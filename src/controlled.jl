@@ -54,7 +54,7 @@ end
 # ---- simulate for ControlledCircuit ----
 
 function simulate(cc::ControlledCircuit, ctrl::Bool, input::Integer)
-    @assert length(cc.circuit.input_widths) == 1
+    length(cc.circuit.input_widths) == 1 || error("simulate(cc, ctrl, input) requires single-input circuit, got $(length(cc.circuit.input_widths)) inputs")
     return _simulate_ctrl(cc, ctrl, (input,))
 end
 
@@ -79,9 +79,9 @@ function _simulate_ctrl(cc::ControlledCircuit, ctrl::Bool, inputs::Tuple)
     for gate in c.gates; apply!(bits, gate); end
 
     for w in c.ancilla_wires
-        @assert !bits[w] "Ancilla wire $w not zero — controlled circuit bug"
+        bits[w] && error("Ancilla wire $w not zero — controlled circuit bug")
     end
-    @assert bits[cc.ctrl_wire] == ctrl "Control wire changed"
+    bits[cc.ctrl_wire] == ctrl || error("Control wire changed from $ctrl to $(bits[cc.ctrl_wire])")
 
     return _read_output(bits, c.output_wires, c.output_elem_widths)
 end
@@ -101,7 +101,7 @@ function verify_reversibility(cc::ControlledCircuit; n_tests::Int=100)
         orig = copy(bits)
         for g in c.gates; apply!(bits, g); end
         for g in Iterators.reverse(c.gates); apply!(bits, g); end
-        @assert bits == orig "Controlled reversibility check failed"
+        bits == orig || error("Controlled reversibility check failed: $(sum(bits .!= orig)) wires differ")
     end
     return true
 end

@@ -856,7 +856,8 @@ function _get_deref_bytes(func::LLVM.Function, param::LLVM.Argument)
                 return parse(Int, m.captures[1])
             end
         end
-    catch
+    catch e
+        e isa MethodError || rethrow()
     end
     # Fallback: parse from function definition line
     ir_str = string(func)

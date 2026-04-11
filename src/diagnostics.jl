@@ -137,7 +137,7 @@ function verify_reversibility(c::ReversibleCircuit; n_tests::Int=100)
         orig = copy(bits)
         for g in c.gates; apply!(bits, g); end
         for g in Iterators.reverse(c.gates); apply!(bits, g); end
-        @assert bits == orig "Reversibility check failed"
+        bits == orig || error("Reversibility check failed: $(sum(bits .!= orig)) wires differ")
     end
     return true
 end

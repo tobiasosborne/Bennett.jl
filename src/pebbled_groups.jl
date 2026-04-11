@@ -10,17 +10,23 @@ Reference: Knill 1995 Theorem 2.1, PRS15 Section III.B (ancilla heap).
 
 # ---- gate remapping ----
 
-_remap_gate(g::NOTGate, wmap::Dict{Int,Int}) =
-    NOTGate(get(wmap, g.target, g.target))
+function _remap_wire(w::Int, wmap::Dict{Int,Int}, input_wire_set::Set{Int})
+    haskey(wmap, w) && return wmap[w]
+    w in input_wire_set && return w  # function inputs are identity-mapped
+    error("Unmapped wire $w in gate remapping — not in wmap and not a function input. Possible corruption from freed group wires.")
+end
 
-_remap_gate(g::CNOTGate, wmap::Dict{Int,Int}) =
-    CNOTGate(get(wmap, g.control, g.control),
-             get(wmap, g.target, g.target))
+_remap_gate(g::NOTGate, wmap::Dict{Int,Int}, iws::Set{Int}) =
+    NOTGate(_remap_wire(g.target, wmap, iws))
 
-_remap_gate(g::ToffoliGate, wmap::Dict{Int,Int}) =
-    ToffoliGate(get(wmap, g.control1, g.control1),
-                get(wmap, g.control2, g.control2),
-                get(wmap, g.target, g.target))
+_remap_gate(g::CNOTGate, wmap::Dict{Int,Int}, iws::Set{Int}) =
+    CNOTGate(_remap_wire(g.control, wmap, iws),
+             _remap_wire(g.target, wmap, iws))
+
+_remap_gate(g::ToffoliGate, wmap::Dict{Int,Int}, iws::Set{Int}) =
+    ToffoliGate(_remap_wire(g.control1, wmap, iws),
+                _remap_wire(g.control2, wmap, iws),
+                _remap_wire(g.target, wmap, iws))
 
 # ---- pebble state tracking ----
 
@@ -92,7 +98,7 @@ function _replay_forward!(result::Vector{ReversibleGate},
 
     # Emit remapped gates
     for gi in group.gate_start:group.gate_end
-        push!(result, _remap_gate(gates[gi], wmap))
+        push!(result, _remap_gate(gates[gi], wmap, input_wire_set))
     end
 
     # Record pebble
@@ -103,12 +109,13 @@ function _replay_reverse!(result::Vector{ReversibleGate},
                           group::GateGroup,
                           gates::Vector{ReversibleGate},
                           wa::WireAllocator,
-                          live_map::Dict{Symbol, ActivePebble})
+                          live_map::Dict{Symbol, ActivePebble},
+                          input_wire_set::Set{Int})
     pebble = live_map[group.ssa_name]
 
     # Emit reverse gates using the SAME wire map from forward
     for gi in group.gate_end:-1:group.gate_start
-        push!(result, _remap_gate(gates[gi], pebble.wmap))
+        push!(result, _remap_gate(gates[gi], pebble.wmap, input_wire_set))
     end
 
     # All target wires are now zero — free them
@@ -148,7 +155,7 @@ function _pebble_groups!(result::Vector{ReversibleGate},
         end
 
         for i in hi:-1:lo
-            _replay_reverse!(result, groups[i], gates, wa, live_map)
+            _replay_reverse!(result, groups[i], gates, wa, live_map, input_wire_set)
         end
         return
     end
@@ -173,7 +180,7 @@ function _pebble_groups!(result::Vector{ReversibleGate},
 
     # Step 3: Reverse groups mid:-1:lo (free wires for reuse)
     for i in mid:-1:lo
-        _replay_reverse!(result, groups[i], gates, wa, live_map)
+        _replay_reverse!(result, groups[i], gates, wa, live_map, input_wire_set)
     end
 end
 
@@ -345,7 +352,7 @@ function checkpoint_bennett(lr::LoweringResult)
         checkpoint_map[group.ssa_name] = ckpt
 
         # Reverse group (frees result + internal wires)
-        _replay_reverse!(result, group, gates, wa, live_map)
+        _replay_reverse!(result, group, gates, wa, live_map, input_wire_set)
 
         # Re-register with checkpoint wires so downstream groups can find deps
         live_map[group.ssa_name] = ActivePebble(ckpt, Int[], Dict{Int,Int}())
@@ -386,7 +393,7 @@ function checkpoint_bennett(lr::LoweringResult)
         end
 
         # Reverse group (frees result + internal)
-        _replay_reverse!(result, group, gates, wa, live_map)
+        _replay_reverse!(result, group, gates, wa, live_map, input_wire_set)
 
         # Free checkpoint wires (now zero)
         free!(wa, old_ckpt)

@@ -3,7 +3,7 @@ apply!(b::Vector{Bool}, g::CNOTGate)    = (b[g.target] ⊻= b[g.control]; nothin
 apply!(b::Vector{Bool}, g::ToffoliGate) = (b[g.target] ⊻= b[g.control1] & b[g.control2]; nothing)
 
 function simulate(circuit::ReversibleCircuit, input::Integer)
-    @assert length(circuit.input_widths) == 1
+    length(circuit.input_widths) == 1 || error("simulate(circuit, input) requires single-input circuit, got $(length(circuit.input_widths)) inputs")
     return _simulate(circuit, (input,))
 end
 
@@ -28,7 +28,7 @@ function _simulate(circuit::ReversibleCircuit, inputs::Tuple)
     end
 
     for w in circuit.ancilla_wires
-        @assert !bits[w] "Ancilla wire $w not zero — Bennett construction bug"
+        bits[w] && error("Ancilla wire $w not zero — Bennett construction bug")
     end
 
     return _read_output(bits, circuit.output_wires, circuit.output_elem_widths)
@@ -39,10 +39,10 @@ function _read_output(bits, output_wires, elem_widths)
         return _read_int(bits, output_wires, 1, elem_widths[1])
     else
         # Multi-element return → tuple
-        vals = []
+        vals = Vector{Int64}(undef, length(elem_widths))
         off = 0
-        for ew in elem_widths
-            push!(vals, _read_int(bits, output_wires, off + 1, ew))
+        for (k, ew) in enumerate(elem_widths)
+            vals[k] = _read_int(bits, output_wires, off + 1, ew)
             off += ew
         end
         return Tuple(vals)

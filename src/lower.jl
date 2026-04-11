@@ -448,6 +448,8 @@ function lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_orde
             lower_insertvalue!(gates, wa, vw, inst)
         elseif inst isa IRCall
             lower_call!(gates, wa, vw, inst)
+        else
+            error("Unhandled instruction type: $(typeof(inst)) — $(inst)")
         end
 
         _ge = length(gates)
@@ -552,7 +554,7 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
     pre_header_preds = Symbol[]  # will be filled from phi incoming
 
     # Separate phi incoming into pre-header (initial) and latch (loop-carried)
-    phi_info = []  # (dest, width, pre_header_operand, latch_operand)
+    phi_info = Tuple{Symbol, Int, IROperand, IROperand}[]
     for inst in header.instructions
         inst isa IRPhi || continue
         pre_op = nothing; latch_op = nothing
@@ -579,7 +581,7 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
 
     # The terminator must be a conditional branch (exit vs continue)
     term = header.terminator
-    @assert term isa IRBranch && term.cond !== nothing "Loop header must end with conditional branch"
+    (term isa IRBranch && term.cond !== nothing) || error("Loop header must end with conditional branch, got: $(typeof(term))")
 
     # Determine which successor is the exit and which is the back-edge
     exit_on_true = !(term.true_label == hlabel || term.true_label in latch_labels)
@@ -766,14 +768,9 @@ function lower_phi!(gates, wa, vw, inst::IRPhi, phi_block::Symbol,
                     block_pred::Dict{Symbol,Vector{Int}}=Dict{Symbol,Vector{Int}}())
     incoming = [(resolve!(gates, wa, vw, val, inst.width), blk)
                 for (val, blk) in inst.incoming]
-    if !isempty(block_pred)
-        vw[inst.dest] = resolve_phi_predicated!(gates, wa, incoming, block_pred, inst.width;
-                                                phi_block=phi_block, branch_info)
-    else
-        vw[inst.dest] = resolve_phi_muxes!(gates, wa, incoming, preds,
-                                           branch_info, block_order, inst.width;
-                                           phi_block)
-    end
+    isempty(block_pred) && error("block_pred is empty during phi resolution for $(inst.dest) — path predicates must be computed before phi lowering")
+    vw[inst.dest] = resolve_phi_predicated!(gates, wa, incoming, block_pred, inst.width;
+                                            phi_block=phi_block, branch_info)
 end
 
 """Check if `ancestor` is an ancestor of `block` in the CFG."""
@@ -1249,7 +1246,6 @@ end
 function lower_ptr_offset!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                            vw::Dict{Symbol,Vector{Int}}, inst::IRPtrOffset)
     # The base operand should be a flat wire array (from ptr param)
-    base_wires = resolve!(gates, wa, vw, inst.base, 0)  # width unknown, use name lookup
     if !haskey(vw, inst.base.name)
         error("GEP base $(inst.base.name) not found in variable wires")
     end

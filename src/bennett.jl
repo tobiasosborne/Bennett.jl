@@ -17,7 +17,9 @@ function bennett(lr::LoweringResult)
     for (i, w) in enumerate(lr.output_wires)
         push!(all_gates, CNOTGate(w, copy_wires[i]))
     end
-    append!(all_gates, reverse(lr.gates))
+    for i in length(lr.gates):-1:1
+        push!(all_gates, lr.gates[i])
+    end
 
     in_set   = Set(lr.input_wires)
     out_set  = Set(copy_wires)
