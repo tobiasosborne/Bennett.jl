@@ -11,7 +11,7 @@ f(x::Int8) = x * x + Int8(3) * x + Int8(1)
 circuit = reversible_compile(f, Int8)
 simulate(circuit, Int8(5))   # => 41
 verify_reversibility(circuit) # => true
-gate_count(circuit)           # => 846
+gate_count(circuit)           # => 872
 
 # Float64 works too (via branchless soft-float, bit-exact with hardware)
 g(x::Float64) = x^2 + 3.0*x + 1.0
@@ -88,8 +88,8 @@ circuit = reversible_compile(x -> x + Int8(1), Int8)
 simulate(circuit, Int8(42))  # => 43
 
 # Inspect
-gate_count(circuit)           # => 86
-ancilla_count(circuit)        # => 63
+gate_count(circuit)           # => 100
+ancilla_count(circuit)        # => 76
 t_count(circuit)              # => 196  (Toffoli * 7)
 verify_reversibility(circuit) # => true
 
@@ -123,6 +123,13 @@ f(x::Int8)     -->  extract_parsed_ir()  -->  lower()  -->  bennett()
 2. **Lower** -- `lower(parsed_ir)` maps each instruction to reversible gates (NOT, CNOT, Toffoli)
 3. **Bennett** -- `bennett(lr)` applies forward + CNOT-copy + reverse (all ancillae return to zero)
 4. **Simulate** -- `simulate(circuit, input)` runs bit-vector simulation with ancilla verification
+
+## Documentation
+
+- **[Tutorial](docs/src/tutorial.md)** -- compile your first reversible circuit in 10 minutes
+- **[API Reference](docs/src/api.md)** -- every exported function with examples
+- **[Architecture Guide](docs/src/architecture.md)** -- how the compiler works internally
+- **[Vision PRD](Bennett-VISION-PRD.md)** -- the full v1.0 roadmap and Enzyme analogy
 
 ## Key References
 
