@@ -1065,6 +1065,65 @@ bd show Bennett-6lb                               # details on MDD issue
 - Push before stopping: work is not done until `git push` succeeds
    robustness. Compute block predicates during lowering, use for phi resolution.
 
+## Session log — 2026-04-11: Mother of all code reviews
+
+### What was done
+
+6-agent code review (Test Coverage, Architecture/Research, Julia Idioms, Knuth, Torvalds, Carmack).
+59 beads issues filed. 19 issues closed in this session.
+
+### Issues closed
+
+**All 4 CRITICAL (P0):**
+- C1 (Bennett-y3c): Removed silent fallback to buggy phi resolver — now errors if block_pred empty
+- C2 (Bennett-126): Replaced global _name_counter with local Ref{Int} threaded through functions
+- C3 (Bennett-9qk): Added _remap_wire() validation in pebbled_groups.jl — unmapped wires now error
+- C4 (Bennett-ug9): Documented Knill pebble game vs circuit model distinction + added tests
+
+**HIGH correctness (H1-H4):**
+- H1: else error() for unhandled instructions in lower_block_insts!
+- H2: Narrowed bare try/catch to MethodError in _get_deref_bytes
+- H3: Removed dead resolve! call in lower_ptr_offset!
+- H4: Replaced all @assert with error() for core invariants (simulator, controlled, diagnostics)
+
+**HIGH testing (T1-T6):**
+- T1: test_soft_sitofp.jl — 1143 tests for Int64→Float64 bit-exact
+- T2: ceil(Float64) test added to test_float_intrinsics.jl
+- T3: test_gate_count_regression.jl — 13 baseline assertions (updated to current values)
+- T4: test_negative.jl — 3 error condition tests
+- T5: soft_fcmp_ole/une library tests added to test_softfcmp.jl
+- T6: test_constant_wire_count.jl — 5 assertions
+
+**HIGH code quality (Q1, Q4):**
+- Q1: Extracted ~150 lines of duplicated soft-float code into softfloat_common.jl
+- Q4: Replaced callee substring matching with exact name lookup + regex
+
+**Other:**
+- P4: Eliminated reverse(lr.gates) allocation in bennett.jl
+- M9: Typed Vector{Any} literals in simulator and lower
+
+### Key gotchas
+
+1. **Gate count baselines shifted**: Path-predicate phi resolution (v0.5) adds block-predicate
+   overhead (NOT+CNOT gates). Old baselines (86/174/350/702) are now (100/204/412/828).
+   Toffoli counts unchanged (28/60/124/252). New scaling: 2x+4 per width doubling.
+
+2. **Knill pebble game ≠ circuit gate model**: The F(n,s) cost formula describes abstract
+   pebble operations. In a circuit, running n gates forward is always n steps. The recursion
+   controls WHICH segments are live simultaneously, not total gate count (always 2n-1+n_out).
+   Actual space reduction requires group-level pebbling (pebbled_groups.jl).
+
+3. **Callee matching had two paths**: LLVM-mangled names (julia_<name>_NNN from call
+   instructions) AND hardcoded bare names ("soft_fcmp_ole" from fcmp intrinsic handling
+   in ir_extract.jl). New _lookup_callee handles both: exact dict match first, then regex.
+
+4. **phi_info type**: The loop phi info is Tuple{Symbol, Int, IROperand, IROperand},
+   not Tuple{Symbol, Int, Tuple{IROperand,Symbol}, Tuple{IROperand,Symbol}}.
+
+5. **_reset_names! needed as no-op**: Many test files call Bennett._reset_names!() before
+   calling extract_parsed_ir directly. With the local counter, the function does nothing
+   but must exist for backward compatibility.
+
 ## Previous: Next session: Float64 support
 
 The next major challenge is floating-point arithmetic. This requires:
