@@ -143,6 +143,16 @@ Recursive pebbling with output copy insertion.
 
 When `is_outermost` is true and we reach the end of all gates, the copy_gates
 are inserted before uncomputing. For inner recursions, no copy is needed.
+
+Implements Knill's reversible pebbling game at the gate level:
+  Step 1: Forward gates lo:mid (compute, m steps)
+  Step 2: Recursively pebble mid+1:hi with s-1 pebbles
+  Step 3: Reverse gates lo:mid (uncompute, m steps)
+
+The benefit over full Bennett: the recursive splitting ensures that at any point
+during execution, at most s segments of gates have live wires simultaneously.
+Total gate count is always 2n-1+n_out (same as full Bennett for a chain), but
+the peak number of simultaneously-live wires is bounded by O(s * max_segment_wires).
 """
 function _pebble_with_copy!(result::Vector{ReversibleGate},
                             gates::Vector{ReversibleGate},
@@ -150,13 +160,10 @@ function _pebble_with_copy!(result::Vector{ReversibleGate},
                             lo::Int, hi::Int, s::Int,
                             is_outermost::Bool)
     n = hi - lo + 1
-    if n <= 0
-        return
-    end
+    n <= 0 && return
 
-    # Base case: apply all gates in range, insert copy if at end, reverse all
+    # Base case: enough pebbles for full Bennett on this segment
     if n <= s
-        # Enough pebbles for full Bennett on this segment
         for i in lo:hi
             push!(result, gates[i])
         end
@@ -169,27 +176,21 @@ function _pebble_with_copy!(result::Vector{ReversibleGate},
         return
     end
 
-    if s <= 1
-        error("Insufficient pebbles: need at least $(min_pebbles(n)) for $n gates, have $s")
-    end
+    s <= 1 && error("Insufficient pebbles: need at least $(min_pebbles(n)) for $n gates, have $s")
 
     m = knill_split_point(n, s)
     mid = lo + m - 1
 
-    # Knill's 3-term recursion: F(m,s) + F(n-m,s-1) + F(m,s-1)
-    #
-    # Step 1: Pebble first m gates with s pebbles (forward, keeping them live)
-    # This is NOT a simple forward — it may involve sub-pebbling if s < m
+    # Step 1: Forward gates lo:mid (compute, m steps)
     for i in lo:mid
         push!(result, gates[i])
     end
 
-    # Step 2: Recursively process remaining gates with s-1 pebbles
+    # Step 2: Recursively pebble mid+1:hi with s-1 pebbles
     includes_end = (hi == length(gates)) && is_outermost
     _pebble_with_copy!(result, gates, copy_gates, mid + 1, hi, s - 1, includes_end)
 
-    # Step 3: Unpebble first m gates with s-1 pebbles
-    # This reverses the checkpoint — may need recursive unpebbling if s-1 < m
+    # Step 3: Reverse gates lo:mid (uncompute, m steps)
     for i in mid:-1:lo
         push!(result, gates[i])
     end
