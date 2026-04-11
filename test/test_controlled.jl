@@ -40,4 +40,28 @@
         end
         @test verify_reversibility(cc)
     end
+
+    @testset "Controlled Int16" begin
+        f16(x::Int16) = x + Int16(7)
+        circuit = reversible_compile(f16, Int16)
+        cc = controlled(circuit)
+
+        for x in [Int16(0), Int16(1), Int16(-1), typemin(Int16), typemax(Int16)]
+            @test simulate(cc, true, x) == f16(x)
+            @test simulate(cc, false, x) == Int16(0)
+        end
+        @test verify_reversibility(cc)
+    end
+
+    @testset "Controlled tuple return" begin
+        swap(x::Int8, y::Int8) = (y, x)
+        circuit = reversible_compile(swap, Int8, Int8)
+        cc = controlled(circuit)
+
+        for x in Int8(0):Int8(7), y in Int8(0):Int8(7)
+            @test simulate(cc, true, (x, y)) == swap(x, y)
+            @test simulate(cc, false, (x, y)) == (Int64(0), Int64(0))
+        end
+        @test verify_reversibility(cc)
+    end
 end

@@ -29,12 +29,27 @@ using Random
     @testset "edge cases" begin
         check_fsub(0.0, -0.0)
         check_fsub(-0.0, 0.0)
+        check_fsub(-0.0, -0.0)
         check_fsub(Inf, 1.0)
         check_fsub(1.0, Inf)
+        check_fsub(-1.0, -Inf)
         check_fsub(Inf, Inf)
         check_fsub(-Inf, -Inf)
+        check_fsub(Inf, -Inf)
+        check_fsub(-Inf, Inf)
         check_fsub(NaN, 1.0)
         check_fsub(1.0, NaN)
+        check_fsub(NaN, NaN)
+        # Subnormals
+        check_fsub(5.0e-324, 0.0)
+        check_fsub(0.0, 5.0e-324)
+        check_fsub(5.0e-324, 5.0e-324)
+        # Overflow boundary
+        check_fsub(-1.7976931348623157e308, 1.7976931348623157e308)
+        check_fsub(1.7976931348623157e308, -1.7976931348623157e308)
+        # Near-cancellation
+        check_fsub(1.0, nextfloat(1.0))
+        check_fsub(nextfloat(1.0), 1.0)
     end
 
     @testset "random (10_000 pairs)" begin

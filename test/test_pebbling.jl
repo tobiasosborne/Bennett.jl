@@ -30,11 +30,12 @@
         @test full.space == 100
         @test full.time == 199
 
-        # Constrained: fewer pebbles = more time
+        # Constrained: fewer pebbles = more time, time matches Knill formula
         for s in [10, 15, 20, 50]
             result = Bennett.pebble_tradeoff(n; max_space=s)
             @test result.space >= Bennett.min_pebbles(n)
             @test result.time >= 2n - 1
+            @test result.time == Bennett.knill_pebble_cost(n, result.space)
             println("  n=$n, space=$(result.space): time=$(result.time), overhead=$(round(result.overhead, digits=2))x")
         end
     end
