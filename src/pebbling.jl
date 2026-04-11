@@ -130,12 +130,7 @@ function pebbled_bennett(lr::LoweringResult; max_pebbles::Int=0)
     # Generate pebbled schedule: forward + copy + reverse
     _pebble_with_copy!(all_gates, lr.gates, copy_gates, 1, n, max_pebbles, true)
 
-    in_set  = Set(lr.input_wires)
-    out_set = Set(copy_wires)
-    ancillae = [w for w in 1:total if !(w in in_set) && !(w in out_set)]
-
-    return ReversibleCircuit(total, all_gates, lr.input_wires, copy_wires,
-                             ancillae, lr.input_widths, lr.output_elem_widths)
+    return _build_circuit(all_gates, total, lr.input_wires, copy_wires, lr)
 end
 
 """

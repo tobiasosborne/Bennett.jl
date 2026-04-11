@@ -278,11 +278,7 @@ function pebbled_group_bennett(lr::LoweringResult; max_pebbles::Int=0)
                     1, n_groups, s, true)
 
     total = wire_count(wa)
-    out_set = Set(copy_wires)
-    ancillae = [w for w in 1:total if !(w in input_wire_set) && !(w in out_set)]
-
-    return ReversibleCircuit(total, result, lr.input_wires, copy_wires,
-                             ancillae, lr.input_widths, lr.output_elem_widths)
+    return _build_circuit(result, total, lr.input_wires, copy_wires, lr)
 end
 
 # ---- checkpoint-based Bennett construction ----
@@ -401,9 +397,5 @@ function checkpoint_bennett(lr::LoweringResult)
     end
 
     total = wire_count(wa)
-    out_set = Set(copy_wires)
-    ancillae = [w for w in 1:total if !(w in input_wire_set) && !(w in out_set)]
-
-    return ReversibleCircuit(total, result, lr.input_wires, copy_wires,
-                             ancillae, lr.input_widths, lr.output_elem_widths)
+    return _build_circuit(result, total, lr.input_wires, copy_wires, lr)
 end
