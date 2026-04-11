@@ -40,10 +40,16 @@ function register_callee!(f::Function)
 end
 
 function _lookup_callee(llvm_name::String)
-    for (jname, f) in _known_callees
-        if occursin(jname, lowercase(llvm_name))
-            return f
-        end
+    # First: try exact match (for hardcoded lookups like "soft_fcmp_ole")
+    haskey(_known_callees, llvm_name) && return _known_callees[llvm_name]
+
+    # Second: LLVM-mangled names follow julia_<funcname>_<NNN> or j_<funcname>_<NNN>.
+    # Extract the function name and do exact dict lookup.
+    lname = lowercase(llvm_name)
+    m = match(r"^(?:julia_|j_)(.+)_(\d+)$", lname)
+    if m !== nothing
+        fname = m.captures[1]
+        haskey(_known_callees, fname) && return _known_callees[fname]
     end
     return nothing
 end
