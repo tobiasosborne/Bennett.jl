@@ -3379,3 +3379,83 @@ Considered three candidates:
   (substantial side-quest). P3 priority, deferred.
 - T3b.3 (Bennett-10rm): universal dispatcher. Feistel becomes one more
   registered strategy alongside T1b MUX EXCH, T1c QROM, T2b linear.
+
+## 2026-04-12 — T3b.1 + T3b.2: shadow memory design + primitives (Bennett-oy9e, Bennett-2ayo)
+
+### T3b.1 design — `docs/memory/shadow_design.md`
+
+Universal fallback for memory ops that T1b / T1c / T2b / T3a can't handle.
+Protocol adapted from Enzyme's AD shadow memory, specialized to reversibility:
+
+- **Primal**: user-visible memory. Lowered as a flat wire array.
+- **Shadow tape**: parallel wire array indexed by store-SSA-sequence.
+- **Store**: tape ← old primal; primal ← val. Bennett reverses to restore
+  primal and zero tape slot.
+- **Load**: pure CNOT-copy. No tape involvement.
+- **Integration point**: tape slots are pebbleable resources; SAT pebbling
+  (Meuli 2019, already in `src/sat_pebbling.jl`) decides which slots to
+  materialize under a user-set budget.
+
+Cost model documented: **3W CNOT per store + W CNOT per load, zero Toffoli
+from the mechanism itself** — orders of magnitude cheaper than MUX EXCH
+(~7k gates) for arbitrary-size writes. Trade-off: peak wire count grows
+with total stores (mitigable via SAT pebbling).
+
+### T3b.2 implementation — `src/shadow_memory.jl`
+
+```julia
+emit_shadow_store!(gates, wa, primal, tape_slot, val, W)  -> Nothing
+emit_shadow_load!(gates, wa, primal, W)                    -> Vector{Int}
+```
+
+Pure gate emitters matching the protocol:
+
+**Store** emits 3W CNOTs (verified in test):
+```
+for i in 1:W: CNOT primal[i] → tape[i]      ; tape = old primal
+for i in 1:W: CNOT tape[i] → primal[i]       ; primal = 0 (XOR identity)
+for i in 1:W: CNOT val[i] → primal[i]        ; primal = val
+```
+
+**Load** emits W CNOTs (fresh output wires).
+
+### Measured
+
+| Primitive                   | Gates    | Toffoli | Notes                        |
+|-----------------------------|----------|---------|------------------------------|
+| Shadow store, W=8           | 24 CNOT  | 0       | 3W per §4.2                  |
+| Shadow store, W=16          | 48 CNOT  | 0       | —                            |
+| Shadow store, W=32          | 96 CNOT  | 0       | —                            |
+| Shadow load, W=8            | 8 CNOT   | 0       | W per §4.3                   |
+| MUX EXCH store_4x8 (ref)    | 7,122    | 1,492   | For comparison               |
+| MUX EXCH load_4x8 (ref)     | 7,514    | 1,658   | For comparison               |
+
+**~300× cheaper than MUX EXCH** for the same primitive operation. MUX EXCH
+retains value for its MEANING (direct in-place slot update with dynamic
+index) where shadow's O(store-count) tape wires become prohibitive.
+
+### Tests — `test/test_shadow_memory.jl`
+
+594 assertions:
+- Single store + load round-trip on all 256 W=8 inputs
+- Two stores same location: last-write-wins
+- Store-then-load-then-store-then-load recovers both stored values
+- Exact gate-count assertions (3W CNOT per store, W CNOT per load, 0 Toffoli)
+- 5-store stress test on W=16 with random sampling
+
+### What this unblocks
+
+- T3b.3 (Bennett-10rm): universal dispatcher can now route to shadow memory
+  for allocations rejected by every specialized strategy. Shadow's cost
+  model makes it the correct fallback for "anything arbitrary".
+- Full SAT-pebbling integration: the tape slots are the pebbles. Existing
+  `src/sat_pebbling.jl` infrastructure already reasons about wire-reuse
+  schedules; shadow-tape-slot reuse is the same problem shape. Deferred
+  as integration work (not a new primitive).
+
+### Not in scope
+
+- SAT-pebbling *scheduling* of shadow tape slots. The primitive EXPOSES the
+  right interface (one tape slot per store, pebbleable) but the scheduler
+  that PICKS which slots to share is follow-up. Current tests allocate one
+  fresh tape slot per store (worst-case wire count, correct behavior).

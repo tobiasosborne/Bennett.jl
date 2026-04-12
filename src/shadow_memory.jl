@@ -1,0 +1,75 @@
+# ---- Shadow memory: universal reversible store/load primitive ----
+#
+# Per docs/memory/shadow_design.md (T3b.1). Adapts Enzyme's shadow-memory
+# pattern to the reversibility setting: instead of linear-accumulating
+# derivatives on a shadow register, we checkpoint the primal's previous
+# value onto a tape slot and restore it on Bennett's reverse pass.
+#
+# These primitives are the UNIVERSAL FALLBACK — applicable to any write
+# when T1b (MUX EXCH) / T1c (QROM) / T2b (linear) / T3a (Feistel) don't
+# fit. Cost: 3W CNOTs per store, W CNOTs per load. Zero Toffolis.
+#
+# Protocol per store (primal ← val, tape ← old primal):
+#   1. CNOT primal[i] → tape[i]   (tape = old primal)
+#   2. CNOT tape[i]   → primal[i] (primal = primal XOR tape = 0, since
+#                                  tape currently equals primal)
+#   3. CNOT val[i]    → primal[i] (primal = val)
+#
+# Bennett reverse unwinds this to primal = old, tape = 0.
+#
+# Tape slots must be pre-allocated by the caller (one slot per store
+# instance) — this keeps the primitive pure gate-emission with no hidden
+# state. The universal dispatcher (T3b.3) or SAT pebbler decides slot
+# allocation strategy.
+
+"""
+    emit_shadow_store!(gates, wa, primal, tape_slot, val, W) -> Nothing
+
+Reversibly write `val` into `primal`, saving the old primal value onto the
+tape slot for later uncomputation. After this call:
+  - `primal` holds `val`
+  - `tape_slot` holds the old primal value
+
+Emits `3·W` CNOT gates, zero Toffolis. Both `primal` and `tape_slot` must
+have length `W`. Caller is responsible for ensuring `tape_slot` wires
+start at zero (they will after Bennett reverse — it's the caller's
+invariant to allocate a fresh slot per store).
+"""
+function emit_shadow_store!(gates::Vector{ReversibleGate}, wa::WireAllocator,
+                            primal::Vector{Int}, tape_slot::Vector{Int},
+                            val::Vector{Int}, W::Int)
+    length(primal)    == W || error("emit_shadow_store!: primal has $(length(primal)) wires, W=$W")
+    length(tape_slot) == W || error("emit_shadow_store!: tape_slot has $(length(tape_slot)) wires, W=$W")
+    length(val)       == W || error("emit_shadow_store!: val has $(length(val)) wires, W=$W")
+
+    for i in 1:W
+        push!(gates, CNOTGate(primal[i], tape_slot[i]))
+    end
+    for i in 1:W
+        push!(gates, CNOTGate(tape_slot[i], primal[i]))
+    end
+    for i in 1:W
+        push!(gates, CNOTGate(val[i], primal[i]))
+    end
+    return nothing
+end
+
+"""
+    emit_shadow_load!(gates, wa, primal, W) -> Vector{Int}
+
+Reversibly read `primal` into fresh output wires. Emits `W` CNOT gates,
+zero Toffolis. Returns the W output wires (each a CNOT-copy of the
+corresponding primal wire).
+
+Shadow-memory loads require no tape slot: the load is a pure copy and
+Bennett's reverse undoes it naturally.
+"""
+function emit_shadow_load!(gates::Vector{ReversibleGate}, wa::WireAllocator,
+                           primal::Vector{Int}, W::Int)
+    length(primal) == W || error("emit_shadow_load!: primal has $(length(primal)) wires, W=$W")
+    out = allocate!(wa, W)
+    for i in 1:W
+        push!(gates, CNOTGate(primal[i], out[i]))
+    end
+    return out
+end
