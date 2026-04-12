@@ -2629,3 +2629,35 @@ T1b.4's bd acceptance asks for a "Julia function" test. In practice Julia's code
 ### Bennett.jl is now the first reversible compiler to handle arbitrary LLVM `store`/`alloca`
 
 Every surveyed reversible compiler (ReVerC, Silq, Quipper, ProjectQ, Qrisp) lacks this. Our tiered dispatch (static 4×8 MUX EXCH via `soft_mux_*_4x8`, with the provenance-aware load patch) handles multi-store, slot isolation, last-write-wins, and zero-init uniformly at ~7k gates per op. This is the paper-winning milestone (PLDI/ICFP "Reversible Memory in an SSA Compiler" narrative from SURVEY.md).
+
+## 2026-04-12 — Memory plan T1b.5: N=8 variant + scaling (Bennett-1ds)
+
+### Scaling table
+
+| Op | Gates | Wires |
+|----|-------|-------|
+| N=4 load  | 7514  | 2753 |
+| N=8 load  | 9590  | 3777 |
+| N=4 store | 7122  | 2753 |
+| N=8 store | 14026 | 5185 |
+
+Scaling factor 4→8:
+- Load: 1.28× (sub-linear; the ifelse-chain collapses well in LLVM)
+- Store: 1.97× (near-linear; 4 parallel ifelses → 8 parallel ifelses + 2× OR chain)
+
+Both within the 20K-gate-per-op budget and well under the first-estimated 50-70K.
+
+### Practical note on further scaling
+
+N=16 at W=8 requires 128 bits of state, which exceeds UInt64. Future paths:
+
+1. Dual-UInt64 state (two 64-bit args, one callee per half). Doubles gate count per op.
+2. Narrower elements (N=16 at W=4 = 64 bits). Fits UInt64 but limits to 4-bit values.
+3. QROM (Babbush-Gidney 2018) for read-only case — 4L Toffolis, may beat MUX for larger read-only tables (T1c.1).
+4. Shadow-memory + SAT pebbling universal fallback (T3b).
+
+For the MVP benchmark milestone, N∈{4,8} suffices — a single alloca backs mutable arrays up to 64 bits of total state.
+
+### Test
+
+`test/test_soft_mux_scaling.jl` — 200 assertions: exhaustive round-trip for N=8, slot-isolation for N=8, reversibility verification, gate-count scaling bounds (g8 < 3·g4 for both load and store).

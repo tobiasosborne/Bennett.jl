@@ -44,3 +44,51 @@ Branchless.
            ifelse(idx == UInt64(1), s1,
            ifelse(idx == UInt64(2), s2, s3)))
 end
+
+# --- N=8, W=8 variant (fully fills a UInt64) ---
+
+"""
+    soft_mux_store_8x8(arr, idx, val) -> UInt64
+
+Write `val & 0xff` into position `idx ∈ 0:7` of an 8-element, 8-bit array
+packed into all 64 bits of `arr`. Branchless; same structure as the 4x8
+variant but over 8 slots.
+"""
+@inline function soft_mux_store_8x8(arr::UInt64, idx::UInt64, val::UInt64)::UInt64
+    m = UInt64(0xff)
+    v = val & m
+    s0 = ifelse(idx == UInt64(0), v, arr         & m)
+    s1 = ifelse(idx == UInt64(1), v, (arr >> 8)  & m)
+    s2 = ifelse(idx == UInt64(2), v, (arr >> 16) & m)
+    s3 = ifelse(idx == UInt64(3), v, (arr >> 24) & m)
+    s4 = ifelse(idx == UInt64(4), v, (arr >> 32) & m)
+    s5 = ifelse(idx == UInt64(5), v, (arr >> 40) & m)
+    s6 = ifelse(idx == UInt64(6), v, (arr >> 48) & m)
+    s7 = ifelse(idx == UInt64(7), v, (arr >> 56) & m)
+    return s0 | (s1 << 8) | (s2 << 16) | (s3 << 24) |
+           (s4 << 32) | (s5 << 40) | (s6 << 48) | (s7 << 56)
+end
+
+"""
+    soft_mux_load_8x8(arr, idx) -> UInt64
+
+Read position `idx ∈ 0:7` from an 8-element, 8-bit array.
+"""
+@inline function soft_mux_load_8x8(arr::UInt64, idx::UInt64)::UInt64
+    m = UInt64(0xff)
+    s0 = arr         & m
+    s1 = (arr >> 8)  & m
+    s2 = (arr >> 16) & m
+    s3 = (arr >> 24) & m
+    s4 = (arr >> 32) & m
+    s5 = (arr >> 40) & m
+    s6 = (arr >> 48) & m
+    s7 = (arr >> 56) & m
+    return ifelse(idx == UInt64(0), s0,
+           ifelse(idx == UInt64(1), s1,
+           ifelse(idx == UInt64(2), s2,
+           ifelse(idx == UInt64(3), s3,
+           ifelse(idx == UInt64(4), s4,
+           ifelse(idx == UInt64(5), s5,
+           ifelse(idx == UInt64(6), s6, s7)))))))
+end

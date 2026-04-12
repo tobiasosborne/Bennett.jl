@@ -113,6 +113,8 @@ register_callee!(soft_trunc)
 register_callee!(soft_fcmp_une)
 register_callee!(soft_mux_store_4x8)
 register_callee!(soft_mux_load_4x8)
+register_callee!(soft_mux_store_8x8)
+register_callee!(soft_mux_load_8x8)
 
 # ---- Float64 support via SoftFloat dispatch ----
 
