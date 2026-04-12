@@ -2524,3 +2524,23 @@ Used hand-crafted LLVM IR strings rather than Julia codegen to avoid triggering 
 ### What this unblocks
 
 T1b.3 — `lower_store!` / `lower_alloca!` can now assume IRStore/IRAlloca appear in the ParsedIR stream. The existing silent-skip path is completely gone.
+
+## 2026-04-12 — Memory plan T1b.1: soft_mux_store/load pure-Julia (Bennett-ape)
+
+### What was built
+
+`src/softmem.jl` — two pure-Julia branchless functions:
+- `soft_mux_store_4x8(arr::UInt64, idx::UInt64, val::UInt64) -> UInt64`
+- `soft_mux_load_4x8(arr::UInt64, idx::UInt64) -> UInt64`
+
+4-element, 8-bit-per-element array packed into the low 32 bits of a UInt64. All slots are computed unconditionally and MUX-selected by `idx`. No variable shifts, no data-dependent control flow — so the compiled reversible circuit will have O(N × W) gates rather than the O(log N × W) barrel-shifter cost.
+
+These are the first T1b memory callees. T1b.2 registers them; T1b.3 wires `lower_store!`/`lower_alloca!` to dispatch to them.
+
+### Naming convention
+
+`soft_mux_<op>_<N>x<W>` — op ∈ {store, load}, N = element count, W = bits/element. T1b.5 scales to (N=4,8,16,32,64).
+
+### Test
+
+`test/test_soft_mux_mem.jl` — 4122 assertions. Every (arr ∈ {0, 0xaabbccdd, 0xffffffff}) × (idx ∈ 0:3) × (val ∈ 0:255) combination verified bit-exact against a reference unpack-manipulate-repack implementation, plus store+load round-trip on all (idx, val) pairs.
