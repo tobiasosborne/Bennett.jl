@@ -2544,3 +2544,23 @@ These are the first T1b memory callees. T1b.2 registers them; T1b.3 wires `lower
 ### Test
 
 `test/test_soft_mux_mem.jl` — 4122 assertions. Every (arr ∈ {0, 0xaabbccdd, 0xffffffff}) × (idx ∈ 0:3) × (val ∈ 0:255) combination verified bit-exact against a reference unpack-manipulate-repack implementation, plus store+load round-trip on all (idx, val) pairs.
+
+## 2026-04-12 — Memory plan T1b.2: register callees + gate-level circuit tests (Bennett-28h)
+
+### What was built
+
+- `register_callee!(soft_mux_store_4x8)` and `register_callee!(soft_mux_load_4x8)` in `src/Bennett.jl`.
+- `test/test_soft_mux_mem_circuit.jl` — compiles both through the full Bennett pipeline and verifies reversibility + bit-exact correctness.
+
+### Gate counts for the primitive memory ops (N=4, W=8)
+
+| Op | Gates | Wires |
+|----|-------|-------|
+| `soft_mux_load_4x8`  | 7514 | 2753 |
+| `soft_mux_store_4x8` | 7122 | 2753 |
+
+Well under the 20K-per-op budget. Store is cheaper than load because store's 4 ifelses are parallel (each slot decided independently) while load is a nested ifelse chain (sequential MUX tree).
+
+### What this unblocks
+
+T1b.3 — `lower_store!`/`lower_alloca!` can now invoke these via `IRCall` dispatch (the same path soft_fadd uses).
