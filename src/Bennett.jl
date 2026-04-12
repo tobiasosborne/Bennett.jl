@@ -72,7 +72,9 @@ end
 _narrow_inst(inst::IRBinOp, W::Int) = IRBinOp(inst.dest, inst.op, inst.op1, inst.op2, W)
 _narrow_inst(inst::IRICmp, W::Int) = IRICmp(inst.dest, inst.predicate, inst.op1, inst.op2, W)
 _narrow_inst(inst::IRSelect, W::Int) = IRSelect(inst.dest, inst.cond, inst.op1, inst.op2, W)
-_narrow_inst(inst::IRCast, W::Int) = IRCast(inst.dest, inst.op, inst.src_width, W, inst.operand)
+_narrow_inst(inst::IRCast, W::Int) = IRCast(inst.dest, inst.op, inst.operand,
+                                             inst.from_width > 1 ? W : 1,
+                                             inst.to_width > 1 ? W : 1)
 _narrow_inst(inst::IRRet, W::Int) = IRRet(inst.op, W)
 _narrow_inst(inst::IRPhi, W::Int) = IRPhi(inst.dest, inst.width > 1 ? W : 1, inst.incoming)
 _narrow_inst(inst::IRBranch, W::Int) = inst  # branches don't have widths

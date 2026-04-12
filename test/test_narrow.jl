@@ -62,4 +62,17 @@ using Bennett
             println("  Int$W x+1: $(gc.total) gates")
         end
     end
+
+    @testset "narrow with integer comparison (IRCast)" begin
+        # x == 5 forces a cast of the literal in the LLVM IR (Int64 5 → i8).
+        # Regression test for _narrow_inst(::IRCast) — previously referenced a
+        # nonexistent src_width field and passed args in the wrong positional
+        # order, breaking any bit_width>0 compile of a function with a cast.
+        f(x::Int8) = Int8(x == 5 ? 1 : 0)
+        c = reversible_compile(f, Int8; bit_width=3)
+        for x in 0:7
+            @test simulate(c, Int8(x)) == (x == 5 ? Int8(1) : Int8(0))
+        end
+        @test verify_reversibility(c)
+    end
 end

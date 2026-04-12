@@ -2349,3 +2349,37 @@ composability. The 5x overhead is irrelevant for a researcher who wants
 
 - Full test suite: all tests pass, zero regressions
 - SHA-256: correct output, all ancillae verified zero
+
+---
+
+## 2026-04-12 — Fix _narrow_inst(IRCast) (Bennett-z9y)
+
+### The bug
+
+`src/Bennett.jl:75` had `_narrow_inst(inst::IRCast, W::Int) = IRCast(inst.dest, inst.op, inst.src_width, W, inst.operand)` — two errors: IRCast has no `src_width` field (it's `from_width`/`to_width`), and the positional order was wrong (`src_width` at position 3 where `operand` belongs). Any `bit_width > 0` compile of a function whose LLVM IR contained a cast hit `FieldError`. Reported by Sturm.jl agent — blocks Sturm's `oracle(f, x::QInt{W})` path for any predicate with a comparison or literal coercion.
+
+### The subtlety the external report missed
+
+External report proposed `IRCast(inst.dest, inst.op, inst.operand, W, W)` — narrow both widths to W. This compiles but crashes at `lower_cast!` with `BoundsError` for casts from `i1`. LLVM emits `zext i1 %cmp to i8` for `Int8(x == 5 ? 1 : 0)`; the operand is a 1-bit comparison result. If we lie to `resolve!` that the source is W bits wide, it returns a 1-element vector and the CNOT copy loop over `1:W` overruns.
+
+**Correct rule: preserve i1, narrow everything else** — same pattern as `_narrow_inst(::IRPhi)` at line 77.
+
+```julia
+_narrow_inst(inst::IRCast, W::Int) = IRCast(inst.dest, inst.op, inst.operand,
+                                             inst.from_width > 1 ? W : 1,
+                                             inst.to_width > 1 ? W : 1)
+```
+
+### Lesson
+
+External bug reports get you halfway. The reporter correctly identified the field/ordering error but hadn't traced what `_narrow_inst` means for each opcode shape in practice. Always reproduce first, then check the *second* failure mode before landing a fix — fix-first thinking misses the class of bugs that only surface once the first-order bug is gone.
+
+### Regression test
+
+Added to `test/test_narrow.jl` — the exact reproduction case (`Int8(x == 5 ? 1 : 0)` at `bit_width=3`).
+
+### Files changed
+
+- `src/Bennett.jl` line 75: one-line fix
+- `test/test_narrow.jl`: regression testset
+- `WORKLOG.md`: this entry
