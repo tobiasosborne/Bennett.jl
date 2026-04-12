@@ -48,7 +48,20 @@ struct LoweringCtx
     inst_counter::Ref{Int}
     use_karatsuba::Bool
     compact_calls::Bool
+    # T1b.3: reversible memory (store/alloca) state
+    alloca_info::Dict{Symbol, Tuple{Int,Int}}                 # alloca dest → (elem_width, n_elems)
+    ptr_provenance::Dict{Symbol, Tuple{Symbol,IROperand}}     # ptr SSA → (alloca dest, element idx)
+    mux_counter::Ref{Int}                                      # monotonic counter for synthetic SSA names
 end
+
+# Backward-compatible constructor: existing sites don't need to pass the new fields.
+LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
+            block_pred, ssa_liveness, inst_counter, use_karatsuba, compact_calls) =
+    LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
+                block_pred, ssa_liveness, inst_counter, use_karatsuba, compact_calls,
+                Dict{Symbol,Tuple{Int,Int}}(),
+                Dict{Symbol,Tuple{Symbol,IROperand}}(),
+                Ref(0))
 
 # Dispatched instruction lowering — Julia selects the method by inst type
 _lower_inst!(ctx::LoweringCtx, inst::IRPhi, label::Symbol) =
@@ -69,13 +82,18 @@ _lower_inst!(ctx::LoweringCtx, inst::IRCast, ::Symbol) =
     lower_cast!(ctx.gates, ctx.wa, ctx.vw, inst)
 
 _lower_inst!(ctx::LoweringCtx, inst::IRPtrOffset, ::Symbol) =
-    lower_ptr_offset!(ctx.gates, ctx.wa, ctx.vw, inst)
+    lower_ptr_offset!(ctx.gates, ctx.wa, ctx.vw, inst; ptr_provenance=ctx.ptr_provenance,
+                      alloca_info=ctx.alloca_info)
 
 _lower_inst!(ctx::LoweringCtx, inst::IRVarGEP, ::Symbol) =
-    lower_var_gep!(ctx.gates, ctx.wa, ctx.vw, inst)
+    lower_var_gep!(ctx.gates, ctx.wa, ctx.vw, inst; ptr_provenance=ctx.ptr_provenance,
+                   alloca_info=ctx.alloca_info)
 
 _lower_inst!(ctx::LoweringCtx, inst::IRLoad, ::Symbol) =
-    lower_load!(ctx.gates, ctx.wa, ctx.vw, inst)
+    lower_load!(ctx, inst)
+
+_lower_inst!(ctx::LoweringCtx, inst::IRAlloca, ::Symbol) = lower_alloca!(ctx, inst)
+_lower_inst!(ctx::LoweringCtx, inst::IRStore,  ::Symbol) = lower_store!(ctx, inst)
 
 _lower_inst!(ctx::LoweringCtx, inst::IRExtractValue, ::Symbol) =
     lower_extractvalue!(ctx.gates, ctx.wa, ctx.vw, inst)
@@ -1285,7 +1303,9 @@ end
 
 """GEP with constant offset: record that dest points to base + offset_bytes."""
 function lower_ptr_offset!(gates::Vector{ReversibleGate}, wa::WireAllocator,
-                           vw::Dict{Symbol,Vector{Int}}, inst::IRPtrOffset)
+                           vw::Dict{Symbol,Vector{Int}}, inst::IRPtrOffset;
+                           ptr_provenance::Union{Nothing,Dict{Symbol,Tuple{Symbol,IROperand}}}=nothing,
+                           alloca_info::Union{Nothing,Dict{Symbol,Tuple{Int,Int}}}=nothing)
     # The base operand should be a flat wire array (from ptr param)
     if !haskey(vw, inst.base.name)
         error("GEP base $(inst.base.name) not found in variable wires")
@@ -1297,6 +1317,26 @@ function lower_ptr_offset!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     bit_offset = inst.offset_bytes * 8
     # Store a reference — the IRLoad will do the actual copy
     vw[inst.dest] = base_wires[(bit_offset + 1):end]
+
+    # T1b.3: propagate pointer provenance for store/load routing.
+    # If the base is a known alloca (or has its own provenance), update the
+    # element index by the byte-offset (bytes map 1:1 to elements when
+    # elem_width = 8 — MVP constraint).
+    if ptr_provenance !== nothing && alloca_info !== nothing
+        alloca_dest, base_idx = if haskey(ptr_provenance, inst.base.name)
+            ptr_provenance[inst.base.name]
+        elseif haskey(alloca_info, inst.base.name)
+            (inst.base.name, iconst(0))
+        else
+            (nothing, iconst(0))
+        end
+        if alloca_dest !== nothing && base_idx.kind == :const
+            ew = first(alloca_info[alloca_dest])
+            ew == 8 || return  # non-MVP; skip
+            new_idx = iconst(base_idx.value + inst.offset_bytes)
+            ptr_provenance[inst.dest] = (alloca_dest, new_idx)
+        end
+    end
 end
 
 """
@@ -1307,7 +1347,16 @@ The index selects which W-bit element to produce, via a binary MUX tree
 with ceil(log2(N)) levels.
 """
 function lower_var_gep!(gates::Vector{ReversibleGate}, wa::WireAllocator,
-                        vw::Dict{Symbol,Vector{Int}}, inst::IRVarGEP)
+                        vw::Dict{Symbol,Vector{Int}}, inst::IRVarGEP;
+                        ptr_provenance::Union{Nothing,Dict{Symbol,Tuple{Symbol,IROperand}}}=nothing,
+                        alloca_info::Union{Nothing,Dict{Symbol,Tuple{Int,Int}}}=nothing)
+    # T1b.3: if base is an alloca, record provenance so lower_store!/lower_load!
+    # can route through soft_mux_* callees instead of the MUX-tree slice.
+    if ptr_provenance !== nothing && alloca_info !== nothing &&
+       haskey(alloca_info, inst.base.name)
+        ptr_provenance[inst.dest] = (inst.base.name, inst.index)
+    end
+
     haskey(vw, inst.base.name) ||
         error("VarGEP base $(inst.base.name) not found in variable wires")
     base_wires = vw[inst.base.name]
@@ -1342,6 +1391,48 @@ function lower_var_gep!(gates::Vector{ReversibleGate}, wa::WireAllocator,
 
     # Store the selected W-bit value — subsequent IRLoad will CNOT-copy from it
     vw[inst.dest] = candidates[1]
+end
+
+"""
+Provenance-aware lower_load! entry point (T1b.3). If the ptr was produced by
+a GEP off a known alloca, route through soft_mux_load_4x8 so we read the
+current post-store state rather than a stale slice-alias of vw[ptr].
+Otherwise delegate to the legacy load path (pointer parameters, NTuple input).
+"""
+function lower_load!(ctx::LoweringCtx, inst::IRLoad)
+    if inst.ptr.kind == :ssa && haskey(ctx.ptr_provenance, inst.ptr.name)
+        _lower_load_via_mux!(ctx, inst)
+    else
+        lower_load!(ctx.gates, ctx.wa, ctx.vw, inst)
+    end
+end
+
+function _lower_load_via_mux!(ctx::LoweringCtx, inst::IRLoad)
+    alloca_dest, idx_op = ctx.ptr_provenance[inst.ptr.name]
+    info = ctx.alloca_info[alloca_dest]
+    info == (8, 4) ||
+        error("_lower_load_via_mux!: MVP supports only (elem_width=8, n_elems=4); got $info")
+    inst.width == 8 ||
+        error("_lower_load_via_mux!: MVP supports only 8-bit loads from arrays; got width=$(inst.width)")
+
+    arr_wires = ctx.vw[alloca_dest]
+    length(arr_wires) == 32 ||
+        error("_lower_load_via_mux!: expected 32-wire packed array at alloca $alloca_dest; got $(length(arr_wires))")
+
+    tag = _next_mux_tag!(ctx, "ld", inst.dest)
+    arr_sym = Symbol("__mux_load_arr_", tag)
+    idx_sym = Symbol("__mux_load_idx_", tag)
+    tmp_sym = Symbol("__mux_load_u64_", tag)
+
+    ctx.vw[arr_sym] = _wires_to_u64!(ctx, arr_wires)
+    ctx.vw[idx_sym] = _operand_to_u64!(ctx, idx_op)
+
+    call = IRCall(tmp_sym, soft_mux_load_4x8,
+                  [ssa(arr_sym), ssa(idx_sym)], [64, 64], 64)
+    lower_call!(ctx.gates, ctx.wa, ctx.vw, call; compact=ctx.compact_calls)
+
+    ctx.vw[inst.dest] = ctx.vw[tmp_sym][1:8]
+    return nothing
 end
 
 """Load from pointer/GEP: CNOT-copy W bits from the wire array."""
@@ -1481,4 +1572,120 @@ function _remap_gate(g::CNOTGate, offset::Int)
 end
 function _remap_gate(g::ToffoliGate, offset::Int)
     ToffoliGate(g.control1 + offset, g.control2 + offset, g.target + offset)
+end
+
+# ---- T1b.3: reversible mutable memory (store/alloca) ----
+
+"""
+    lower_alloca!(ctx, inst::IRAlloca)
+
+Allocate the wire range for a fresh reversible array and record it in the
+per-compilation alloca_info + ptr_provenance maps. No gates are emitted —
+fresh wires are zero by WireAllocator invariant.
+
+MVP: only (elem_width=8, n_elems=iconst(4)) is accepted. Anything else errors
+loudly; T1b.5 adds wider shapes.
+"""
+function lower_alloca!(ctx::LoweringCtx, inst::IRAlloca)
+    inst.n_elems.kind == :const ||
+        error("lower_alloca!: dynamic n_elems not supported in MVP (%$(inst.n_elems.name))")
+    n = inst.n_elems.value
+    (inst.elem_width == 8 && n == 4) ||
+        error("lower_alloca!: MVP supports only (elem_width=8, n_elems=4); got ($(inst.elem_width), $n)")
+
+    total_bits = inst.elem_width * n           # 32
+    wires = allocate!(ctx.wa, total_bits)       # zero by invariant
+    ctx.vw[inst.dest] = wires
+    ctx.alloca_info[inst.dest] = (inst.elem_width, n)
+    # Self-provenance: a direct store/load on %alloca_dest targets slot 0.
+    ctx.ptr_provenance[inst.dest] = (inst.dest, iconst(0))
+    return nothing
+end
+
+"""
+    lower_store!(ctx, inst::IRStore)
+
+Reversible write: dispatch to `soft_mux_store_4x8` via IRCall. The callee is
+64-bit; we zero-extend the 32-bit packed array, idx, and val to 64 wires.
+After the call, `vw[alloca_dest]` is rebound to the low 32 wires of the
+callee's output — subsequent loads see the post-store state.
+
+MVP: ptr must resolve via ptr_provenance to a (4, 8) alloca. Store width must
+be 8. All other cases error loudly.
+"""
+function lower_store!(ctx::LoweringCtx, inst::IRStore)
+    inst.ptr.kind == :ssa ||
+        error("lower_store!: store to a constant pointer is not supported")
+    inst.width == 8 ||
+        error("lower_store!: MVP supports only width=8; got $(inst.width)")
+
+    haskey(ctx.ptr_provenance, inst.ptr.name) ||
+        error("lower_store!: no provenance for ptr %$(inst.ptr.name); " *
+              "store must target an alloca or GEP thereof")
+    alloca_dest, idx_op = ctx.ptr_provenance[inst.ptr.name]
+    info = get(ctx.alloca_info, alloca_dest, nothing)
+    info === nothing &&
+        error("lower_store!: provenance points to unknown alloca %$alloca_dest")
+    info == (8, 4) ||
+        error("lower_store!: MVP supports only (elem_width=8, n_elems=4); got $info at %$alloca_dest")
+
+    arr_wires = ctx.vw[alloca_dest]
+    length(arr_wires) == 32 ||
+        error("lower_store!: expected 32-wire packed array at %$alloca_dest; got $(length(arr_wires))")
+
+    tag = _next_mux_tag!(ctx, "st", inst.ptr.name)
+    arr_sym = Symbol("__mux_store_arr_", tag)
+    idx_sym = Symbol("__mux_store_idx_", tag)
+    val_sym = Symbol("__mux_store_val_", tag)
+    res_sym = Symbol("__mux_store_res_", tag)
+
+    ctx.vw[arr_sym] = _wires_to_u64!(ctx, arr_wires)
+    ctx.vw[idx_sym] = _operand_to_u64!(ctx, idx_op)
+    ctx.vw[val_sym] = _operand_to_u64!(ctx, inst.val)
+
+    call = IRCall(res_sym, soft_mux_store_4x8,
+                  [ssa(arr_sym), ssa(idx_sym), ssa(val_sym)],
+                  [64, 64, 64], 64)
+    lower_call!(ctx.gates, ctx.wa, ctx.vw, call; compact=ctx.compact_calls)
+
+    # Rebind alloca_dest to the low 32 wires of the callee's result — the new heap version
+    ctx.vw[alloca_dest] = ctx.vw[res_sym][1:32]
+    return nothing
+end
+
+# ---- helpers for T1b.3 store/load dispatch ----
+
+_next_mux_tag!(ctx::LoweringCtx, op::String, hint) =
+    (ctx.mux_counter[] += 1; string(op, "_", hint, "_", ctx.mux_counter[]))
+
+# Zero-extend a wire vector to 64 wires by CNOT-copying into the low bits of
+# a fresh 64-wire block (high bits stay zero). Leaves the source wires
+# untouched so they can still be read elsewhere.
+function _wires_to_u64!(ctx::LoweringCtx, src::Vector{Int})
+    length(src) <= 64 ||
+        error("_wires_to_u64!: source has $(length(src)) wires > 64")
+    dst = allocate!(ctx.wa, 64)
+    for i in eachindex(src)
+        push!(ctx.gates, CNOTGate(src[i], dst[i]))
+    end
+    return dst
+end
+
+# Resolve an IROperand to exactly 64 wires. For :const, materialize the value
+# with NOT gates. For :ssa, zero-extend via CNOT-copy.
+function _operand_to_u64!(ctx::LoweringCtx, op::IROperand)
+    if op.kind == :const
+        dst = allocate!(ctx.wa, 64)
+        v = UInt64(op.value)  # narrow to 64 bits
+        for i in 1:64
+            if ((v >> (i - 1)) & UInt64(1)) == UInt64(1)
+                push!(ctx.gates, NOTGate(dst[i]))
+            end
+        end
+        return dst
+    else
+        haskey(ctx.vw, op.name) ||
+            error("_operand_to_u64!: undefined SSA %$(op.name)")
+        return _wires_to_u64!(ctx, ctx.vw[op.name])
+    end
 end

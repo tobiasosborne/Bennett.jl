@@ -2564,3 +2564,47 @@ Well under the 20K-per-op budget. Store is cheaper than load because store's 4 i
 ### What this unblocks
 
 T1b.3 — `lower_store!`/`lower_alloca!` can now invoke these via `IRCall` dispatch (the same path soft_fadd uses).
+
+## 2026-04-12 — Memory plan T1b.3: lower_alloca! / lower_store! (Bennett-soz)
+
+### What was built
+
+First end-to-end mutable memory lowering. A Julia function (or hand-crafted LLVM IR) with `alloca`/`store`/`load` now compiles to a verified reversible circuit.
+
+### Design (via 3+1 proposer agents)
+
+Both proposers converged on most decisions — IRCall dispatch via existing `lower_call!`, 32→64 zero-extension to match the `soft_mux_*_4x8(UInt64, UInt64, UInt64)` callee signature, pointer-provenance side table, rebind `vw[alloca_dest]` after each store.
+
+**Key disagreement, resolved in favor of Proposer B**: `lower_load!` MUST be provenance-aware. If a load's pointer came from a GEP, the slice-alias stored in `vw[gep_dest]` goes stale after the store rebinds `vw[alloca_dest]`. Proposer A claimed the simple rebinding suffices — it doesn't, because GEP-derived slice aliases are not updated. Proposer B's patched `lower_load!` (route through `soft_mux_load_4x8` when provenance exists) is the correct path. Adopted.
+
+### LoweringCtx extension
+
+Three new fields:
+- `alloca_info::Dict{Symbol, Tuple{Int,Int}}` — alloca dest → (elem_width, n_elems).
+- `ptr_provenance::Dict{Symbol, Tuple{Symbol,IROperand}}` — ptr SSA → (alloca dest, element idx).
+- `mux_counter::Ref{Int}` — monotonic for synthetic SSA names.
+
+Backward-compatible outer constructor preserves existing call sites.
+
+### Lowering flow
+
+1. `IRAlloca` → `lower_alloca!`: shape check (MVP is (8,4)), `allocate!(wa, 32)` (zero by invariant), populate `alloca_info` + self-provenance. Zero gates emitted.
+2. `IRPtrOffset` / `IRVarGEP` → still use existing slice-based paths but also populate `ptr_provenance` with the propagated (alloca_dest, updated_idx).
+3. `IRStore` → `lower_store!`: resolve provenance, zero-extend `vw[alloca_dest]`/idx/val to 64 wires, build `IRCall(soft_mux_store_4x8, ...)`, hand to `lower_call!`, rebind `vw[alloca_dest]` to low 32 wires of the result.
+4. `IRLoad` with provenance → `_lower_load_via_mux!`: same pattern but for `soft_mux_load_4x8`. No provenance → legacy slice-copy path.
+
+### MVP errors loudly on
+
+- Alloca with non-(8,4) shape or dynamic `n_elems`.
+- Store/load of width != 8.
+- Store to a pointer without known provenance.
+- Nested GEP with non-trivial base idx.
+- In-place memory operations outside this dispatch path.
+
+### Test
+
+`test/test_lower_store_alloca.jl` — 41 assertions via hand-crafted LLVM IR. Covers: alloca+store+load at slot 0 round-trips x (17 inputs), same via a `gep %p, 2` to slot 2 (17 inputs), `verify_reversibility`, and three fail-loudly error cases (non-MVP shape, i16 elem, store to pointer param).
+
+### Worked example gate count
+
+`alloca i8 × 4 + store i8 %x + load i8 %ret` compiles to ≈7k gates (dominated by the single `soft_mux_store_4x8` callee inlined in + the `soft_mux_load_4x8` callee for the post-store load). Reversibility verified; all ancillae return to zero under Bennett reverse.
