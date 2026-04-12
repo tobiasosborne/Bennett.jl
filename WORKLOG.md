@@ -2661,3 +2661,34 @@ For the MVP benchmark milestone, N∈{4,8} suffices — a single alloca backs mu
 ### Test
 
 `test/test_soft_mux_scaling.jl` — 200 assertions: exhaustive round-trip for N=8, slot-isolation for N=8, reversibility verification, gate-count scaling bounds (g8 < 3·g4 for both load and store).
+
+## 2026-04-12 — Memory plan BC.1: Cuccaro 32-bit adder baseline (Bennett-t7wc)
+
+### Measured
+
+| Config | Total | Toffoli | Wires | Ancillae |
+|--------|-------|---------|-------|----------|
+| a+b ripple-carry (use_inplace=false) | 350 | 124 | 161 | 65 |
+| a+b default (use_inplace=true) | 410 | 124 | 98  | 2 |
+| x+1 ripple-carry | 352 | 124 | 161 | 97 |
+| x+1 default | 412 | 124 | 98  | 34 |
+
+All reversible.
+
+### ReVerC comparison
+
+ReVerC Table 1 (Parent/Roetteler/Svore 2017): Cuccaro 32-bit = 32 Toffoli, 65 qubits.
+
+**Our best: 124 Toffoli / 98 wires.** Gap: ~4× Toffoli, ~1.5× wires.
+
+Two factors in the gap:
+1. **Cuccaro dispatch doesn't activate** for `f(a,b) = a+b` because the liveness analysis doesn't currently mark either operand as dead. `use_inplace=true` reduces wires (161 → 98) but leaves Toffoli count identical (124) — the dispatch fell back to ripple-carry with wire reuse.
+2. **ReVerC's 32 Toffoli is below Cuccaro's published formula** (2n = 64 for n=32). May be a counting-methodology difference or a specific optimization they apply; left as a head-to-head methodology note.
+
+### Follow-up needed
+
+File issue to investigate why `use_inplace=true` doesn't reduce Toffoli count for `a+b` — the liveness dispatcher recognizes x+const but not a+b despite both operands being dead after the add. Expected win: 124 → 63 Toffoli when Cuccaro actually activates. That would put us at 2× ReVerC's claim, consistent with their paper-typo theory.
+
+### Artifact
+
+`benchmark/bc1_cuccaro_32bit.jl` — reproducible measurement script. Re-run any time to check regression.
