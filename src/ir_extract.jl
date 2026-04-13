@@ -130,6 +130,242 @@ end
 # No-op for backward compatibility (counter is now local to each compilation)
 function _reset_names!() end
 
+# ---- sret (structure return) support (Bennett-dv1z) ----
+#
+# LLVM LangRef: `sret(<ty>)` is a parameter attribute that marks a pointer
+# parameter as the caller-allocated destination for an aggregate return value.
+# The function's LLVM return type is `void`; the callee writes the return
+# struct to this pointer. Julia routes tuple returns of >16 bytes (on x86_64
+# SysV) through sret. Examples: `(a::UInt32,b::UInt32,c::UInt32)->(a,b,c)`.
+#
+# The extractor translates sret back to the by-value aggregate-return shape
+# that the rest of the pipeline already handles: exclude sret from args,
+# derive `ret_elem_widths` from the sret pointee type, suppress the
+# sret-targeting stores and their constant-offset GEPs during the block
+# walk, and at `ret void` synthesise an IRInsertValue chain + IRRet
+# equivalent to what n=2 by-value returns produce directly.
+
+"""
+    _detect_sret(func) -> nothing | NamedTuple
+
+Detect the LLVM `sret` parameter attribute on `func`. Returns `nothing` if no
+sret parameter is present — the non-sret path is byte-identical to the
+pre-fix behaviour, preserving all existing gate-count baselines.
+
+Returns a NamedTuple:
+    (param_index::Int, param_ref::LLVMValueRef, agg_type::LLVM.ArrayType,
+     n_elems::Int, elem_width::Int, elem_byte_size::Int, agg_byte_size::Int)
+
+Errors (fail-fast per CLAUDE.md rule 1):
+  * multiple sret parameters (LangRef forbids this)
+  * sret pointee is not `[N x iM]` (heterogeneous struct unsupported — MVP scope)
+  * sret element is not an integer type
+  * sret element width is not in {8, 16, 32, 64}
+"""
+function _detect_sret(func::LLVM.Function)
+    kind_sret = LLVM.API.LLVMGetEnumAttributeKindForName("sret", 4)
+    found = nothing
+    for (i, p) in enumerate(LLVM.parameters(func))
+        attr = LLVM.API.LLVMGetEnumAttributeAtIndex(func, UInt32(i), kind_sret)
+        attr == C_NULL && continue
+        if found !== nothing
+            error("function has multiple sret parameters (LangRef forbids this); " *
+                  "found at parameter indices $(found.param_index) and $i")
+        end
+        ty = LLVM.LLVMType(LLVM.API.LLVMGetTypeAttributeValue(attr))
+        ty isa LLVM.ArrayType || error(
+            "sret pointee is $ty; only [N x iM] aggregates are supported " *
+            "(heterogeneous struct returns like Tuple{UInt32,UInt64} are not yet " *
+            "supported — see Bennett-dv1z MVP scope)")
+        et = LLVM.eltype(ty)
+        et isa LLVM.IntegerType || error(
+            "sret aggregate element type $et is not an integer; " *
+            "float/pointer sret aggregates are not supported")
+        w = LLVM.width(et)
+        w ∈ (8, 16, 32, 64) || error(
+            "sret element width $w is not in {8,16,32,64}; got aggregate $ty")
+        n = LLVM.length(ty)
+        elem_bytes = w ÷ 8
+        found = (param_index = i, param_ref = p.ref, agg_type = ty,
+                 n_elems = n, elem_width = w,
+                 elem_byte_size = elem_bytes,
+                 agg_byte_size = n * elem_bytes)
+    end
+    return found
+end
+
+"""
+    _collect_sret_writes(func, sret_info, names) -> NamedTuple
+
+Pre-walk the function body, classifying every instruction that touches the
+sret pointer. Returns `(slot_values, suppressed)` where `slot_values` is a
+`Dict{Int, IROperand}` (0-based element index → stored value) and
+`suppressed` is a `Set{LLVMValueRef}` of instructions the block walk must
+skip — the sret stores and their constant-offset GEPs. These materialise
+at `ret void` time as a synthetic IRInsertValue chain.
+
+Recognised patterns (optimize=true Julia emits):
+  * `store iM %v, ptr %sret_return`                           → slot 0
+  * `store iM %v, ptr %gep_from_sret_byte_K`                  → slot K/elem_byte_size
+  * `%gep = getelementptr inbounds i8, ptr %sret_return, i64 K` → consumed
+
+Errors (no silent miscompile):
+  * `llvm.memcpy` into sret (optimize=false pattern — direct user not to use
+    optimize=false, or preprocess=true to canonicalise)
+  * dynamic/non-constant-offset GEP from sret
+  * GEP offset past aggregate end
+  * store with width ≠ element width, or misaligned byte offset
+  * duplicate stores to the same slot (MVP: one store per slot)
+  * a slot left unwritten before `ret void`
+"""
+function _collect_sret_writes(func::LLVM.Function, sret_info, names::Dict{_LLVMRef, Symbol})
+    slot_values = Dict{Int, IROperand}()
+    suppressed  = Set{_LLVMRef}()
+    gep_byte    = Dict{_LLVMRef, Int}()   # sret-derived GEP result → byte offset
+
+    sret_ref  = sret_info.param_ref
+    eb        = sret_info.elem_byte_size
+    n         = sret_info.n_elems
+    ew        = sret_info.elem_width
+    agg_bytes = sret_info.agg_byte_size
+
+    for bb in LLVM.blocks(func)
+        for inst in LLVM.instructions(bb)
+            opc = LLVM.opcode(inst)
+
+            # llvm.memcpy into sret → reject (optimize=false form)
+            if opc == LLVM.API.LLVMCall
+                ops = LLVM.operands(inst)
+                n_ops = length(ops)
+                if n_ops >= 1
+                    cname = try LLVM.name(ops[n_ops]) catch; "" end
+                    if startswith(cname, "llvm.memcpy")
+                        if n_ops >= 2 && ops[1].ref === sret_ref
+                            error("sret with llvm.memcpy form is not supported. " *
+                                  "This pattern is emitted under optimize=false. " *
+                                  "Re-compile with optimize=true (the Bennett.jl " *
+                                  "default) or set preprocess=true to canonicalise " *
+                                  "via SROA/mem2reg.")
+                        end
+                    end
+                end
+            end
+
+            # GEP chained off the sret pointer with a constant offset
+            if opc == LLVM.API.LLVMGetElementPtr
+                ops = LLVM.operands(inst)
+                if length(ops) >= 2
+                    base = ops[1]
+                    base_off = if base.ref === sret_ref
+                        0
+                    elseif haskey(gep_byte, base.ref)
+                        gep_byte[base.ref]
+                    else
+                        nothing
+                    end
+                    if base_off !== nothing
+                        length(ops) == 2 || error(
+                            "sret-derived GEP has $(length(ops)-1) indices; only " *
+                            "single-index constant-offset GEPs from sret are supported")
+                        idx = ops[2]
+                        idx isa LLVM.ConstantInt || error(
+                            "sret pointer is indexed dynamically; only constant-offset " *
+                            "GEPs from sret are supported")
+                        src_ty = LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(inst))
+                        add_bytes = if src_ty isa LLVM.IntegerType && LLVM.width(src_ty) == 8
+                            convert(Int, idx)              # byte-indexed GEP (Julia default)
+                        elseif src_ty === sret_info.agg_type
+                            convert(Int, idx) * eb          # typed GEP on [N x iM]
+                        else
+                            error("sret GEP source element type $src_ty; expected i8 " *
+                                  "(byte-indexed) or $(sret_info.agg_type) (typed element)")
+                        end
+                        new_off = base_off + add_bytes
+                        (0 <= new_off < agg_bytes) || error(
+                            "sret GEP byte offset $new_off is outside aggregate " *
+                            "range [0, $agg_bytes)")
+                        gep_byte[inst.ref] = new_off
+                        push!(suppressed, inst.ref)
+                        continue
+                    end
+                end
+            end
+
+            # Store targeting the sret buffer (directly or through a tracked GEP)
+            if opc == LLVM.API.LLVMStore
+                ops = LLVM.operands(inst)
+                val = ops[1]
+                ptr = ops[2]
+                byte_off = if ptr.ref === sret_ref
+                    0
+                elseif haskey(gep_byte, ptr.ref)
+                    gep_byte[ptr.ref]
+                else
+                    nothing
+                end
+                if byte_off !== nothing
+                    vt = LLVM.value_type(val)
+                    vt isa LLVM.IntegerType || error(
+                        "sret store at byte offset $byte_off has non-integer value " *
+                        "type $vt; only integer stores are supported")
+                    sw = LLVM.width(vt)
+                    sw == ew || error(
+                        "sret store at byte offset $byte_off has value width $sw, " *
+                        "but aggregate element width is $ew (partial-element writes " *
+                        "are not supported)")
+                    (byte_off % eb == 0) || error(
+                        "sret store at byte offset $byte_off is not aligned to " *
+                        "element size $eb (partial-element writes are not supported)")
+                    slot = byte_off ÷ eb
+                    (0 <= slot < n) || error(
+                        "sret store slot $slot is out of range [0, $n)")
+                    haskey(slot_values, slot) && error(
+                        "sret slot $slot has multiple stores; only a single store " *
+                        "per slot is supported in MVP (multi-store / conditional " *
+                        "sret coverage is a planned extension)")
+                    slot_values[slot] = _operand(val, names)
+                    push!(suppressed, inst.ref)
+                    continue
+                end
+            end
+        end
+    end
+
+    # Every slot must be written before ret void
+    for k in 0:(n - 1)
+        haskey(slot_values, k) || error(
+            "sret slot $k is never written; every element of the aggregate return " *
+            "must be stored before ret void")
+    end
+
+    return (slot_values = slot_values, suppressed = suppressed)
+end
+
+"""
+    _synthesize_sret_chain(sret_info, slot_values, counter) -> (Vector{IRInst}, IRRet)
+
+Build an `IRInsertValue` chain that reconstructs the aggregate return value
+from the per-slot stored values, terminated by an `IRRet`. Structurally
+identical to the `insertvalue` chain LLVM emits for n=2 by-value aggregate
+returns, so downstream lowering sees no difference.
+"""
+function _synthesize_sret_chain(sret_info, slot_values::Dict{Int, IROperand},
+                                counter::Ref{Int})
+    n  = sret_info.n_elems
+    ew = sret_info.elem_width
+    chain = IRInst[]
+    agg_op = IROperand(:const, :__zero_agg__, 0)
+    last_dest = Symbol("")
+    for k in 0:(n - 1)
+        dest = _auto_name(counter)
+        push!(chain, IRInsertValue(dest, agg_op, slot_values[k], k, ew, n))
+        agg_op = ssa(dest)
+        last_dest = dest
+    end
+    ret_inst = IRRet(ssa(last_dest), n * ew)
+    return (chain, ret_inst)
+end
+
 # ---- module walking ----
 
 function _module_to_parsed_ir(mod::LLVM.Module)
@@ -149,14 +385,24 @@ function _module_to_parsed_ir(mod::LLVM.Module)
     # dispatch read-only lookups through QROM instead of a MUX-tree.
     globals = _extract_const_globals(mod)
 
-    # Return type (scalar integer or array of integers)
-    ft = LLVM.function_type(func)
-    rt = LLVM.return_type(ft)
-    ret_width = _type_width(rt)
-    ret_elem_widths = if rt isa LLVM.ArrayType
-        [LLVM.width(LLVM.eltype(rt)) for _ in 1:LLVM.length(rt)]
+    # Bennett-dv1z: detect sret calling convention. When present, the LLVM
+    # return type is `void`; the aggregate shape comes from the sret attribute.
+    sret_info = _detect_sret(func)
+
+    # Return type derivation — sret overrides the void return with the
+    # aggregate described by the sret attribute.
+    if sret_info !== nothing
+        ret_width       = sret_info.n_elems * sret_info.elem_width
+        ret_elem_widths = [sret_info.elem_width for _ in 1:sret_info.n_elems]
     else
-        [ret_width]
+        ft = LLVM.function_type(func)
+        rt = LLVM.return_type(ft)
+        ret_width = _type_width(rt)
+        ret_elem_widths = if rt isa LLVM.ArrayType
+            [LLVM.width(LLVM.eltype(rt)) for _ in 1:LLVM.length(rt)]
+        else
+            [ret_width]
+        end
     end
 
     # Build name table: LLVMValueRef → Symbol  (two-pass: name everything first)
@@ -166,10 +412,17 @@ function _module_to_parsed_ir(mod::LLVM.Module)
     args = Tuple{Symbol,Int}[]
     # Track pointer params: map ptr SSA name → (base_sym, byte_size) for GEP/load resolution
     ptr_params = Dict{Symbol, Tuple{Symbol, Int}}()
-    for p in LLVM.parameters(func)
+    for (i, p) in enumerate(LLVM.parameters(func))
         nm = LLVM.name(p)
         sym = isempty(nm) ? _auto_name(counter) : Symbol(nm)
         names[p.ref] = sym
+        # sret parameter is an output buffer, not a function input. Name it so
+        # sret-targeted stores resolve through `names`, but skip adding it to
+        # `args` — otherwise the wire allocator would reserve input wires for
+        # a value the caller never supplies.
+        if sret_info !== nothing && i == sret_info.param_index
+            continue
+        end
         ptype = LLVM.value_type(p)
         if ptype isa LLVM.IntegerType
             push!(args, (sym, LLVM.width(ptype)))
@@ -198,6 +451,12 @@ function _module_to_parsed_ir(mod::LLVM.Module)
         end
     end
 
+    # sret pre-walk: classify stores/GEPs that target the sret buffer and
+    # record the per-slot stored values. Must run after the naming pass so
+    # _operand() can resolve SSA references.
+    sret_writes = sret_info === nothing ? nothing :
+                  _collect_sret_writes(func, sret_info, names)
+
     # Convert blocks (second pass)
     blocks = IRBasicBlock[]
     for bb in LLVM.blocks(func)
@@ -206,6 +465,23 @@ function _module_to_parsed_ir(mod::LLVM.Module)
         terminator = nothing
 
         for inst in LLVM.instructions(bb)
+            # sret hook: suppress instructions already accounted for in the
+            # pre-walk (sret-targeting stores and their constant-offset GEPs).
+            if sret_writes !== nothing && inst.ref in sret_writes.suppressed
+                continue
+            end
+            # sret hook: at `ret void`, emit the synthetic IRInsertValue chain
+            # plus IRRet equivalent to the n=2 by-value aggregate-return path.
+            if sret_writes !== nothing &&
+               LLVM.opcode(inst) == LLVM.API.LLVMRet &&
+               isempty(LLVM.operands(inst))
+                chain, ret_inst = _synthesize_sret_chain(
+                    sret_info, sret_writes.slot_values, counter)
+                append!(insts, chain)
+                terminator = ret_inst
+                continue
+            end
+
             ir_inst = _convert_instruction(inst, names, counter)
             ir_inst === nothing && continue
             if ir_inst isa Vector
