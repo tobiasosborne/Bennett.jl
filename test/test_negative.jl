@@ -3,15 +3,21 @@ using Bennett
 
 @testset "Negative tests (error conditions)" begin
     @testset "Loop without max_loop_iterations" begin
-        # A data-dependent loop that LLVM cannot unroll — needs max_loop_iterations
+        # A data-dependent loop that LLVM cannot unroll (genuinely unbounded —
+        # the exit condition depends on computed value, with no step counter).
+        # Needs max_loop_iterations or else extraction detects a back-edge
+        # and lowering errors out.
+        #
+        # Previous fixture used `steps < Int8(5)` as an auxiliary bound, which
+        # modern LLVM aggressively unrolls — the bounded loop now compiles
+        # cleanly without errors. Removed the counter so the exit is purely
+        # data-dependent (Bennett-s4b4).
         function collatz_step(x::Int8)
             n = x
-            steps = Int8(0)
-            while n > Int8(1) && steps < Int8(5)
-                n = ifelse(n & Int8(1) == Int8(0), n >> 1, Int8(3) * n + Int8(1))
-                steps += Int8(1)
+            while n > Int8(1)
+                n = ifelse(n & Int8(1) == Int8(0), n >> Int8(1), Int8(3) * n + Int8(1))
             end
-            return steps
+            return n
         end
         @test_throws Exception reversible_compile(collatz_step, Int8)
     end
