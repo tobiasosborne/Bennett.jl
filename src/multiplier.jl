@@ -28,10 +28,50 @@ function lower_mul_wide!(gates::Vector{ReversibleGate}, wa::WireAllocator,
 end
 
 """
-Karatsuba multiplier: result = a * b  (mod 2^W).
+Karatsuba multiplier: `result = a * b  (mod 2^W)`.
 
-Uses recursive Karatsuba with widening sub-products.
-3 multiplications of ~W/2 bits instead of W^2 schoolbook gates.
+Uses recursive Karatsuba with widening sub-products. At each level, 3
+half-width multiplications plus add/subtract glue — recursion depth log₂(W).
+
+## Cost tradeoff vs schoolbook
+
+|               | Schoolbook (`lower_mul!`) | Karatsuba (this fn)   |
+|---------------|:-------------------------:|:---------------------:|
+| Toffoli       | Θ(W²)                     | Θ(W^log₂3) ≈ Θ(W^1.585) |
+| CNOT          | Θ(W²)                     | Θ(W^log₂3)            |
+| Ancilla wires | Θ(W²)                     | **Θ(W^log₂5) ≈ Θ(W^2.32)** |
+| Peak qubits   | Θ(W)                      | Θ(W)                  |
+
+Karatsuba is cheaper in **gate count** (asymptotically) but more expensive
+in **wire allocations** — each recursion level duplicates and widens its
+cross-sum operands into fresh ancillae. The wire cost grows as the number
+of recursion leaves times the widened-operand storage at each level, which
+solves to Θ(W^log₂5).
+
+In practice for the Bennett pipeline (where total ancillae directly drive
+circuit size and pebbling complexity):
+  * W ≤ 32: schoolbook is smaller AND faster — use `lower_mul!`.
+  * W = 64: Karatsuba's gate count wins (~4× fewer Toffolis), but wire
+    count is ~2.3× worse — evaluate per use-case.
+  * W ≥ 128: Karatsuba gates dominate the savings curve; pick it unless
+    wire budget is critical.
+
+This function is exported but **not dispatched automatically**. Callers
+select schoolbook vs Karatsuba based on their optimization target (gate
+depth vs wire count vs peak qubits).
+
+## Why wires grow super-linearly
+
+Each recursion splits a W-bit multiplication into three half-width
+products and two (W/2 + 1)-bit cross-sums. The cross-sums are allocated
+fresh ancillae to avoid mutating inputs, and the recursive sub-products
+return 2*(W/2) bits each into fresh wires. Unrolled over log₂W levels
+this accumulates roughly 5 ancilla groups per level over 3 leaves per
+level → `(5/3)^log₂W × W` = W^(1 + log₂(5/3)) = W^log₂5 ≈ W^2.32.
+
+## References
+  * Karatsuba & Ofman 1962 (original algorithm)
+  * Parhami 2010 *Computer Arithmetic* §11 (wire-count analysis)
 """
 function lower_mul_karatsuba!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                               a::Vector{Int}, b::Vector{Int}, W::Int)
