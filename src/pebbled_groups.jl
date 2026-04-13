@@ -219,7 +219,56 @@ Each GateGroup is a pebble unit. After un-pebbling a group, its wires are freed
 back to the allocator. Subsequent groups get recycled wire indices.
 
 Requires lr.gate_groups to be populated (from lower()).
-Falls back to full Bennett if gate_groups is empty or max_pebbles >= n_groups.
+
+## Fallback behaviour
+
+Three conditions cause this function to fall back to a simpler construction
+rather than attempt pebbling:
+
+1. **`groups` empty** — no gate grouping available (e.g., legacy `lower()`
+   path without gate-group tracking). Falls back to `bennett(lr)`.
+
+2. **In-place ops detected** (Bennett-07r) — any group whose `result_wires`
+   extend outside its allocated `[wire_start..wire_end]` range. Cuccaro's
+   in-place adder (`use_inplace=true` in `lower()`) writes results BACK into
+   the input/dependency wires — it reuses the same qubits for output that
+   held inputs. This is how Cuccaro achieves its 1-ancilla / 2n-1 Toffoli
+   efficiency.
+
+   Pebbling's checkpoint replay is incompatible with this pattern: when
+   un-pebbling, the original group's dependency wires must still hold their
+   pre-group values so the replay can recompute cleanly. Cuccaro groups
+   have already overwritten those wires, so replay would compute on
+   corrupted inputs and produce the wrong result.
+
+   **Decision: fall back to `bennett(lr)`.** This sacrifices pebbling-style
+   wire reuse to preserve Cuccaro's per-adder wire/Toffoli savings — which
+   are strictly larger than pebbling gains on adder-heavy benchmarks.
+
+   Making these compose (so pebbling can wrap Cuccaro groups without
+   corrupting state) would require one of:
+     * Snapshot-and-restore dependency wires before each in-place group's
+       execution (adds 2·wire_count CNOT overhead per group — breaks the
+       Cuccaro wire-count win)
+     * Track an "in-place wire overwrite" graph and schedule un-pebbles
+       only across groups that don't share overwritten wires (complex
+       dependency-analysis change to the pebbling scheduler)
+     * Decompose in-place groups into their equivalent out-of-place form
+       for pebbling purposes (loses the Cuccaro gate-count win)
+
+   None is obviously better than the current fallback for Bennett.jl's
+   benchmark suite; documented as a known tradeoff.
+
+3. **`max_pebbles ≥ n_groups`** — enough pebble budget to hold every
+   group simultaneously. No pebbling needed; full Bennett equivalent.
+   Falls back to `bennett(lr)`.
+
+## Preferred path
+
+When none of the fallbacks trigger, delegates to `checkpoint_bennett` for
+the non-pebbled path (uses `wire_start`/`wire_end` info for fine-grained
+checkpoints) or the explicit pebbling scheduler below when `max_pebbles`
+is bounded and groups permit.
 """
 function pebbled_group_bennett(lr::LoweringResult; max_pebbles::Int=0)
     groups = lr.gate_groups
@@ -229,6 +278,8 @@ function pebbled_group_bennett(lr::LoweringResult; max_pebbles::Int=0)
 
     # Detect in-place results (Cuccaro): result_wires outside group's wire range.
     # In-place ops modify dependency/input wires, breaking checkpoint replay.
+    # See docstring "Fallback behaviour" §2 for full tradeoff analysis and
+    # why this is the right default (Bennett-07r documented).
     has_inplace = any(g -> g.wire_start > 0 &&
         any(w -> w < g.wire_start || w > g.wire_end, g.result_wires), groups)
     if has_inplace
