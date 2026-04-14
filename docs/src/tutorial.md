@@ -33,11 +33,19 @@ println("Total: $(gc.total), NOT: $(gc.NOT), CNOT: $(gc.CNOT), Toffoli: $(gc.Tof
 # How many ancilla wires?
 ancilla_count(circuit)  # => 76
 
-# Circuit depth (longest gate chain)
-depth(circuit)  # => 50
+# Circuit depth (longest gate chain, strict per-wire dependencies)
+depth(circuit)  # => 77
 
-# T-gate count (for fault-tolerant quantum computing)
-t_count(circuit)  # => 196  (each Toffoli = 7 T-gates)
+# Toffoli-depth: longest chain of Toffoli gates only (CNOTs don't advance it).
+# This is the key metric for fault-tolerant quantum cost.
+toffoli_depth(circuit)  # => 28
+
+# T-gate count (classical AMMR decomposition: each Toffoli = 7 T-gates)
+t_count(circuit)  # => 196
+
+# T-depth under different Toffoli decompositions:
+t_depth(circuit)                    # => 28 (AMMR, default, 1 T-layer per Toffoli)
+t_depth(circuit; decomp=:nc_7t)     # => 84 (Nielsen-Chuang 7-T, 3 T-layers per Toffoli)
 ```
 
 ## 3. Wider Types
@@ -127,7 +135,57 @@ c_swap = reversible_compile(swap, Int8, Int8)
 simulate(c_swap, (Int8(3), Int8(7)))  # => (7, 3)
 ```
 
-## 8. Space Optimization
+## 8. Strategy Dispatchers for Arithmetic
+
+Different circuit shapes trade gate count against depth and ancilla. Pick a
+strategy per operation via kwargs:
+
+```julia
+f(x, y) = x * y
+
+# Default: shift-and-add multiplier, O(n²) Toffolis, O(n) Toffoli-depth.
+c_default = reversible_compile(f, Int32, Int32)
+toffoli_depth(c_default)  # => 190
+
+# Karatsuba: O(n^log₂3) ≈ O(n^1.585) Toffolis — shallower at large W.
+c_kara = reversible_compile(f, Int32, Int32; mul=:karatsuba)
+toffoli_depth(c_kara)  # => 132
+
+# Sun-Borissov 2026 QCLA-tree multiplier: O(log²n) Toffoli-depth.
+c_qcla = reversible_compile(f, Int32, Int32; mul=:qcla_tree)
+toffoli_depth(c_qcla)  # => 56
+```
+
+The same pattern works for addition via `add=`:
+
+```julia
+g(x, y) = x + y
+
+# Default: auto-picks Cuccaro (in-place, 1 ancilla) when operand is dead.
+c_def = reversible_compile(g, Int32, Int32)
+
+# Draper QCLA: O(log n) Toffoli-depth instead of O(n).
+c_qcla = reversible_compile(g, Int32, Int32; add=:qcla)
+toffoli_depth(c_qcla)  # logarithmic
+```
+
+Supported strategies:
+- `mul = :auto | :shift_add | :karatsuba | :qcla_tree`
+- `add = :auto | :ripple | :cuccaro | :qcla`
+
+When to use what:
+
+| Caller constraint                | Best choice                 |
+|---------------------------------|-----------------------------|
+| Classical reversible CMOS       | `:shift_add`, `:ripple`    |
+| Ancilla-constrained NISQ        | `:shift_add`, `:cuccaro`   |
+| Depth-limited FTQC              | `:qcla_tree`, `:qcla`      |
+| Gate-count at W ≥ 32            | `:karatsuba`                |
+
+See `benchmark/bc6_mul_strategies.jl` for the full head-to-head table and
+[BENCHMARKS.md](../../BENCHMARKS.md) for the headline numbers.
+
+## 9. Space Optimization
 
 The default Bennett construction uses O(T) ancillae. For large circuits, use checkpoint strategies:
 
@@ -150,7 +208,7 @@ for x in typemin(Int8):typemax(Int8)
 end
 ```
 
-## 9. Loops
+## 10. Loops
 
 Functions with bounded loops compile via loop unrolling:
 
@@ -169,7 +227,7 @@ c = reversible_compile(collatz_steps, Int8; max_loop_iterations=20)
 simulate(c, Int8(6))  # => 5 (6 -> 3 -> 10 -> 5 -> 16 -> 8, 5 steps capped)
 ```
 
-## 10. What's Next
+## 11. What's Next
 
 - **Sturm.jl integration**: use Bennett.jl circuits as quantum-controlled operations
 - **Custom callees**: `register_callee!(my_function)` for gate-level inlining

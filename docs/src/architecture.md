@@ -31,9 +31,9 @@ Key design: a **two-pass name table** keyed on `LLVMValueRef` (C pointer) assign
 
 | IR Instruction | Gate Implementation |
 |---------------|-------------------|
-| `add` | Ripple-carry adder (or Cuccaro in-place when operand is dead) |
+| `add` | Strategy-dispatched (see below): ripple / Cuccaro / QCLA |
 | `sub` | Two's complement: NOT + add + carry-in |
-| `mul` | Shift-and-add (O(W^2) Toffoli gates) |
+| `mul` | Strategy-dispatched (see below): shift-add / Karatsuba / QCLA-tree |
 | `and/or/xor` | Per-bit Toffoli/CNOT |
 | `shl/lshr/ashr` | Barrel shifter (6 stages for 64-bit) |
 | `icmp` | Modified adder for unsigned, sign-flip for signed |
@@ -48,6 +48,33 @@ Key design: a **two-pass name table** keyed on `LLVMValueRef` (C pointer) assign
 
 **Liveness analysis**: SSA variable liveness determines when the Cuccaro in-place adder can safely overwrite its second operand (saving W-1 ancilla wires per addition).
 
+**Arithmetic strategy dispatch**: `lower_binop!` routes `:add` and `:mul`
+through `_pick_add_strategy` and `_pick_mul_strategy` respectively, honoring
+the `add=` / `mul=` kwargs threaded from `reversible_compile` through
+`LoweringCtx`:
+
+| `add=` | Primitive | Shape |
+|--------|-----------|-------|
+| `:ripple`  | `lower_add!` (`adder.jl`)          | O(n) depth, out-of-place |
+| `:cuccaro` | `lower_add_cuccaro!` (`adder.jl`)  | O(n) depth, in-place, 1 ancilla |
+| `:qcla`    | `lower_add_qcla!` (`qcla.jl`)      | O(log n) depth, out-of-place, O(n) ancilla |
+| `:auto`    | Cuccaro when op2 dead, ripple otherwise | pre-D1 default |
+
+| `mul=` | Primitive | Shape |
+|--------|-----------|-------|
+| `:shift_add`  | `lower_mul!` (`multiplier.jl`)         | O(W²) Toffoli, O(W²) Toffoli-depth |
+| `:karatsuba`  | `lower_mul_karatsuba!`                  | O(W^log₂3) Toffoli, O(W^log₂5) wires |
+| `:qcla_tree`  | `lower_mul_qcla_tree!` (`mul_qcla_tree.jl`) | O(n²) Toffoli, O(log²n) Toffoli-depth, self-reversing |
+| `:auto`       | Shift-add (+ Karatsuba via legacy `use_karatsuba`) | pre-P2 default |
+
+The QCLA-tree multiplier composes four sub-primitives — `emit_fast_copy!`,
+`emit_conditional_copy!`, `emit_partial_products!`, `emit_parallel_adder_tree!` —
+implementing Sun-Borissov 2026's Algorithm 3 end-to-end. The final
+`parallel_adder_tree` is itself self-cleaning (see `parallel_adder_tree.jl`):
+it tracks `_AdderRecord` per invocation, copies the root into a fresh 2W
+register, then replays every adder's gate range in reverse to zero
+intermediate levels.
+
 ### Stage 3: Bennett Construction (`bennett.jl`)
 
 `bennett(lr)` applies Bennett's 1973 construction:
@@ -61,6 +88,12 @@ After this, input wires hold `x`, copy wires hold `f(x)`, and all intermediate (
 The construction is 28 lines of code and is provably correct under two invariants:
 - Every gate is an involution (self-inverse)
 - Input wires are never targeted by any gate (read-only controls)
+
+**Self-reversing short-circuit**: when `lr.self_reversing == true`,
+`bennett` returns forward-gates-only. This applies to primitives like
+`lower_mul_qcla_tree!` that already end with clean ancillae — the standard
+copy + reverse pass would just double the gate count without changing the
+output. Default is `false`; opt-in at `LoweringResult` construction.
 
 ### Stage 4: Simulate (`simulator.jl`)
 
@@ -82,7 +115,12 @@ src/
   gates.jl              NOTGate, CNOTGate, ToffoliGate, ReversibleCircuit
   wire_allocator.jl     Sequential wire allocation with free/reuse
   adder.jl              Ripple-carry + Cuccaro in-place adder
+  qcla.jl               Draper-Kutin-Rains-Svore 2004 carry-lookahead adder
   multiplier.jl         Shift-and-add + Karatsuba multiplier
+  fast_copy.jl          Sun-Borissov doubling-broadcast primitive
+  partial_products.jl   conditional_copy + partial_products primitives
+  parallel_adder_tree.jl  Binary tree of QCLA adders (self-cleaning)
+  mul_qcla_tree.jl      Sun-Borissov 2026 polylogarithmic-depth multiplier
   divider.jl            Restoring division (soft_udiv, soft_urem)
   lower.jl              IR -> gates (phi resolution, loops, all instruction handlers)
   bennett.jl            Bennett construction (forward + copy + reverse)
@@ -125,3 +163,17 @@ LLVM's phi nodes merge values from different control flow paths. The original re
 ### Why Bennett + Pebbling?
 
 Bennett's construction is simple and correct but uses O(T) ancillae (one per intermediate value). For real programs, this is wasteful. The pebbling strategies (Knill recursion, EAGER, checkpoint) trade increased gate count for reduced peak wire usage. The group-level checkpoint approach reduces SHA-256 wires by 14-25%.
+
+### Why Strategy Dispatchers?
+
+Reversible arithmetic isn't one algorithm per op — it's a cost surface.
+Classical CMOS cares about gate count; NISQ cares about ancilla;
+fault-tolerant quantum cares about Toffoli-depth (T-depth). The
+dispatchers let callers pick per-op strategy without touching the compiler
+internals: `reversible_compile(f, T; mul=:qcla_tree)` routes every `mul` in
+`f` through the O(log²n) Sun-Borissov multiplier at the cost of 5× more
+Toffolis and 8× more ancillae.
+
+The framework is additive: new strategies (e.g. Cuccaro-2n-3 tightening,
+Schöenhage-Strassen for very large W) plug into `_pick_{add,mul}_strategy`
+without reshuffling the dispatcher call site.

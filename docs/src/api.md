@@ -21,8 +21,27 @@ circuit = reversible_compile(f, Int8;
     optimize=true,             # Use LLVM optimization (default: true)
     max_loop_iterations=0,     # Max loop unrolling iterations (0 = no loops)
     compact_calls=false,       # Apply Bennett per-callee to limit wire accumulation
+    add=:auto,                 # Adder strategy: :auto | :ripple | :cuccaro | :qcla
+    mul=:auto,                 # Multiplier strategy: :auto | :shift_add | :karatsuba | :qcla_tree
+    bit_width=0,               # >0: narrow all widths to bit_width (see _narrow_ir)
 )
 ```
+
+### Strategy kwargs
+
+**`add=` selects the adder lowering:**
+- `:auto` (default) — Cuccaro in-place when op2 is dead, else ripple-carry. Preserves pre-dispatcher gate-count baselines.
+- `:ripple` — out-of-place ripple-carry (`lower_add!`); `2(W-1)` Toffoli, `W` ancilla carry register.
+- `:cuccaro` — in-place, 1 ancilla (`lower_add_cuccaro!`, Cuccaro 2004).
+- `:qcla` — Draper-Kutin-Rains-Svore 2004 carry-lookahead, `O(log n)` Toffoli-depth, `O(n)` ancilla.
+
+**`mul=` selects the multiplier lowering:**
+- `:auto` (default) — shift-and-add; falls back to Karatsuba if the legacy `use_karatsuba` path is set and `W > 4`.
+- `:shift_add` — schoolbook (`lower_mul!`), `O(W²)` Toffoli, `O(W)` peak wires.
+- `:karatsuba` — recursive (`lower_mul_karatsuba!`), `O(W^log₂3)` Toffoli, `O(W^log₂5)` wires.
+- `:qcla_tree` — Sun-Borissov 2026 (`lower_mul_qcla_tree!`), `O(log²n)` Toffoli-depth, `O(n²)` Toffoli/ancilla; self-reversing primitive.
+
+Unknown strategy symbols raise an error at `lower()` entry.
 
 **Supported input types**: `Int8`, `Int16`, `Int32`, `Int64`, `UInt8`, `UInt16`, `UInt32`, `UInt64`, `Float64`, `NTuple{N,T}` (for integer T).
 
@@ -76,9 +95,19 @@ Circuit depth (longest chain of dependent gates).
 
 T-gate count in fault-tolerant decomposition. Each Toffoli = 7 T-gates; NOT and CNOT are Clifford (0 T-gates).
 
-### `t_depth(c::ReversibleCircuit) -> Int`
+### `toffoli_depth(c::ReversibleCircuit) -> Int`
 
-T-depth: longest chain of Toffoli gates (each contributing T-depth 1).
+Longest chain of Toffoli gates along a data-dependence path. NOT/CNOT gates
+do not advance the count. This is the raw circuit-level metric — it doesn't
+assume any specific Toffoli decomposition.
+
+### `t_depth(c::ReversibleCircuit; decomp::Symbol=:ammr) -> Int`
+
+Clifford+T T-depth. Equals `toffoli_depth(c) × k`, where `k` is the per-Toffoli T-layer cost of the chosen decomposition:
+- `:ammr` (default) — Amy/Maslov/Mosca/Roetteler 2013, `k=1` (ancilla-assisted, matches Sun-Borissov 2026 formulas)
+- `:nc_7t` — Nielsen-Chuang classical 7-T decomposition, `k=3`
+
+The `:ammr` default preserves the pre-M1 semantics (unparameterized `t_depth(c)` returns the same numbers).
 
 ### `peak_live_wires(c::ReversibleCircuit) -> Int`
 
@@ -110,6 +139,12 @@ Wrap every gate with a control bit:
 ### `bennett(lr::LoweringResult) -> ReversibleCircuit`
 
 Standard Bennett construction: forward + CNOT-copy + reverse. O(T) space.
+
+If `lr.self_reversing == true`, `bennett` short-circuits to forward-only:
+the primitive is assumed to already end with clean ancillae and its
+`output_wires` hold the result directly. No copy-out, no reverse. Roughly
+halves the gate count for self-cleaning primitives like `lower_mul_qcla_tree!`.
+Default is `false` — explicit opt-in at `LoweringResult` construction.
 
 ### `pebbled_bennett(lr; max_pebbles=0) -> ReversibleCircuit`
 
@@ -172,3 +207,40 @@ A sequence of gates with metadata:
 - `ancilla_wires::Vector{Int}` -- ancilla wire indices (verified zero)
 - `input_widths::Vector{Int}` -- bit width of each input argument
 - `output_elem_widths::Vector{Int}` -- bit width of each output element
+
+### `LoweringResult`
+
+Intermediate result between `lower(parsed)` and `bennett(lr)`. Fields:
+- `gates`, `n_wires`, `input_wires`, `output_wires`, `input_widths`, `output_elem_widths` — as above
+- `constant_wires::Set{Int}` — wires carrying compile-time constants
+- `gate_groups::Vector{GateGroup}` — SSA instruction → gate range mapping
+- `self_reversing::Bool` — opt-in flag telling `bennett()` to skip the copy-out + reverse pass. Set when the primitive already ends with clean ancillae (e.g. Sun-Borissov multiplier). Default `false`; backward-compatible 7/8-arg constructors preserved.
+
+## Arithmetic primitive functions
+
+These are the per-strategy emitters called by the dispatcher. Useful for
+direct circuit construction outside the `reversible_compile` pipeline.
+
+### `lower_add!(gates, wa, a, b, W) -> Vector{Int}`
+
+Out-of-place ripple-carry adder. Returns a fresh `W`-wire result register.
+
+### `lower_add_cuccaro!(gates, wa, a, b, W) -> Vector{Int}`
+
+In-place Cuccaro 2004 adder. Returns `b` (overwritten with `a + b mod 2^W`).
+
+### `lower_add_qcla!(gates, wa, a, b, W) -> Vector{Int}`
+
+Out-of-place Draper-Kutin-Rains-Svore 2004 QCLA. Returns a fresh `W+1`-wire register (low `W` bits = sum, top bit = carry-out). O(log n) Toffoli-depth. All internal ancillae self-cleaned.
+
+### `lower_mul!(gates, wa, a, b, W) -> Vector{Int}`
+
+Shift-and-add multiplier, returns `W`-bit result (`a * b mod 2^W`).
+
+### `lower_mul_karatsuba!(gates, wa, a, b, W) -> Vector{Int}`
+
+Recursive Karatsuba, returns `W`-bit result.
+
+### `lower_mul_qcla_tree!(gates, wa, a, b, W) -> Vector{Int}`
+
+Sun-Borissov 2026 polylogarithmic-depth multiplier. Returns a fresh `2W`-wire register holding the full product `a * b`. Self-cleaning (all ancillae zero on exit). Composes `emit_fast_copy!`, `emit_partial_products!`, and `emit_parallel_adder_tree!`.

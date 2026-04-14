@@ -1,6 +1,6 @@
 # Bennett.jl
 
-**The Enzyme of reversible computation.** An LLVM-level compiler that transforms arbitrary pure Julia functions into reversible circuits (NOT, CNOT, Toffoli) via [Bennett's 1973 construction](https://doi.org/10.1137/0218053). First reversible compiler with full LLVM `store`/`alloca` support through four specialized, automatically-dispatched memory strategies.
+**The Enzyme of reversible computation.** An LLVM-level compiler that transforms arbitrary pure Julia functions into reversible circuits (NOT, CNOT, Toffoli) via [Bennett's 1973 construction](https://doi.org/10.1137/0218053). First reversible compiler with full LLVM `store`/`alloca` support through four specialized, automatically-dispatched memory strategies, plus user-selectable adder and multiplier strategies including Draper QCLA and the Sun-Borissov 2026 polylogarithmic-depth multiplier.
 
 ```julia
 using Bennett
@@ -12,6 +12,16 @@ circuit = reversible_compile(f, Int8)
 simulate(circuit, Int8(5))    # => 41
 verify_reversibility(circuit) # => true
 gate_count(circuit)           # => 872
+
+# Strategy-select the multiplier (shift_add | karatsuba | qcla_tree | auto)
+c_qcla = reversible_compile((x, y) -> x * y, Int32, Int32; mul=:qcla_tree)
+toffoli_depth(c_qcla)  # => 56 (O(log²n) — Sun-Borissov 2026)
+# vs default shift-and-add:
+c_sa = reversible_compile((x, y) -> x * y, Int32, Int32)
+toffoli_depth(c_sa)    # => 190 (O(n))
+
+# Draper QCLA adder: O(log n) Toffoli-depth instead of O(n) ripple
+c_add = reversible_compile((x, y) -> x + y, Int32, Int32; add=:qcla)
 
 # Float64 via branchless soft-float (bit-exact with hardware)
 g(x::Float64) = x^2 + 3.0*x + 1.0
@@ -108,6 +118,33 @@ Multiple Bennett construction strategies for space-time tradeoffs:
 | Cuccaro in-place adder | 1,545 | 25% |
 | `value_eager_bennett` (PRS15 EAGER) | further reduction | — |
 
+**Self-reversing primitives**: set `lr.self_reversing = true` on a
+`LoweringResult` whose gate sequence already ends with clean ancillae
+(e.g. the Sun-Borissov multiplier). `bennett()` then skips the copy-out
++ reverse pass — roughly halving the gate count for pure-primitive
+functions.
+
+### Arithmetic strategy dispatchers
+
+`reversible_compile(f, T; add=STRAT, mul=STRAT)` selects the
+lowering per operation:
+
+| Operation | Strategies | Best for |
+|-----------|------------|----------|
+| `add=:ripple`   | Out-of-place ripple-carry, O(n) depth | Default, tight Toffoli count |
+| `add=:cuccaro`  | In-place with 1 ancilla (Cuccaro 2004) | Ancilla-constrained paths |
+| `add=:qcla`     | Carry-lookahead, O(log n) Toffoli-depth (Draper 2004) | Depth-sensitive FTQC |
+| `add=:auto`     | Cuccaro when operand dead, ripple otherwise | Pre-P2 default |
+| `mul=:shift_add`  | Schoolbook, O(n²) Toffolis | Classical reversible, small W |
+| `mul=:karatsuba`  | Recursive, O(n^log₂3) Toffolis | W ≥ 32 gate-count optimization |
+| `mul=:qcla_tree`  | QCLA adder tree, O(log²n) T-depth (Sun-Borissov 2026) | Depth-sensitive FTQC |
+| `mul=:auto`       | Legacy shift-add / Karatsuba | Pre-P2 default |
+
+Head-to-head at W=64 for `x * y`: QCLA tree Toffoli-depth=64 vs
+shift-add 382 (6× shallower) vs Karatsuba 260 (4× shallower), at
+5× / 2.5× more Toffolis respectively. Full table in
+[BENCHMARKS.md](BENCHMARKS.md#multiplication-strategies-head-to-head).
+
 ### MemorySSA integration
 
 Opt-in analysis for memory patterns that survive T0 preprocessing:
@@ -122,7 +159,7 @@ Captures via `print<memoryssa>` pass-output parsing. Informs future lowering dec
 ### Wider types and composability
 
 - **Int8/16/32/64**: gate count scales linearly (2× per width doubling)
-- **Float64**: full IEEE 754 via branchless soft-float (bit-exact with hardware on all of add/sub/mul/div/neg/cmp/fptosi/sitofp)
+- **Float64**: full IEEE 754 via branchless soft-float (bit-exact with hardware on add/sub/mul/div/neg/cmp/fptosi/sitofp across 1.2M random raw-bit pairs including all subnormal, NaN, Inf, signed-zero, and overflow regions)
 - **Tuple return**: `(new_a, new_e) = sha256_round(a, ..., w)`
 - **NTuple input**: pointer parameters handled via static memory flattening
 - **Ref**: scalar mutable state via shadow memory
@@ -203,6 +240,8 @@ Julia function          LLVM IR                Parsed IR             Reversible 
 | Bennett 1989 | Time/Space Trade-Offs for Reversible Computation | O(T^{1+ε}) time, O(S·log T) space |
 | Knill 1995 | Analysis of Bennett's Pebble Game | Exact pebbling recursion |
 | Cuccaro 2004 | A New Quantum Ripple-Carry Addition Circuit | In-place adder: 1 ancilla, 2n-1 Toffoli |
+| Draper-Kutin-Rains-Svore 2004 | A Logarithmic-Depth Quantum Carry-Lookahead Adder | QCLA: O(log n) Toffoli-depth, O(n) ancilla |
+| Sun-Borissov 2026 | A Polylogarithmic-Depth Quantum Multiplier | QCLA-tree multiplier: O(log² n) T-depth |
 | Luby-Rackoff 1988 | How to Construct Pseudorandom Permutations | 4-round Feistel = bijective permutation |
 | PRS15 | Parent/Roetteler/Svore, Reversible Circuit Compilation | EAGER cleanup: 5.3× reduction on SHA-2 |
 | Babbush-Gidney 2018 | Encoding Electronic Spectra with Linear T Complexity | QROM: 4L-4 T, independent of W |
