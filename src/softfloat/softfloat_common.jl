@@ -12,6 +12,52 @@ const INF_BITS  = UInt64(0x7FF0000000000000)   # +Inf
 const QNAN      = UInt64(0x7FF8000000000000)   # canonical quiet NaN
 
 """
+    _sf_normalize_to_bit52(m, e) -> (m, e)
+
+Normalize a mantissa so its leading 1 is at bit 52 (the IEEE 754 normalized
+form). Decrement the effective exponent `e` by the shift count. Used by
+`soft_fdiv` to pre-normalize subnormal operands before the restoring-division
+loop, which assumes `ma, mb ∈ [2^52, 2^53)` so that the ratio fits in 56 bits
+of precision. For an already-normalized input (bit 52 set), this is a no-op.
+
+Precondition: `m` has no bits set above bit 52. All callers guarantee this
+(subnormal inputs have `m < 2^52`; normal inputs have `m < 2^53` with bit 52
+set, so already-normalized). `m == 0` yields a pathological result (63
+shifts, no leading 1 found) but callers handle zero inputs via the select
+chain before using `m`.
+
+Six-stage branchless binary-search CLZ; structure mirrors `_sf_normalize_clz`
+but the target bit is 52 instead of 55.
+"""
+@inline function _sf_normalize_to_bit52(m::UInt64, e::Int64)
+    need32 = (m & (UInt64(0xFFFFFFFF) << 21)) == UInt64(0)
+    m = ifelse(need32, m << 32, m)
+    e = ifelse(need32, e - Int64(32), e)
+
+    need16 = (m & (UInt64(0xFFFF) << 37)) == UInt64(0)
+    m = ifelse(need16, m << 16, m)
+    e = ifelse(need16, e - Int64(16), e)
+
+    need8 = (m & (UInt64(0xFF) << 45)) == UInt64(0)
+    m = ifelse(need8, m << 8, m)
+    e = ifelse(need8, e - Int64(8), e)
+
+    need4 = (m & (UInt64(0xF) << 49)) == UInt64(0)
+    m = ifelse(need4, m << 4, m)
+    e = ifelse(need4, e - Int64(4), e)
+
+    need2 = (m & (UInt64(0x3) << 51)) == UInt64(0)
+    m = ifelse(need2, m << 2, m)
+    e = ifelse(need2, e - Int64(2), e)
+
+    need1 = (m & (UInt64(1) << 52)) == UInt64(0)
+    m = ifelse(need1, m << 1, m)
+    e = ifelse(need1, e - Int64(1), e)
+
+    return (m, e)
+end
+
+"""
     _sf_normalize_clz(wr, result_exp) -> (wr, result_exp)
 
 Normalize working result so leading 1 is at bit 55.

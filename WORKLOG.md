@@ -128,6 +128,42 @@ on Toffoli-depth at W=64** — the key FTQC metric. Peak live qubits=1
 matches `shift_add` thanks to the self-reversing wrap. Gate count is
 5× shift-add / 2.5× Karatsuba — the price of logarithmic depth.
 
+## Session log — 2026-04-14 (continuation) — Bennett-r6e3 soft_fdiv subnormal bug fixed
+
+Root cause: `src/softfloat/fdiv.jl` ran its 56-bit restoring-division loop
+without pre-normalizing subnormal operands. With subnormal `mb` (leading 1
+at bit k < 52), `ma/mb > 2` and the true quotient exceeds 56 bits — the
+division loop's invariant (`r < 2·mb` before each iteration) broke, and the
+result's low 52 bits zeroed out. `soft_fmul` doesn't need this fix because
+its 106-bit product naturally carries the subnormal scaling; post-multiply
+`_sf_normalize_clz` handles it. `soft_fdiv`'s loop is different — the loop
+itself depends on operand alignment, so normalization must come FIRST.
+
+Fix: new `_sf_normalize_to_bit52(m, e)` helper in `softfloat_common.jl`
+(six-stage binary-search CLZ targeting bit 52, mirroring `_sf_normalize_clz`'s
+structure but with shift masks 21 positions lower). Called on both `(ma,
+ea_eff)` and `(mb, eb_eff)` immediately before the division loop. No-op for
+already-normalized inputs; shifts subnormals up to place their leading 1 at
+bit 52 and adjusts the effective exponent correspondingly.
+
+Hardening results (post-fix):
+- `MersenneTwister(12345)` 200k raw-bits sweep: **0 failures** (was 59)
+- 6 seeds × 200k = 1.2M raw-bits pairs: **0 failures**
+- Normals-only sweep (5k pairs): 0 failures (regression guard)
+- Full Bennett test suite: all green
+
+Gotcha worth recording: the ORIGINAL bd notes hypothesized a "sticky shift"
+bug (Bennett-utt). That was falsified by the normals-only sweep showing 0
+failures. Real bug was only in the division-loop alignment, not the sticky
+logic. Saved ~1 session by re-running the normals sweep before diving into
+sticky code.
+
+Files changed:
+- `src/softfloat/softfloat_common.jl` — `_sf_normalize_to_bit52` helper
+- `src/softfloat/fdiv.jl` — call helper on ma, mb before division loop
+- `test/test_softfdiv_subnormal.jl` — new, 8 testsets, RED-GREEN bug demo
+- `test/runtests.jl` — wire new test
+
 ### Follow-ups filed (none — all in scope completed)
 
 The workstream is fully landed. Potential future tightenings, not

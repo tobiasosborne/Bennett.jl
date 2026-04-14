@@ -32,6 +32,16 @@ Fully branchless.
     ea_eff = ifelse(ea != UInt64(0), Int64(ea), Int64(1))
     eb_eff = ifelse(eb != UInt64(0), Int64(eb), Int64(1))
 
+    # Bennett-r6e3: pre-normalize subnormal operands so leading 1 is at bit 52.
+    # The 56-bit restoring-division loop below requires ma, mb ∈ [2^52, 2^53)
+    # so that the quotient ma/mb ∈ [1/2, 2) fits in 56 bits. For subnormal
+    # inputs, ma or mb has its leading 1 below bit 52; without this step the
+    # loop overflows and the result's low 52 bits zero out.
+    # No-op for already-normalized inputs (normal operand, or zero — zero is
+    # caught by the final select chain regardless).
+    (ma, ea_eff) = _sf_normalize_to_bit52(ma, ea_eff)
+    (mb, eb_eff) = _sf_normalize_to_bit52(mb, eb_eff)
+
     result_exp = ea_eff - eb_eff + BIAS
 
     # ── Mantissa division: produce quotient with leading 1 at bit 55 ──
