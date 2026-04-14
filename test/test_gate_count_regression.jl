@@ -8,10 +8,12 @@ using Bennett
     # Total is higher due to block-predicate overhead (NOT + CNOT gates).
 
     @testset "Addition gate counts (x + 1)" begin
-        gc8  = gate_count(reversible_compile(x -> x + Int8(1), Int8))
-        gc16 = gate_count(reversible_compile(x -> x + Int16(1), Int16))
-        gc32 = gate_count(reversible_compile(x -> x + Int32(1), Int32))
-        gc64 = gate_count(reversible_compile(x -> x + Int64(1), Int64))
+        c8  = reversible_compile(x -> x + Int8(1), Int8)
+        c16 = reversible_compile(x -> x + Int16(1), Int16)
+        c32 = reversible_compile(x -> x + Int32(1), Int32)
+        c64 = reversible_compile(x -> x + Int64(1), Int64)
+
+        gc8, gc16, gc32, gc64 = gate_count(c8), gate_count(c16), gate_count(c32), gate_count(c64)
 
         @test gc8.total  == 100
         @test gc16.total == 204
@@ -28,15 +30,37 @@ using Bennett
         @test gc16.total == 2 * gc8.total + 4
         @test gc32.total == 2 * gc16.total + 4
         @test gc64.total == 2 * gc32.total + 4
+
+        # Toffoli-depth baselines (M2, bd Bennett-z29g).
+        # Ripple-carry adder: Toffoli-depth == Toffoli count because the carry
+        # chain serializes every Toffoli. This is the reason QCLA (O(log n)
+        # Toffoli-depth) is the natural next primitive.
+        @test toffoli_depth(c8)  == 28
+        @test toffoli_depth(c16) == 60
+        @test toffoli_depth(c32) == 124
+        @test toffoli_depth(c64) == 252
     end
 
     @testset "Polynomial gate count (x*x + 3x + 1)" begin
-        gc = gate_count(reversible_compile(x -> x * x + Int8(3) * x + Int8(1), Int8))
-        @test gc.total == 872
+        c = reversible_compile(x -> x * x + Int8(3) * x + Int8(1), Int8)
+        @test gate_count(c).total == 872
+        @test toffoli_depth(c) == 90
     end
 
     @testset "x + 3 gate count" begin
-        gc = gate_count(reversible_compile(x -> x + Int8(3), Int8))
-        @test gc.total == 102
+        c = reversible_compile(x -> x + Int8(3), Int8)
+        @test gate_count(c).total == 102
+        @test toffoli_depth(c) == 28
+    end
+
+    @testset "Multiplication Toffoli-depth (shift-and-add)" begin
+        # Baselines BEFORE the Sun-Borissov qcla_tree multiplier lands.
+        # Expected: gets replaced by O(log^2 n) once mul=:qcla_tree is wired.
+        c8  = reversible_compile(x -> x * x, Int8)
+        c16 = reversible_compile(x -> x * x, Int16)
+        @test gate_count(c8).Toffoli  == 296
+        @test gate_count(c16).Toffoli == 1232
+        @test toffoli_depth(c8)  == 68
+        @test toffoli_depth(c16) == 214
     end
 end

@@ -1,5 +1,142 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-14 — advanced-arithmetic workstream kickoff
+
+Sidequest triggered by Sun-Borissov 2026
+(`docs/literature/multiplication/sun-borissov-2026.pdf`, arXiv:2604.09847, a
+polylogarithmic-depth quantum multiplier using indicator-controlled copies +
+binary adder tree of Draper QCLAs). Spawned a 22-issue workstream to land
+the algorithm plus supporting infrastructure. PRD:
+`docs/prd/advanced-arithmetic-PRD.md`. DAG in bd memory under
+`advanced-arithmetic-workstream-sun-borissov-2026-mul-draper`. Ground truth
+papers downloaded to `docs/literature/arithmetic/` (Draper QCLA,
+quant-ph/0406142) and `docs/literature/multiplication/` (Sun-Borissov).
+
+### Closed so far this session
+
+| Issue | Phase | Summary |
+|-------|-------|---------|
+| Bennett-6xdi | G0 | PRD for advanced-arithmetic workstream |
+| Bennett-yxmz | M1 | `toffoli_depth(c)` + `t_depth(c; decomp=:ammr|:nc_7t)` |
+| Bennett-z29g | M2 | Toffoli-depth baselines pinned in regression test |
+| Bennett-8daw | F1 | `emit_fast_copy!` (Sun-Borissov Alg 1); 84/84 pass |
+| Bennett-98k2 | C1 | `emit_conditional_copy!` + `emit_partial_products!`; 3585/3585 pass |
+| Bennett-cnyx | Q1 | QCLA design consensus (`docs/design/qcla_consensus.md`) |
+| Bennett-6moh | Q2 | `test/test_qcla.jl` RED test landed |
+| Bennett-bo91 | Q3 | `src/qcla.jl` GREEN; 2587/2587 pass |
+| Bennett-63h0 | Q4 | Three-way adder baseline table (this section) |
+| Bennett-4uys | D1 | `add=:auto|:ripple|:cuccaro|:qcla` kwarg dispatcher; 46/46 pass |
+| Bennett-a439 | A1 | parallel_adder_tree design consensus (Schedule A, black-box QCLA) |
+| Bennett-5qze | A2 | `emit_parallel_adder_tree!` forward pass; 398/398 pass |
+
+### Open workstream (10 issues remaining)
+
+Critical path: A3 (uncompute-in-flight) → X1 (7-step multiplier assembly)
+→ X2 (scale) → X3 (paper-match). Then P1 (self_reversing flag) → P2
+(mul dispatcher) → P3 (kwarg plumbing). Then B1/B2 (benchmark) and Z1
+(session close).
+
+Blockers and gotchas for the next session:
+- **A3 (Bennett-lvk4)**: Schedule A linearized uncompute per consensus.
+  Each `_AdderRecord` replays `gates[gs:ge]` in reverse to zero
+  internal wires. Consensus accepts 2× depth hit; Schedule B is a
+  deferred tightening for X3.
+- **X1 (Bennett-22o5)**: 7-step Sun-Borissov algorithm. F1/C1/A3 are
+  the building blocks. Implement in `src/mul_qcla_tree.jl`.
+- **P1 (Bennett-ellx)**: core change to `bennett.jl` — requires 3+1
+  agents per principle 2. Generalize Cuccaro's self-reversing pattern.
+- **X1 test edge**: `UInt8 * UInt8` in Julia wraps mod 256 — test
+  expectations must widen operands to `Int` before multiplying (see
+  `test/test_parallel_adder_tree.jl` for the fix).
+
+### M1 — what `t_depth` used to measure
+
+Pre-M1, `t_depth(c)` walked the critical path restricted to Toffolis — which
+is actually Toffoli-depth, not Clifford+T T-depth. The function was named
+for the most common downstream use (FTQC cost) but implicitly assumed a
+1-T-layer-per-Toffoli decomposition (Amy/Maslov/Mosca/Roetteler 2013 with
+ancilla), and didn't let the caller ask about other decompositions.
+
+Fix: `toffoli_depth(c)` is the raw circuit metric. `t_depth(c; decomp=...)`
+multiplies by a per-Toffoli T-layer factor. Defaults to `:ammr` (k=1) so
+all pre-M1 numbers are preserved. `:nc_7t` (k=3) models the Nielsen-Chuang
+classical 7-T decomposition for papers that assume it.
+
+This matters for Sun-Borissov comparisons: their paper explicitly assumes
+1-T-layer Toffolis, so our `:ammr` default lines up with their Table III.
+
+### M2 — Toffoli-depth baselines at 2026-04-14
+
+Ripple-carry `lower_add!` has **Toffoli-depth equal to Toffoli count** at
+all widths — the carry chain serializes every Toffoli. This is the clean
+motivation for landing Draper QCLA (O(log n) Toffoli-depth) as Q1–Q4.
+
+| Benchmark              | Total | Toffoli | Toffoli-depth | depth |
+|------------------------|------:|--------:|--------------:|------:|
+| `x + 1`  Int8          |  100  |   28    |   28          |  77   |
+| `x + 1`  Int16         |  204  |   60    |   60          | 157   |
+| `x + 1`  Int32         |  412  |  124    |  124          | 317   |
+| `x + 1`  Int64         |  828  |  252    |  252          | 637   |
+| `x * x`  Int8          |  690  |  296    |   68          |  97   |
+| `x * x`  Int16         | 2786  | 1232    |  214          | 261   |
+| `x*x + 3x + 1` Int8    |  872  |  352    |   90          | 231   |
+
+Multiplication already shows parallelism: Toffoli-depth is ~4× smaller than
+Toffoli count at W=8 and ~6× smaller at W=16, because the shift-add layout
+lets partial products compute concurrently with earlier adders. Once the
+qcla_tree multiplier lands (Phase X), expect Toffoli-depth to collapse from
+O(n) to O(log² n) at the cost of ~4× more Toffolis.
+
+Baselines are pinned in `test/test_gate_count_regression.jl`. Any change
+to these requires WORKLOG justification per principle 6.
+
+### Q3/Q4 — QCLA lands, three-way adder comparison
+
+`src/qcla.jl` implements Draper-Kutin-Rains-Svore 2004 §4.1 out-of-place.
+Two independent proposers (`docs/design/qcla_proposer_{A,B}.md`) converged
+on the same 5-phase algorithm; consensus is
+`docs/design/qcla_consensus.md`.
+
+Measured at the primitive level (bare `lower_add_*!` calls, no Bennett wrap):
+
+| W  | Primitive | total | Toffoli | CNOT | Tof-depth | depth | ancilla |
+|----|-----------|------:|--------:|-----:|----------:|------:|--------:|
+|  4 | ripple    |  18   |   6     |  12  |   4       |   7   |   4     |
+|  4 | Cuccaro   |  20   |   6     |  14  |   6       |  17   |   1     |
+|  4 | QCLA      |  21   |  10     |  11  |   6       |   9   |   1     |
+|  8 | ripple    |  38   |  14     |  24  |   8       |  11   |   8     |
+|  8 | Cuccaro   |  44   |  14     |  30  |  14       |  37   |   1     |
+|  8 | QCLA      |  50   |  27     |  23  |   8       |  11   |   4     |
+| 16 | ripple    |  78   |  30     |  48  |  16       |  19   |  16     |
+| 16 | Cuccaro   |  92   |  30     |  62  |  30       |  77   |   1     |
+| 16 | QCLA      | 111   |  64     |  47  |  10       |  13   |  11     |
+| 32 | ripple    | 158   |  62     |  96  |  32       |  35   |  32     |
+| 32 | Cuccaro   | 188   |  62     | 126  |  62       | 157   |   1     |
+| 32 | QCLA      | 236   | 141     |  95  |  12       |  15   |  26     |
+| 64 | ripple    | 318   | 126     | 192  |  64       |  67   |  64     |
+| 64 | Cuccaro   | 380   | 126     | 254  | 126       | 317   |   1     |
+| 64 | QCLA      | 489   | 298     | 191  |  14       |  17   |  57     |
+
+**Headline**: QCLA Toffoli-depth at W=64 is **14** vs ripple's **64** vs
+Cuccaro's **126** — a 4.6× vs 9× depth reduction, at the cost of 2.4×
+more Toffolis than ripple (298 vs 126) and ~57 more ancilla qubits.
+
+**Caveat**: Cuccaro's *total* depth (317 at W=64) exceeds its Toffoli-depth
+because Cuccaro emits Toffolis and CNOTs that share wires — the CNOTs
+serialize against adjacent Toffolis on the same wire. Ripple-carry's total
+depth stays close to its Toffoli-depth because its Toffolis and CNOTs
+operate on adjacent carry positions without cross-wire conflicts. This is
+an artifact of our `depth()` walker being strict about wire-level
+ordering; a downstream scheduler could tighten Cuccaro's depth
+significantly.
+
+QCLA gate-count pins live in `test/test_qcla.jl`; they are the Q3 GREEN
+contract. `lower_add_qcla!` is not yet reachable from `reversible_compile`
+— D1 (Bennett-4uys) will introduce the `add=:auto|:ripple|:cuccaro|:qcla`
+dispatcher when claimed.
+
+---
+
 ## Session log — 2026-04-13 (continued) — 5 more closed
 
 Subsequent to BC.3 + sret (first entry below), five more issues resolved:

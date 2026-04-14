@@ -45,12 +45,13 @@ NOT and CNOT are Clifford gates (0 T-gates).
 t_count(c::ReversibleCircuit) = 7 * count(g -> g isa ToffoliGate, c.gates)
 
 """
-    t_depth(c::ReversibleCircuit) -> Int
+    toffoli_depth(c::ReversibleCircuit) -> Int
 
-T-depth: longest chain of Toffoli gates (each contributing T-depth 1).
-NOT and CNOT gates have T-depth 0 (Clifford, can be parallelized with T-gates).
+Longest chain of Toffoli gates along a data-dependence path. NOT/CNOT gates
+do not advance the count. This is the raw circuit-level metric; `t_depth`
+converts it to a Clifford+T T-depth estimate via a Toffoli decomposition.
 """
-function t_depth(c::ReversibleCircuit)
+function toffoli_depth(c::ReversibleCircuit)
     wd = zeros(Int, c.n_wires)
     md = 0
     for gate in c.gates
@@ -61,6 +62,24 @@ function t_depth(c::ReversibleCircuit)
         md = max(md, d)
     end
     return md
+end
+
+const _T_LAYERS_PER_TOFFOLI = Dict{Symbol,Int}(
+    :ammr  => 1,  # Amy/Maslov/Mosca/Roetteler 2013, with ancilla. Matches Sun-Borissov 2026.
+    :nc_7t => 3,  # Nielsen-Chuang classical 7-T Toffoli decomposition.
+)
+
+"""
+    t_depth(c::ReversibleCircuit; decomp::Symbol=:ammr) -> Int
+
+Clifford+T T-depth for `c` under a chosen Toffoli decomposition. Returns
+`toffoli_depth(c) * k` where `k` is the decomposition's per-Toffoli T-layer
+cost. Supported: `:ammr` (k=1, default), `:nc_7t` (k=3).
+"""
+function t_depth(c::ReversibleCircuit; decomp::Symbol=:ammr)
+    haskey(_T_LAYERS_PER_TOFFOLI, decomp) ||
+        error("unknown Toffoli decomposition :$decomp; supported: $(sort(collect(keys(_T_LAYERS_PER_TOFFOLI))))")
+    return _T_LAYERS_PER_TOFFOLI[decomp] * toffoli_depth(c)
 end
 
 """

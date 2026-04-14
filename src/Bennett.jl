@@ -6,6 +6,7 @@ include("ir_parser.jl")
 include("gates.jl")
 include("wire_allocator.jl")
 include("adder.jl")
+include("qcla.jl")
 include("multiplier.jl")
 include("lower.jl")
 include("bennett.jl")
@@ -25,11 +26,14 @@ include("qrom.jl")
 include("memssa.jl")
 include("feistel.jl")
 include("shadow_memory.jl")
+include("fast_copy.jl")
+include("partial_products.jl")
+include("parallel_adder_tree.jl")
 
 export reversible_compile, simulate, extract_ir, parse_ir, extract_parsed_ir, register_callee!
 export soft_fadd, soft_fsub, soft_fmul, soft_fdiv, soft_fneg, soft_fcmp_olt, soft_fcmp_oeq, soft_fcmp_ole, soft_fcmp_une, soft_fptosi, soft_sitofp
 export ReversibleCircuit, ControlledCircuit, controlled
-export gate_count, ancilla_count, constant_wire_count, depth, t_count, t_depth, peak_live_wires, print_circuit, verify_reversibility
+export gate_count, ancilla_count, constant_wire_count, depth, t_count, t_depth, toffoli_depth, peak_live_wires, print_circuit, verify_reversibility
 export pebbled_bennett, eager_bennett, value_eager_bennett, pebbled_group_bennett, checkpoint_bennett
 
 reversible_compile(f, types::Type...; kw...) = reversible_compile(f, Tuple{types...}; kw...)
@@ -42,12 +46,13 @@ Uses LLVM.jl to walk the IR as typed objects (no regex parsing).
 """
 function reversible_compile(f, arg_types::Type{<:Tuple};
                             optimize::Bool=true, max_loop_iterations::Int=0,
-                            compact_calls::Bool=false, bit_width::Int=0)
+                            compact_calls::Bool=false, bit_width::Int=0,
+                            add::Symbol=:auto)
     parsed = extract_parsed_ir(f, arg_types; optimize)
     if bit_width > 0
         parsed = _narrow_ir(parsed, bit_width)
     end
-    lr = lower(parsed; max_loop_iterations, compact_calls)
+    lr = lower(parsed; max_loop_iterations, compact_calls, add)
     return bennett(lr)
 end
 

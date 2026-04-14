@@ -54,6 +54,8 @@ struct LoweringCtx
     mux_counter::Ref{Int}                                      # monotonic counter for synthetic SSA names
     # T1c.2: compile-time-constant global arrays (for QROM dispatch)
     globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}}          # global name → (data, elem_width)
+    # D1: add-op strategy dispatcher (:auto, :ripple, :cuccaro, :qcla)
+    add::Symbol
 end
 
 # Backward-compatible constructor: existing sites don't need to pass the new fields.
@@ -64,7 +66,8 @@ LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
                 Dict{Symbol,Tuple{Int,Int}}(),
                 Dict{Symbol,Tuple{Symbol,IROperand}}(),
                 Ref(0),
-                Dict{Symbol,Tuple{Vector{UInt64},Int}}())
+                Dict{Symbol,Tuple{Vector{UInt64},Int}}(),
+                :auto)
 
 # 12-arg constructor for callers that want to pass globals explicitly.
 LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
@@ -75,7 +78,20 @@ LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
                 Dict{Symbol,Tuple{Int,Int}}(),
                 Dict{Symbol,Tuple{Symbol,IROperand}}(),
                 Ref(0),
-                globals)
+                globals,
+                :auto)
+
+# 13-arg constructor: adds the add-strategy field.
+LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
+            block_pred, ssa_liveness, inst_counter, use_karatsuba, compact_calls,
+            globals::Dict{Symbol,Tuple{Vector{UInt64},Int}}, add::Symbol) =
+    LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
+                block_pred, ssa_liveness, inst_counter, use_karatsuba, compact_calls,
+                Dict{Symbol,Tuple{Int,Int}}(),
+                Dict{Symbol,Tuple{Symbol,IROperand}}(),
+                Ref(0),
+                globals,
+                add)
 
 # Dispatched instruction lowering — Julia selects the method by inst type
 _lower_inst!(ctx::LoweringCtx, inst::IRPhi, label::Symbol) =
@@ -84,7 +100,8 @@ _lower_inst!(ctx::LoweringCtx, inst::IRPhi, label::Symbol) =
 
 _lower_inst!(ctx::LoweringCtx, inst::IRBinOp, ::Symbol) =
     lower_binop!(ctx.gates, ctx.wa, ctx.vw, inst;
-                 ssa_liveness=ctx.ssa_liveness, inst_idx=ctx.inst_counter[], use_karatsuba=ctx.use_karatsuba)
+                 ssa_liveness=ctx.ssa_liveness, inst_idx=ctx.inst_counter[],
+                 use_karatsuba=ctx.use_karatsuba, add=ctx.add)
 
 _lower_inst!(ctx::LoweringCtx, inst::IRICmp, ::Symbol) =
     lower_icmp!(ctx.gates, ctx.wa, ctx.vw, inst)
@@ -263,7 +280,10 @@ end
 # ==== main lowering entry point ====
 
 function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=true,
-               use_karatsuba::Bool=false, fold_constants::Bool=false, compact_calls::Bool=false)
+               use_karatsuba::Bool=false, fold_constants::Bool=false, compact_calls::Bool=false,
+               add::Symbol=:auto)
+    add in (:auto, :ripple, :cuccaro, :qcla) ||
+        error("lower: unknown add strategy :$add; supported: :auto, :ripple, :cuccaro, :qcla")
     wa = WireAllocator()
     gates = ReversibleGate[]
     vw = Dict{Symbol,Vector{Int}}()
@@ -350,7 +370,7 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
         else
             lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_order;
                                block_pred, ssa_liveness, inst_counter, gate_groups,
-                               use_karatsuba, compact_calls, globals=parsed.globals)
+                               use_karatsuba, compact_calls, globals=parsed.globals, add)
         end
 
         # Process terminator (for non-loop blocks AND after loop unrolling)
@@ -517,10 +537,11 @@ function lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_orde
                            gate_groups::Vector{GateGroup}=GateGroup[],
                            use_karatsuba::Bool=false,
                            compact_calls::Bool=false,
-                           globals::Dict{Symbol,Tuple{Vector{UInt64},Int}}=Dict{Symbol,Tuple{Vector{UInt64},Int}}())
+                           globals::Dict{Symbol,Tuple{Vector{UInt64},Int}}=Dict{Symbol,Tuple{Vector{UInt64},Int}}(),
+                           add::Symbol=:auto)
     ctx = LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
                       block_pred, ssa_liveness, inst_counter, use_karatsuba, compact_calls,
-                      globals)
+                      globals, add)
     for inst in block.instructions
         inst_counter[] += 1
         _ws = wa.next_wire
@@ -942,10 +963,27 @@ end
 
 # ---- binary-op dispatch ----
 
+"""
+    _pick_add_strategy(user_choice, W, op2_dead, liveness_enabled) -> Symbol
+
+Resolve an `add=:auto|:ripple|:cuccaro|:qcla` user choice into one of the
+three concrete strategies. `:auto` preserves the pre-D1 default:
+Cuccaro when in-place is safe (liveness available AND op2 is dead), ripple
+otherwise. Explicit choices bypass the heuristic.
+"""
+function _pick_add_strategy(user_choice::Symbol, W::Int, op2_dead::Bool, liveness_enabled::Bool)
+    user_choice === :ripple  && return :ripple
+    user_choice === :cuccaro && return :cuccaro
+    user_choice === :qcla    && return :qcla
+    user_choice === :auto || error("_pick_add_strategy: unknown choice :$user_choice")
+    (liveness_enabled && op2_dead) ? :cuccaro : :ripple
+end
+
 function lower_binop!(gates, wa, vw, inst::IRBinOp;
                       ssa_liveness::Dict{Symbol,Int}=Dict{Symbol,Int}(),
                       inst_idx::Int=0,
-                      use_karatsuba::Bool=false)
+                      use_karatsuba::Bool=false,
+                      add::Symbol=:auto)
     a = resolve!(gates, wa, vw, inst.op1, inst.width)
     W = inst.width
 
@@ -970,9 +1008,15 @@ function lower_binop!(gates, wa, vw, inst::IRBinOp;
         # SSA vars are safe when this is their last use (liveness[name] <= inst_idx).
         op2_dead = inst.op2.kind == :const ||
                    (inst.op2.kind == :ssa && get(ssa_liveness, inst.op2.name, 0) <= inst_idx)
-        if inst.op == :add && !isempty(ssa_liveness) && op2_dead
-            lower_add_cuccaro!(gates, wa, a, b, W)
-        elseif inst.op == :add; lower_add!(gates, wa, a, b, W)
+        if inst.op == :add
+            strat = _pick_add_strategy(add, W, op2_dead, !isempty(ssa_liveness))
+            if strat == :cuccaro
+                lower_add_cuccaro!(gates, wa, a, b, W)
+            elseif strat == :qcla
+                lower_add_qcla!(gates, wa, a, b, W)[1:W]   # drop carry-out
+            else
+                lower_add!(gates, wa, a, b, W)
+            end
         elseif inst.op == :sub; lower_sub!(gates, wa, a, b, W)
         elseif inst.op == :mul
             if use_karatsuba && W > 4
