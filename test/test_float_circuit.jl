@@ -150,4 +150,61 @@ using Random
         gc = gate_count(circuit)
         println("  Float64 div (end-to-end): ", gc)
     end
+
+    @testset "Float64 sqrt end-to-end (Bennett-ux2)" begin
+        float_sqrt(x) = sqrt(x)
+        circuit = reversible_compile(float_sqrt, Float64; max_loop_iterations=70)
+
+        # Positive finite / zero / Inf / NaN: compare against Julia's sqrt.
+        # Julia's sqrt(::Float64) throws DomainError on negatives, so for
+        # negative-finite/-Inf cases we check NaN directly (the IEEE-correct result).
+        function check_sqrt_nonneg(a::Float64)
+            a_bits = reinterpret(UInt64, a)
+            result_i64 = simulate(circuit, a_bits)
+            result_bits = reinterpret(UInt64, result_i64)
+            expected_bits = reinterpret(UInt64, sqrt(a))
+            result_f = reinterpret(Float64, result_bits)
+            expected_f = sqrt(a)
+            if isnan(expected_f)
+                @test isnan(result_f)
+            else
+                @test result_bits == expected_bits
+            end
+        end
+
+        function check_sqrt_nan(a::Float64)
+            # IEEE: sqrt(negative non-zero) = NaN, sqrt(-Inf) = NaN
+            result_i64 = simulate(circuit, reinterpret(UInt64, a))
+            @test isnan(reinterpret(Float64, result_i64))
+        end
+
+        # Perfect squares
+        check_sqrt_nonneg(0.0)
+        check_sqrt_nonneg(1.0)
+        check_sqrt_nonneg(4.0)
+        check_sqrt_nonneg(9.0)
+        check_sqrt_nonneg(16.0)
+        check_sqrt_nonneg(100.0)
+        check_sqrt_nonneg(0.25)
+
+        # Irrational (correctly rounded)
+        check_sqrt_nonneg(2.0)
+        check_sqrt_nonneg(3.0)
+        check_sqrt_nonneg(0.5)
+        check_sqrt_nonneg(10.0)
+
+        # Special cases
+        check_sqrt_nonneg(Inf)
+        check_sqrt_nonneg(-0.0)   # IEEE §6.3: sqrt(-0) = -0
+        check_sqrt_nonneg(NaN)
+        check_sqrt_nan(-1.0)
+        check_sqrt_nan(-Inf)
+
+        # Subnormal input
+        check_sqrt_nonneg(reinterpret(Float64, UInt64(1)))   # smallest subnormal
+
+        @test verify_reversibility(circuit)
+        gc = gate_count(circuit)
+        println("  Float64 sqrt (end-to-end): ", gc)
+    end
 end
