@@ -207,4 +207,55 @@ using Random
         gc = gate_count(circuit)
         println("  Float64 sqrt (end-to-end): ", gc)
     end
+
+    @testset "Float32 <-> Float64 conversion (Bennett-4gk)" begin
+        @testset "fpext circuit" begin
+            c = reversible_compile(Bennett.soft_fpext, UInt32)
+
+            function check(a::Float32)
+                bits32 = reinterpret(UInt32, a)
+                result = simulate(c, bits32)
+                expected = reinterpret(UInt64, Float64(a))
+                if isnan(Float64(a))
+                    @test isnan(reinterpret(Float64, reinterpret(UInt64, result)))
+                else
+                    @test reinterpret(UInt64, result) == expected
+                end
+            end
+
+            check(0.0f0); check(1.0f0); check(-1.0f0); check(3.14f0)
+            check(Inf32); check(-Inf32); check(-0.0f0)
+            check(floatmin(Float32)); check(floatmax(Float32))
+            check(reinterpret(Float32, UInt32(1)))   # smallest subnormal
+            check(reinterpret(Float32, UInt32(0x007FFFFF)))   # largest subnormal
+
+            @test verify_reversibility(c)
+            println("  soft_fpext circuit: ", gate_count(c))
+        end
+
+        @testset "fptrunc circuit" begin
+            c = reversible_compile(Bennett.soft_fptrunc, UInt64)
+
+            function check(a::Float64)
+                bits64 = reinterpret(UInt64, a)
+                result = simulate(c, bits64)
+                expected = reinterpret(UInt32, Float32(a))
+                if isnan(Float32(a))
+                    @test isnan(reinterpret(Float32, reinterpret(UInt32, result)))
+                else
+                    @test reinterpret(UInt32, result) == expected
+                end
+            end
+
+            check(0.0); check(1.0); check(-1.0); check(3.14)
+            check(Inf); check(-Inf); check(-0.0)
+            check(1e40)                              # overflow → Inf
+            check(1e-40)                             # Float32 subnormal
+            check(5e-324)                            # F64 smallest subnormal → 0
+            check(Float64(floatmax(Float32)))        # exact max F32
+
+            @test verify_reversibility(c)
+            println("  soft_fptrunc circuit: ", gate_count(c))
+        end
+    end
 end

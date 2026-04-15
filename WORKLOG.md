@@ -1,5 +1,108 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-15 — `soft_fpext` / `soft_fptrunc` (Bennett-4gk)
+
+Added IEEE 754 Float32 ↔ Float64 precision conversion on raw bit patterns.
+`soft_fpext(a::UInt32) -> UInt64` (always exact) and
+`soft_fptrunc(a::UInt64) -> UInt32` (round-nearest-even). Both fully
+branchless, bit-exact vs Julia's `Float64(::Float32)` and `Float32(::Float64)`.
+
+Per user direction 2026-04-15 ("reversible algorithms for every opcode
+first, then pipeline later"): added as soft-float primitives, registered
+as callees, no `IRCast` opcode-handler wiring yet. That comes in a later
+pipeline session.
+
+### Implementation — `src/softfloat/fpconv.jl` (~140 LOC)
+
+**`soft_fpext`**: 5 paths, selected via ifelse chain.
+- Normal F32 → normal F64: rebias exp (`+896`), widen fraction (`<< 29`).
+- Subnormal F32 → normal F64: Float64's exponent range covers all F32
+  subnormals as normals. Reuse `_sf_normalize_to_bit52(UInt64(fa), 1)` to
+  normalize the 23-bit fraction to a 53-bit implicit-bit mantissa; biased
+  F64 exp = `925 + e_final` (derivation in source comment).
+- NaN: `sign | 0x7FF0_0000_0000_0000 | (fa << 29)` — preserves payload &
+  quiet-bit, matching hardware fpext.
+- ±Inf / ±0: sign-preserving.
+
+**`soft_fptrunc`**: 6 paths. Normal / subnormal-output / overflow / F64
+subnormal input (→0) / Inf / NaN.
+- Normal path: drop 29 low bits, round-nearest-even with guard/sticky;
+  detect mantissa overflow to bump exponent.
+- Subnormal-output path (e_new ∈ [-23, 0]): shift full 53-bit mantissa
+  (`2^52 | fa`) right by `30 - e_new` bits, round-nearest-even. Carry-out
+  bumps to smallest normal F32 (exp=1, frac=0).
+- Underflow beyond F32 subnormal range → ±0 via round-to-even (since
+  f_top=0 after extreme shift, tie → 0 = even).
+- F64 subnormal input (ea=0, fa≠0) → ±0 directly (all F64 subnormals
+  are below 2^-149 Float32 min).
+- NaN payload: `sign32 | 0x7F800000 | (fa >> 29) | 0x00400000` — the
+  last term forces quiet bit 22 set (IEEE rule: signaling NaN canonicalizes
+  to quiet on precision conversion).
+
+### Test results
+
+**Bit-level** `test/test_softfconv.jl` — 68 testsets: exact normals,
+specials (±0/±Inf/NaN), subnormal-F32→normal-F64, overflow to ±Inf,
+underflow to subnormal/zero, round-nearest-even, round-trips, plus
+10k random-Float32 and 100k raw-UInt64 sweeps. Zero failures.
+
+**End-to-end circuit** `test/test_float_circuit.jl` extended with
+"Float32 ↔ Float64 conversion (Bennett-4gk)" testset. Both circuits
+compile and simulate bit-exactly vs Julia native; `verify_reversibility`
+passes. Gate counts:
+
+| Circuit       | Total  | NOT   | CNOT   | Toffoli |
+|---------------|-------:|------:|-------:|--------:|
+| `soft_fpext`  | 25,684 | 1,058 | 17,882 | 6,744   |
+| `soft_fptrunc`| 36,474 | 2,336 | 24,822 | 9,316   |
+
+Far cheaper than other float ops (fadd 95k, fdiv 1.7M, fsqrt 1.4M) —
+expected because conversion is pure bit manipulation with no iteration.
+
+### Gotchas learned
+
+1. **Branchless computation of subnormal path hit an InexactError in the
+   normal-input case.** `UInt32(m_full >> shift_sub)` crashed for e_new > 0
+   because the shifted value still had ≥ 32 bits. Fixed with `% UInt32`
+   truncation — the subnormal_result garbage is overridden by the select
+   chain when the normal path is active, but we still need to avoid
+   crashing during its computation.
+2. **Subnormal-output formula**: for Float64 in Float32-subnormal range,
+   the mantissa shift is `30 - e_new` bits, NOT `29 + (1 - e_new)`. The
+   `30` = 29 (fraction width diff) + 1 (implicit-bit position offset:
+   F32 subnormal has no implicit 1, so we must include bit 52 in the
+   shifted-out region before it lands in the F32 fraction).
+3. **F64 subnormal input**: must short-circuit to zero rather than
+   running through the subnormal-output path, because the "full mantissa"
+   assembly `fa | IMPLICIT` is wrong for subnormal Float64 (no implicit
+   1). Explicit `a_f64sub` predicate catches this.
+4. **NaN payload shift direction**: fpext shifts left 29 bits (preserves
+   payload), fptrunc shifts right 29 bits (drops precision). Quiet bit
+   maps cleanly (F32 bit 22 ↔ F64 bit 51 = F32 bit 22 after >>29).
+
+### Files changed
+
+- `src/softfloat/fpconv.jl` (new, ~140 lines — both functions)
+- `src/softfloat/softfloat.jl` — `include("fpconv.jl")`
+- `src/Bennett.jl` — export `soft_fpext`, `soft_fptrunc`;
+  `register_callee!` for both
+- `test/test_softfconv.jl` (new, 170 lines, 68 testsets)
+- `test/test_float_circuit.jl` — new testset "Float32 ↔ Float64 conversion"
+  (circuit compile + simulate + reversibility, ~24 checks)
+- `test/runtests.jl` — wire new bit-level test
+- `WORKLOG.md` — this entry
+
+### Follow-ups (not blocking)
+
+- Wire `fpext` / `fptrunc` as `IRCast` opcodes in `ir_extract.jl` + `lower.jl`
+  so raw LLVM IR with these instructions compiles (enables Float32 end-to-end
+  via `reversible_compile(f, Float32)` and multi-language C/Rust bitcode input).
+  Deferred per user direction — algorithms first, pipeline later.
+- `SoftFloat32` wrapper + `Base.Float64(::SoftFloat32)` / `Base.Float32(::SoftFloat)`
+  dispatch so user-level Julia functions using Float32 compile.
+
+---
+
 ## Session log — 2026-04-15 — `soft_fsqrt` + `Base.sqrt(::SoftFloat)` (Bennett-ux2)
 
 Added IEEE 754 correctly-rounded `soft_fsqrt(a::UInt64)::UInt64` to the
