@@ -194,6 +194,53 @@ These instructions require non-trivial design but ARE targets:
 can reversibilise it. Every LLVM opcode, every common intrinsic, every language
 that compiles to LLVM.
 
+### Coverage North Star: Enzyme's frontier as ours
+
+Enzyme's real-world coverage story (from Moses & Churavy NeurIPS 2020 and the
+Enzyme.jl / Enzyme-MPI / Enzyme-GPU followups) is the honest north star:
+
+**"Every LLVM opcode that appears in pure numerical code from supported
+frontends, plus anything you write a custom rule for."**
+
+Where Enzyme stops — identical to where Bennett.jl will stop:
+
+1. **Inline assembly** (`callbr`, `asm!`). No general semantic model for opaque
+   machine code. Hard stop for both tools.
+2. **External functions without source or a custom rule**. Enzyme errors on
+   `call @printf`, `call @malloc`, raw syscalls, libc math without a registered
+   derivative. The escape hatch is `@enzyme_custom_rule` / `augmented_primal`.
+3. **Non-reproducible intrinsics**: `llvm.readcyclecounter`,
+   `llvm.thread.pointer`, `llvm.returnaddress`, `llvm.frameaddress` — read
+   external state with no pure semantics.
+4. **Complex C++/SEH exception handling** — Enzyme handles the simple
+   `invoke`/`landingpad` pair; full `catchswitch`/`catchpad`/`cleanuppad`
+   is historically fragile.
+5. **Coroutines** (`llvm.coro.*`) — not supported.
+
+**Bennett.jl's `register_callee!` IS our `@enzyme_custom_rule`.** Same escape
+hatch, same semantics: the user registers a pure reversible implementation of
+an opaque function and the compiler inlines it at gate level. Building out
+the rule library for common libraries (libc math, BLAS, MPI) is the path to
+Enzyme-level practical coverage.
+
+Bennett.jl has two additional frontiers Enzyme doesn't share:
+
+- **Concurrent atomic semantics**: `atomicrmw`/`cmpxchg`/`fence` are
+  decomposable under single-threaded collapse but not under true concurrency
+  (reversible circuits are synchronous by nature). Enzyme handles some
+  parallel semantics with custom rules; we commit to single-thread.
+- **Runtime exception paths**: Enzyme tolerates simple cases by treating the
+  unwind edge as dead. We need an explicit **exception-flag-wire model** for
+  faithful translation — every instruction has a guard, throw sets a flag,
+  downstream code MUXes on it. Tracked as design work when exception-heavy
+  code becomes a target.
+
+**The practical upshot:** no LLVM opcode is provably impossible to cover
+(Bennett 1973/1989 is universal for deterministic classical computation).
+Every gap reduces to either (a) a design decision about semantics — which
+Enzyme has already faced and resolved — or (b) a missing custom rule for an
+opaque external, which is a library-building task, not a fundamental one.
+
 ---
 
 ## 5. Three Pillars
