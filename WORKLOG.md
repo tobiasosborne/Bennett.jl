@@ -1,5 +1,98 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-15 — `:tabulate` strategy for small-W pure functions (Bennett-cfjx)
+
+Sturm.jl hit statevector caps on trivial-looking polynomials at low bit-width
+(x²+3x+1 @ W=2 compiled to 43 wires, exceeding 30-qubit Orkan). Root cause:
+the expression-graph path holds every SSA intermediate live simultaneously
+even when the input domain has only 2^W points — at W=2 the input has 4
+values total, so evaluating f classically and emitting the result via QROM
+is strictly smaller.
+
+### What was built
+
+- `src/tabulate.jl` — new file.
+  - `lower_tabulate(f, arg_types, widths; out_width) → LoweringResult`.
+    Enumerates all 2^sum(widths) input tuples, evaluates `f`, packs the
+    result into a UInt64 table, and emits via the existing `emit_qrom!`
+    (Babbush-Gidney). Sets `self_reversing=true` so `bennett()` skips the
+    copy+reverse wrap — QROM is already self-cleaning.
+  - `_tabulate_applicable(arg_types, bit_width) → (Bool, String)` — hard
+    cap at total input width ≤ 16 bits; integer arg types only.
+  - `_tabulate_auto_picks(parsed, arg_types, bit_width) → Bool` — the
+    `:auto` cost model. Picks tabulate only when (a) total input width ≤ 4
+    AND (b) the IR contains at least one O(W²)-lowered op (`mul`/`udiv`/
+    `sdiv`/`urem`/`srem`). This correctly flips `x^2+3x+1 @ W=2` to tabulate
+    while keeping `x+1` on the expression path at every width.
+- `src/Bennett.jl` — new `strategy::Symbol=:auto` kwarg on both integer
+  and Float64 `reversible_compile` entry points. Validates the value
+  (`:auto | :tabulate | :expression`); Float64 rejects `:tabulate` with a
+  clear error (2^64 table would be absurd).
+- `test/test_tabulate.jl` — 94 assertions. Covers acceptance case
+  (x²+3x+1 @ W=2 ≤ 10 wires / ≤ 15 Toffoli), single- and two-arg
+  polynomials, W=2/3/4 scaling, `:auto` flip behavior, `:expression`
+  override, and explicit-error paths (unknown strategy, Float64 reject).
+
+### Acceptance numbers
+
+| Function            | Strategy        | Wires | Gates | Toffoli |
+|---------------------|----------------|------:|------:|--------:|
+| x²+3x+1 @ W=2       | `:tabulate`    |     9 |    26 |       6 |
+| x²+3x+1 @ W=2       | `:expression`  |    25 |    80 |       — |
+| x*x @ W=4           | `:tabulate`    |    17 |   124 |      30 |
+| x*x @ W=4           | `:expression`  |    61 |    ~220 |     — |
+| x+1 @ W=4 (:auto)   | `:expression` ✓|    14 |    48 |       — |
+| a+b @ W=2 (:auto)   | `:expression` ✓|     8 |    22 |       — |
+| a*b @ W=2 (:auto)   | `:tabulate` ✓  |    15 |    51 |       — |
+
+All nine regression baselines in `test_gate_count_regression.jl`
+unchanged. `test_narrow.jl` `Int4 poly` baseline moved from 71w/256g
+→ 17w/132g because `:auto` now correctly picks tabulate — assertion
+(`< gate_count at Int8`) still holds.
+
+### Cost-model rationale (what actually breaks the width-only heuristic)
+
+First pass used `W ≤ 4` as the sole predicate. Wrong: at W=4, `x+1`
+expression path is 14 wires / 48 gates, while tabulate is 17 wires /
+124 gates. Expression wins for pure additive functions because ripple-carry
+is O(W) while tabulate is 2(2^W - 1) Toffoli + fan-out, which grows
+exponentially in W. The fix is to require an O(W²)-lowered op in the IR
+— `mul`/`udiv`/`sdiv`/`urem`/`srem`. These are the only ops where the
+expression path is quadratic, and they're exactly what makes `x²+3x+1`
+expensive.
+
+Empirical check across (W, function) pairs confirmed the two-factor model
+picks the smaller circuit in all probed cases (see commit discussion).
+
+### Bit-exactness of classical evaluation
+
+`lower_tabulate` evaluates `f` at the source type (e.g. `Int8`) and masks
+the result to the output bit width. This matches the narrowed-IR semantics
+for add/sub/mul/shift/bitwise (these form a ring homomorphism under
+reduction mod 2^W). For signed division and comparisons, native and
+narrowed paths can diverge at small W — documented as a known limitation;
+the user should stick to `strategy=:expression` for div/rem-heavy code at
+narrow bit widths.
+
+### Integration surface
+
+Zero changes to `lower.jl`, `bennett_transform.jl`, `ir_types.jl`,
+`ir_extract.jl`, `gates.jl`, or the phi resolution algorithm. Not a
+"core change" under CLAUDE.md §2; followed red-green TDD (principle 3).
+Sturm.jl inherits the new kwarg through its existing
+`oracle(f, x; kw...)` pass-through — no Sturm-side changes needed.
+
+### Files changed
+
+- `src/tabulate.jl` (new, 168 lines)
+- `src/Bennett.jl` — `include("tabulate.jl")`, `strategy=` kwarg on both
+  `reversible_compile` signatures, dispatch logic
+- `test/test_tabulate.jl` (new, 130 lines, 94 assertions)
+- `test/runtests.jl` — wire in new test file
+- `WORKLOG.md` — this entry
+
+---
+
 ## Session log — 2026-04-14 — advanced-arithmetic workstream kickoff
 
 Sidequest triggered by Sun-Borissov 2026

@@ -23,6 +23,7 @@ include("divider.jl")
 include("softfloat/softfloat.jl")
 include("softmem.jl")
 include("qrom.jl")
+include("tabulate.jl")
 include("memssa.jl")
 include("feistel.jl")
 include("shadow_memory.jl")
@@ -48,8 +49,34 @@ Uses LLVM.jl to walk the IR as typed objects (no regex parsing).
 function reversible_compile(f, arg_types::Type{<:Tuple};
                             optimize::Bool=true, max_loop_iterations::Int=0,
                             compact_calls::Bool=false, bit_width::Int=0,
-                            add::Symbol=:auto, mul::Symbol=:auto)
+                            add::Symbol=:auto, mul::Symbol=:auto,
+                            strategy::Symbol=:auto)
+    strategy in (:auto, :tabulate, :expression) ||
+        error("reversible_compile: unknown strategy :$strategy; " *
+              "supported: :auto, :tabulate, :expression")
+
+    # Explicit tabulate: evaluate f classically on all 2^W inputs and emit as
+    # a QROM lookup. Skip IR extraction entirely.
+    if strategy === :tabulate
+        ok, reason = _tabulate_applicable(arg_types, bit_width)
+        ok || error("reversible_compile: strategy=:tabulate not applicable — $reason")
+        widths = _tabulate_input_widths(arg_types, bit_width)
+        out_width = bit_width > 0 ? bit_width : sizeof(arg_types.parameters[1]) * 8
+        lr = lower_tabulate(f, arg_types, widths; out_width)
+        return bennett(lr)
+    end
+
+    # Expression path (also base for :auto). Extract IR once; the cost model
+    # inspects it to decide whether to redirect to tabulate.
     parsed = extract_parsed_ir(f, arg_types; optimize)
+
+    if strategy === :auto && _tabulate_auto_picks(parsed, arg_types, bit_width)
+        widths = _tabulate_input_widths(arg_types, bit_width)
+        out_width = bit_width > 0 ? bit_width : sizeof(arg_types.parameters[1]) * 8
+        lr = lower_tabulate(f, arg_types, widths; out_width)
+        return bennett(lr)
+    end
+
     if bit_width > 0
         parsed = _narrow_ir(parsed, bit_width)
     end
@@ -183,7 +210,11 @@ with direct `call @j_soft_fdiv` instructions that the callee registry recognizes
 """
 function reversible_compile(f::F, float_types::Type{Float64}...;
                             optimize::Bool=true, max_loop_iterations::Int=0,
-                            compact_calls::Bool=false) where {F}
+                            compact_calls::Bool=false,
+                            strategy::Symbol=:auto) where {F}
+    strategy in (:auto, :expression) ||
+        error("reversible_compile: strategy=:$strategy not supported for Float64 " *
+              "(2^64 table would be absurd); use :auto or :expression")
     N = length(float_types)
     N >= 1 || error("Need at least one Float64 argument type")
 
