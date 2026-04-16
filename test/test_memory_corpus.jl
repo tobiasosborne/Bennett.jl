@@ -293,12 +293,18 @@ end
         end
     end
 
-    @testset "L7e — conditional store semantics (BROKEN, C3, M2c deferred)" begin
-        # Store is INSIDE a branch — expected to fire only when c=true. Currently
-        # the primal wires get mutated unconditionally (no block-predicate gating
-        # in _lower_store_via_shadow! or _lower_store_via_mux_*!). So when c=false,
-        # the load still sees the stored value instead of the initial 0.
-        # Marked broken until M2c lands path-predicate guarding for store ops.
+    @testset "L7e — conditional store semantics (GREEN, C3 shadow path, M2c)" begin
+        # Store is INSIDE a branch. M2c (Bennett-oio4) wires block-predicate
+        # guarding into _lower_store_via_shadow!: when the store's block is
+        # not the entry, each CNOT of the 3W-CNOT pattern becomes a
+        # Toffoli(block_pred, ctrl, tgt) via emit_shadow_store_guarded!. With
+        # pred=0 the Toffolis no-op; with pred=1 they collapse to the original
+        # CNOTs. Entry-block stores stay on the ungated emit_shadow_store! path
+        # so existing gate-count baselines are preserved.
+        #
+        # NOTE: this test covers the SHADOW path only. The MUX-store path
+        # (dynamic idx) is still unguarded — see L7f for the @test_broken pin
+        # and Bennett-<M2d> for the follow-up issue.
         ir = raw"""
         define i8 @julia_f_1(i8 %x, i1 %c) {
         top:
@@ -316,11 +322,40 @@ end
         }
         """
         c = _compile_ir(ir)
-        @test verify_reversibility(c)  # reversibility holds even with wrong semantics
-        # Broken: expected 0 on c=false path, currently returns x.
-        @test_broken simulate(c, (Int8(5), false)) == Int8(0)
-        # The c=true path is correct today.
-        @test simulate(c, (Int8(5), true)) == Int8(5)
+        @test verify_reversibility(c)
+        for x in Int8(-8):Int8(1):Int8(8), cc in (true, false)
+            @test simulate(c, (x, cc)) == (cc ? x : Int8(0))
+        end
+    end
+
+    @testset "L7f — conditional MUX-store semantics (BROKEN, MUX path, M2d deferred)" begin
+        # Same shape as L7e but with DYNAMIC idx — dispatches to the MUX EXCH
+        # path (soft_mux_store_4x8). The IRCall writes unconditionally; block
+        # predicate is not threaded through the callee. Filed as follow-up to
+        # Bennett-oio4 (M2c); deferred until the MUX-store guarding design lands
+        # (snapshot + MUX on predicate, ~2·N·W extra Toffoli per guarded store).
+        ir = raw"""
+        define i8 @julia_f_1(i8 %x, i8 %i, i1 %c) {
+        top:
+          %p   = alloca i8, i32 4
+          br i1 %c, label %L, label %R
+        L:
+          %idx = zext i8 %i to i32
+          %g   = getelementptr i8, ptr %p, i32 %idx
+          store i8 %x, ptr %g
+          br label %J
+        R:
+          br label %J
+        J:
+          %gr = getelementptr i8, ptr %p, i32 0
+          %v  = load i8, ptr %gr
+          ret i8 %v
+        }
+        """
+        c = _compile_ir(ir)
+        @test verify_reversibility(c)  # still reverses cleanly
+        # Broken: MUX-store fires regardless of %c, so c=false still writes.
+        @test_broken simulate(c, (Int8(5), Int8(0), false)) == Int8(0)
     end
 
     @testset "L7c — pointer-typed phi (RED, C2, M2b target)" begin

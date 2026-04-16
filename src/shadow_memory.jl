@@ -73,3 +73,43 @@ function emit_shadow_load!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     end
     return out
 end
+
+"""
+    emit_shadow_store_guarded!(gates, wa, primal, tape_slot, val, W, pred_wire) -> Nothing
+
+Bennett-cc0 M2c — conditional shadow store. Same semantic as
+`emit_shadow_store!` when `pred_wire = 1`; no-op (identity on primal and
+tape_slot) when `pred_wire = 0`.
+
+Each CNOT of the 3·W-CNOT pattern becomes a Toffoli(pred_wire, ctrl, tgt).
+Bennett's reverse is self-inverse per-gate: `pred_wire` is the block
+predicate (written once during block prologue, read-only thereafter), so
+the reverse pass sees the same guard value and unwinds correctly on both
+paths (pred=0 reverse is also no-op; pred=1 reverse matches the
+unguarded inverse).
+
+Cost: 3·W Toffoli, 0 CNOT. Caller must pass `pred_wire` as a single wire
+holding the current block's path predicate (lookup: `ctx.block_pred[label][1]`
+for single-wire path predicates; multi-wire predicates would need AND-reduction
+before calling this primitive).
+
+See `emit_shadow_store!` for the unguarded base case.
+"""
+function emit_shadow_store_guarded!(gates::Vector{ReversibleGate}, wa::WireAllocator,
+                                    primal::Vector{Int}, tape_slot::Vector{Int},
+                                    val::Vector{Int}, W::Int, pred_wire::Int)
+    length(primal)    == W || error("emit_shadow_store_guarded!: primal has $(length(primal)) wires, W=$W")
+    length(tape_slot) == W || error("emit_shadow_store_guarded!: tape_slot has $(length(tape_slot)) wires, W=$W")
+    length(val)       == W || error("emit_shadow_store_guarded!: val has $(length(val)) wires, W=$W")
+
+    for i in 1:W
+        push!(gates, ToffoliGate(pred_wire, primal[i], tape_slot[i]))
+    end
+    for i in 1:W
+        push!(gates, ToffoliGate(pred_wire, tape_slot[i], primal[i]))
+    end
+    for i in 1:W
+        push!(gates, ToffoliGate(pred_wire, val[i], primal[i]))
+    end
+    return nothing
+end

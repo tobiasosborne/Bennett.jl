@@ -69,6 +69,12 @@ struct LoweringCtx
     add::Symbol
     # P2/P3: mul-op strategy dispatcher (:auto, :shift_add, :karatsuba, :qcla_tree)
     mul::Symbol
+    # Bennett-cc0 M2c: entry (unconditional) block label. Stores in this block
+    # use the ungated shadow path (preserves BENCHMARKS.md gate counts).
+    # Stores in any other block get path-predicate-guarded shadow writes.
+    # Sentinel Symbol("") disables gating entirely (backward-compat for direct
+    # `lower_block_insts!` callers).
+    entry_label::Symbol
 end
 
 # Backward-compatible constructor: existing sites don't need to pass the new fields.
@@ -80,7 +86,7 @@ LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
                 Dict{Symbol,Tuple{Symbol,IROperand}}(),
                 Ref(0),
                 Dict{Symbol,Tuple{Vector{UInt64},Int}}(),
-                :auto, :auto)
+                :auto, :auto, Symbol(""))
 
 # 12-arg constructor for callers that want to pass globals explicitly.
 LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
@@ -92,7 +98,7 @@ LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
                 Dict{Symbol,Tuple{Symbol,IROperand}}(),
                 Ref(0),
                 globals,
-                :auto)
+                :auto, :auto, Symbol(""))
 
 # 13-arg constructor: adds the add-strategy field.
 LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
@@ -105,7 +111,7 @@ LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
                 Dict{Symbol,Tuple{Symbol,IROperand}}(),
                 Ref(0),
                 globals,
-                add, mul)
+                add, mul, Symbol(""))
 
 # Dispatched instruction lowering — Julia selects the method by inst type
 _lower_inst!(ctx::LoweringCtx, inst::IRPhi, label::Symbol) =
@@ -138,7 +144,7 @@ _lower_inst!(ctx::LoweringCtx, inst::IRLoad, ::Symbol) =
     lower_load!(ctx, inst)
 
 _lower_inst!(ctx::LoweringCtx, inst::IRAlloca, ::Symbol) = lower_alloca!(ctx, inst)
-_lower_inst!(ctx::LoweringCtx, inst::IRStore,  ::Symbol) = lower_store!(ctx, inst)
+_lower_inst!(ctx::LoweringCtx, inst::IRStore,  label::Symbol) = lower_store!(ctx, inst, label)
 
 _lower_inst!(ctx::LoweringCtx, inst::IRExtractValue, ::Symbol) =
     lower_extractvalue!(ctx.gates, ctx.wa, ctx.vw, inst)
@@ -394,7 +400,7 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
             lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_order;
                                block_pred, ssa_liveness, inst_counter, gate_groups,
                                use_karatsuba, compact_calls, globals=parsed.globals, add, mul,
-                               alloca_info, ptr_provenance)
+                               alloca_info, ptr_provenance, entry_label=order[1])
         end
 
         # Process terminator (for non-loop blocks AND after loop unrolling)
@@ -569,11 +575,15 @@ function lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_orde
                            # globally-unique hint (inst.dest / inst.ptr.name) so cross-block
                            # counter reset doesn't collide.
                            alloca_info::Dict{Symbol,Tuple{Int,Int}}=Dict{Symbol,Tuple{Int,Int}}(),
-                           ptr_provenance::Dict{Symbol,Tuple{Symbol,IROperand}}=Dict{Symbol,Tuple{Symbol,IROperand}}())
+                           ptr_provenance::Dict{Symbol,Tuple{Symbol,IROperand}}=Dict{Symbol,Tuple{Symbol,IROperand}}(),
+                           # Bennett-cc0 M2c: entry-block label for conditional-store
+                           # guarding. Sentinel Symbol("") means "treat all as entry"
+                           # (backward-compat for direct callers).
+                           entry_label::Symbol=Symbol(""))
     ctx = LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
                       block_pred, ssa_liveness, inst_counter, use_karatsuba, compact_calls,
                       alloca_info, ptr_provenance, Ref(0),
-                      globals, add, mul)
+                      globals, add, mul, entry_label)
     for inst in block.instructions
         inst_counter[] += 1
         _ws = wa.next_wire
@@ -1841,7 +1851,7 @@ callee's output — subsequent loads see the post-store state.
 MVP: ptr must resolve via ptr_provenance to a (4, 8) alloca. Store width must
 be 8. All other cases error loudly.
 """
-function lower_store!(ctx::LoweringCtx, inst::IRStore)
+function lower_store!(ctx::LoweringCtx, inst::IRStore, block_label::Symbol=Symbol(""))
     inst.ptr.kind == :ssa ||
         error("lower_store!: store to a constant pointer is not supported")
 
@@ -1856,7 +1866,7 @@ function lower_store!(ctx::LoweringCtx, inst::IRStore)
     strategy = _pick_alloca_strategy(info, idx_op)
 
     if strategy == :shadow
-        _lower_store_via_shadow!(ctx, inst, alloca_dest, info, idx_op)
+        _lower_store_via_shadow!(ctx, inst, alloca_dest, info, idx_op, block_label)
     elseif strategy == :mux_exch_2x8
         _lower_store_via_mux_2x8!(ctx, inst, alloca_dest, idx_op)
     elseif strategy == :mux_exch_4x8
@@ -1876,10 +1886,19 @@ function lower_store!(ctx::LoweringCtx, inst::IRStore)
 end
 
 # T3b.3 shadow-memory store: idx is compile-time constant, so we touch only
-# the W wires of the target slot directly. Zero Toffoli, 3W CNOT per store.
+# the W wires of the target slot directly.
+#
+# Gate cost depends on block_label:
+#   - Entry block (unconditional): 3W CNOT, 0 Toffoli — via emit_shadow_store!
+#   - Any other block: 3W Toffoli gated by block predicate — via
+#     emit_shadow_store_guarded!  (Bennett-cc0 M2c / Bennett-oio4)
+#
+# The entry-block fast path preserves all existing BENCHMARKS.md gate counts
+# while fixing the conditional-store semantic bug. Sentinel Symbol("") matches
+# no block → treats as entry (backward-compat for direct lower_store! callers).
 function _lower_store_via_shadow!(ctx::LoweringCtx, inst::IRStore,
                                   alloca_dest::Symbol, info::Tuple{Int,Int},
-                                  idx_op::IROperand)
+                                  idx_op::IROperand, block_label::Symbol=Symbol(""))
     elem_w, n = info
     inst.width == elem_w ||
         error("_lower_store_via_shadow!: store width=$(inst.width) doesn't match alloca elem_width=$elem_w")
@@ -1893,7 +1912,19 @@ function _lower_store_via_shadow!(ctx::LoweringCtx, inst::IRStore,
     primal_slot = arr_wires[idx_op.value * elem_w + 1 : (idx_op.value + 1) * elem_w]
     tape = allocate!(ctx.wa, elem_w)
     val_wires = resolve!(ctx.gates, ctx.wa, ctx.vw, inst.val, elem_w)
-    emit_shadow_store!(ctx.gates, ctx.wa, primal_slot, tape, val_wires, elem_w)
+
+    # M2c guard: store is unconditional iff we're in the entry block (or the
+    # sentinel Symbol("") signals "no gating info"). Otherwise gate on block
+    # predicate. Assumes single-wire predicates; multi-wire would need
+    # AND-reduction first (not currently produced by _compute_block_pred!).
+    if block_label == Symbol("") || block_label == ctx.entry_label
+        emit_shadow_store!(ctx.gates, ctx.wa, primal_slot, tape, val_wires, elem_w)
+    else
+        pred_wires = get(ctx.block_pred, block_label, Int[])
+        length(pred_wires) == 1 ||
+            error("_lower_store_via_shadow!: expected single-wire predicate for block $block_label, got $(length(pred_wires)) wires")
+        emit_shadow_store_guarded!(ctx.gates, ctx.wa, primal_slot, tape, val_wires, elem_w, pred_wires[1])
+    end
     return nothing
 end
 

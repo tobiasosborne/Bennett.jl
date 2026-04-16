@@ -1,8 +1,8 @@
 # Bennett.jl Work Log
 
-## NEXT AGENT — start here — 2026-04-16 (M1 + M2a landed, M2b next)
+## NEXT AGENT — start here — 2026-04-16 (M1 + M2a + M2c landed, M2b next)
 
-**Bennett-cc0 memory epic is underway. PRD landed, M1 + M2a landed.
+**Bennett-cc0 memory epic is underway. PRD + M1 + M2a + M2c landed.
 Next up: M2b — pointer-typed phi/select support per PRD §10 M2 /
 test_memory_corpus.jl L7c, L7d. Requires ir_extract.jl support for
 pointer-typed phi/select PLUS lowering. CORE CHANGE → 3+1 agents.**
@@ -17,16 +17,19 @@ pointer-typed phi/select PLUS lowering. CORE CHANGE → 3+1 agents.**
 - ✓ **M2a** — Bucket C1: cross-block ptr_provenance + alloca_info
   threading. `lower_block_insts!` no longer re-initialises per-block.
   L7a, L7b GREEN. Matches existing idiom (ssa_liveness, inst_counter,
-  gate_groups already per-function). Shadow 3W/W CNOT invariants and
-  all gate-count baselines unchanged.
+  gate_groups already per-function).
+- ✓ **M2c** — Bucket C3 shadow path: path-predicate guarding for
+  conditional shadow-stores (Bennett-oio4 closed). New
+  `emit_shadow_store_guarded!` (3W Toffoli per guarded store).
+  `_lower_store_via_shadow!` checks `block_label == ctx.entry_label`;
+  entry-block stores keep 3W CNOT path (baselines preserved). L7e GREEN.
 - ○ **M2b** — Bucket C2: pointer-typed phi/select support.
   L7c (phi ptr) and L7d (select ptr) currently crash at ir_extract.jl
   with "Unsupported LLVM type for width: LLVM.PointerType(ptr)".
   CORE CHANGE.
-- ○ **M2c** — Bucket C3: path-predicate guarding for conditional
-  stores (Bennett-oio4). Latent semantic bug exposed by M2a — stores
-  inside branches fire unconditionally. L7e marked @test_broken.
-  CORE CHANGE.
+- ○ **M2d** — Bucket C3 MUX path: conditional MUX-store guarding
+  (Bennett-i2a6). Same semantic bug as M2c but for dynamic-idx
+  stores. L7f marked @test_broken. CORE CHANGE.
 - ○ **M3** — Bucket B (partial): T4 shadow-checkpoint + re-exec.
 - ○ **M4** — BennettBench paper outline.
 - ⊘ **M1b** — Multi-word MUX EXCH for N·W > 64. Deferred.
@@ -419,6 +422,111 @@ N=2 loads all 1,472 gates (one ifelse selection, width-independent).
 
 1. See "Session log — 2026-04-16 — M2a" for completed work.
 2. Next: M2b (pointer-typed phi/select) — 3+1 agents.
+
+---
+
+## Session log — 2026-04-16 — M2c Bucket C3 shadow-store gating (Bennett-oio4)
+
+Fixes the latent bug M2a exposed: shadow stores inside conditional-branch
+blocks fired unconditionally on the reversible circuit, so simulate()
+returned wrong values on the inactive-branch path. 3+1 agent protocol
+invoked per CLAUDE.md §2 since this is a core `lower.jl` change.
+
+### 3+1 protocol outcome
+
+Spawned two proposers in parallel with divergent framing:
+
+- **Proposer A (correctness-first)**: `trivially_one_wires::Set{Int}`
+  on LoweringCtx tracks ALL wires known to hold 1. Predicate lookup
+  is a Set membership check. More general but over-specified for M2c.
+- **Proposer B (preserve baselines)**: `entry_label::Symbol` on
+  LoweringCtx. Stores in `block_label == ctx.entry_label` use ungated
+  path. Simpler, sufficient for the one currently-trivial predicate.
+
+Orchestrator chose B's approach (simpler, sufficient) but kept A's
+insight that "mutually-exclusive branch guards act as implicit
+alloca-phi for stores to the same slot" — documented in shadow_memory.jl
+docstring.
+
+### Implementation
+
+`src/shadow_memory.jl`:
+  - NEW `emit_shadow_store_guarded!(gates, wa, primal, tape, val, W, pred_wire)`
+  - 3W Toffoli per guarded store: `Toffoli(pred, ctrl, tgt)` replacing
+    each `CNOT(ctrl, tgt)` of the 3-pass XOR-swap pattern
+  - With pred=0 all Toffolis no-op; with pred=1 they collapse to
+    original CNOTs
+  - Bennett reverse on same pred wire unwinds symmetrically
+
+`src/lower.jl`:
+  - NEW `entry_label::Symbol` field on `LoweringCtx` (sentinel `Symbol("")`
+    means "treat all as entry" — backward-compat for direct callers)
+  - `lower_block_insts!` accepts `entry_label` kwarg, threads to ctx
+  - `lower()` passes `entry_label=order[1]` (first block = topological entry)
+  - `_lower_inst!(IRStore)` now forwards `block.label` to `lower_store!`
+  - `lower_store!` accepts optional `block_label::Symbol` positional
+  - `_lower_store_via_shadow!` accepts optional `block_label`; when
+    `block_label == ctx.entry_label` emits unguarded (3W CNOT), else
+    emits guarded (3W Toffoli)
+
+### Gate-count invariants preserved
+
+`BENCHMARKS.md` regenerated, all numbers byte-identical:
+  - i8 adder = 100 gates, 28 Toff
+  - i16 = 204, 60 Toff
+  - i32 = 412, 124 Toff
+  - i64 = 828, 252 Toff
+  - soft_fma = 447,728 gates
+  - soft_exp_julia = 3,485,262 gates
+  - Shadow store W=8 = 24 CNOT (0 Toffoli)
+  - All MUX EXCH variants unchanged
+
+Entry-block guard bypass is what preserves these: any existing test
+with stores in a single unconditional block (which is nearly all of
+them pre-M2a) still gets the zero-Toffoli shadow path.
+
+### Tests
+
+- **L7e** flipped `@test_broken` → `@test` + input sweep. Now verifies
+  `simulate(c, (x, true)) == x` AND `simulate(c, (x, false)) == 0`.
+- **L7f** NEW `@test_broken` pinning the still-unguarded MUX-store path.
+  Same pattern as L7e but with dynamic idx → dispatches to
+  `_lower_store_via_mux_4x8!` which doesn't yet gate. Documents the
+  gap; will flip to GREEN when Bennett-i2a6 (M2d) lands.
+- Full suite: `Testing Bennett tests passed`.
+
+### Gotchas learned
+
+- **`@test_broken` + fix = "errored" in test output**, not "failed".
+  When a `@test_broken` expression becomes truthy, Test.jl raises an
+  error ("Test broken was not broken"). This is the TDD signal to
+  flip to `@test`. Don't panic when the test summary shows "errored".
+
+- **Proposer overconfidence check**: A's `Set{Int}` over-generalised
+  for zero current benefit. B's `Symbol` just works. Pick the tighter
+  abstraction when both correctly handle the current problem.
+
+- **Correctness-preservation trick**: guarding via Toffoli means the
+  Bennett-reverse naturally unwinds both branches. `pred` is write-
+  once / read-only after block prologue, so the reverse pass sees
+  the same guard value. This is why the construction is safe even
+  though the reversible semantics look odd at first glance.
+
+### Filed for follow-up
+
+- **Bennett-i2a6** (M2d): MUX-store path-predicate guarding. Same
+  problem as M2c but for dynamic-idx stores. Designs noted in the
+  issue: (1) snapshot + MUX on predicate (~2NW extra Toffoli per
+  guarded store); (2) new `soft_mux_store_guarded_NxW` callees
+  (would perturb MUX EXCH baselines).
+
+### Next agent steps
+
+1. **M2b** — pointer-typed phi/select in ir_extract + lowering
+   (L7c, L7d). CORE CHANGE → 3+1 agents. Larger than M2c.
+2. **M2d** (Bennett-i2a6) — MUX-store guarding. CORE CHANGE → 3+1.
+3. **M3** — T4 shadow-checkpoint (original PRD plan). Depends on
+   M2c's path-predicate threading pattern (now available).
 
 ---
 
