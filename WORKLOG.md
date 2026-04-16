@@ -1,5 +1,92 @@
 # Bennett.jl Work Log
 
+## Reference note — 2026-04-16 — Simulator architecture (general)
+
+For future agents puzzled by what `simulate(circuit, x)` actually does: it
+is a **deliberately minimal classical bit-vector simulator**, not a quantum
+one. Total surface area is ~50 lines in `src/simulator.jl` plus the
+`verify_reversibility` helper in `src/diagnostics.jl`.
+
+### Core loop (`src/simulator.jl:14-35`)
+
+```julia
+function _simulate(circuit, inputs)
+    bits = zeros(Bool, circuit.n_wires)        # one Bool per wire
+    # load inputs into circuit.input_wires positions (LSB-first)
+    for gate in circuit.gates                  # sweep gates in order
+        apply!(bits, gate)
+    end
+    for w in circuit.ancilla_wires             # Bennett invariant safety net
+        bits[w] && error("Ancilla wire $w not zero — Bennett construction bug")
+    end
+    return _read_output(bits, circuit.output_wires, circuit.output_elem_widths)
+end
+```
+
+### Three gate kernels (`src/simulator.jl:1-3`)
+
+One-line bit-XORs — that is the entire ISA:
+
+```julia
+apply!(b, g::NOTGate)     = (b[g.target] ⊻= true)
+apply!(b, g::CNOTGate)    = (b[g.target] ⊻= b[g.control])
+apply!(b, g::ToffoliGate) = (b[g.target] ⊻= b[g.control1] & b[g.control2])
+```
+
+### Two layered safety checks
+
+1. **Per-call ancilla zero check** (`simulator.jl:30-32`) — after the gate
+   sweep, every wire in `circuit.ancilla_wires` must be 0 or we crash with
+   "Bennett construction bug". This is the on-the-fly check that catches
+   uncomputation failures during normal simulation.
+
+2. **`verify_reversibility(c; n_tests=100)`** (`diagnostics.jl:145`) — the
+   stronger guarantee. Runs forward then reverse (`Iterators.reverse(c.gates)`,
+   each gate is self-inverse) over `n_tests` random inputs and asserts that
+   *every wire* (not just ancillae) returns to its starting state. Catches
+   the failure mode where ancillae happen to return to 0 by coincidence on
+   the tested input but the circuit isn't actually reversible.
+
+### Output unpacking
+
+`_read_output` packs result bits back into native Julia ints via `_read_int`:
+single-element output → `Int8/16/32/64` (matched to width); multi-element
+output (insertvalue tuple return) → `Tuple{Int...}`. Return type is
+inherently unstable — depends on `circuit.output_elem_widths`.
+
+### Cost
+
+O(n_gates) per simulation call, each gate is a single Bool XOR. A 3M-gate
+circuit (e.g. `soft_exp2_fast`) simulates in ~1-3 seconds; a 5M-gate
+circuit (`soft_exp` bit-exact) in ~2-5 seconds. This is why per-input
+exhaustive-sweep tests on `Float64` end-to-end circuits cap at ~15-20
+inputs per testset — not a fundamental limit, just a CI-time tradeoff.
+
+### Why classical, not quantum?
+
+Bennett's theorem: a classically reversible circuit (correct on every
+basis state) is automatically quantum-reversible (correct on superpositions).
+So the classical simulator is sufficient to prove **construction
+correctness** — that the gate sequence implements `(x, 0) → (x, f(x))`
+with all ancillae back to zero on every classical input.
+
+What the classical simulator does *not* do: prove that the circuit gives
+the right answer when run on a superposition of inputs. That's
+**quantum-control validation**, which is Sturm.jl's domain — Bennett.jl
+just emits the gate-level reversible computation that Sturm.jl wraps in
+quantum control via `when(qubit) do f(x) end`.
+
+### Controlled circuits (`src/controlled.jl`)
+
+`controlled(c)` returns a `ControlledCircuit` wrapping every gate with a
+control: NOT→CNOT, CNOT→Toffoli, Toffoli→4-gate decomposition with a
+reusable ancilla (`promote_gate!`). The result has a fresh control wire
+and is simulated by the same loop after dispatching `apply!` on the
+promoted gate sequence. So the simulator surface area stays at three
+gate kernels even for controlled circuits.
+
+---
+
 ## Session log — 2026-04-16 — soft_exp / soft_exp2 bit-exact subnormal output via musl specialcase (Bennett-wigl)
 
 ### Garbage-bug post-mortem (CLAUDE.md principle 7: "bugs are deep and interlocked")
