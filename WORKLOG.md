@@ -1,11 +1,11 @@
 # Bennett.jl Work Log
 
-## NEXT AGENT — start here — 2026-04-16 (M1 landed, M2 next)
+## NEXT AGENT — start here — 2026-04-16 (M1 + M2a landed, M2b next)
 
-**Bennett-cc0 memory epic is underway. PRD landed (`Bennett-Memory-PRD.md`).
-M1 (Bucket A parametric MUX EXCH) LANDED. Next up: M2 — wire MemorySSA
-into `_pick_alloca_strategy` per PRD §10 M2 (Bucket C / dataflow gap).
-CORE CHANGE → requires 3+1 agents per CLAUDE.md §2.**
+**Bennett-cc0 memory epic is underway. PRD landed, M1 + M2a landed.
+Next up: M2b — pointer-typed phi/select support per PRD §10 M2 /
+test_memory_corpus.jl L7c, L7d. Requires ir_extract.jl support for
+pointer-typed phi/select PLUS lowering. CORE CHANGE → 3+1 agents.**
 
 ### Progress tracker
 
@@ -13,13 +13,23 @@ CORE CHANGE → requires 3+1 agents per CLAUDE.md §2.**
   3-bucket failure envelope, milestones M1-M4.
 - ✓ **M1** — Bucket A: parametric MUX EXCH for single-UInt64 shapes
   (N·W ≤ 64). Added (2,8), (2,16), (4,16), (2,32). Dispatcher extended.
-  RED tests L4/L5/L6 flipped to GREEN. Full test suite: `Testing Bennett
-  tests passed`. BENCHMARKS.md regenerated with new MUX EXCH table.
-- ○ **M2** — Bucket C: wire MemorySSA into dispatcher. CORE CHANGE.
-- ○ **M3** — Bucket B (partial): T4 shadow-checkpoint + re-exec. CORE CHANGE.
+  RED tests L4/L5/L6 flipped to GREEN.
+- ✓ **M2a** — Bucket C1: cross-block ptr_provenance + alloca_info
+  threading. `lower_block_insts!` no longer re-initialises per-block.
+  L7a, L7b GREEN. Matches existing idiom (ssa_liveness, inst_counter,
+  gate_groups already per-function). Shadow 3W/W CNOT invariants and
+  all gate-count baselines unchanged.
+- ○ **M2b** — Bucket C2: pointer-typed phi/select support.
+  L7c (phi ptr) and L7d (select ptr) currently crash at ir_extract.jl
+  with "Unsupported LLVM type for width: LLVM.PointerType(ptr)".
+  CORE CHANGE.
+- ○ **M2c** — Bucket C3: path-predicate guarding for conditional
+  stores (Bennett-oio4). Latent semantic bug exposed by M2a — stores
+  inside branches fire unconditionally. L7e marked @test_broken.
+  CORE CHANGE.
+- ○ **M3** — Bucket B (partial): T4 shadow-checkpoint + re-exec.
 - ○ **M4** — BennettBench paper outline.
-- ⊘ **M1b** — Multi-word MUX EXCH for N·W > 64. Deferred (no RED test
-  hits this except L10 which is a test-only stub).
+- ⊘ **M1b** — Multi-word MUX EXCH for N·W > 64. Deferred.
 
 ### Deferred (per PRD §5 non-goals)
 
@@ -405,20 +415,175 @@ N=2 loads all 1,472 gates (one ifelse selection, width-independent).
 - `benchmark/run_benchmarks.jl` — extended MUX EXCH imports + table
 - `BENCHMARKS.md` — regenerated
 
+### Next agent steps (superseded by M2a session below)
+
+1. See "Session log — 2026-04-16 — M2a" for completed work.
+2. Next: M2b (pointer-typed phi/select) — 3+1 agents.
+
+---
+
+## Session log — 2026-04-16 — M2a Bucket C1 cross-block ptr_provenance
+
+PRD §10 M2 was originally scoped as "wire MemorySSA into dispatcher".
+Deep research on the actual failure modes (L7, L8 in corpus) showed
+that M2's problem space is THREE distinct sub-issues, and MemSSA
+addresses only one of them. Split accordingly:
+
+  C1 = cross-block ptr_provenance state lifetime (THIS session, M2a)
+  C2 = pointer-typed phi/select (M2b, ir_extract.jl extension)
+  C3 = conditional-store path-predicate guarding (M2c, Bennett-oio4)
+
+### Research phase
+
+- Read `src/memssa.jl`, `docs/memory/memssa_investigation.md`,
+  `src/lower.jl` key functions. Findings:
+  - `MemSSAInfo` parses `print<memoryssa>` stderr output into def/use
+    graph. Fully built, NOT yet consumed by dispatcher.
+  - `ptr_provenance` is a local Dict in `LoweringCtx`. SHOULD be
+    per-function but actually per-block due to constructor pattern.
+
+- Classified the failing patterns by running each through the pipeline:
+
+  | Pattern | Error |
+  |---|---|
+  | Cross-block store through GEP | `no provenance for ptr %g0` at src/lower.jl:1820 |
+  | Branched stores to diff indices | same |
+  | Pointer-phi | `Unsupported LLVM type for width: LLVM.PointerType(ptr)` at ir_extract |
+  | Pointer-select | same |
+
+  The first two are state-lifetime bugs. The second two are
+  extractor-type-support gaps.
+
+### 3+1 agent protocol
+
+Spawned two independent proposers in parallel (via Agent tool):
+
+- **Proposer A (minimal-change, general-purpose)**: thread
+  `alloca_info` + `ptr_provenance` as kwargs through `lower_block_insts!`,
+  matching existing idiom for `ssa_liveness` / `inst_counter` /
+  `gate_groups`. ~15 line diff. Kept block-local `mux_counter`
+  (synthetic names already embed a globally-unique hint, no
+  collision risk).
+
+- **Proposer B (clean-refactor, general-purpose)**: split
+  `LoweringCtx` into `FunctionCtx` (per-compilation) + `LoweringCtx`
+  (per-block view) with property-forwarding via `Base.getproperty`.
+  Collapses 4 constructor overloads. ~80+ line diff. Also fixes
+  `mux_counter` lifetime (which B claimed was buggy; A's precise
+  analysis showed it was not).
+
+### Orchestrator decision
+
+Chose Proposer A. Rationale:
+
+1. B's claim that `mux_counter` is buggy is WRONG. Synthetic names
+   are `"op_hint_counter"` where `hint` is a globally-unique SSA
+   name — no collision. A correctly kept it block-local.
+2. CLAUDE.md §7 "bugs are deep and interlocked" favours minimal touch
+   on a bug that turns out (see below) to expose a DIFFERENT latent
+   bug. Smaller blast radius leaves room to debug.
+3. B's refactor is sound long-term; defer to a dedicated milestone
+   once a second memory field (e.g. T4 shadow checkpoint tape) wants
+   the same lifetime.
+
+### Implementation
+
+Applied A's fix in three edits to `src/lower.jl`:
+
+1. Line ~313 (in `lower()`): allocate `alloca_info` + `ptr_provenance`
+   Dicts once per compilation, next to `inst_counter`.
+2. Line ~387 (call site): pass as kwargs to `lower_block_insts!`.
+3. Line ~549 (signature) + ~558 (ctx construction): accept kwargs with
+   fresh-Dict defaults (backward-compat), forward to `LoweringCtx` via
+   the 17-arg struct constructor directly.
+
+### Unexpected finding: latent correctness bug surfaced (→ M2c)
+
+Post-fix, L7a-original-draft (branched store) compiled but simulated
+incorrectly. Trace:
+
+    L7a: if c then store x at slot 0; load slot 0 → returns 0 or x?
+    Expected: c=true → x, c=false → 0.
+    Actual:   c=true → x, c=false → x (wrong; store fires regardless).
+
+Root cause: `_lower_store_via_shadow!` and `_lower_store_via_mux_*!`
+both emit unconditional writes to the alloca's primal wires. No
+block-predicate guarding. `verify_reversibility` still passes because
+the Bennett reverse un-does the unconditional write, but semantics
+are wrong on the inactive-branch path.
+
+This latent bug was MASKED by the cross-block provenance bug (branched
+stores couldn't compile at all before M2a). M2a exposes it.
+
+### Test corpus reshuffle
+
+Split L7 into:
+
+- **L7a, L7b (GREEN, M2a)**: cross-block LOAD patterns (alloca+store
+  in `top`, load in branch). These exercise the state-lifetime fix
+  without touching conditional-store semantics.
+- **L7c, L7d (RED, M2b)**: pointer-typed phi/select; still crash at
+  ir_extract.
+- **L7e (@test_broken, M2c)**: conditional-store semantics. Verifies
+  reversibility AND c=true path, but marks c=false path broken until
+  path-predicate guarding lands.
+
+### Deliverable
+
+- `src/lower.jl`: ~15 lines changed. Three edits plus a docstring note.
+- `test/test_memory_corpus.jl`: L7a, L7b rewritten as GREEN cross-block
+  LOAD tests. L7e added as @test_broken for the deferred semantic issue.
+  L7c, L7d unchanged (still RED for M2b).
+- `WORKLOG.md`: this entry.
+- Filed Bennett-oio4 (M2c) for the deferred conditional-store fix.
+- `BENCHMARKS.md` regenerated: i8=100, i16=204, i32=412, i64=828;
+  soft_fma=447,728; soft_exp_julia=3,485,262; MUX EXCH table unchanged.
+- Full suite: `Testing Bennett tests passed`. Memory corpus: 489
+  pass + 1 broken (L7e, expected).
+
+### Gotchas learned (for future agents)
+
+- **Fresh `LoweringCtx` per block.** `lower_block_insts!` calls the
+  13-arg constructor which default-initialises memory fields. This
+  pattern was added incrementally as memory features shipped — the
+  intent was "per-function state" but the constructor never got
+  updated. Any future per-function field added to `LoweringCtx` will
+  hit the same bug unless the constructor-threading pattern is used.
+
+- **`verify_reversibility` is not a semantic check.** The Bennett
+  reverse construction can undo unconditional writes cleanly, so a
+  semantically-wrong circuit can still pass reversibility. Always
+  combine `verify_reversibility` with an input-sweep correctness check.
+
+- **Proposer overconfidence is a real risk in 3+1.** Proposer B's
+  claim about `mux_counter` was confidently stated and wrong. The
+  orchestrator has to independently verify, not just pick the
+  "better-looking" design.
+
+- **The PRD's M2 scope was too coarse.** "Wire MemSSA into
+  dispatcher" described one of three problems. Running each failing
+  pattern through the compiler first (10 minutes of work) exposed
+  the real structure. Future milestones should RED-test first even
+  when the PRD seems clear.
+
 ### Next agent steps
 
-1. Claim Bennett-cc0 (parent) or create Bennett-cc0-M2 sub-issue.
-2. Start M2 red test: L7 phi-merged pointer (already in corpus, RED).
-3. **CORE CHANGE → 3+1 AGENTS** per CLAUDE.md §2. Proposer A + Proposer
-   B independently design MemSSAInfo→dispatcher wiring; implementer +
-   orchestrator review.
-4. Specific design questions for proposers (PRD §10 M2):
-   - How is `MemSSAInfo` threaded into `LoweringCtx`?
-   - Fallback order (MemSSA → ptr_provenance → error)?
-   - How to handle phi-merged pointer defs?
-5. GREEN L7/L8, regression on gate-count baselines.
-6. Bonus if achievable: SHA-256 Toff count moves toward PRS15 43,712
-   (currently 135,584).
+1. **M2b** (pointer-typed phi/select support): extend `ir_extract.jl`
+   to accept pointer-typed phi/select; extend `ptr_provenance` to
+   handle multi-origin entries (or similar); extend dispatcher to
+   emit controlled-stores/loads to each possible underlying alloca.
+   CORE CHANGE → 3+1 agents.
+
+2. **M2c** (path-predicate guarding, Bennett-oio4): add `block_pred`
+   threading to store lowering. Shadow path loses its "0 Toffoli"
+   property inside branches (CNOT→Toffoli). MUX path needs
+   double-compute + MUX-on-predicate. CORE CHANGE → 3+1 agents.
+
+3. **M3** (T4 shadow-checkpoint, original PRD plan). Bigger than M2b
+   and M2c; depends on M2c's path-predicate threading.
+
+Order depends on what the user wants. I'd suggest M2b (largest
+coverage gain) then M2c (closes the last semantic gap before M3).
 
 ---
 

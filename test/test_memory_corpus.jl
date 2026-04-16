@@ -219,15 +219,113 @@ end
     end
 
     # ─────────────────────────────────────────────────────────────────────
-    # Bucket C — dataflow gap (phi-merged or aliased pointer).
-    # Current: store hard-errors at `src/lower.jl:1820` with
-    #   "lower_store!: no provenance for ptr %..; store must target an alloca or GEP thereof"
-    # M2 fix: wire MemSSAInfo into _pick_alloca_strategy.
+    # Bucket C — dataflow gap. Split into three sub-buckets after M2a:
+    #
+    #   C1 (M2a, GREEN): ptr_provenance state scoped per-function (not per-block).
+    #     Previously: lower_block_insts! at src/lower.jl:558 constructed a FRESH
+    #     LoweringCtx each block, so allocas in block N were invisible in block
+    #     N+1. Fix: thread alloca_info + ptr_provenance through as kwargs from
+    #     lower() — matches the existing pattern for ssa_liveness, inst_counter,
+    #     gate_groups. L7a and L7b below exercise this fix.
+    #
+    #   C2 (M2b, RED): pointer-typed phi/select not supported by ir_extract.jl.
+    #     Error: "Unsupported LLVM type for width: LLVM.PointerType(ptr)".
+    #     Affects SSA-level pointer merging (phi ptr, select ptr). L7c, L7d.
+    #
+    #   C3 (M2c, BROKEN): conditional-store semantics. A store inside a branch
+    #     block currently fires unconditionally — the alloca's primal wires are
+    #     mutated regardless of the block predicate. `verify_reversibility`
+    #     still passes (the Bennett reverse undoes the unconditional write) but
+    #     simulation returns the wrong value on the inactive-branch path.
+    #     L7e exercises this (marked @test_broken until fixed).
     # ─────────────────────────────────────────────────────────────────────
 
-    @testset "L7 — phi-merged pointer (RED, bucket C, M2 target)" begin
-        # Select between two allocas via branch+phi, then store.
-        # ptr_provenance can't track the merged SSA name.
+    @testset "L7a — alloca+store in top, load in L-branch (GREEN, C1, M2a)" begin
+        # Cross-block use of ptr_provenance: alloca + GEP + store happen in
+        # `top` (unconditional), load happens in the `L` branch. Before M2a
+        # this crashed in the load with "no provenance for ptr %g0" because
+        # L's fresh LoweringCtx had an empty ptr_provenance Dict.
+        ir = raw"""
+        define i8 @julia_f_1(i8 %x, i1 %c) {
+        top:
+          %p  = alloca i8, i32 4
+          %g0 = getelementptr i8, ptr %p, i32 0
+          store i8 %x, ptr %g0
+          br i1 %c, label %L, label %R
+        L:
+          %v = load i8, ptr %g0
+          ret i8 %v
+        R:
+          ret i8 0
+        }
+        """
+        c = _compile_ir(ir)
+        @test verify_reversibility(c)
+        for x in Int8(-8):Int8(1):Int8(8), b in (true, false)
+            @test simulate(c, (x, b)) == (b ? x : Int8(0))
+        end
+    end
+
+    @testset "L7b — alloca+GEPs in top, load from two branches (GREEN, C1, M2a)" begin
+        # Two GEP entries in `top`; each branch loads from a different slot.
+        # Exercises both %g0 and %g1 persisting across three blocks.
+        ir = raw"""
+        define i8 @julia_f_1(i8 %x, i8 %y, i1 %c) {
+        top:
+          %p  = alloca i8, i32 4
+          %g0 = getelementptr i8, ptr %p, i32 0
+          %g1 = getelementptr i8, ptr %p, i32 1
+          store i8 %x, ptr %g0
+          store i8 %y, ptr %g1
+          br i1 %c, label %L, label %R
+        L:
+          %vL = load i8, ptr %g0
+          ret i8 %vL
+        R:
+          %vR = load i8, ptr %g1
+          ret i8 %vR
+        }
+        """
+        c = _compile_ir(ir)
+        @test verify_reversibility(c)
+        for x in Int8(-4):Int8(2):Int8(4), y in Int8(-4):Int8(2):Int8(4), b in (true, false)
+            @test simulate(c, (x, y, b)) == (b ? x : y)
+        end
+    end
+
+    @testset "L7e — conditional store semantics (BROKEN, C3, M2c deferred)" begin
+        # Store is INSIDE a branch — expected to fire only when c=true. Currently
+        # the primal wires get mutated unconditionally (no block-predicate gating
+        # in _lower_store_via_shadow! or _lower_store_via_mux_*!). So when c=false,
+        # the load still sees the stored value instead of the initial 0.
+        # Marked broken until M2c lands path-predicate guarding for store ops.
+        ir = raw"""
+        define i8 @julia_f_1(i8 %x, i1 %c) {
+        top:
+          %p  = alloca i8, i32 4
+          %g0 = getelementptr i8, ptr %p, i32 0
+          br i1 %c, label %L, label %R
+        L:
+          store i8 %x, ptr %g0
+          br label %J
+        R:
+          br label %J
+        J:
+          %v = load i8, ptr %g0
+          ret i8 %v
+        }
+        """
+        c = _compile_ir(ir)
+        @test verify_reversibility(c)  # reversibility holds even with wrong semantics
+        # Broken: expected 0 on c=false path, currently returns x.
+        @test_broken simulate(c, (Int8(5), false)) == Int8(0)
+        # The c=true path is correct today.
+        @test simulate(c, (Int8(5), true)) == Int8(5)
+    end
+
+    @testset "L7c — pointer-typed phi (RED, C2, M2b target)" begin
+        # Different allocas selected by branch + phi — needs ir_extract.jl to
+        # accept pointer-typed phi values, THEN lowering/MemSSA to disambiguate.
         ir = raw"""
         define i8 @julia_f_1(i8 %x, i1 %c) {
         top:
@@ -248,9 +346,26 @@ end
         @test_throws Exception _compile_ir(ir)
     end
 
-    @testset "L8 — aliased pointer via copy (RED, bucket C, M2 target)" begin
-        # Two SSA names for the same alloca. Lowering tracks %a's provenance
-        # but not %b's copy, so the store via %b has no entry.
+    @testset "L7d — pointer-select (RED, C2, M2b target)" begin
+        # Same structural issue as L7c but via `select ptr` in a single block.
+        ir = raw"""
+        define i8 @julia_f_1(i8 %x, i1 %c) {
+        top:
+          %a = alloca i8, i32 4
+          %b = alloca i8, i32 4
+          %p = select i1 %c, ptr %a, ptr %b
+          store i8 %x, ptr %p
+          %v = load i8, ptr %p
+          ret i8 %v
+        }
+        """
+        @test_throws Exception _compile_ir(ir)
+    end
+
+    @testset "L8 — GEP-offset-0 alias (baseline GREEN)" begin
+        # NOT actually a bucket-C case: lower_ptr_offset! propagates provenance
+        # through const-offset GEPs including offset=0, so this compiles today.
+        # Kept as a regression pin for the propagation path.
         ir = raw"""
         define i8 @julia_f_1(i8 %x) {
         top:
@@ -261,15 +376,11 @@ end
           ret i8 %v
         }
         """
-        # NOTE: this *might* actually compile today because %b has const-offset 0
-        # provenance. The true bucket-C pattern needs a phi or an aliased-via-call
-        # pointer; test this assertion and refine if needed during M2 RED phase.
-        c = try
-            _compile_ir(ir)
-        catch e
-            e
+        c = _compile_ir(ir)
+        @test verify_reversibility(c)
+        for x in Int8(-16):Int8(4):Int8(16)
+            @test simulate(c, x) == x
         end
-        @test c isa Exception || c isa Bennett.ReversibleCircuit
     end
 
     # ─────────────────────────────────────────────────────────────────────

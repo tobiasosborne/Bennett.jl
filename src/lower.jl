@@ -312,6 +312,13 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
     ssa_liveness = use_inplace ? compute_ssa_liveness(parsed) : Dict{Symbol,Int}()
     inst_counter = Ref(0)
 
+    # T3b.3 / Bennett-cc0 M2a: ptr_provenance + alloca_info are per-function state,
+    # threaded into lower_block_insts! so allocas defined in one block are visible
+    # to stores/loads in later blocks. Previously these were re-initialised per
+    # block (bug), which hard-errored on branched stores — see L7a/L7b tests.
+    alloca_info = Dict{Symbol, Tuple{Int,Int}}()
+    ptr_provenance = Dict{Symbol, Tuple{Symbol,IROperand}}()
+
     for (name, width) in parsed.args
         wires = allocate!(wa, width)
         vw[name] = wires
@@ -386,7 +393,8 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
         else
             lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_order;
                                block_pred, ssa_liveness, inst_counter, gate_groups,
-                               use_karatsuba, compact_calls, globals=parsed.globals, add, mul)
+                               use_karatsuba, compact_calls, globals=parsed.globals, add, mul,
+                               alloca_info, ptr_provenance)
         end
 
         # Process terminator (for non-loop blocks AND after loop unrolling)
@@ -554,9 +562,17 @@ function lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_orde
                            use_karatsuba::Bool=false,
                            compact_calls::Bool=false,
                            globals::Dict{Symbol,Tuple{Vector{UInt64},Int}}=Dict{Symbol,Tuple{Vector{UInt64},Int}}(),
-                           add::Symbol=:auto, mul::Symbol=:auto)
+                           add::Symbol=:auto, mul::Symbol=:auto,
+                           # Bennett-cc0 M2a: caller-owned per-function memory state.
+                           # Defaults to fresh dicts for backward-compat with direct callers.
+                           # mux_counter stays block-local — synthetic SSA names embed the
+                           # globally-unique hint (inst.dest / inst.ptr.name) so cross-block
+                           # counter reset doesn't collide.
+                           alloca_info::Dict{Symbol,Tuple{Int,Int}}=Dict{Symbol,Tuple{Int,Int}}(),
+                           ptr_provenance::Dict{Symbol,Tuple{Symbol,IROperand}}=Dict{Symbol,Tuple{Symbol,IROperand}}())
     ctx = LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
                       block_pred, ssa_liveness, inst_counter, use_karatsuba, compact_calls,
+                      alloca_info, ptr_provenance, Ref(0),
                       globals, add, mul)
     for inst in block.instructions
         inst_counter[] += 1
