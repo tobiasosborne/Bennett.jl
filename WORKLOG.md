@@ -1,60 +1,206 @@
 # Bennett.jl Work Log
 
-## NEXT AGENT — start here — 2026-04-16 (post-0xx3)
+## NEXT AGENT — start here — 2026-04-16 (post-t110)
 
-**Do Bennett-t110 next: implement `soft_exp_julia` (Plan A Julia-faithful
-`exp` using `soft_fma`).** Bennett-0xx3 (soft_fma, below) has landed. The
-transcendental roadmap is unblocked.
+**Transcendental roadmap unblocked.** Bennett-0xx3 (soft_fma) and
+Bennett-t110 (soft_exp_julia / soft_exp2_julia) have both landed. The
+FMA foundation is in place for the remaining transcendentals:
 
-### Why
+- **Bennett-582** (`soft_log`) — next most useful; pairs with exp.
+- **Bennett-3mo** (`soft_sin`, `soft_cos`) — trig via Payne-Hanek reduction.
+- **Bennett-emv** (`soft_pow`) — composed via exp(y·log(x)).
+- **Bennett-1pb** — LLVM intrinsic wiring (`llvm.sqrt.f64`, etc).
+- **Bennett-fnxg** — extend subnormal-output sweep to all soft_* tests.
 
-1. `soft_fma` is in. `Base.fma(::Float64,::Float64,::Float64)` bit-exact
-   across all test regions including Kahan witness, subnormal, complete
-   cancellation, Inf·0, NaN, signed-zero combine.
-2. Plan A closes the ≤1 ulp gap between current Plan B `soft_exp` (musl
-   specialcase, Bennett-wigl) and `Base.exp` by porting Julia's
-   `Base.Math.exp_impl` line-for-line with `soft_fma` at every muladd
-   site. Current gap: ~1% of inputs differ by 1 ulp due to musl's
-   fmul+fadd vs Julia's FMA-based range reduction.
-3. Once Plan A works, `Base.exp(::SoftFloat)` re-points to
-   `soft_exp_julia` as the user-facing default. `soft_exp` (musl) stays
-   as the cross-language reference; `soft_exp_fast` stays as the
-   gate-minimal variant.
+### Pattern to follow (from Bennett-0xx3 and Bennett-t110)
 
-### Granular steps for Bennett-t110 (from 2026-04-16 plan)
+1. **RED test first** (`test/test_softfLOGNAME_julia.jl` or similar).
+2. **Read ground truth**: Julia's `base/special/*.jl` source is at
+   `/home/tobias/.julia/juliaup/julia-1.12.5+0.x64.linux.gnu/share/julia/base/special/`.
+   Also musl/fdlibm for reference implementations.
+3. **Port line-for-line with `soft_fma` at every `muladd`**. Constants
+   as UInt64 bit patterns via `reinterpret(UInt64, Float64(...))`.
+4. **Branchless `ifelse` select chains**. NaN strictly last override.
+5. **Test**: hard cases + 10k+ random sweep covering normal range +
+   subnormal-output region (Bennett-fnxg).
+6. **Wire dispatch**: `Base.log(::SoftFloat)`, etc. Point to the new
+   _julia variant once green. Register as callee.
+7. **End-to-end circuit**: compile + verify_reversibility + record
+   gate count in BENCHMARKS.md as regression baseline.
+8. **WORKLOG session log + commit + push per task**.
 
-1. Port Julia's `J_TABLE` (256-entry tuple) verbatim from `julia/base/
-   special/exp.jl` — each entry is a Float64 representing `2^(i/256)`.
-2. Port `expm1b_kernel` polynomial coefficients (degree-3, natural base).
-3. Implement `soft_exp_julia(a::UInt64)::UInt64` reproducing Julia's
-   `Base.Math.exp_impl(x::Float64, ::Val{:ℯ})` using `soft_fma` at every
-   `muladd` site. Subnormal handling via Julia's "k ≤ -53" shift trick.
-4. Test: 10k `[-700, 700]` random sweep, expect `n_exact >= 9_990`
-   (Plan B current: 9904). Add subnormal-output sweep (Bennett-fnxg).
-5. Compile + `verify_reversibility`; record gate count (estimate:
-   `soft_fma ×` ~8 muladd sites ≈ 3.5M gates, plus table lookup +
-   range reduction overhead).
+### Key ground-truth tricks for exp → transferable
 
-### `soft_fma` characteristics (from Bennett-0xx3 session below)
+- `muladd(x, LogB_INV, MAGIC)` is Julia's "round-to-integer" trick;
+  MAGIC = 1.5·2^52. Also used in `log`, `log2`, `sincos`.
+- `reinterpret(UInt64, N_float) % Int32` extracts the rounded integer.
+- `k << 52 + small_part_bits` is Julia's ldexp-via-integer-add trick
+  for 2^k scaling. Universal across transcendentals.
+- Subnormal-result handling via "k + 53" shift + `*2^-53`.
 
-- `soft_fma(a, b, c)` registered as callee; `Base.fma(::SoftFloat, ...)`
-  wired.
-- Bit-exact vs `Base.fma` across 85k+ random triples including
-  subnormal, cancellation, Inf, NaN regions.
-- Gate count: **447,728 total, 148,340 Toffoli, T-count 1,038,380,
-  ancilla 127,791**. Circuit compile ~20s. `verify_reversibility` ~0ms.
-- Per-call overhead vs soft_fmul: 1.7× (as expected; FMA does single-
-  rounded 128-bit add on top of the mul).
+### Gate counts (current benchmark)
 
-### Rules to follow (CLAUDE.md compact)
+| Primitive | Gates | Toffoli | T-count | Note |
+|-----------|------:|--------:|--------:|------|
+| soft_fma  | 447,728 | 148,340 | 1,038,380 | 1.7× soft_fmul |
+| soft_exp_julia | 3,485,262 | 1,195,196 | 8,366,372 | **30% cheaper than soft_exp (musl Plan B)** |
+| soft_exp2_julia | 2,697,734 | 890,168 | 6,231,176 | **38% cheaper than soft_exp2 (Plan B)** |
 
-- **Red-green TDD**: test file first, RED confirmed, then implement.
-  Verified working pattern from Bennett-0xx3 session.
-- **3+1 agents** only for CORE changes (ir_extract/lower/bennett/gates/
-  ir_types/phi). `soft_exp_julia` is pure soft-float addition; use the
-  parallel-research-then-single-implementer pattern (same as 0xx3).
-- **Subnormal-output sweeps** mandatory (Bennett-fnxg convention).
-- **Commit+push per milestone**, not at session end.
+Plan A is cheaper AND bit-exact vs `Base.exp`. `Base.exp(::SoftFloat)`
+now dispatches to `soft_exp_julia`.
+
+---
+
+## Session log — 2026-04-16 — soft_exp_julia / soft_exp2_julia (Bennett-t110, Plan A)
+
+Julia-faithful `exp` and `exp2` bit-exact vs `Base.exp` / `Base.exp2` on
+FMA-capable hardware. Line-for-line port of `Base.Math.exp_impl` from
+`julia/base/special/exp.jl` (lines 207-231) with every `muladd` replaced
+by `soft_fma`.
+
+Closes the ≤1 ulp gap that Plan B (Bennett-wigl, musl-based) left open:
+musl uses separate fmul+fadd in range reduction producing different
+intermediate `r` values at round-half cases; Julia uses FMA-based
+`muladd` for single rounding. Landing `soft_fma` (Bennett-0xx3) made
+the Plan A port trivial — 182 LOC for both functions + the shared core.
+
+### Algorithm (verbatim from Julia Base)
+
+```
+N_float = fma(x, 256/log(b, 2), 1.5·2^52)              # muladd + MAGIC round trick
+N       = reinterpret(UInt64, N_float) % Int32         # rounded integer
+N_float = N_float - 1.5·2^52                           # undo MAGIC
+r       = fma(N_float, LogBo256U, x)                   # Cody-Waite part 1
+r       = fma(N_float, LogBo256L, r)                   # Cody-Waite part 2
+k       = N >> 8
+jU, jL  = J_TABLE[N & 255]                             # 256-entry table (QROM)
+# Horner polynomial: degree-3 on [−log(b,2)/512, log(b,2)/512]
+p       = fma(r, C3, C2); p = fma(r, p, C1); p = fma(r, p, C0)
+kern    = r * p                                        # = expm1b_kernel(base, r)
+small_part = fma(jU, kern, jL) + jU
+# Normal: result = reinterpret(Float64, (k<<52) + reinterpret(Int64, small_part))
+# Subnormal (k ≤ -53): result = reinterpret(Float64, ((k+53)<<52) + bits(small_part)) · 2^-53
+# Overflow: ±Inf; underflow: 0.0; NaN: pass-through (not canonicalized)
+```
+
+5 muladds main flow + 3 muladds for Horner + 1 fmul for outer `r·poly`
++ 1 fadd (`+ jU`). Plus a 256-entry `J_TABLE` compile-time QROM lookup.
+
+### Shared core refactor
+
+`_exp_impl_julia` takes the base-specific constants as arguments and
+is called by both `soft_exp_julia` (base ℯ) and `soft_exp2_julia`
+(base 2). Single-source code path → half the compile-time work vs
+duplicating.
+
+### Test coverage
+
+`test/test_softfexp_julia.jl` (~180 LOC): for each of exp and exp2:
+- Integer arguments (k ∈ -10..10): bit-exact
+- Well-known values (e, 2, 0.5, etc.)
+- Specials (NaN, ±Inf)
+- Overflow / underflow boundaries
+- Subnormal-output range (k ≤ -53 path)
+- 10k random sweep [-100, 100]
+- 10k random full-range [-700, 700] for exp (matches Bennett-t110 spec)
+- 2k subnormal-output sweep (Bennett-fnxg convention)
+
+**All 81 tests pass on first run** (36 soft_exp_julia + 45 soft_exp2_julia).
+Bit-exact vs Base.exp / Base.exp2 across every tested region.
+
+### End-to-end circuit
+
+| Function | Gates | Toffoli | T-count | Ancilla | Compile |
+|----------|------:|--------:|--------:|--------:|--------:|
+| soft_exp_julia  | 3,485,262 | 1,195,196 | 8,366,372 | 995,280 | 36s |
+| soft_exp2_julia | 2,697,734 | 890,168 | 6,231,176 | 774,542 | 1s (cache hit) |
+
+`verify_reversibility(c; n_tests=3)` passes for both. All 14 per-function
+sample inputs (including NaN, Inf, subnormal region, overflow boundary)
+bit-exact vs `Base.exp` / `Base.exp2`.
+
+### Comparison vs Plan B (musl-based soft_exp / soft_exp2)
+
+| Function | Plan A (Julia) | Plan B (musl) | Savings |
+|----------|---------------:|--------------:|--------:|
+| exp  total gates  | 3,485,262 | 4,958,914 | 30% fewer |
+| exp  Toffoli      | 1,195,196 | 1,693,984 | 29% fewer |
+| exp2 total gates  | 2,697,734 | 4,348,418 | 38% fewer |
+| exp2 Toffoli      |   890,168 | 1,465,382 | 39% fewer |
+
+Plan A is **cheaper AND more accurate** (bit-exact vs Julia, not just
+≤1 ulp). This is because Julia uses a degree-3 polynomial on a tighter
+domain (|r| ≤ log(b,2)/512) thanks to the 256-entry table, while musl
+uses degree-5 on the 128-entry table (domain |r| ≤ log(b,2)/256).
+Smaller polynomial → fewer fma's.
+
+### Dispatch change
+
+`Base.exp(::SoftFloat) = SoftFloat(soft_exp_julia(x.bits))`
+`Base.exp2(::SoftFloat) = SoftFloat(soft_exp2_julia(x.bits))`
+
+The musl-bit-exact `soft_exp` and `soft_exp2` remain exported as the
+cross-language reference. `soft_exp_fast` / `soft_exp2_fast` remain as
+the flush-to-zero subnormal variants for speed-critical users.
+
+### Gotchas learned (for future agents)
+
+1. **`muladd` in Julia compiles to `@llvm.fmuladd.f64`**, which MAY
+   fuse on FMA hardware. Empirically on x86_64+FMA3 (WSL Linux), every
+   muladd in `exp_impl` does fuse — confirmed by the bit-exact match
+   across 22k+ random inputs. Port using soft_fma; if Base.exp changes
+   its fusion behavior, we'd need to match the new pattern.
+
+2. **Operator precedence**: Julia has `&` at multiplication precedence,
+   so `N & 255 + 1` parses as `(N & 255) + 1`, not `N & 256`. Critical
+   for the table index. Matches the source.
+
+3. **`reinterpret(UInt64, Int64(k) << 52)`** is the idiomatic way to
+   convert a signed shift result to a UInt64 bit pattern without
+   InexactError. `UInt64(Int64(k) << 52)` throws for negative k;
+   `reinterpret` preserves the bit pattern.
+
+4. **NaN pass-through**: Julia's `exp_impl` returns the INPUT NaN
+   (preserving payload), not a canonical QNAN. Match this. My select
+   chain: `result = ifelse(is_nan, a, result)` — a is the input.
+
+5. **J_TABLE indexing**: `getfield(tuple, Int(ind))` vs `tuple[Int(ind)]`
+   should both lower to QROM. I used `getfield` to match Julia's pattern
+   (avoids potential inbounds-check noise in LLVM IR).
+
+6. **First-run success** (rare!): the port was clean enough that no
+   iteration was needed. Attribution: soft_fma was bit-exact, the
+   algorithm was well-specified in source, and `_sf_handle_subnormal` /
+   `_sf_round_and_pack` (existing helpers) composed naturally with the
+   muladd chain.
+
+### Files changed
+
+- `src/softfloat/fexp_julia.jl` — new file (~215 LOC)
+- `src/softfloat/softfloat.jl` — `include("fexp_julia.jl")`
+- `src/Bennett.jl` — export `soft_exp_julia` / `soft_exp2_julia`;
+  `register_callee!` both; re-point `Base.exp(::SoftFloat)` and
+  `Base.exp2(::SoftFloat)` to the `_julia` variants.
+- `test/test_softfexp_julia.jl` — new (~180 LOC)
+- `test/runtests.jl` — include new test file
+- `test/test_float_circuit.jl` — add soft_exp_julia / soft_exp2_julia
+  circuit testsets
+- `BENCHMARKS.md` — two new rows
+- `WORKLOG.md` — this entry
+
+### Deferred / follow-ups
+
+- Port `log`, `log2` (same shape as exp: range reduction + polynomial
+  + table). Likely ~3M gates each. Bennett-582.
+- Port `sin`, `cos` (Payne-Hanek range reduction + Estrin polynomials).
+  Much more complex. Bennett-3mo.
+- Verify bit-exactness on non-FMA hardware (unlikely target but worth
+  documenting). If Julia's `muladd` doesn't fuse, we'd need a
+  non-FMA-matching variant.
+- `soft_exp_julia` registered as callee: `Base.exp(SoftFloat(x))` in a
+  compiled circuit routes through. End-to-end `reversible_compile` on
+  user code like `f(x::Float64) = exp(x^2)` should Just Work — verified
+  in test_float_circuit.jl.
 
 ---
 

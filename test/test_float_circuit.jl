@@ -366,5 +366,59 @@ using Random
             @test verify_reversibility(c)
             println("  soft_fma circuit: ", gate_count(c))
         end
+
+        @testset "soft_exp_julia circuit (bit-exact vs Base.exp)" begin
+            c = reversible_compile(Bennett.soft_exp_julia, UInt64)
+
+            function check(a::Float64)
+                bits = reinterpret(UInt64, a)
+                result = reinterpret(UInt64, Int64(simulate(c, bits)))
+                expected = reinterpret(UInt64, Base.exp(a))
+                if isnan(Base.exp(a))
+                    @test isnan(reinterpret(Float64, result))
+                else
+                    @test result == expected
+                end
+            end
+
+            check(0.0); check(1.0); check(2.0); check(-1.0); check(0.5)
+            check(-10.0); check(100.0)
+            # Subnormal output region
+            check(-710.0); check(-720.0); check(-730.0); check(-745.0)
+            # Boundaries
+            check(709.0); check(710.0); check(-1000.0)
+            # Specials
+            check(Inf); check(-Inf); check(NaN)
+
+            @test verify_reversibility(c)
+            println("  soft_exp_julia circuit: ", gate_count(c))
+        end
+
+        @testset "soft_exp2_julia circuit (bit-exact vs Base.exp2)" begin
+            c = reversible_compile(Bennett.soft_exp2_julia, UInt64)
+
+            function check(a::Float64)
+                bits = reinterpret(UInt64, a)
+                result = reinterpret(UInt64, Int64(simulate(c, bits)))
+                expected = reinterpret(UInt64, Base.exp2(a))
+                if isnan(Base.exp2(a))
+                    @test isnan(reinterpret(Float64, result))
+                else
+                    @test result == expected
+                end
+            end
+
+            check(0.0); check(1.0); check(2.0); check(-1.0); check(0.5)
+            check(-10.0); check(100.0)
+            # Subnormal output
+            check(-1022.5); check(-1050.0); check(-1074.0)
+            # Boundaries
+            check(1023.0); check(1024.0); check(-1076.0)
+            # Specials
+            check(Inf); check(-Inf); check(NaN)
+
+            @test verify_reversibility(c)
+            println("  soft_exp2_julia circuit: ", gate_count(c))
+        end
     end
 end
