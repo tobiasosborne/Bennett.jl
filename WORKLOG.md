@@ -1,5 +1,160 @@
 # Bennett.jl Work Log
 
+## NEXT AGENT — start here — 2026-04-16
+
+**Do Bennett-0xx3 next: implement `soft_fma` (IEEE 754 binary64 fused
+multiply-add).** This is the user's explicitly queued next track and the
+gating prerequisite for Bennett-t110 (Plan A: Julia-faithful soft_exp).
+
+### Why
+
+1. **User direction (this session)**: "we will ALSO do plan a, later, once
+   we have implemented fma in bennett.jl". soft_fma is the prerequisite.
+2. **Foundational leverage**: every future Tang-style transcendental
+   (log, sin, cos, pow, atan, sinh, tanh) uses Julia-style `muladd`-based
+   polynomial evaluation. Land soft_fma once → bit-exactness vs `Base.<op>`
+   unlocks for the entire transcendental roadmap (Bennett-582, -3mo, -emv,
+   -1pb).
+3. **Closes the ≤1 ulp gap** that Plan B left vs `Base.exp` (~1% of
+   inputs differ from Julia by 1 ulp because musl uses separate fmul+fadd
+   in range reduction; Julia uses FMA-based muladd → single rounding).
+
+### What
+
+`soft_fma(a::UInt64, b::UInt64, c::UInt64) -> UInt64` — IEEE 754
+single-rounding fused multiply-add on raw bit patterns. Branchless integer
+arithmetic. Bit-exact vs `Base.fma(::Float64, ::Float64, ::Float64)`.
+
+**NOT the same as `soft_fadd(soft_fmul(a, b), c)`** — soft_fma rounds once;
+the composed form rounds twice. The single rounding step is what makes
+Julia's exp_impl match the hardware FMA path.
+
+### Granular steps (from this session's plan)
+
+**A0. Three-agent algorithm consensus** (per established pattern, see
+2026-04-15 fsqrt and 2026-04-16 exp sessions).
+
+Dispatch three parallel deep-research subagents:
+- **Software**: survey libm FMA implementations — fdlibm `s_fma.c`,
+  Berkeley SoftFloat 3 `f64_mulAdd.c` (this DOES exist — Hauser ships
+  fma even though he skips exp), GCC libgcc soft-fp `op-2.h`. Recommend
+  ONE concrete algorithm with constants.
+- **Reversible cost**: score candidate algorithms by reversible-circuit
+  gates. Reuse soft_fmul's existing 53×53 → 106-bit product machinery if
+  exposed, OR re-implement. Estimate gate count (likely 300-400k per call).
+- **Quantum literature**: search for prior reversible FMA. Häner 2018
+  arXiv:1807.02023 covers FP add/mul but NOT fma — likely a literature
+  first too.
+
+**A0a. Implement** `src/softfloat/fma.jl` (~250-300 LOC):
+- Compute exact 53×53 → 106-bit product `(p_hi, p_lo)` using existing
+  internal helpers from `soft_fmul` (look in `src/softfloat/fmul.jl` for
+  the 106-bit assembly via UInt64 hi/lo pairs — already there for product
+  generation, just expose / reuse it).
+- Align `c` to the 106-bit product's exponent (shift c's mantissa to the
+  right position; handle the case where c's exponent dominates differently
+  from where p_hi's does).
+- Three-way add `p_hi + p_lo + c_aligned` with extended precision (Knuth
+  2sum or musl-style `eval_as_double`-equivalent).
+- Single rounding via `_sf_round_and_pack` (already in
+  `src/softfloat/softfloat_common.jl`).
+- Special cases: NaN, ±Inf, ±0, subnormal a/b/c, subnormal output,
+  mixed-sign cancellation (a·b - |c| where the magnitudes nearly cancel).
+  Mixed-sign cancellation is the trickiest — needs careful handling of
+  the 106-bit subtraction and possible massive cancellation requiring
+  re-normalization.
+
+**A0b. Tests** — `test/test_softffma.jl` (new):
+- Bit-exact vs `Base.fma(::Float64, ::Float64, ::Float64)` across a 200k
+  random sweep (uniform raw UInt64 triples covering all subnormal /
+  Inf / NaN / mixed-sign regions per the Bennett-fnxg test convention).
+- Specific edge cases: a·b + 0 == soft_fmul(a,b); 1.0·b + c == b + c;
+  cancellation cases like fma(a, b, -a*b) → 0 (or near-zero with single
+  rounding).
+- The musl-vs-Julia divergence on 1% of soft_exp inputs is the **acceptance
+  criterion**: after soft_fma lands and Bennett-t110 reroutes, the
+  `FULL-RANGE BIT-EXACT random sweep` testset in `test/test_softfexp.jl`
+  should hit `n_exact >= 9_990` (vs current 9904).
+- End-to-end circuit compile + simulate + reversibility in
+  `test/test_float_circuit.jl` — soft_fma directly compilable (no loop,
+  no kwarg needed). Estimated ~200-400k gates per call.
+
+**A0c. Wire dispatch**:
+- `src/Bennett.jl`: export `soft_fma`, `register_callee!(soft_fma)`,
+  `Base.fma(a::SoftFloat, b::SoftFloat, c::SoftFloat) =
+   SoftFloat(soft_fma(a.bits, b.bits, c.bits))`.
+- Existing soft_* functions don't change — soft_fma is purely additive.
+
+### After soft_fma lands
+
+Bennett-t110 unblocks. Granular steps for that are written into the issue
+description (`bd show Bennett-t110`); briefly:
+1. Port Julia's J_TABLE (256-entry tuple) verbatim from
+   `Base.Math` source (path: `julia/base/special/exp.jl`).
+2. Port `expm1b_kernel` polynomial coefficients (degree-3, natural base).
+3. Implement `soft_exp_julia(a)` reproducing Julia's `exp_impl(x, base)`
+   line-for-line, using soft_fma at every muladd site.
+4. Subnormal handling via Julia's "k ≤ -53" shift trick (simpler than
+   musl's specialcase — just `twopk = (k+53) << 52; result *= 2^-53`).
+5. Re-point `Base.exp(::SoftFloat)` to `soft_exp_julia`. Keep `soft_exp`
+   (musl) as cross-language reference.
+
+### Rules to follow (from CLAUDE.md, compact)
+
+- **Red-green TDD**: write failing test first, watch it fail, implement,
+  green. The post-Bennett-cel garbage bug exists in WORKLOG history because
+  the random sweep was [-50, 50] only. Per Bennett-fnxg: ALL transcendental
+  tests must include subnormal-output sweep; same convention applies to
+  soft_fma — sweep must cover the subnormal-input AND subnormal-output
+  regions, AND the cancellation regions.
+- **3+1 agents** for core changes (`ir_extract.jl`, `lower.jl`,
+  `bennett.jl`, `gates.jl`, `ir_types.jl`, phi resolution). soft_fma is
+  additive in `src/softfloat/` — NOT a core change. Established pattern
+  for soft-float additions: parallel deep-research subagents for algorithm
+  consensus, then single implementer. (See 2026-04-15 fsqrt session, 2026-
+  04-16 exp session.)
+- **Fail fast, fail loud**: `error()` for unhandled cases, never silent
+  `nothing`.
+- **Soft-float MUST be bit-exact** vs Julia native (CLAUDE.md §13).
+- **`@inline`** on every soft_* function (deep dispatch chain inlining
+  — v0.6 soft_fdiv bug class).
+- **Branchless `ifelse` chains** over UInt64; truncate via `% UIntN` to
+  avoid `InexactError` on shadow paths.
+- **No UInt128** (emits `__udivti3` non-callee). Use `(hi, lo)` UInt64
+  pairs for >64-bit intermediate arithmetic.
+- **Get feedback fast**: run tests every ~50 lines.
+- **Ground truth before code**: read fdlibm `s_fma.c` and Berkeley
+  SoftFloat 3 `f64_mulAdd.c` BEFORE designing the algorithm. No
+  hallucinated bit-twiddling.
+- **Commit + push per task**, not at session end. Session not done until
+  `git push` succeeds (`git pull --rebase && bd dolt push && git push`).
+
+### Existing pattern to copy
+
+The 2026-04-16 Bennett-cel session log immediately below shows the full
+pattern: parallel research agents → consensus → RED test → implementation
+→ bit-level test → end-to-end circuit test → WORKLOG → commit → push.
+Bennett-wigl (next entry below this) shows what to do when the first
+implementation is incomplete (specialcase addition + _fast variants).
+
+Mirror this workflow.
+
+### Closing notes
+
+- After soft_fma + Bennett-t110 land, the transcendental roadmap unblocks:
+  Bennett-582 (log) → Bennett-3mo (sin/cos) → Bennett-emv (pow) →
+  Bennett-1pb (sqrt/pow/exp/log intrinsic wiring).
+- `Base.exp(::SoftFloat)` will switch to soft_exp_julia (Julia-faithful)
+  as the user-facing default. soft_exp (musl) stays as a separately-named
+  cross-language reference. soft_exp_fast stays as the speed-optimal
+  variant for users who don't need subnormal exactness.
+- Don't forget Bennett-fnxg as a parallel hygiene task: extend the
+  subnormal-output sweep convention into existing soft_* tests
+  (soft_fadd, soft_fmul, soft_fdiv, soft_fsqrt, soft_fpext/fptrunc,
+  soft_fptosi/sitofp). Likely catches latent bugs of the same class.
+
+---
+
 ## Reference note — 2026-04-16 — Simulator architecture (general)
 
 For future agents puzzled by what `simulate(circuit, x)` actually does: it
