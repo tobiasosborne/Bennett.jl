@@ -168,7 +168,11 @@ using Bennett: emit_qrom!, emit_feistel!, emit_shadow_store!, emit_shadow_load!,
                WireAllocator, allocate!, wire_count, ReversibleGate,
                LoweringResult, NOTGate, CNOTGate, ToffoliGate,
                soft_mux_load_4x8, soft_mux_load_8x8,
-               soft_mux_store_4x8, soft_mux_store_8x8
+               soft_mux_store_4x8, soft_mux_store_8x8,
+               soft_mux_load_2x8, soft_mux_store_2x8,
+               soft_mux_load_2x16, soft_mux_store_2x16,
+               soft_mux_load_4x16, soft_mux_store_4x16,
+               soft_mux_load_2x32, soft_mux_store_2x32
 
 function _qrom_circuit(data::Vector{UInt64}, W::Int)
     wa = WireAllocator(); gates = ReversibleGate[]
@@ -204,11 +208,21 @@ for W in (8, 16, 32, 64)
     push!(feistel_table, (W, gc.total, gc.Toffoli, c.n_wires))
 end
 
-# --- MUX EXCH reference ---
-mux_load_4x8 = reversible_compile(soft_mux_load_4x8, UInt64, UInt64)
-mux_load_8x8 = reversible_compile(soft_mux_load_8x8, UInt64, UInt64)
-mux_store_4x8 = reversible_compile(soft_mux_store_4x8, UInt64, UInt64, UInt64)
-mux_store_8x8 = reversible_compile(soft_mux_store_8x8, UInt64, UInt64, UInt64)
+# --- MUX EXCH reference (all single-UInt64 shapes, N·W ≤ 64) ---
+mux_variants = [
+    ("soft_mux_load_2x8",   reversible_compile(soft_mux_load_2x8,   UInt64, UInt64)),
+    ("soft_mux_load_4x8",   reversible_compile(soft_mux_load_4x8,   UInt64, UInt64)),
+    ("soft_mux_load_8x8",   reversible_compile(soft_mux_load_8x8,   UInt64, UInt64)),
+    ("soft_mux_load_2x16",  reversible_compile(soft_mux_load_2x16,  UInt64, UInt64)),
+    ("soft_mux_load_4x16",  reversible_compile(soft_mux_load_4x16,  UInt64, UInt64)),
+    ("soft_mux_load_2x32",  reversible_compile(soft_mux_load_2x32,  UInt64, UInt64)),
+    ("soft_mux_store_2x8",  reversible_compile(soft_mux_store_2x8,  UInt64, UInt64, UInt64)),
+    ("soft_mux_store_4x8",  reversible_compile(soft_mux_store_4x8,  UInt64, UInt64, UInt64)),
+    ("soft_mux_store_8x8",  reversible_compile(soft_mux_store_8x8,  UInt64, UInt64, UInt64)),
+    ("soft_mux_store_2x16", reversible_compile(soft_mux_store_2x16, UInt64, UInt64, UInt64)),
+    ("soft_mux_store_4x16", reversible_compile(soft_mux_store_4x16, UInt64, UInt64, UInt64)),
+    ("soft_mux_store_2x32", reversible_compile(soft_mux_store_2x32, UInt64, UInt64, UInt64)),
+]
 
 # --- Shadow memory (per single store, per single load) ---
 function _shadow_store_cost(W::Int)
@@ -305,16 +319,15 @@ open(joinpath(@__DIR__, "..", "BENCHMARKS.md"), "w") do io
     println(io, "**Store: exactly 3W CNOT, 0 Toffoli. Load: exactly W CNOT, 0 Toffoli.**")
     println(io)
 
-    println(io, "### T1b MUX EXCH (writable, dynamic idx, fixed (N, W=8) shapes)")
+    println(io, "### T1b MUX EXCH (writable, dynamic idx, single-UInt64 shapes)")
     println(io)
-    println(io, "Full end-to-end via `reversible_compile` (post-Bennett):")
+    println(io, "Full end-to-end via `reversible_compile` (post-Bennett). Naming: `NxW`")
+    println(io, "where N is the slot count and W is the bit-width per slot (N·W ≤ 64).")
+    println(io, "Bennett-cc0 M1 added (2,8), (2,16), (4,16), (2,32) alongside the pre-existing (4,8)/(8,8).")
     println(io)
     println(io, "| Callee | Total | Toffoli | Wires |")
     println(io, "|--------|-------|---------|-------|")
-    for (name, c) in [("soft_mux_load_4x8", mux_load_4x8),
-                      ("soft_mux_load_8x8", mux_load_8x8),
-                      ("soft_mux_store_4x8", mux_store_4x8),
-                      ("soft_mux_store_8x8", mux_store_8x8)]
+    for (name, c) in mux_variants
         local gc_mux = gate_count(c)
         println(io, "| $name | $(gc_mux.total) | $(gc_mux.Toffoli) | $(c.n_wires) |")
     end
@@ -329,8 +342,7 @@ open(joinpath(@__DIR__, "..", "BENCHMARKS.md"), "w") do io
     println(io, "| Strategy | When it activates | Per-store cost | Per-load cost |")
     println(io, "|----------|-------------------|----------------|---------------|")
     println(io, "| Shadow (T3b.2) | static idx, any shape | 3W CNOT, 0 Toffoli | W CNOT, 0 Toffoli |")
-    println(io, "| MUX EXCH 4x8 (T1b.3) | dynamic idx, (W=8, N=4) | 7,122 gates | 7,514 gates |")
-    println(io, "| MUX EXCH 8x8 (T1b.3) | dynamic idx, (W=8, N=8) | 14,026 gates | 9,590 gates |")
+    println(io, "| MUX EXCH NxW (T1b.3) | dynamic idx, N·W ≤ 64 | see MUX EXCH table above | see MUX EXCH table above |")
     println(io, "| QROM (T1c.2) | read-only global constant table | — | 4(L-1) Toffoli + O(L·W) CNOT |")
     println(io, "| Feistel hash (T3a.1) | reversible bijective key hash | — | 8W Toffoli |")
     println(io)
@@ -354,7 +366,7 @@ open(joinpath(@__DIR__, "..", "BENCHMARKS.md"), "w") do io
     println(io)
     println(io, "- ✓ T0.x — LLVM preprocessing (sroa/mem2reg/simplifycfg/instcombine)")
     println(io, "- ✓ T1a — IRStore/IRAlloca types + LLVM extraction")
-    println(io, "- ✓ T1b — MUX EXCH (soft_mux_*_{4,8}x8)")
+    println(io, "- ✓ T1b — MUX EXCH (soft_mux_* for N·W ≤ 64: (2,8)(4,8)(8,8)(2,16)(4,16)(2,32))")
     println(io, "- ✓ T1c — Babbush-Gidney QROM (primitive + dispatch + benchmark)")
     println(io, "- ✓ T2a — MemorySSA investigation + ingest + integration tests")
     println(io, "- ✓ T3a — Feistel reversible hash + Okasaki comparison")

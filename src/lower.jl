@@ -1525,10 +1525,18 @@ function _lower_load_via_mux!(ctx::LoweringCtx, inst::IRLoad)
 
     if strategy == :shadow
         return _lower_load_via_shadow!(ctx, inst, alloca_dest, info, idx_op)
+    elseif strategy == :mux_exch_2x8
+        return _lower_load_via_mux_2x8!(ctx, inst, alloca_dest, info, idx_op)
     elseif strategy == :mux_exch_4x8
         return _lower_load_via_mux_4x8!(ctx, inst, alloca_dest, info, idx_op)
     elseif strategy == :mux_exch_8x8
         return _lower_load_via_mux_8x8!(ctx, inst, alloca_dest, info, idx_op)
+    elseif strategy == :mux_exch_2x16
+        return _lower_load_via_mux_2x16!(ctx, inst, alloca_dest, info, idx_op)
+    elseif strategy == :mux_exch_4x16
+        return _lower_load_via_mux_4x16!(ctx, inst, alloca_dest, info, idx_op)
+    elseif strategy == :mux_exch_2x32
+        return _lower_load_via_mux_2x32!(ctx, inst, alloca_dest, info, idx_op)
     else
         error("_lower_load_via_mux!: unsupported (elem_width=$(info[1]), n_elems=$(info[2])) for dynamic idx")
     end
@@ -1779,26 +1787,31 @@ shape and the runtime index operand.
 
 Strategies:
   :shadow          — static idx (const), any shape. Cheap direct CNOT pattern.
-  :mux_exch_4x8    — dynamic idx on (W=8, N=4) shape.
-  :mux_exch_8x8    — dynamic idx on (W=8, N=8) shape.
-  :unsupported     — dynamic idx on any other shape; caller must error.
+  :mux_exch_NxW    — dynamic idx. N·W ≤ 64 (single-UInt64 packed).
+                     M1: N ∈ {2,4,8}×W=8, N ∈ {2,4}×W=16, N=2×W=32.
+  :unsupported     — dynamic idx on any shape with N·W > 64, or any shape
+                     outside the covered set; caller must error.
 
 Priority rule: static idx ALWAYS dispatches to :shadow. MUX EXCH only
-engages when idx is dynamic and the shape matches a soft_mux_load_NxW
-callee we've already registered.
+engages when idx is dynamic and the shape matches a soft_mux_*_NxW callee
+registered in Bennett.jl.
 """
 function _pick_alloca_strategy(shape::Tuple{Int,Int}, idx::IROperand)
     if idx.kind == :const
         return :shadow
     end
     (elem_w, n) = shape
-    if elem_w == 8 && n == 4
-        return :mux_exch_4x8
-    elseif elem_w == 8 && n == 8
-        return :mux_exch_8x8
-    else
-        return :unsupported
+    if elem_w == 8
+        n == 2 && return :mux_exch_2x8
+        n == 4 && return :mux_exch_4x8
+        n == 8 && return :mux_exch_8x8
+    elseif elem_w == 16
+        n == 2 && return :mux_exch_2x16
+        n == 4 && return :mux_exch_4x16
+    elseif elem_w == 32
+        n == 2 && return :mux_exch_2x32
     end
+    return :unsupported
 end
 
 """
@@ -1828,10 +1841,18 @@ function lower_store!(ctx::LoweringCtx, inst::IRStore)
 
     if strategy == :shadow
         _lower_store_via_shadow!(ctx, inst, alloca_dest, info, idx_op)
+    elseif strategy == :mux_exch_2x8
+        _lower_store_via_mux_2x8!(ctx, inst, alloca_dest, idx_op)
     elseif strategy == :mux_exch_4x8
         _lower_store_via_mux_4x8!(ctx, inst, alloca_dest, idx_op)
     elseif strategy == :mux_exch_8x8
         _lower_store_via_mux_8x8!(ctx, inst, alloca_dest, idx_op)
+    elseif strategy == :mux_exch_2x16
+        _lower_store_via_mux_2x16!(ctx, inst, alloca_dest, idx_op)
+    elseif strategy == :mux_exch_4x16
+        _lower_store_via_mux_4x16!(ctx, inst, alloca_dest, idx_op)
+    elseif strategy == :mux_exch_2x32
+        _lower_store_via_mux_2x32!(ctx, inst, alloca_dest, idx_op)
     else
         error("lower_store!: unsupported (elem_width=$(info[1]), n_elems=$(info[2])) for dynamic idx")
     end
@@ -1910,6 +1931,77 @@ function _lower_store_via_mux_8x8!(ctx::LoweringCtx, inst::IRStore,
 
     ctx.vw[alloca_dest] = ctx.vw[res_sym]
     return nothing
+end
+
+# M1 — Bennett-cc0 parametric MUX EXCH helpers.
+# Generated via @eval over the shape list. Each (N, W) pair produces a
+# _lower_load_via_mux_NxW! and a _lower_store_via_mux_NxW!, both following
+# the same structure as the hand-written (4,8)/(8,8) variants: validate
+# width + packed-array size, pack operands into UInt64, emit IRCall to the
+# matching soft_mux_*_NxW callee, slice the low N·W bits back into the
+# primal wire list.
+for (N, W) in [(2, 8), (2, 16), (4, 16), (2, 32)]
+    @assert N * W <= 64 "shape ($N, $W) exceeds UInt64 packing"
+    load_fn   = Symbol(:_lower_load_via_mux_, N, :x, W, :!)
+    store_fn  = Symbol(:_lower_store_via_mux_, N, :x, W, :!)
+    soft_load  = Symbol(:soft_mux_load_, N, :x, W)
+    soft_store = Symbol(:soft_mux_store_, N, :x, W)
+    packed_bits = N * W
+    name_tag = string(N, "x", W)
+
+    @eval begin
+        function $load_fn(ctx::LoweringCtx, inst::IRLoad,
+                          alloca_dest::Symbol, info::Tuple{Int,Int},
+                          idx_op::IROperand)
+            inst.width == $W ||
+                error($("_lower_load_via_mux_$(name_tag)!: load width must be $W, got "), inst.width)
+            arr_wires = ctx.vw[alloca_dest]
+            length(arr_wires) == $packed_bits ||
+                error($("_lower_load_via_mux_$(name_tag)!: expected $(packed_bits)-wire packed array at alloca "),
+                      alloca_dest, "; got ", length(arr_wires))
+
+            tag = _next_mux_tag!(ctx, "ld", inst.dest)
+            arr_sym = Symbol("__mux_load_arr_", tag)
+            idx_sym = Symbol("__mux_load_idx_", tag)
+            tmp_sym = Symbol("__mux_load_u64_", tag)
+
+            ctx.vw[arr_sym] = _wires_to_u64!(ctx, arr_wires)
+            ctx.vw[idx_sym] = _operand_to_u64!(ctx, idx_op)
+
+            call = IRCall(tmp_sym, $soft_load,
+                          [ssa(arr_sym), ssa(idx_sym)], [64, 64], 64)
+            lower_call!(ctx.gates, ctx.wa, ctx.vw, call; compact=ctx.compact_calls)
+
+            ctx.vw[inst.dest] = ctx.vw[tmp_sym][1:$W]
+            return nothing
+        end
+
+        function $store_fn(ctx::LoweringCtx, inst::IRStore,
+                           alloca_dest::Symbol, idx_op::IROperand)
+            inst.width == $W ||
+                error($("_lower_store_via_mux_$(name_tag)!: store width must be $W, got "), inst.width)
+            arr_wires = ctx.vw[alloca_dest]
+            length(arr_wires) == $packed_bits ||
+                error($("_lower_store_via_mux_$(name_tag)!: expected $(packed_bits)-wire packed array"))
+
+            tag = _next_mux_tag!(ctx, "st", inst.ptr.name)
+            arr_sym = Symbol("__mux_store_arr_", tag)
+            idx_sym = Symbol("__mux_store_idx_", tag)
+            val_sym = Symbol("__mux_store_val_", tag)
+            res_sym = Symbol("__mux_store_res_", tag)
+
+            ctx.vw[arr_sym] = _wires_to_u64!(ctx, arr_wires)
+            ctx.vw[idx_sym] = _operand_to_u64!(ctx, idx_op)
+            ctx.vw[val_sym] = _operand_to_u64!(ctx, inst.val)
+
+            call = IRCall(res_sym, $soft_store,
+                          [ssa(arr_sym), ssa(idx_sym), ssa(val_sym)], [64, 64, 64], 64)
+            lower_call!(ctx.gates, ctx.wa, ctx.vw, call; compact=ctx.compact_calls)
+
+            ctx.vw[alloca_dest] = ctx.vw[res_sym][1:$packed_bits]
+            return nothing
+        end
+    end
 end
 
 # ---- helpers for T1b.3 store/load dispatch ----

@@ -162,6 +162,15 @@ register_callee!(soft_mux_store_4x8)
 register_callee!(soft_mux_load_4x8)
 register_callee!(soft_mux_store_8x8)
 register_callee!(soft_mux_load_8x8)
+# M1 — Bennett-cc0 bucket A parametric MUX EXCH (N·W ≤ 64)
+register_callee!(soft_mux_store_2x8)
+register_callee!(soft_mux_load_2x8)
+register_callee!(soft_mux_store_2x16)
+register_callee!(soft_mux_load_2x16)
+register_callee!(soft_mux_store_4x16)
+register_callee!(soft_mux_load_4x16)
+register_callee!(soft_mux_store_2x32)
+register_callee!(soft_mux_load_2x32)
 
 # ---- Float64 support via SoftFloat dispatch ----
 

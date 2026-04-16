@@ -96,10 +96,18 @@ end
     @testset "strategy picker returns :mux_exch_* for dynamic idx on supported shapes" begin
         @test Bennett._pick_alloca_strategy((8, 4), Bennett.ssa(:idx)) == :mux_exch_4x8
         @test Bennett._pick_alloca_strategy((8, 8), Bennett.ssa(:idx)) == :mux_exch_8x8
+        # M1 additions (Bennett-cc0): N·W ≤ 64 single-UInt64 shapes.
+        @test Bennett._pick_alloca_strategy((8, 2),  Bennett.ssa(:idx)) == :mux_exch_2x8
+        @test Bennett._pick_alloca_strategy((16, 2), Bennett.ssa(:idx)) == :mux_exch_2x16
+        @test Bennett._pick_alloca_strategy((16, 4), Bennett.ssa(:idx)) == :mux_exch_4x16
+        @test Bennett._pick_alloca_strategy((32, 2), Bennett.ssa(:idx)) == :mux_exch_2x32
     end
 
     @testset "strategy picker returns :unsupported for dynamic idx on uncovered shapes" begin
-        @test Bennett._pick_alloca_strategy((16, 4), Bennett.ssa(:idx)) == :unsupported
+        # Multi-word (N·W > 64) — deferred to M1b.
         @test Bennett._pick_alloca_strategy((8, 100), Bennett.ssa(:idx)) == :unsupported
+        @test Bennett._pick_alloca_strategy((16, 8),  Bennett.ssa(:idx)) == :unsupported
+        @test Bennett._pick_alloca_strategy((32, 4),  Bennett.ssa(:idx)) == :unsupported
+        @test Bennett._pick_alloca_strategy((64, 2),  Bennett.ssa(:idx)) == :unsupported
     end
 end

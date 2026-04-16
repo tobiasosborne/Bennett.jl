@@ -1,12 +1,38 @@
 # Bennett.jl Work Log
 
-## NEXT AGENT — start here — 2026-04-16 (post-t110, memory pivot)
+## NEXT AGENT — start here — 2026-04-16 (M1 landed, M2 next)
 
-**Do Bennett-cc0 next: attack general `store` for dynamic mutable
-memory — the hardest remaining LLVM opcode that Enzyme covers and
-Bennett doesn't fully handle yet.** Per user direction, this is the
-priority pivot away from the transcendental roadmap (log/sin/cos/pow
-are now deferred follow-ups — see §Deferred roadmap below).
+**Bennett-cc0 memory epic is underway. PRD landed (`Bennett-Memory-PRD.md`).
+M1 (Bucket A parametric MUX EXCH) LANDED. Next up: M2 — wire MemorySSA
+into `_pick_alloca_strategy` per PRD §10 M2 (Bucket C / dataflow gap).
+CORE CHANGE → requires 3+1 agents per CLAUDE.md §2.**
+
+### Progress tracker
+
+- ✓ **PRD** (Bennett-ceps) — `Bennett-Memory-PRD.md`, 13 sections,
+  3-bucket failure envelope, milestones M1-M4.
+- ✓ **M1** — Bucket A: parametric MUX EXCH for single-UInt64 shapes
+  (N·W ≤ 64). Added (2,8), (2,16), (4,16), (2,32). Dispatcher extended.
+  RED tests L4/L5/L6 flipped to GREEN. Full test suite: `Testing Bennett
+  tests passed`. BENCHMARKS.md regenerated with new MUX EXCH table.
+- ○ **M2** — Bucket C: wire MemorySSA into dispatcher. CORE CHANGE.
+- ○ **M3** — Bucket B (partial): T4 shadow-checkpoint + re-exec. CORE CHANGE.
+- ○ **M4** — BennettBench paper outline.
+- ⊘ **M1b** — Multi-word MUX EXCH for N·W > 64. Deferred (no RED test
+  hits this except L10 which is a test-only stub).
+
+### Deferred (per PRD §5 non-goals)
+
+- T5 persistent hash-consed array (Okasaki+Mogensen). 71 kG/op exceeds
+  budget; next PRD post-MD5 if a benchmark needs unbounded `Vector{T}`.
+- Concurrent atomicrmw/cmpxchg, inline asm callbr, llvm.coro.*. Enzyme
+  hard-stop frontier.
+
+**Why `store` is the hardest remaining** (retained for context)
+
+Enzyme cleanly solves dynamic mutable memory via MemorySSA + shadow
+memory (O(1) per store, gradient-accumulation semantics). Bennett has
+a 4-of-5-tier PATCHWORK covering specific patterns but no unified
 
 ### Why `store` is the hardest remaining
 
@@ -197,6 +223,202 @@ bottleneck.
 | soft_exp2_julia | 2,697,734 | 890,168 | 6,231,176 | 38% cheaper than soft_exp2 (Bennett-t110) |
 
 `Base.exp(::SoftFloat)` now dispatches to `soft_exp_julia`.
+
+---
+
+## Session log — 2026-04-16 — Bennett-Memory-PRD.md drafted (Bennett-ceps)
+
+Claimed Bennett-ceps and landed draft `Bennett-Memory-PRD.md` (this
+repo root). Mirrors `Bennett-VISION-PRD.md` structure but scoped to
+reversible mutable memory.
+
+### Deep research phase (2 parallel Explore agents + bd + direct reads)
+
+- **Codebase agent** inventoried every tier with `file:line` citations.
+  Key findings verified against source: dispatcher at `src/lower.jl:1790`
+  picks `:shadow` / `:mux_exch_{4,8}x8` / `:unsupported`; hard rejection
+  sites at `:1759` (dynamic n_elems), `:1817` (const-pointer store),
+  `:1820` (no provenance for store ptr), `:1836` and `:1533`
+  (unsupported shape for dynamic idx).
+- **Literature agent** mapped the 5-tier strategy from
+  `docs/literature/memory/SURVEY.md` §1 onto the existing code.
+  Both agents independently identified MemorySSA-wiring and T4
+  shadow-checkpoint as the two highest-leverage next moves.
+
+### Failure envelope — three buckets (verbatim from PRD §4)
+
+- **Bucket A** — shape gap (dynamic idx, (N,W) ∉ {(8,4),(8,8)}):
+  `Array{Int16}(undef, 4)` dynamic-idx crashes at `src/lower.jl:1836`.
+  Fix = parametric MUX EXCH extension.
+- **Bucket B** — dynamic-size gap (`Vector{T}()` + `push!`, Dict):
+  crashes at `src/lower.jl:1759` "dynamic n_elems not supported".
+  Fix = T4 shadow-checkpoint (bounded), T5 persistent tree (unbounded).
+- **Bucket C** — dataflow gap (phi-merged pointer, no ptr_provenance):
+  store crashes at `src/lower.jl:1820`; load falls through to legacy.
+  Fix = wire `MemSSAInfo` into `_pick_alloca_strategy`.
+
+### Gotchas learned (for future agents)
+
+- **Agents hallucinate paper paths.** Both Explore agents claimed
+  `docs/literature/memory/reverc-2017.pdf`, `Okasaki1999_redblack.pdf`,
+  `enzyme/Moses2020_enzyme.pdf` exist — none do. The memory/ subdir
+  contains ONLY `SURVEY.md` and `COMPLEMENTARY_SURVEY.md`. Always
+  verify `ls` before citing PDFs in a PRD. Per MEMORY.md
+  `feedback_ground_truth.md`: no hallucinated paper patterns.
+
+- **`preprocess=false` is the default**, not `true`. One agent reported
+  T0 as "default-on". Verified at `src/ir_extract.jl:26`:
+  `extract_parsed_ir(f, arg_types; optimize=true, preprocess=false, ...)`.
+
+- **Load rejection is nuanced.** `lower_load!` at `src/lower.jl:1512`
+  falls through to legacy primitive when `ptr_provenance` is missing;
+  only errors on shape mismatch. Stores always hard-error on missing
+  provenance. Bucket C thus asymmetrically affects stores.
+
+- **T2 MemorySSA ingest exists but is NOT YET CONSUMED** by
+  `_pick_alloca_strategy`. It's parsed into `MemSSAInfo` metadata and
+  left unused. This is the specific wiring that M2 delivers.
+
+- **Budget** per `SURVEY.md` §1: ≤20 kGates per memory op. T4 must
+  stay within this for the MD5 benchmark.
+
+### Milestones (PRD §10)
+
+1. **M1** Bucket A: parametric MUX EXCH for (N, W) ∈ {2,4,8,16,32} × {8,16,32}. Additive, single-implementer.
+2. **M2** Bucket C: wire MemorySSA into dispatcher. Core change to `lower.jl` + `ir_extract.jl` → **3+1 agents** per CLAUDE.md §2.
+3. **M3** Bucket B (partial): T4 shadow-checkpoint + re-exec per `docs/memory/shadow_design.md`. Meuli-SAT pebbled. New strategy tier → **3+1 agents**. MD5 head-to-head vs ReVerC 27,520 Toff.
+4. **M4** BennettBench paper outline (PLDI/ICFP, Bennett-6siy).
+
+### Explicitly deferred
+
+- **T5 persistent hash-consed array** (Okasaki+Mogensen). 71 kG/op
+  prototype exceeds budget. Next PRD post-MD5 if a benchmark needs
+  unbounded `Vector{T}`.
+- Concurrent `atomicrmw`/`cmpxchg`/`fence`, inline asm `callbr`,
+  `llvm.coro.*`, complex SEH. Matches Enzyme's hard-stop frontier.
+
+### Next agent steps
+
+1. Read `Bennett-Memory-PRD.md` end-to-end.
+2. Review against `docs/literature/memory/SURVEY.md` and
+   `COMPLEMENTARY_SURVEY.md` (PRD §13 checklist items left open).
+3. Get user sign-off.
+4. Start M1: red tests for L4/L5/L6 in new `test/test_memory_corpus.jl`.
+
+---
+
+## Session log — 2026-04-16 — M1 Bucket A (parametric MUX EXCH) GREEN
+
+User signed off on the PRD ("lgtm get to work"). Proceeded to M1:
+parametric extension of MUX EXCH for single-UInt64 shapes (N·W ≤ 64).
+
+### Scope delivered
+
+Added 6 new MUX primitive pairs (12 new functions) in `src/softmem.jl`:
+
+  (2, 8), (2, 16), (4, 16), (2, 32)
+
+alongside the pre-existing (4, 8) and (8, 8). All 6 shapes are now
+auto-dispatched from `_pick_alloca_strategy` at `src/lower.jl:1790`.
+The lowering helpers `_lower_{load,store}_via_mux_NxW!` for the 4 new
+shapes are generated by `@eval` loop in `src/lower.jl` directly after
+the hand-written 4x8/8x8 helpers — the generated bodies are byte-for-byte
+the same pattern, just with N, W, and the callee symbol swapped in.
+
+### RED→GREEN test ladder
+
+Landed `test/test_memory_corpus.jl` per PRD §7. Current state:
+
+  L0-L3    baseline (shadow / 4x8 / 8x8)    GREEN
+  L4-L6    M1 target (16×4, 8×2, 32×2)      RED → GREEN
+  L4b      bonus (16×2)                     GREEN (not in PRD but covered)
+  L7       phi-merged ptr (bucket C)        RED (M2)
+  L8       aliased-via-GEP-0 (bucket C)     either — depends on provenance
+  L9       dynamic n_elems (bucket B)       RED (M3)
+  L10      multi-word 8×16                  RED (M1b)
+
+Full suite: `Testing Bennett tests passed`. No regressions on:
+
+- i8 adder (100 gates, 28 Toff)
+- i16/32/64 adders (204/412/828 gates)
+- soft_fma 447,728 gates
+- soft_exp_julia 3,485,262 gates
+- All memory primitives (QROM, Feistel, Shadow, MUX 4x8, MUX 8x8)
+
+### New gate counts (from regenerated BENCHMARKS.md)
+
+| Callee | Total | Toffoli | Wires |
+|---|---|---|---|
+| soft_mux_load_2x8 | 1,472 | 382 | 705 |
+| soft_mux_load_2x16 | 1,472 | 382 | 705 |
+| soft_mux_load_2x32 | 1,472 | 382 | 705 |
+| soft_mux_load_4x16 | 4,192 | 1,146 | 1,729 |
+| soft_mux_store_2x8 | 3,408 | 1,020 | 1,473 |
+| soft_mux_store_2x16 | 3,424 | 1,020 | 1,473 |
+| soft_mux_store_2x32 | 3,072 | 764 | 1,217 |
+| soft_mux_store_4x16 | 6,850 | 1,912 | 2,625 |
+
+N=2 loads all 1,472 gates (one ifelse selection, width-independent).
+4x16 load (4,192) scales with N not W×N — selection chain dominates.
+
+### Gotchas learned
+
+- **Julia gate_count named-tuple field is `Toffoli` (capitalised)**, not
+  `toffoli`. Bit me once in a benchmark REPL one-liner.
+- **LLVM IR parse requires `@julia_*` function name prefix** via
+  `_module_to_parsed_ir`. Errored with "No julia_ function found in
+  LLVM module" when I used `@f`.
+- **`@test_throws Exception` is the RED idiom** — after M1 lands, the
+  test auto-converts to failing with "Expected: Exception / No exception
+  thrown", which is the TDD signal to flip to `@test + verify_reversibility`.
+  Much cleaner than `@test_broken` for this workflow.
+- **`@eval` loop pattern** for generating dispatcher helpers cuts
+  boilerplate ~90% vs copy-paste. Kept the hand-written (4,8)/(8,8)
+  variants untouched for low-blast-radius.
+- **Existing test assertion `(16, 4) → :unsupported`** in
+  `test/test_universal_dispatch.jl:102` had to flip to `:mux_exch_4x16`.
+  Added positive-dispatch tests for all 6 shapes.
+
+### Deferred from M1
+
+- **Multi-word shapes (N·W > 64)**. (8, 16), (16, 8), (32, 8), (32, 32)
+  all exceed the single-UInt64 packing budget. Deferred to M1b. L10
+  is the test-only stub pinning this decision.
+- **Julia source-level tests**. All L0-L10 tests use hand-crafted LLVM
+  IR because Julia's codegen aggressively eliminates allocas before we
+  see them (even at `optimize=false` small local arrays get promoted).
+  Source-level `Array{Int16}(undef, 4)` + dynamic idx would need M2
+  MemorySSA to avoid the preprocessing pass stripping.
+
+### Files changed
+
+- `Bennett-Memory-PRD.md` — new, 432 LOC
+- `src/softmem.jl` — +8 primitive functions, docstring update
+- `src/Bennett.jl` — +8 register_callee! calls
+- `src/lower.jl` — `_pick_alloca_strategy` extended; +4 load helpers +
+  4 store helpers via @eval; dispatch chains extended in
+  `_lower_load_via_mux!` and `lower_store!`
+- `test/test_memory_corpus.jl` — new, 11 levels L0-L10
+- `test/test_universal_dispatch.jl` — +6 positive-dispatch asserts,
+  +3 unsupported asserts (swapped (16,4) for multi-word shapes)
+- `test/runtests.jl` — includes test_memory_corpus.jl
+- `benchmark/run_benchmarks.jl` — extended MUX EXCH imports + table
+- `BENCHMARKS.md` — regenerated
+
+### Next agent steps
+
+1. Claim Bennett-cc0 (parent) or create Bennett-cc0-M2 sub-issue.
+2. Start M2 red test: L7 phi-merged pointer (already in corpus, RED).
+3. **CORE CHANGE → 3+1 AGENTS** per CLAUDE.md §2. Proposer A + Proposer
+   B independently design MemSSAInfo→dispatcher wiring; implementer +
+   orchestrator review.
+4. Specific design questions for proposers (PRD §10 M2):
+   - How is `MemSSAInfo` threaded into `LoweringCtx`?
+   - Fallback order (MemSSA → ptr_provenance → error)?
+   - How to handle phi-merged pointer defs?
+5. GREEN L7/L8, regression on gate-count baselines.
+6. Bonus if achievable: SHA-256 Toff count moves toward PRS15 43,712
+   (currently 135,584).
 
 ---
 
