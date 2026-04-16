@@ -1,53 +1,202 @@
 # Bennett.jl Work Log
 
-## NEXT AGENT — start here — 2026-04-16 (post-t110)
+## NEXT AGENT — start here — 2026-04-16 (post-t110, memory pivot)
 
-**Transcendental roadmap unblocked.** Bennett-0xx3 (soft_fma) and
-Bennett-t110 (soft_exp_julia / soft_exp2_julia) have both landed. The
-FMA foundation is in place for the remaining transcendentals:
+**Do Bennett-cc0 next: attack general `store` for dynamic mutable
+memory — the hardest remaining LLVM opcode that Enzyme covers and
+Bennett doesn't fully handle yet.** Per user direction, this is the
+priority pivot away from the transcendental roadmap (log/sin/cos/pow
+are now deferred follow-ups — see §Deferred roadmap below).
 
-- **Bennett-582** (`soft_log`) — next most useful; pairs with exp.
-- **Bennett-3mo** (`soft_sin`, `soft_cos`) — trig via Payne-Hanek reduction.
-- **Bennett-emv** (`soft_pow`) — composed via exp(y·log(x)).
-- **Bennett-1pb** — LLVM intrinsic wiring (`llvm.sqrt.f64`, etc).
-- **Bennett-fnxg** — extend subnormal-output sweep to all soft_* tests.
+### Why `store` is the hardest remaining
 
-### Pattern to follow (from Bennett-0xx3 and Bennett-t110)
+Enzyme cleanly solves dynamic mutable memory via MemorySSA + shadow
+memory (O(1) per store, gradient-accumulation semantics). Bennett has
+a 4-of-5-tier PATCHWORK covering specific patterns but no unified
+solution for:
 
-1. **RED test first** (`test/test_softfLOGNAME_julia.jl` or similar).
-2. **Read ground truth**: Julia's `base/special/*.jl` source is at
-   `/home/tobias/.julia/juliaup/julia-1.12.5+0.x64.linux.gnu/share/julia/base/special/`.
-   Also musl/fdlibm for reference implementations.
-3. **Port line-for-line with `soft_fma` at every `muladd`**. Constants
-   as UInt64 bit patterns via `reinterpret(UInt64, Float64(...))`.
-4. **Branchless `ifelse` select chains**. NaN strictly last override.
-5. **Test**: hard cases + 10k+ random sweep covering normal range +
-   subnormal-output region (Bennett-fnxg).
-6. **Wire dispatch**: `Base.log(::SoftFloat)`, etc. Point to the new
-   _julia variant once green. Register as callee.
-7. **End-to-end circuit**: compile + verify_reversibility + record
-   gate count in BENCHMARKS.md as regression baseline.
-8. **WORKLOG session log + commit + push per task**.
+- `store` through a dynamically-aliased pointer into a dynamically-
+  sized heap with reversible allocation + reversible free
+- Runtime-growing `Vector{T}`, `Dict{K,V}`, nested mutable trees
 
-### Key ground-truth tricks for exp → transferable
+When the pointer is dynamic-unknown-alias, reversibility demands O(heap
+size) ancilla per store. MUX EXCH scales only to ~W=8, N=8. Beyond that
+it's catastrophic. This is **the open research frontier** (Bennett-cc0,
+P1, the only P1 issue in the tracker).
 
-- `muladd(x, LogB_INV, MAGIC)` is Julia's "round-to-integer" trick;
-  MAGIC = 1.5·2^52. Also used in `log`, `log2`, `sincos`.
-- `reinterpret(UInt64, N_float) % Int32` extracts the rounded integer.
-- `k << 52 + small_part_bits` is Julia's ldexp-via-integer-add trick
-  for 2^k scaling. Universal across transcendentals.
-- Subnormal-result handling via "k + 53" shift + `*2^-53`.
+### What Bennett already has (don't re-implement)
 
-### Gate counts (current benchmark)
+Per `docs/literature/memory/SURVEY.md` §1, the 5-tier strategy is
+partially in place:
+
+| Tier | Strategy | File | Status | Handles |
+|------|----------|------|--------|---------|
+| T0 | SSA/mem2reg/escape-elim | `ir_extract.jl` `preprocess=true` kwarg | ✓ done | ~80% of stores eliminated upfront |
+| T1a | MUX EXCH (small dyn idx) | `src/softmem.jl` | ✓ done | W=8, N∈{4,8} |
+| T1b | QROM (read-only tables) | `src/qrom.jl` | ✓ done | Babbush-Gidney 2018, 4(L-1) Toffoli |
+| T2 | MemorySSA ingest (opt-in) | `src/memssa.jl` | ✓ done | Def/Use/Phi graph |
+| T3a | Feistel bijective hash | `src/feistel.jl` | ✓ done | Luby-Rackoff 1988, 8W Toffoli |
+| T3b | Shadow memory (static idx) | `src/shadow_memory.jl` | ✓ done | 3W CNOT / op |
+| T3c | Universal dispatch | `_pick_alloca_strategy` in `lower.jl` | ✓ done | Auto-picks cheapest correct lowering |
+| T4 | Shadow checkpoint + re-exec | — | **OPEN** | Enzyme-style for complex stores |
+| T5 | Persistent hash-consed array | — | **OPEN** | Truly dynamic heap (Okasaki, AG13) |
+
+Existing memory tests: `test/test_lower_store_alloca.jl`,
+`test/test_rev_memory.jl`, `test/test_store_alloca_extract.jl`,
+`test/test_soft_mux_mem*.jl`, `test/test_shadow_memory.jl`,
+`test/test_qrom*.jl`, `test/test_feistel.jl`,
+`test/test_universal_dispatch.jl`, `test/test_mutable_array.jl`,
+`test/test_memssa*.jl`. Read these before writing new tests.
+
+### Recommended attack plan
+
+Three milestones, roughly 1 week each. Proceed in order.
+
+#### M1 — Write `Bennett-Memory-PRD.md` (Bennett-ceps, P2)
+
+Before coding, land the PRD. Analogous to `Bennett-VISION-PRD.md` but
+scoped to memory. Include:
+
+1. **Scope**: which LLVM memory patterns in target (what's supported
+   already, what's next, what's out-of-scope for this phase).
+2. **Success criteria**: at least one patten that currently CRASHES
+   must work end-to-end with `verify_reversibility` passing. Gate-count
+   target: within 2× of ReVerC on MD5/SHA-2 memory patterns.
+3. **Test corpus**: curate 10-15 "hard" test programs that exercise
+   specific store patterns (dynamic idx, aliased pointers, nested
+   `Ref{Ref{Int}}`, `Vector{T}` with `push!`, mutable recursive types).
+   Build this in `test/test_memory_corpus.jl`.
+4. **Benchmark targets**: ReVerC Table I/II numbers (MD5 = 27,520
+   Toff / 4,769 bits). Currently Bennett's MD5 is ~48k Toff — beat
+   this on the same benchmark.
+5. **Non-goals**: full concurrency (atomicrmw under true concurrency),
+   inline asm `callbr`. These are Enzyme hard-stops too.
+
+Mirror the PRD structure from `Bennett-VISION-PRD.md` §§1-10.
+Review against `docs/literature/memory/SURVEY.md` and
+`COMPLEMENTARY_SURVEY.md` before finalizing.
+
+#### M2 — Identify and fix the FIRST FAILING pattern
+
+Concrete starting point: build a failing test. A candidate:
+
+```julia
+# test/test_dynamic_heap_smoke.jl
+function push_and_sum(x::Int8)::Int8
+    v = Int8[]
+    push!(v, x)
+    push!(v, x + Int8(1))
+    push!(v, x + Int8(2))
+    sum(v) % Int8
+end
+
+@test reversible_compile(push_and_sum, Int8) isa ReversibleCircuit
+# ↑ currently CRASHES or produces wrong result. Find out which.
+```
+
+Pick the simplest failing pattern, not the most complex. Examples to
+try, in increasing order of difficulty:
+
+1. `Ref{Ref{Int}}` nested mutation (likely works via shadow; verify)
+2. `Array{Int8}(undef, 4)` with dynamic `a[i] = v` (dynamic idx)
+3. `Vector{Int8}()` + `push!` (dynamic size — MUX EXCH fails)
+4. `Dict{Int8, Int8}()` insert/lookup (general hash map)
+5. Mutable struct with self-reference (linked list)
+
+Use `bd update Bennett-cc0 --claim` to claim, then file sub-issues for
+each specific failure (e.g., `Bennett-cc0-001: Vector{Int8} push!`).
+
+For the chosen pattern, decide strategy:
+
+- If the pattern has a BOUND (e.g., `Vector` with max size from the
+  type or a `sizehint!` call): extend T1/T3 to handle bounded dynamic
+  size. Probably the cheapest win.
+- If genuinely unbounded: implement T4 (shadow checkpoint + Bennett
+  re-execute) or T5 (persistent tree). T4 is simpler to implement
+  first; T5 is more elegant but heavier (20-70kG per access).
+
+#### M3 — First-in-literature result
+
+The goal per Bennett-cc0 description is: "first reversible compiler
+to handle arbitrary LLVM store/alloca/memcpy." Reference comparison:
+**ReVerC 2017 (Parent/Roetteler/Svore)** handles arrays with static
+indices only — no pointer-based memory, no dynamic indexing, no
+memcpy. Beat this on a concrete benchmark.
+
+Target paper deliverable: PLDI / ICFP with BennettBench head-to-head
+table. See SURVEY §1 for the target numbers.
+
+### Key references (all local)
+
+- **`docs/literature/memory/SURVEY.md`** — 40+ paper survey, 5-tier
+  strategy recommendation. READ FIRST.
+- **`docs/literature/memory/COMPLEMENTARY_SURVEY.md`** — persistent
+  data structures + reversible AD deep dive.
+- **`docs/memory/memssa_investigation.md`** — Go/no-go on MemorySSA
+  integration. Shows why the opt-in flag works.
+- **`docs/memory/shadow_design.md`** — shadow memory strategy doc.
+- **Axelsen-Glück 2013 AG13** — EXCH-based linear heap (reversible
+  malloc/free via linearity). `docs/literature/` — download if not
+  local.
+- **Okasaki 1999** — persistent red-black trees. Hash-consing gives
+  O(log n) per access.
+- **Enzyme 2020** (arXiv:2010.01709) — shadow memory at LLVM level.
+  The reference Bennett is implicitly racing.
+
+### Pattern to follow (same as Bennett-0xx3 and Bennett-t110)
+
+1. **Red-green TDD**: failing test first, watch RED, implement, GREEN.
+2. **3+1 agents for core changes**: `lower.jl` memory dispatch is
+   CORE — 2 proposers + 1 implementer + orchestrator-reviewer.
+   Adding new strategy files (like a persistent-tree primitive) is
+   additive — single-implementer OK.
+3. **Feedback every ~50 LOC**: don't code blind for 500 lines.
+4. **Commit + push per milestone**, not per session. Session not
+   done until `git push` succeeds (`git pull --rebase && bd dolt push
+   && git push`).
+5. **Gate counts are regression baselines** — WORKLOG any change.
+6. **WORKLOG session log** — document gotchas, LLVM quirks, design
+   choices. Future agents will thank you.
+
+### Currently working memory benchmarks (regression baselines)
+
+From `BENCHMARKS.md`:
+
+| Pattern | Gates | Strategy |
+|---------|------:|----------|
+| QROM L=4 W=8 | 56 | T1b QROM |
+| QROM L=8 W=8 | 144 | T1b QROM |
+| MUX EXCH L=4 W=8 read | 7,514 | T1a |
+| MUX EXCH L=4 W=8 write | 7,122 | T1a |
+| Shadow static W=8 | 24 CNOT | T3b |
+| Feistel W=32 | 480 | T3a |
+
+If any of these regress, the core dispatch broke.
+
+### Deferred roadmap (after memory epic)
+
+The transcendental roadmap is queued but not urgent:
+
+- Bennett-582 (`soft_log`) — next most useful; mirror of soft_exp_julia
+- Bennett-3mo (`soft_sin`, `soft_cos`) — Payne-Hanek reduction
+- Bennett-emv (`soft_pow`) — composed via exp(y·log(x))
+- Bennett-1pb — LLVM intrinsic wiring
+- Bennett-fnxg — extend subnormal-output sweep across all soft_* tests
+
+Groundwork done (soft_fma at 447,728 gates, soft_exp_julia at
+3.48M gates, both bit-exact vs Base). Foundation is solid; the
+individual ports are straightforward once memory isn't the
+bottleneck.
+
+### Gate counts (current benchmark, soft-float)
 
 | Primitive | Gates | Toffoli | T-count | Note |
 |-----------|------:|--------:|--------:|------|
-| soft_fma  | 447,728 | 148,340 | 1,038,380 | 1.7× soft_fmul |
-| soft_exp_julia | 3,485,262 | 1,195,196 | 8,366,372 | **30% cheaper than soft_exp (musl Plan B)** |
-| soft_exp2_julia | 2,697,734 | 890,168 | 6,231,176 | **38% cheaper than soft_exp2 (Plan B)** |
+| soft_fma | 447,728 | 148,340 | 1,038,380 | 1.7× soft_fmul (Bennett-0xx3) |
+| soft_exp_julia | 3,485,262 | 1,195,196 | 8,366,372 | 30% cheaper than soft_exp (Bennett-t110) |
+| soft_exp2_julia | 2,697,734 | 890,168 | 6,231,176 | 38% cheaper than soft_exp2 (Bennett-t110) |
 
-Plan A is cheaper AND bit-exact vs `Base.exp`. `Base.exp(::SoftFloat)`
-now dispatches to `soft_exp_julia`.
+`Base.exp(::SoftFloat)` now dispatches to `soft_exp_julia`.
 
 ---
 
