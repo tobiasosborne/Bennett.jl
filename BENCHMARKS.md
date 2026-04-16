@@ -109,6 +109,22 @@ Bennett-cc0 M1 added (2,8), (2,16), (4,16), (2,32) alongside the pre-existing (4
 | soft_mux_store_4x16 | 6850 | 1912 | 2625 |
 | soft_mux_store_2x32 | 3072 | 764 | 1217 |
 
+#### T1b MUX EXCH (guarded, M2d)
+
+Emitted when a MUX-store is in a non-entry block (path-predicate
+guarding). `pred & 1` folds into the per-slot `ifelse` cond; pred=0
+returns `arr` unchanged. Bennett-cc0 M2d (Bennett-i2a6); see
+`docs/design/m2d_consensus.md`.
+
+| Callee | Total | Toffoli | Wires |
+|--------|-------|---------|-------|
+| soft_mux_store_guarded_2x8 | 4204 | 1278 | 1865 |
+| soft_mux_store_guarded_4x8 | 7946 | 2302 | 3153 |
+| soft_mux_store_guarded_8x8 | 14906 | 4222 | 5601 |
+| soft_mux_store_guarded_2x16 | 4220 | 1278 | 1865 |
+| soft_mux_store_guarded_4x16 | 7674 | 2174 | 3025 |
+| soft_mux_store_guarded_2x32 | 3868 | 1022 | 1609 |
+
 ## Memory strategy comparison matrix
 
 All four strategies are live and picked automatically by the T3b.3 universal

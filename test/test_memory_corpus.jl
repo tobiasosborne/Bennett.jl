@@ -328,12 +328,11 @@ end
         end
     end
 
-    @testset "L7f — conditional MUX-store semantics (BROKEN, MUX path, M2d deferred)" begin
+    @testset "L7f — conditional MUX-store semantics (GREEN, MUX path, M2d)" begin
         # Same shape as L7e but with DYNAMIC idx — dispatches to the MUX EXCH
-        # path (soft_mux_store_4x8). The IRCall writes unconditionally; block
-        # predicate is not threaded through the callee. Filed as follow-up to
-        # Bennett-oio4 (M2c); deferred until the MUX-store guarding design lands
-        # (snapshot + MUX on predicate, ~2·N·W extra Toffoli per guarded store).
+        # path (soft_mux_store_4x8). Bennett-cc0 M2d threads the block
+        # predicate into a new soft_mux_store_guarded_4x8 callee, so the
+        # MUX store is a no-op when `%c == 0`.
         ir = raw"""
         define i8 @julia_f_1(i8 %x, i8 %i, i1 %c) {
         top:
@@ -353,14 +352,16 @@ end
         }
         """
         c = _compile_ir(ir)
-        @test verify_reversibility(c)  # still reverses cleanly
-        # Broken: MUX-store fires regardless of %c, so c=false still writes.
-        @test_broken simulate(c, (Int8(5), Int8(0), false)) == Int8(0)
+        @test verify_reversibility(c)
+        @test simulate(c, (Int8(5), Int8(0), true)) == Int8(5)
+        @test simulate(c, (Int8(5), Int8(0), false)) == Int8(0)
     end
 
-    @testset "L7c — pointer-typed phi (RED, C2, M2b target)" begin
-        # Different allocas selected by branch + phi — needs ir_extract.jl to
-        # accept pointer-typed phi values, THEN lowering/MemSSA to disambiguate.
+    @testset "L7c — pointer-typed phi (GREEN, C2, M2b)" begin
+        # Different allocas selected by branch + phi. Bennett-cc0 M2b:
+        # extractor accepts pointer-typed phi (width=0 sentinel), lowerer
+        # tracks multi-origin ptr_provenance as Vector{PtrOrigin}, store/load
+        # fan out into per-origin path-predicate-guarded shadow writes.
         ir = raw"""
         define i8 @julia_f_1(i8 %x, i1 %c) {
         top:
@@ -378,10 +379,14 @@ end
           ret i8 %v
         }
         """
-        @test_throws Exception _compile_ir(ir)
+        c = _compile_ir(ir)
+        @test verify_reversibility(c)
+        for x in Int8(-8):Int8(2):Int8(8), cbit in (false, true)
+            @test simulate(c, (x, cbit)) == x
+        end
     end
 
-    @testset "L7d — pointer-select (RED, C2, M2b target)" begin
+    @testset "L7d — pointer-select (GREEN, C2, M2b)" begin
         # Same structural issue as L7c but via `select ptr` in a single block.
         ir = raw"""
         define i8 @julia_f_1(i8 %x, i1 %c) {
@@ -394,7 +399,11 @@ end
           ret i8 %v
         }
         """
-        @test_throws Exception _compile_ir(ir)
+        c = _compile_ir(ir)
+        @test verify_reversibility(c)
+        for x in Int8(-8):Int8(2):Int8(8), cbit in (false, true)
+            @test simulate(c, (x, cbit)) == x
+        end
     end
 
     @testset "L8 — GEP-offset-0 alias (baseline GREEN)" begin

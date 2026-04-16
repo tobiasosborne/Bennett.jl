@@ -112,12 +112,14 @@ end
 # IRPhi / IRCast guard.
 _narrow_inst(inst::IRBinOp, W::Int) = IRBinOp(inst.dest, inst.op, inst.op1, inst.op2, inst.width > 1 ? W : 1)
 _narrow_inst(inst::IRICmp, W::Int) = IRICmp(inst.dest, inst.predicate, inst.op1, inst.op2, inst.width > 1 ? W : 1)
-_narrow_inst(inst::IRSelect, W::Int) = IRSelect(inst.dest, inst.cond, inst.op1, inst.op2, inst.width > 1 ? W : 1)
+_narrow_inst(inst::IRSelect, W::Int) = inst.width == 0 ? inst :
+    IRSelect(inst.dest, inst.cond, inst.op1, inst.op2, inst.width > 1 ? W : 1)
 _narrow_inst(inst::IRCast, W::Int) = IRCast(inst.dest, inst.op, inst.operand,
                                              inst.from_width > 1 ? W : 1,
                                              inst.to_width > 1 ? W : 1)
 _narrow_inst(inst::IRRet, W::Int) = IRRet(inst.op, W)
-_narrow_inst(inst::IRPhi, W::Int) = IRPhi(inst.dest, inst.width > 1 ? W : 1, inst.incoming)
+_narrow_inst(inst::IRPhi, W::Int) = inst.width == 0 ? inst :
+    IRPhi(inst.dest, inst.width > 1 ? W : 1, inst.incoming)
 _narrow_inst(inst::IRBranch, W::Int) = inst  # branches don't have widths
 _narrow_inst(inst::IRInsertValue, W::Int) = IRInsertValue(inst.dest, inst.agg, inst.val, inst.index, W, inst.elem_count)
 _narrow_inst(inst::IRExtractValue, W::Int) = IRExtractValue(inst.dest, inst.agg, inst.index, W)
@@ -171,6 +173,13 @@ register_callee!(soft_mux_store_4x16)
 register_callee!(soft_mux_load_4x16)
 register_callee!(soft_mux_store_2x32)
 register_callee!(soft_mux_load_2x32)
+# M2d — Bennett-cc0 bucket C3 (MUX path) path-predicate-guarded MUX stores
+register_callee!(soft_mux_store_guarded_2x8)
+register_callee!(soft_mux_store_guarded_4x8)
+register_callee!(soft_mux_store_guarded_8x8)
+register_callee!(soft_mux_store_guarded_2x16)
+register_callee!(soft_mux_store_guarded_4x16)
+register_callee!(soft_mux_store_guarded_2x32)
 
 # ---- Float64 support via SoftFloat dispatch ----
 

@@ -172,7 +172,10 @@ using Bennett: emit_qrom!, emit_feistel!, emit_shadow_store!, emit_shadow_load!,
                soft_mux_load_2x8, soft_mux_store_2x8,
                soft_mux_load_2x16, soft_mux_store_2x16,
                soft_mux_load_4x16, soft_mux_store_4x16,
-               soft_mux_load_2x32, soft_mux_store_2x32
+               soft_mux_load_2x32, soft_mux_store_2x32,
+               soft_mux_store_guarded_2x8,  soft_mux_store_guarded_4x8,
+               soft_mux_store_guarded_8x8,  soft_mux_store_guarded_2x16,
+               soft_mux_store_guarded_4x16, soft_mux_store_guarded_2x32
 
 function _qrom_circuit(data::Vector{UInt64}, W::Int)
     wa = WireAllocator(); gates = ReversibleGate[]
@@ -222,6 +225,18 @@ mux_variants = [
     ("soft_mux_store_2x16", reversible_compile(soft_mux_store_2x16, UInt64, UInt64, UInt64)),
     ("soft_mux_store_4x16", reversible_compile(soft_mux_store_4x16, UInt64, UInt64, UInt64)),
     ("soft_mux_store_2x32", reversible_compile(soft_mux_store_2x32, UInt64, UInt64, UInt64)),
+]
+
+# --- Guarded MUX EXCH store variants (Bennett-cc0 M2d) ---
+# Each emits when a MUX-store lives in a non-entry block; pred folds into the
+# per-slot ifelse cond so pred=0 returns `arr` unchanged.
+mux_guarded_variants = [
+    ("soft_mux_store_guarded_2x8",  reversible_compile(soft_mux_store_guarded_2x8,  UInt64, UInt64, UInt64, UInt64)),
+    ("soft_mux_store_guarded_4x8",  reversible_compile(soft_mux_store_guarded_4x8,  UInt64, UInt64, UInt64, UInt64)),
+    ("soft_mux_store_guarded_8x8",  reversible_compile(soft_mux_store_guarded_8x8,  UInt64, UInt64, UInt64, UInt64)),
+    ("soft_mux_store_guarded_2x16", reversible_compile(soft_mux_store_guarded_2x16, UInt64, UInt64, UInt64, UInt64)),
+    ("soft_mux_store_guarded_4x16", reversible_compile(soft_mux_store_guarded_4x16, UInt64, UInt64, UInt64, UInt64)),
+    ("soft_mux_store_guarded_2x32", reversible_compile(soft_mux_store_guarded_2x32, UInt64, UInt64, UInt64, UInt64)),
 ]
 
 # --- Shadow memory (per single store, per single load) ---
@@ -328,6 +343,21 @@ open(joinpath(@__DIR__, "..", "BENCHMARKS.md"), "w") do io
     println(io, "| Callee | Total | Toffoli | Wires |")
     println(io, "|--------|-------|---------|-------|")
     for (name, c) in mux_variants
+        local gc_mux = gate_count(c)
+        println(io, "| $name | $(gc_mux.total) | $(gc_mux.Toffoli) | $(c.n_wires) |")
+    end
+    println(io)
+
+    println(io, "#### T1b MUX EXCH (guarded, M2d)")
+    println(io)
+    println(io, "Emitted when a MUX-store is in a non-entry block (path-predicate")
+    println(io, "guarding). `pred & 1` folds into the per-slot `ifelse` cond; pred=0")
+    println(io, "returns `arr` unchanged. Bennett-cc0 M2d (Bennett-i2a6); see")
+    println(io, "`docs/design/m2d_consensus.md`.")
+    println(io)
+    println(io, "| Callee | Total | Toffoli | Wires |")
+    println(io, "|--------|-------|---------|-------|")
+    for (name, c) in mux_guarded_variants
         local gc_mux = gate_count(c)
         println(io, "| $name | $(gc_mux.total) | $(gc_mux.Toffoli) | $(c.n_wires) |")
     end

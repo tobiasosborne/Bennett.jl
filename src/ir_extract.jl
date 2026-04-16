@@ -679,9 +679,13 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
     # select
     if opc == LLVM.API.LLVMSelect
         ops = LLVM.operands(inst)
+        # Bennett-cc0 M2b: pointer-typed select uses width=0 sentinel.
+        # Pointers don't materialize as wires — routing is recorded in
+        # ptr_provenance at lowering time. _type_width stays fail-loud
+        # for any other unexpected pointer use (load, binop, etc.).
+        w = LLVM.value_type(inst) isa LLVM.PointerType ? 0 : _iwidth(inst)
         return IRSelect(dest, _operand(ops[1], names),
-                        _operand(ops[2], names), _operand(ops[3], names),
-                        _iwidth(inst))
+                        _operand(ops[2], names), _operand(ops[3], names), w)
     end
 
     # phi
@@ -690,7 +694,9 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         for (val, blk) in LLVM.incoming(inst)
             push!(incoming, (_operand(val, names), Symbol(LLVM.name(blk))))
         end
-        return IRPhi(dest, _iwidth(inst), incoming)
+        # Bennett-cc0 M2b: pointer-typed phi uses width=0 sentinel.
+        w = LLVM.value_type(inst) isa LLVM.PointerType ? 0 : _iwidth(inst)
+        return IRPhi(dest, w, incoming)
     end
 
     # casts

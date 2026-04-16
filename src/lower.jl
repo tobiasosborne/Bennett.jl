@@ -61,7 +61,12 @@ struct LoweringCtx
     compact_calls::Bool
     # T1b.3: reversible memory (store/alloca) state
     alloca_info::Dict{Symbol, Tuple{Int,Int}}                 # alloca dest → (elem_width, n_elems)
-    ptr_provenance::Dict{Symbol, Tuple{Symbol,IROperand}}     # ptr SSA → (alloca dest, element idx)
+    # Bennett-cc0 M2b: multi-origin ptr provenance. Each pointer SSA name maps
+    # to ≥1 PtrOrigins — one per alloca the pointer might dereference at
+    # runtime, keyed on the path-predicate wire that selects that origin.
+    # Single-origin producers (alloca, GEP of known alloca) push a 1-Vector
+    # with `predicate_wire = block_pred[entry_label][1]`.
+    ptr_provenance::Dict{Symbol, Vector{PtrOrigin}}
     mux_counter::Ref{Int}                                      # monotonic counter for synthetic SSA names
     # T1c.2: compile-time-constant global arrays (for QROM dispatch)
     globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}}          # global name → (data, elem_width)
@@ -83,7 +88,7 @@ LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
     LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
                 block_pred, ssa_liveness, inst_counter, use_karatsuba, compact_calls,
                 Dict{Symbol,Tuple{Int,Int}}(),
-                Dict{Symbol,Tuple{Symbol,IROperand}}(),
+                Dict{Symbol,Vector{PtrOrigin}}(),
                 Ref(0),
                 Dict{Symbol,Tuple{Vector{UInt64},Int}}(),
                 :auto, :auto, Symbol(""))
@@ -95,7 +100,7 @@ LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
     LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
                 block_pred, ssa_liveness, inst_counter, use_karatsuba, compact_calls,
                 Dict{Symbol,Tuple{Int,Int}}(),
-                Dict{Symbol,Tuple{Symbol,IROperand}}(),
+                Dict{Symbol,Vector{PtrOrigin}}(),
                 Ref(0),
                 globals,
                 :auto, :auto, Symbol(""))
@@ -108,7 +113,7 @@ LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
     LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
                 block_pred, ssa_liveness, inst_counter, use_karatsuba, compact_calls,
                 Dict{Symbol,Tuple{Int,Int}}(),
-                Dict{Symbol,Tuple{Symbol,IROperand}}(),
+                Dict{Symbol,Vector{PtrOrigin}}(),
                 Ref(0),
                 globals,
                 add, mul, Symbol(""))
@@ -116,7 +121,7 @@ LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
 # Dispatched instruction lowering — Julia selects the method by inst type
 _lower_inst!(ctx::LoweringCtx, inst::IRPhi, label::Symbol) =
     lower_phi!(ctx.gates, ctx.wa, ctx.vw, inst, label, ctx.preds, ctx.branch_info, ctx.block_order;
-               block_pred=ctx.block_pred)
+               block_pred=ctx.block_pred, ptr_provenance=ctx.ptr_provenance)
 
 _lower_inst!(ctx::LoweringCtx, inst::IRBinOp, ::Symbol) =
     lower_binop!(ctx.gates, ctx.wa, ctx.vw, inst;
@@ -127,7 +132,7 @@ _lower_inst!(ctx::LoweringCtx, inst::IRICmp, ::Symbol) =
     lower_icmp!(ctx.gates, ctx.wa, ctx.vw, inst)
 
 _lower_inst!(ctx::LoweringCtx, inst::IRSelect, ::Symbol) =
-    lower_select!(ctx.gates, ctx.wa, ctx.vw, inst)
+    lower_select!(ctx.gates, ctx.wa, ctx.vw, inst; ctx=ctx)
 
 _lower_inst!(ctx::LoweringCtx, inst::IRCast, ::Symbol) =
     lower_cast!(ctx.gates, ctx.wa, ctx.vw, inst)
@@ -323,7 +328,7 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
     # to stores/loads in later blocks. Previously these were re-initialised per
     # block (bug), which hard-errored on branched stores — see L7a/L7b tests.
     alloca_info = Dict{Symbol, Tuple{Int,Int}}()
-    ptr_provenance = Dict{Symbol, Tuple{Symbol,IROperand}}()
+    ptr_provenance = Dict{Symbol, Vector{PtrOrigin}}()
 
     for (name, width) in parsed.args
         wires = allocate!(wa, width)
@@ -575,7 +580,7 @@ function lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_orde
                            # globally-unique hint (inst.dest / inst.ptr.name) so cross-block
                            # counter reset doesn't collide.
                            alloca_info::Dict{Symbol,Tuple{Int,Int}}=Dict{Symbol,Tuple{Int,Int}}(),
-                           ptr_provenance::Dict{Symbol,Tuple{Symbol,IROperand}}=Dict{Symbol,Tuple{Symbol,IROperand}}(),
+                           ptr_provenance::Dict{Symbol,Vector{PtrOrigin}}=Dict{Symbol,Vector{PtrOrigin}}(),
                            # Bennett-cc0 M2c: entry-block label for conditional-store
                            # guarding. Sentinel Symbol("") means "treat all as entry"
                            # (backward-compat for direct callers).
@@ -853,6 +858,40 @@ end
 
 # ---- phi resolution (predicated) ----
 
+"""
+Bennett-cc0 M2b — compute the edge predicate wire from `src_block` into
+`phi_block`. Extracted verbatim from the original `resolve_phi_predicated!`
+loop so pointer-typed phi can share the same logic (pure refactor).
+
+- Conditional branch where phi_block is the true target:
+  edge_pred = AND(block_pred[src_block], cond_wire).
+- Conditional branch where phi_block is the false target:
+  edge_pred = AND(block_pred[src_block], NOT(cond_wire)).
+- Unconditional branch or src_block doesn't directly branch to phi_block:
+  edge_pred = block_pred[src_block] (propagated unchanged).
+
+Returns a Vector{Int} (1-wire) for AND-reduction compatibility with the
+existing MUX chain.
+"""
+function _edge_predicate!(gates::Vector{ReversibleGate}, wa::WireAllocator,
+                          src_block::Symbol, phi_block::Symbol,
+                          block_pred::Dict{Symbol,Vector{Int}},
+                          branch_info::Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}})
+    haskey(block_pred, src_block) ||
+        error("_edge_predicate!: no predicate for block $src_block in phi resolution")
+    if haskey(branch_info, src_block)
+        (cw, tlabel, flabel) = branch_info[src_block]
+        if tlabel == phi_block
+            return _and_wire!(gates, wa, block_pred[src_block], cw)
+        elseif flabel == phi_block
+            not_cw = _not_wire!(gates, wa, cw)
+            return _and_wire!(gates, wa, block_pred[src_block], not_cw)
+        end
+    end
+    # Unconditional / indirect — propagate block pred as-is.
+    return block_pred[src_block]
+end
+
 """Resolve phi node using path predicates.
 
 For each incoming (wires, from_block), compute the **edge predicate** — the
@@ -871,24 +910,8 @@ function resolve_phi_predicated!(gates, wa, incoming, block_pred, W;
     # Compute edge predicates for each incoming value
     edge_preds = Vector{Int}[]
     for (_, blk) in incoming
-        haskey(block_pred, blk) || error("No predicate for block $blk in phi resolution")
-        if haskey(branch_info, blk)
-            (cw, tlabel, flabel) = branch_info[blk]
-            if tlabel == phi_block
-                # True side edge
-                push!(edge_preds, _and_wire!(gates, wa, block_pred[blk], cw))
-            elseif flabel == phi_block
-                # False side edge
-                not_cw = _not_wire!(gates, wa, cw)
-                push!(edge_preds, _and_wire!(gates, wa, block_pred[blk], not_cw))
-            else
-                # from_block doesn't branch directly to phi_block — use block pred
-                push!(edge_preds, block_pred[blk])
-            end
-        else
-            # Unconditional branch or no branch info — use block predicate
-            push!(edge_preds, block_pred[blk])
-        end
+        push!(edge_preds, _edge_predicate!(gates, wa, blk, phi_block,
+                                           block_pred, branch_info))
     end
 
     # Chain MUXes: start from last, each edge pred selects its value
@@ -904,7 +927,40 @@ end
 
 function lower_phi!(gates, wa, vw, inst::IRPhi, phi_block::Symbol,
                     preds, branch_info, block_order;
-                    block_pred::Dict{Symbol,Vector{Int}}=Dict{Symbol,Vector{Int}}())
+                    block_pred::Dict{Symbol,Vector{Int}}=Dict{Symbol,Vector{Int}}(),
+                    ptr_provenance::Union{Nothing,Dict{Symbol,Vector{PtrOrigin}}}=nothing)
+    # Bennett-cc0 M2b: pointer-typed phi (width=0 sentinel from ir_extract.jl).
+    # Metadata-only routing — emits NO wires, NO gates for the phi itself
+    # beyond the edge-predicate ANDs that fold each origin's predicate with
+    # its incoming edge. Store/load through the resulting multi-origin
+    # pointer fan out via emit_shadow_store_guarded! / multi-origin load.
+    if inst.width == 0
+        ptr_provenance === nothing &&
+            error("lower_phi!: ptr-phi %$(inst.dest) requires ptr_provenance threading")
+        isempty(block_pred) &&
+            error("lower_phi!: ptr-phi %$(inst.dest) needs block_pred for edge predicates")
+        merged = PtrOrigin[]
+        for (val, src_block) in inst.incoming
+            val.kind == :ssa ||
+                error("lower_phi!: ptr-phi %$(inst.dest) incoming from non-SSA operand $(val)")
+            haskey(ptr_provenance, val.name) ||
+                error("lower_phi!: ptr-phi %$(inst.dest) incoming %$(val.name) has no provenance")
+            edge_pred = _edge_predicate!(gates, wa, src_block, phi_block,
+                                         block_pred, branch_info)
+            for o in ptr_provenance[val.name]
+                combined = _and_wire!(gates, wa, [o.predicate_wire], edge_pred)
+                push!(merged, PtrOrigin(o.alloca_dest, o.idx_op, combined[1]))
+            end
+        end
+        isempty(merged) &&
+            error("lower_phi!: ptr-phi %$(inst.dest) produced empty origin set")
+        length(merged) <= 8 ||
+            error("lower_phi!: ptr-phi %$(inst.dest) fan-out $(length(merged)) > 8 " *
+                  "exceeds M2b budget; file a bd issue")
+        ptr_provenance[inst.dest] = merged
+        return  # no vw[inst.dest] — pointers don't materialize as wires
+    end
+
     incoming = [(resolve!(gates, wa, vw, val, inst.width), blk)
                 for (val, blk) in inst.incoming]
     isempty(block_pred) && error("block_pred is empty during phi resolution for $(inst.dest) — path predicates must be computed before phi lowering")
@@ -1281,7 +1337,40 @@ end
 
 # ---- select (mux) ----
 
-function lower_select!(gates, wa, vw, inst::IRSelect)
+function lower_select!(gates, wa, vw, inst::IRSelect; ctx::Union{Nothing,LoweringCtx}=nothing)
+    # Bennett-cc0 M2b: pointer-typed select (width=0 sentinel). Metadata-only
+    # routing: merge origins from both sides, guarded by cond / NOT(cond).
+    if inst.width == 0
+        ctx === nothing &&
+            error("lower_select!: ptr-select %$(inst.dest) requires ctx for ptr_provenance threading")
+        inst.op1.kind == :ssa ||
+            error("lower_select!: ptr-select %$(inst.dest) true-side is non-SSA ($(inst.op1))")
+        inst.op2.kind == :ssa ||
+            error("lower_select!: ptr-select %$(inst.dest) false-side is non-SSA ($(inst.op2))")
+        haskey(ctx.ptr_provenance, inst.op1.name) ||
+            error("lower_select!: ptr-select %$(inst.dest) true-side %$(inst.op1.name) has no provenance")
+        haskey(ctx.ptr_provenance, inst.op2.name) ||
+            error("lower_select!: ptr-select %$(inst.dest) false-side %$(inst.op2.name) has no provenance")
+
+        cond = resolve!(gates, wa, vw, inst.cond, 1)
+        not_cond = _not_wire!(gates, wa, cond)
+
+        merged = PtrOrigin[]
+        for o in ctx.ptr_provenance[inst.op1.name]
+            combined = _and_wire!(gates, wa, [o.predicate_wire], cond)
+            push!(merged, PtrOrigin(o.alloca_dest, o.idx_op, combined[1]))
+        end
+        for o in ctx.ptr_provenance[inst.op2.name]
+            combined = _and_wire!(gates, wa, [o.predicate_wire], not_cond)
+            push!(merged, PtrOrigin(o.alloca_dest, o.idx_op, combined[1]))
+        end
+        length(merged) <= 8 ||
+            error("lower_select!: ptr-select %$(inst.dest) fan-out $(length(merged)) > 8 " *
+                  "exceeds M2b budget; file a bd issue")
+        ctx.ptr_provenance[inst.dest] = merged
+        return  # no vw[inst.dest] — pointers don't materialize as wires
+    end
+
     cond = resolve!(gates, wa, vw, inst.cond, 1)
     tv   = resolve!(gates, wa, vw, inst.op1, inst.width)
     fv   = resolve!(gates, wa, vw, inst.op2, inst.width)
@@ -1426,7 +1515,7 @@ end
 """GEP with constant offset: record that dest points to base + offset_bytes."""
 function lower_ptr_offset!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                            vw::Dict{Symbol,Vector{Int}}, inst::IRPtrOffset;
-                           ptr_provenance::Union{Nothing,Dict{Symbol,Tuple{Symbol,IROperand}}}=nothing,
+                           ptr_provenance::Union{Nothing,Dict{Symbol,Vector{PtrOrigin}}}=nothing,
                            alloca_info::Union{Nothing,Dict{Symbol,Tuple{Int,Int}}}=nothing)
     # The base operand should be a flat wire array (from ptr param)
     if !haskey(vw, inst.base.name)
@@ -1440,23 +1529,29 @@ function lower_ptr_offset!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     # Store a reference — the IRLoad will do the actual copy
     vw[inst.dest] = base_wires[(bit_offset + 1):end]
 
-    # T1b.3: propagate pointer provenance for store/load routing.
-    # If the base is a known alloca (or has its own provenance), update the
-    # element index by the byte-offset (bytes map 1:1 to elements when
-    # elem_width = 8 — MVP constraint).
+    # Bennett-cc0 M2b: propagate pointer provenance per-origin. For each
+    # origin of the base (typically 1 pre-M2b; >1 after a ptr-phi/select),
+    # bump the element index by offset_bytes (MVP: elem_width = 8). Preserves
+    # the predicate_wire per origin — the GEP is a pure index map, not a
+    # control-flow merge.
     if ptr_provenance !== nothing && alloca_info !== nothing
-        alloca_dest, base_idx = if haskey(ptr_provenance, inst.base.name)
+        base_origins = if haskey(ptr_provenance, inst.base.name)
             ptr_provenance[inst.base.name]
-        elseif haskey(alloca_info, inst.base.name)
-            (inst.base.name, iconst(0))
         else
-            (nothing, iconst(0))
+            PtrOrigin[]
         end
-        if alloca_dest !== nothing && base_idx.kind == :const
-            ew = first(alloca_info[alloca_dest])
-            ew == 8 || return  # non-MVP; skip
-            new_idx = iconst(base_idx.value + inst.offset_bytes)
-            ptr_provenance[inst.dest] = (alloca_dest, new_idx)
+        new_origins = PtrOrigin[]
+        for o in base_origins
+            o.idx_op.kind == :const || continue  # non-const base idx: skip
+            info = get(alloca_info, o.alloca_dest, nothing)
+            info === nothing && continue
+            ew = first(info)
+            ew == 8 || continue  # non-MVP; skip this origin
+            new_idx = iconst(o.idx_op.value + inst.offset_bytes)
+            push!(new_origins, PtrOrigin(o.alloca_dest, new_idx, o.predicate_wire))
+        end
+        if !isempty(new_origins)
+            ptr_provenance[inst.dest] = new_origins
         end
     end
 end
@@ -1474,7 +1569,7 @@ W-independent, vs MUX's O(L·W). See `emit_qrom!`.
 """
 function lower_var_gep!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                         vw::Dict{Symbol,Vector{Int}}, inst::IRVarGEP;
-                        ptr_provenance::Union{Nothing,Dict{Symbol,Tuple{Symbol,IROperand}}}=nothing,
+                        ptr_provenance::Union{Nothing,Dict{Symbol,Vector{PtrOrigin}}}=nothing,
                         alloca_info::Union{Nothing,Dict{Symbol,Tuple{Int,Int}}}=nothing,
                         globals::Union{Nothing,Dict{Symbol,Tuple{Vector{UInt64},Int}}}=nothing)
     # T1c.2: constant global table → QROM
@@ -1486,11 +1581,24 @@ function lower_var_gep!(gates::Vector{ReversibleGate}, wa::WireAllocator,
         return
     end
 
-    # T1b.3: if base is an alloca, record provenance so lower_store!/lower_load!
-    # can route through soft_mux_* callees instead of the MUX-tree slice.
+    # Bennett-cc0 M2b: if base is an alloca, record provenance per-origin so
+    # lower_store!/lower_load! can route through the right callee. The dynamic
+    # index is uniform across origins — each origin gets the same `inst.index`
+    # with its existing `predicate_wire`.
     if ptr_provenance !== nothing && alloca_info !== nothing &&
        haskey(alloca_info, inst.base.name)
-        ptr_provenance[inst.dest] = (inst.base.name, inst.index)
+        # Single-origin producer path — use the entry predicate as the guard.
+        # (lower_alloca! already registers this origin; this branch handles
+        # the case where the base is a raw alloca reference, not itself an
+        # SSA name carrying multi-origin provenance.)
+        base_origins = get(ptr_provenance, inst.base.name, PtrOrigin[])
+        if !isempty(base_origins)
+            new_origins = PtrOrigin[]
+            for o in base_origins
+                push!(new_origins, PtrOrigin(o.alloca_dest, inst.index, o.predicate_wire))
+            end
+            ptr_provenance[inst.dest] = new_origins
+        end
     end
 
     haskey(vw, inst.base.name) ||
@@ -1537,14 +1645,62 @@ Otherwise delegate to the legacy load path (pointer parameters, NTuple input).
 """
 function lower_load!(ctx::LoweringCtx, inst::IRLoad)
     if inst.ptr.kind == :ssa && haskey(ctx.ptr_provenance, inst.ptr.name)
-        _lower_load_via_mux!(ctx, inst)
+        origins = ctx.ptr_provenance[inst.ptr.name]
+        isempty(origins) &&
+            error("lower_load!: empty origin set for ptr %$(inst.ptr.name)")
+        if length(origins) == 1
+            _lower_load_via_mux!(ctx, inst, origins[1])
+        else
+            _lower_load_multi_origin!(ctx, inst, origins)
+        end
     else
         lower_load!(ctx.gates, ctx.wa, ctx.vw, inst)
     end
 end
 
-function _lower_load_via_mux!(ctx::LoweringCtx, inst::IRLoad)
-    alloca_dest, idx_op = ctx.ptr_provenance[inst.ptr.name]
+"""Bennett-cc0 M2b — multi-origin pointer load. Allocate a fresh W-wire
+result (zero by WireAllocator invariant); per origin, emit
+`ToffoliGate(origin.predicate_wire, primal[i], result[i])` for each bit.
+At runtime exactly one predicate is 1, so exactly one origin XORs its
+slot bits into the zero-initialised result — yielding the selected value.
+Bennett's reverse pass unwinds symmetrically (Toffoli is self-inverse;
+predicate wires are write-once).
+"""
+function _lower_load_multi_origin!(ctx::LoweringCtx, inst::IRLoad,
+                                   origins::Vector{PtrOrigin})
+    length(origins) <= 8 ||
+        error("_lower_load_multi_origin!: fan-out of $(length(origins)) > 8 " *
+              "origins exceeds M2b budget; file a bd issue")
+    W = inst.width
+    result = allocate!(ctx.wa, W)  # zero by WireAllocator invariant
+    for o in origins
+        info = get(ctx.alloca_info, o.alloca_dest, nothing)
+        info === nothing &&
+            error("_lower_load_multi_origin!: unknown alloca %$(o.alloca_dest)")
+        elem_w, n = info
+        W == elem_w ||
+            error("_lower_load_multi_origin!: load width=$W vs origin $(o.alloca_dest) elem_width=$elem_w")
+        o.idx_op.kind == :const ||
+            error("_lower_load_multi_origin!: multi-origin ptr with dynamic idx is NYI")
+        0 <= o.idx_op.value < n ||
+            error("_lower_load_multi_origin!: idx=$(o.idx_op.value) out of range [0, $n)")
+
+        arr_wires = ctx.vw[o.alloca_dest]
+        length(arr_wires) == elem_w * n ||
+            error("_lower_load_multi_origin!: primal has $(length(arr_wires)) wires, expected $(elem_w*n)")
+
+        primal_slot = arr_wires[o.idx_op.value * elem_w + 1 : (o.idx_op.value + 1) * elem_w]
+        for i in 1:W
+            push!(ctx.gates, ToffoliGate(o.predicate_wire, primal_slot[i], result[i]))
+        end
+    end
+    ctx.vw[inst.dest] = result
+    return nothing
+end
+
+function _lower_load_via_mux!(ctx::LoweringCtx, inst::IRLoad, origin::PtrOrigin)
+    alloca_dest = origin.alloca_dest
+    idx_op = origin.idx_op
     info = ctx.alloca_info[alloca_dest]
 
     strategy = _pick_alloca_strategy(info, idx_op)
@@ -1800,8 +1956,38 @@ function lower_alloca!(ctx::LoweringCtx, inst::IRAlloca)
     wires = allocate!(ctx.wa, total_bits)       # zero by invariant
     ctx.vw[inst.dest] = wires
     ctx.alloca_info[inst.dest] = (inst.elem_width, n)
-    ctx.ptr_provenance[inst.dest] = (inst.dest, iconst(0))
+    # Bennett-cc0 M2b: single-origin provenance with the entry predicate as
+    # the guard wire. The trivial "always-1" entry predicate lets downstream
+    # multi-origin merges (lower_phi!/lower_select!) AND edge predicates with
+    # the origin's guard uniformly, and keeps the single-origin fast path
+    # byte-identical to pre-M2b (the entry predicate is always 1 at runtime).
+    ctx.ptr_provenance[inst.dest] = [PtrOrigin(inst.dest, iconst(0),
+                                               _entry_predicate_wire(ctx))]
     return nothing
+end
+
+"""Return the entry-block's single-wire path predicate (always 1).
+
+Every `lower()` run installs a `NOTGate(pw[1])` on a fresh wire in the
+entry block, so `ctx.block_pred[ctx.entry_label]` is a 1-vector whose only
+wire is 1 at runtime. This is the default `predicate_wire` for single-
+origin `PtrOrigin`s (alloca, GEP of known alloca): it satisfies the
+multi-origin type shape without actually emitting a guard.
+
+Fail-fast if called with the sentinel `entry_label = Symbol("")` (direct
+`lower_block_insts!` callers that didn't go through `lower()`). In that
+case the caller should supply the predicate explicitly.
+"""
+function _entry_predicate_wire(ctx::LoweringCtx)
+    ctx.entry_label == Symbol("") &&
+        error("_entry_predicate_wire: ctx has sentinel entry_label; direct " *
+              "lower_block_insts! callers must either set entry_label or " *
+              "bypass ptr_provenance usage")
+    pw = get(ctx.block_pred, ctx.entry_label, Int[])
+    length(pw) == 1 ||
+        error("_entry_predicate_wire: expected single-wire predicate for " *
+              "entry block $(ctx.entry_label), got $(length(pw)) wires")
+    return pw[1]
 end
 
 """
@@ -1858,7 +2044,46 @@ function lower_store!(ctx::LoweringCtx, inst::IRStore, block_label::Symbol=Symbo
     haskey(ctx.ptr_provenance, inst.ptr.name) ||
         error("lower_store!: no provenance for ptr %$(inst.ptr.name); " *
               "store must target an alloca or GEP thereof")
-    alloca_dest, idx_op = ctx.ptr_provenance[inst.ptr.name]
+    origins = ctx.ptr_provenance[inst.ptr.name]
+    isempty(origins) &&
+        error("lower_store!: empty origin set for ptr %$(inst.ptr.name)")
+
+    # Bennett-cc0 M2b: single-origin fast path preserves every BENCHMARKS.md
+    # baseline. Multi-origin (pointer phi/select) fans out to N guarded shadow
+    # stores, one per origin, keyed on its path-predicate wire.
+    if length(origins) == 1
+        return _lower_store_single_origin!(ctx, inst, origins[1], block_label)
+    end
+
+    # Multi-origin fan-out. Each origin writes into its own alloca slot under
+    # its own path-predicate guard. At runtime exactly one predicate is true
+    # (mutual exclusion is guaranteed by the producer: ptr-phi/ptr-select
+    # compose edge predicates that are pairwise-exclusive by construction).
+    length(origins) <= 8 ||
+        error("lower_store!: multi-origin fan-out of $(length(origins)) > 8 " *
+              "origins exceeds M2b budget; file a bd issue for MUX-tree " *
+              "collapse of deep ptr-phi chains")
+    val_wires = resolve!(ctx.gates, ctx.wa, ctx.vw, inst.val, inst.width)
+    for o in origins
+        info = get(ctx.alloca_info, o.alloca_dest, nothing)
+        info === nothing &&
+            error("lower_store!: multi-origin ptr references unknown alloca %$(o.alloca_dest)")
+        strategy = _pick_alloca_strategy(info, o.idx_op)
+        strategy == :shadow ||
+            error("lower_store!: multi-origin ptr with dynamic idx (origin=$(o.alloca_dest), " *
+                  "strategy=$strategy) is NYI; file follow-up bd issue for multi-origin MUX EXCH")
+        _emit_store_via_shadow_guarded!(ctx, inst, o.alloca_dest, info, o.idx_op,
+                                        o.predicate_wire, val_wires)
+    end
+    return nothing
+end
+
+"""Single-origin store dispatch (Bennett-cc0 M2b). Pulled out of the old
+`lower_store!` body so the fast path stays byte-identical to pre-M2b."""
+function _lower_store_single_origin!(ctx::LoweringCtx, inst::IRStore,
+                                     origin::PtrOrigin, block_label::Symbol)
+    alloca_dest = origin.alloca_dest
+    idx_op = origin.idx_op
     info = get(ctx.alloca_info, alloca_dest, nothing)
     info === nothing &&
         error("lower_store!: provenance points to unknown alloca %$alloca_dest")
@@ -1868,20 +2093,52 @@ function lower_store!(ctx::LoweringCtx, inst::IRStore, block_label::Symbol=Symbo
     if strategy == :shadow
         _lower_store_via_shadow!(ctx, inst, alloca_dest, info, idx_op, block_label)
     elseif strategy == :mux_exch_2x8
-        _lower_store_via_mux_2x8!(ctx, inst, alloca_dest, idx_op)
+        _lower_store_via_mux_2x8!(ctx, inst, alloca_dest, idx_op; block_label=block_label)
     elseif strategy == :mux_exch_4x8
-        _lower_store_via_mux_4x8!(ctx, inst, alloca_dest, idx_op)
+        _lower_store_via_mux_4x8!(ctx, inst, alloca_dest, idx_op; block_label=block_label)
     elseif strategy == :mux_exch_8x8
-        _lower_store_via_mux_8x8!(ctx, inst, alloca_dest, idx_op)
+        _lower_store_via_mux_8x8!(ctx, inst, alloca_dest, idx_op; block_label=block_label)
     elseif strategy == :mux_exch_2x16
-        _lower_store_via_mux_2x16!(ctx, inst, alloca_dest, idx_op)
+        _lower_store_via_mux_2x16!(ctx, inst, alloca_dest, idx_op; block_label=block_label)
     elseif strategy == :mux_exch_4x16
-        _lower_store_via_mux_4x16!(ctx, inst, alloca_dest, idx_op)
+        _lower_store_via_mux_4x16!(ctx, inst, alloca_dest, idx_op; block_label=block_label)
     elseif strategy == :mux_exch_2x32
-        _lower_store_via_mux_2x32!(ctx, inst, alloca_dest, idx_op)
+        _lower_store_via_mux_2x32!(ctx, inst, alloca_dest, idx_op; block_label=block_label)
     else
         error("lower_store!: unsupported (elem_width=$(info[1]), n_elems=$(info[2])) for dynamic idx")
     end
+    return nothing
+end
+
+"""Bennett-cc0 M2b — emit a guarded shadow store for one origin of a
+multi-origin pointer. `pred_wire` is the origin's path predicate; at
+runtime exactly one origin's predicate is 1, so exactly one primal slot
+receives the value.
+
+`val_wires` must be the pre-resolved value wires — passed in so the fan-out
+shares one resolution across all origins (avoids re-allocating the value
+wire per origin).
+"""
+function _emit_store_via_shadow_guarded!(ctx::LoweringCtx, inst::IRStore,
+                                         alloca_dest::Symbol, info::Tuple{Int,Int},
+                                         idx_op::IROperand, pred_wire::Int,
+                                         val_wires::Vector{Int})
+    elem_w, n = info
+    inst.width == elem_w ||
+        error("_emit_store_via_shadow_guarded!: store width=$(inst.width) doesn't match alloca elem_width=$elem_w")
+    idx_op.kind == :const ||
+        error("_emit_store_via_shadow_guarded!: non-const idx not supported in multi-origin path")
+    0 <= idx_op.value < n ||
+        error("_emit_store_via_shadow_guarded!: idx=$(idx_op.value) out of range [0, $n)")
+
+    arr_wires = ctx.vw[alloca_dest]
+    length(arr_wires) == elem_w * n ||
+        error("_emit_store_via_shadow_guarded!: primal has $(length(arr_wires)) wires, expected $(elem_w*n)")
+
+    primal_slot = arr_wires[idx_op.value * elem_w + 1 : (idx_op.value + 1) * elem_w]
+    tape = allocate!(ctx.wa, elem_w)
+    emit_shadow_store_guarded!(ctx.gates, ctx.wa, primal_slot, tape, val_wires,
+                               elem_w, pred_wire)
     return nothing
 end
 
@@ -1928,8 +2185,16 @@ function _lower_store_via_shadow!(ctx::LoweringCtx, inst::IRStore,
     return nothing
 end
 
+# Bennett-cc0 M2d: MUX-store dispatch is guarded when the store lives in a
+# non-entry block. `block_label == ctx.entry_label` (or the sentinel
+# Symbol("")) routes to the unguarded soft_mux_store_NxW callee — entry-block
+# stores therefore keep the byte-identical BENCHMARKS.md gate counts. Any
+# other block promotes the 1-wire block predicate into a 64-wire operand and
+# calls soft_mux_store_guarded_NxW, folding `pred` into the per-slot
+# `ifelse` cond. When `pred == 0` every slot returns OLD → `arr` unchanged.
 function _lower_store_via_mux_4x8!(ctx::LoweringCtx, inst::IRStore,
-                                   alloca_dest::Symbol, idx_op::IROperand)
+                                   alloca_dest::Symbol, idx_op::IROperand;
+                                   block_label::Symbol=Symbol(""))
     inst.width == 8 ||
         error("_lower_store_via_mux_4x8!: store width must be 8, got $(inst.width)")
     arr_wires = ctx.vw[alloca_dest]
@@ -1946,8 +2211,16 @@ function _lower_store_via_mux_4x8!(ctx::LoweringCtx, inst::IRStore,
     ctx.vw[idx_sym] = _operand_to_u64!(ctx, idx_op)
     ctx.vw[val_sym] = _operand_to_u64!(ctx, inst.val)
 
-    call = IRCall(res_sym, soft_mux_store_4x8,
-                  [ssa(arr_sym), ssa(idx_sym), ssa(val_sym)], [64, 64, 64], 64)
+    if block_label == Symbol("") || block_label == ctx.entry_label
+        call = IRCall(res_sym, soft_mux_store_4x8,
+                      [ssa(arr_sym), ssa(idx_sym), ssa(val_sym)], [64, 64, 64], 64)
+    else
+        pred_sym = _mux_store_pred_sym!(ctx, block_label, tag,
+                                        "_lower_store_via_mux_4x8!")
+        call = IRCall(res_sym, soft_mux_store_guarded_4x8,
+                      [ssa(arr_sym), ssa(idx_sym), ssa(val_sym), ssa(pred_sym)],
+                      [64, 64, 64, 64], 64)
+    end
     lower_call!(ctx.gates, ctx.wa, ctx.vw, call; compact=ctx.compact_calls)
 
     ctx.vw[alloca_dest] = ctx.vw[res_sym][1:32]
@@ -1955,7 +2228,8 @@ function _lower_store_via_mux_4x8!(ctx::LoweringCtx, inst::IRStore,
 end
 
 function _lower_store_via_mux_8x8!(ctx::LoweringCtx, inst::IRStore,
-                                   alloca_dest::Symbol, idx_op::IROperand)
+                                   alloca_dest::Symbol, idx_op::IROperand;
+                                   block_label::Symbol=Symbol(""))
     inst.width == 8 ||
         error("_lower_store_via_mux_8x8!: store width must be 8, got $(inst.width)")
     arr_wires = ctx.vw[alloca_dest]
@@ -1972,8 +2246,16 @@ function _lower_store_via_mux_8x8!(ctx::LoweringCtx, inst::IRStore,
     ctx.vw[idx_sym] = _operand_to_u64!(ctx, idx_op)
     ctx.vw[val_sym] = _operand_to_u64!(ctx, inst.val)
 
-    call = IRCall(res_sym, soft_mux_store_8x8,
-                  [ssa(arr_sym), ssa(idx_sym), ssa(val_sym)], [64, 64, 64], 64)
+    if block_label == Symbol("") || block_label == ctx.entry_label
+        call = IRCall(res_sym, soft_mux_store_8x8,
+                      [ssa(arr_sym), ssa(idx_sym), ssa(val_sym)], [64, 64, 64], 64)
+    else
+        pred_sym = _mux_store_pred_sym!(ctx, block_label, tag,
+                                        "_lower_store_via_mux_8x8!")
+        call = IRCall(res_sym, soft_mux_store_guarded_8x8,
+                      [ssa(arr_sym), ssa(idx_sym), ssa(val_sym), ssa(pred_sym)],
+                      [64, 64, 64, 64], 64)
+    end
     lower_call!(ctx.gates, ctx.wa, ctx.vw, call; compact=ctx.compact_calls)
 
     ctx.vw[alloca_dest] = ctx.vw[res_sym]
@@ -1989,10 +2271,11 @@ end
 # primal wire list.
 for (N, W) in [(2, 8), (2, 16), (4, 16), (2, 32)]
     @assert N * W <= 64 "shape ($N, $W) exceeds UInt64 packing"
-    load_fn   = Symbol(:_lower_load_via_mux_, N, :x, W, :!)
-    store_fn  = Symbol(:_lower_store_via_mux_, N, :x, W, :!)
-    soft_load  = Symbol(:soft_mux_load_, N, :x, W)
-    soft_store = Symbol(:soft_mux_store_, N, :x, W)
+    load_fn           = Symbol(:_lower_load_via_mux_, N, :x, W, :!)
+    store_fn          = Symbol(:_lower_store_via_mux_, N, :x, W, :!)
+    soft_load         = Symbol(:soft_mux_load_, N, :x, W)
+    soft_store        = Symbol(:soft_mux_store_, N, :x, W)
+    soft_store_guard  = Symbol(:soft_mux_store_guarded_, N, :x, W)
     packed_bits = N * W
     name_tag = string(N, "x", W)
 
@@ -2023,8 +2306,13 @@ for (N, W) in [(2, 8), (2, 16), (4, 16), (2, 32)]
             return nothing
         end
 
+        # Bennett-cc0 M2d: same block_label-dispatch pattern as the hand-written
+        # (4,8)/(8,8) helpers. Entry-block → unguarded callee, byte-identical to
+        # pre-M2d. Any other block → guarded callee with block-predicate folded
+        # into the per-slot ifelse cond.
         function $store_fn(ctx::LoweringCtx, inst::IRStore,
-                           alloca_dest::Symbol, idx_op::IROperand)
+                           alloca_dest::Symbol, idx_op::IROperand;
+                           block_label::Symbol=Symbol(""))
             inst.width == $W ||
                 error($("_lower_store_via_mux_$(name_tag)!: store width must be $W, got "), inst.width)
             arr_wires = ctx.vw[alloca_dest]
@@ -2041,8 +2329,16 @@ for (N, W) in [(2, 8), (2, 16), (4, 16), (2, 32)]
             ctx.vw[idx_sym] = _operand_to_u64!(ctx, idx_op)
             ctx.vw[val_sym] = _operand_to_u64!(ctx, inst.val)
 
-            call = IRCall(res_sym, $soft_store,
-                          [ssa(arr_sym), ssa(idx_sym), ssa(val_sym)], [64, 64, 64], 64)
+            if block_label == Symbol("") || block_label == ctx.entry_label
+                call = IRCall(res_sym, $soft_store,
+                              [ssa(arr_sym), ssa(idx_sym), ssa(val_sym)], [64, 64, 64], 64)
+            else
+                pred_sym = _mux_store_pred_sym!(ctx, block_label, tag,
+                                                $("_lower_store_via_mux_$(name_tag)!"))
+                call = IRCall(res_sym, $soft_store_guard,
+                              [ssa(arr_sym), ssa(idx_sym), ssa(val_sym), ssa(pred_sym)],
+                              [64, 64, 64, 64], 64)
+            end
             lower_call!(ctx.gates, ctx.wa, ctx.vw, call; compact=ctx.compact_calls)
 
             ctx.vw[alloca_dest] = ctx.vw[res_sym][1:$packed_bits]
@@ -2055,6 +2351,26 @@ end
 
 _next_mux_tag!(ctx::LoweringCtx, op::String, hint) =
     (ctx.mux_counter[] += 1; string(op, "_", hint, "_", ctx.mux_counter[]))
+
+# Bennett-cc0 M2d helper: promote a 1-wire block predicate into a 64-wire
+# operand suitable for the guarded soft_mux_store_guarded_NxW callees. Looks
+# up the predicate via `ctx.block_pred[block_label]`, asserts it is a single
+# wire (M2c invariant, same as `_lower_store_via_shadow!`), CNOT-copies that
+# wire into bit 0 of a fresh 64-wire block, and registers the resulting SSA
+# name in `ctx.vw`. Returns the symbol for use in `ssa(pred_sym)`.
+# Caller supplies `tag` (for unique naming) and `callee_name` (for error text).
+function _mux_store_pred_sym!(ctx::LoweringCtx, block_label::Symbol, tag::String,
+                              callee_name::AbstractString)::Symbol
+    pred_wires = get(ctx.block_pred, block_label, Int[])
+    length(pred_wires) == 1 ||
+        error(callee_name, ": expected single-wire predicate for block ",
+              block_label, ", got ", length(pred_wires), " wires")
+    pred_sym = Symbol("__mux_store_pred_", tag)
+    pw64 = allocate!(ctx.wa, 64)
+    push!(ctx.gates, CNOTGate(pred_wires[1], pw64[1]))  # promote 1→64 via low bit
+    ctx.vw[pred_sym] = pw64
+    return pred_sym
+end
 
 # Zero-extend a wire vector to 64 wires by CNOT-copying into the low bits of
 # a fresh 64-wire block (high bits stay zero). Leaves the source wires

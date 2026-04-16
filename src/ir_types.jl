@@ -135,6 +135,27 @@ struct IRPhi <: IRInst
     incoming::Vector{Tuple{IROperand, Symbol}}  # (value, from_block)
 end
 
+# Bennett-cc0 M2b — pointer provenance entry. Represents one possible origin
+# of a pointer SSA value: the backing alloca, the element index within it,
+# and the path-predicate wire that is true on the control-flow path under
+# which this origin is the live value of the pointer.
+#
+# `ptr_provenance[name]::Vector{PtrOrigin}` — exactly one origin per pointer
+# in the common (pre-M2b) case; multiple origins for pointers merged by a
+# pointer-typed phi or select. When lowering a store/load through a
+# multi-origin pointer, each origin gets a guarded shadow write/read keyed
+# on its own `predicate_wire`; at runtime exactly one origin's predicate is
+# true, so exactly one primal register is touched.
+#
+# For single-origin producers (alloca, GEP of known alloca), the
+# `predicate_wire` is `ctx.block_pred[ctx.entry_label][1]` — the trivial
+# "always-1" entry predicate, which preserves every BENCHMARKS.md baseline.
+struct PtrOrigin
+    alloca_dest::Symbol    # which alloca this origin points into
+    idx_op::IROperand      # element index within that alloca
+    predicate_wire::Int    # 1-wire path predicate
+end
+
 struct IRBasicBlock
     label::Symbol
     instructions::Vector{IRInst}  # non-terminator instructions
