@@ -1,157 +1,236 @@
 # Bennett.jl Work Log
 
-## NEXT AGENT — start here — 2026-04-16
+## NEXT AGENT — start here — 2026-04-16 (post-0xx3)
 
-**Do Bennett-0xx3 next: implement `soft_fma` (IEEE 754 binary64 fused
-multiply-add).** This is the user's explicitly queued next track and the
-gating prerequisite for Bennett-t110 (Plan A: Julia-faithful soft_exp).
+**Do Bennett-t110 next: implement `soft_exp_julia` (Plan A Julia-faithful
+`exp` using `soft_fma`).** Bennett-0xx3 (soft_fma, below) has landed. The
+transcendental roadmap is unblocked.
 
 ### Why
 
-1. **User direction (this session)**: "we will ALSO do plan a, later, once
-   we have implemented fma in bennett.jl". soft_fma is the prerequisite.
-2. **Foundational leverage**: every future Tang-style transcendental
-   (log, sin, cos, pow, atan, sinh, tanh) uses Julia-style `muladd`-based
-   polynomial evaluation. Land soft_fma once → bit-exactness vs `Base.<op>`
-   unlocks for the entire transcendental roadmap (Bennett-582, -3mo, -emv,
-   -1pb).
-3. **Closes the ≤1 ulp gap** that Plan B left vs `Base.exp` (~1% of
-   inputs differ from Julia by 1 ulp because musl uses separate fmul+fadd
-   in range reduction; Julia uses FMA-based muladd → single rounding).
+1. `soft_fma` is in. `Base.fma(::Float64,::Float64,::Float64)` bit-exact
+   across all test regions including Kahan witness, subnormal, complete
+   cancellation, Inf·0, NaN, signed-zero combine.
+2. Plan A closes the ≤1 ulp gap between current Plan B `soft_exp` (musl
+   specialcase, Bennett-wigl) and `Base.exp` by porting Julia's
+   `Base.Math.exp_impl` line-for-line with `soft_fma` at every muladd
+   site. Current gap: ~1% of inputs differ by 1 ulp due to musl's
+   fmul+fadd vs Julia's FMA-based range reduction.
+3. Once Plan A works, `Base.exp(::SoftFloat)` re-points to
+   `soft_exp_julia` as the user-facing default. `soft_exp` (musl) stays
+   as the cross-language reference; `soft_exp_fast` stays as the
+   gate-minimal variant.
 
-### What
+### Granular steps for Bennett-t110 (from 2026-04-16 plan)
 
-`soft_fma(a::UInt64, b::UInt64, c::UInt64) -> UInt64` — IEEE 754
-single-rounding fused multiply-add on raw bit patterns. Branchless integer
-arithmetic. Bit-exact vs `Base.fma(::Float64, ::Float64, ::Float64)`.
-
-**NOT the same as `soft_fadd(soft_fmul(a, b), c)`** — soft_fma rounds once;
-the composed form rounds twice. The single rounding step is what makes
-Julia's exp_impl match the hardware FMA path.
-
-### Granular steps (from this session's plan)
-
-**A0. Three-agent algorithm consensus** (per established pattern, see
-2026-04-15 fsqrt and 2026-04-16 exp sessions).
-
-Dispatch three parallel deep-research subagents:
-- **Software**: survey libm FMA implementations — fdlibm `s_fma.c`,
-  Berkeley SoftFloat 3 `f64_mulAdd.c` (this DOES exist — Hauser ships
-  fma even though he skips exp), GCC libgcc soft-fp `op-2.h`. Recommend
-  ONE concrete algorithm with constants.
-- **Reversible cost**: score candidate algorithms by reversible-circuit
-  gates. Reuse soft_fmul's existing 53×53 → 106-bit product machinery if
-  exposed, OR re-implement. Estimate gate count (likely 300-400k per call).
-- **Quantum literature**: search for prior reversible FMA. Häner 2018
-  arXiv:1807.02023 covers FP add/mul but NOT fma — likely a literature
-  first too.
-
-**A0a. Implement** `src/softfloat/fma.jl` (~250-300 LOC):
-- Compute exact 53×53 → 106-bit product `(p_hi, p_lo)` using existing
-  internal helpers from `soft_fmul` (look in `src/softfloat/fmul.jl` for
-  the 106-bit assembly via UInt64 hi/lo pairs — already there for product
-  generation, just expose / reuse it).
-- Align `c` to the 106-bit product's exponent (shift c's mantissa to the
-  right position; handle the case where c's exponent dominates differently
-  from where p_hi's does).
-- Three-way add `p_hi + p_lo + c_aligned` with extended precision (Knuth
-  2sum or musl-style `eval_as_double`-equivalent).
-- Single rounding via `_sf_round_and_pack` (already in
-  `src/softfloat/softfloat_common.jl`).
-- Special cases: NaN, ±Inf, ±0, subnormal a/b/c, subnormal output,
-  mixed-sign cancellation (a·b - |c| where the magnitudes nearly cancel).
-  Mixed-sign cancellation is the trickiest — needs careful handling of
-  the 106-bit subtraction and possible massive cancellation requiring
-  re-normalization.
-
-**A0b. Tests** — `test/test_softffma.jl` (new):
-- Bit-exact vs `Base.fma(::Float64, ::Float64, ::Float64)` across a 200k
-  random sweep (uniform raw UInt64 triples covering all subnormal /
-  Inf / NaN / mixed-sign regions per the Bennett-fnxg test convention).
-- Specific edge cases: a·b + 0 == soft_fmul(a,b); 1.0·b + c == b + c;
-  cancellation cases like fma(a, b, -a*b) → 0 (or near-zero with single
-  rounding).
-- The musl-vs-Julia divergence on 1% of soft_exp inputs is the **acceptance
-  criterion**: after soft_fma lands and Bennett-t110 reroutes, the
-  `FULL-RANGE BIT-EXACT random sweep` testset in `test/test_softfexp.jl`
-  should hit `n_exact >= 9_990` (vs current 9904).
-- End-to-end circuit compile + simulate + reversibility in
-  `test/test_float_circuit.jl` — soft_fma directly compilable (no loop,
-  no kwarg needed). Estimated ~200-400k gates per call.
-
-**A0c. Wire dispatch**:
-- `src/Bennett.jl`: export `soft_fma`, `register_callee!(soft_fma)`,
-  `Base.fma(a::SoftFloat, b::SoftFloat, c::SoftFloat) =
-   SoftFloat(soft_fma(a.bits, b.bits, c.bits))`.
-- Existing soft_* functions don't change — soft_fma is purely additive.
-
-### After soft_fma lands
-
-Bennett-t110 unblocks. Granular steps for that are written into the issue
-description (`bd show Bennett-t110`); briefly:
-1. Port Julia's J_TABLE (256-entry tuple) verbatim from
-   `Base.Math` source (path: `julia/base/special/exp.jl`).
+1. Port Julia's `J_TABLE` (256-entry tuple) verbatim from `julia/base/
+   special/exp.jl` — each entry is a Float64 representing `2^(i/256)`.
 2. Port `expm1b_kernel` polynomial coefficients (degree-3, natural base).
-3. Implement `soft_exp_julia(a)` reproducing Julia's `exp_impl(x, base)`
-   line-for-line, using soft_fma at every muladd site.
-4. Subnormal handling via Julia's "k ≤ -53" shift trick (simpler than
-   musl's specialcase — just `twopk = (k+53) << 52; result *= 2^-53`).
-5. Re-point `Base.exp(::SoftFloat)` to `soft_exp_julia`. Keep `soft_exp`
-   (musl) as cross-language reference.
+3. Implement `soft_exp_julia(a::UInt64)::UInt64` reproducing Julia's
+   `Base.Math.exp_impl(x::Float64, ::Val{:ℯ})` using `soft_fma` at every
+   `muladd` site. Subnormal handling via Julia's "k ≤ -53" shift trick.
+4. Test: 10k `[-700, 700]` random sweep, expect `n_exact >= 9_990`
+   (Plan B current: 9904). Add subnormal-output sweep (Bennett-fnxg).
+5. Compile + `verify_reversibility`; record gate count (estimate:
+   `soft_fma ×` ~8 muladd sites ≈ 3.5M gates, plus table lookup +
+   range reduction overhead).
 
-### Rules to follow (from CLAUDE.md, compact)
+### `soft_fma` characteristics (from Bennett-0xx3 session below)
 
-- **Red-green TDD**: write failing test first, watch it fail, implement,
-  green. The post-Bennett-cel garbage bug exists in WORKLOG history because
-  the random sweep was [-50, 50] only. Per Bennett-fnxg: ALL transcendental
-  tests must include subnormal-output sweep; same convention applies to
-  soft_fma — sweep must cover the subnormal-input AND subnormal-output
-  regions, AND the cancellation regions.
-- **3+1 agents** for core changes (`ir_extract.jl`, `lower.jl`,
-  `bennett.jl`, `gates.jl`, `ir_types.jl`, phi resolution). soft_fma is
-  additive in `src/softfloat/` — NOT a core change. Established pattern
-  for soft-float additions: parallel deep-research subagents for algorithm
-  consensus, then single implementer. (See 2026-04-15 fsqrt session, 2026-
-  04-16 exp session.)
-- **Fail fast, fail loud**: `error()` for unhandled cases, never silent
-  `nothing`.
-- **Soft-float MUST be bit-exact** vs Julia native (CLAUDE.md §13).
-- **`@inline`** on every soft_* function (deep dispatch chain inlining
-  — v0.6 soft_fdiv bug class).
-- **Branchless `ifelse` chains** over UInt64; truncate via `% UIntN` to
-  avoid `InexactError` on shadow paths.
-- **No UInt128** (emits `__udivti3` non-callee). Use `(hi, lo)` UInt64
-  pairs for >64-bit intermediate arithmetic.
-- **Get feedback fast**: run tests every ~50 lines.
-- **Ground truth before code**: read fdlibm `s_fma.c` and Berkeley
-  SoftFloat 3 `f64_mulAdd.c` BEFORE designing the algorithm. No
-  hallucinated bit-twiddling.
-- **Commit + push per task**, not at session end. Session not done until
-  `git push` succeeds (`git pull --rebase && bd dolt push && git push`).
+- `soft_fma(a, b, c)` registered as callee; `Base.fma(::SoftFloat, ...)`
+  wired.
+- Bit-exact vs `Base.fma` across 85k+ random triples including
+  subnormal, cancellation, Inf, NaN regions.
+- Gate count: **447,728 total, 148,340 Toffoli, T-count 1,038,380,
+  ancilla 127,791**. Circuit compile ~20s. `verify_reversibility` ~0ms.
+- Per-call overhead vs soft_fmul: 1.7× (as expected; FMA does single-
+  rounded 128-bit add on top of the mul).
 
-### Existing pattern to copy
+### Rules to follow (CLAUDE.md compact)
 
-The 2026-04-16 Bennett-cel session log immediately below shows the full
-pattern: parallel research agents → consensus → RED test → implementation
-→ bit-level test → end-to-end circuit test → WORKLOG → commit → push.
-Bennett-wigl (next entry below this) shows what to do when the first
-implementation is incomplete (specialcase addition + _fast variants).
+- **Red-green TDD**: test file first, RED confirmed, then implement.
+  Verified working pattern from Bennett-0xx3 session.
+- **3+1 agents** only for CORE changes (ir_extract/lower/bennett/gates/
+  ir_types/phi). `soft_exp_julia` is pure soft-float addition; use the
+  parallel-research-then-single-implementer pattern (same as 0xx3).
+- **Subnormal-output sweeps** mandatory (Bennett-fnxg convention).
+- **Commit+push per milestone**, not at session end.
 
-Mirror this workflow.
+---
 
-### Closing notes
+## Session log — 2026-04-16 — soft_fma (IEEE 754 binary64 FMA) (Bennett-0xx3)
 
-- After soft_fma + Bennett-t110 land, the transcendental roadmap unblocks:
-  Bennett-582 (log) → Bennett-3mo (sin/cos) → Bennett-emv (pow) →
-  Bennett-1pb (sqrt/pow/exp/log intrinsic wiring).
-- `Base.exp(::SoftFloat)` will switch to soft_exp_julia (Julia-faithful)
-  as the user-facing default. soft_exp (musl) stays as a separately-named
-  cross-language reference. soft_exp_fast stays as the speed-optimal
-  variant for users who don't need subnormal exactness.
-- Don't forget Bennett-fnxg as a parallel hygiene task: extend the
-  subnormal-output sweep convention into existing soft_* tests
-  (soft_fadd, soft_fmul, soft_fdiv, soft_fsqrt, soft_fpext/fptrunc,
-  soft_fptosi/sitofp). Likely catches latent bugs of the same class.
+First IEEE 754 binary64 reversible fused multiply-add with single
+rounding in the quantum / reversible-circuit literature. Häner-Soeken-
+Roetteler-Svore 2018 (arXiv:1807.02023) implements only FP add and mul;
+§7 names FMA as a useful combination (Horner scheme, Knuth 1962) but
+does not implement it. The 2024 comprehensive survey (arXiv:2406.03867)
+§2.3 enumerates every known reversible-FP circuit: "no mention of fused
+multiply-add (FMA)", "only single-precision (binary32) implementations".
+AnanthaLakshmi-Sudha 2017 (Microprocessors and Microsystems v.51) is
+adiabatic-CMOS FP32 with unverified single-rounding semantics — not in
+the quantum Clifford+T regime.
+
+### Algorithm
+
+Berkeley SoftFloat 3 `s_mulAddF64.c` SOFTFLOAT_FAST_INT64 path, ported
+branchless. 128-bit intermediate (two UInt64 limbs). Berkeley's scaling
+convention: `ma << 10`, `mb << 10`, `mc << 9`. Full design doc:
+`docs/design/soft_fma_consensus.md`.
+
+Pipeline:
+1. Unpack all three operands + special predicates + subnormal
+   pre-normalization via `_sf_normalize_to_bit52`.
+2. 53×53 → 128-bit product via new helper `_sf_widemul_u64_to_128` (32×32
+   split — general enough for 63-bit Berkeley-scaled inputs).
+3. Berkeley line-122 normalize: `if p_hi < 2^61, <<1, expZ--`. Leading 1
+   at bit 125 of 128-bit.
+4. Alignment: if `expDiff < 0`, shift-right-jam product by `-expDiff`;
+   if `expDiff > 0`, shift c. Special: `expDiff == -1 & opp sign` uses
+   `>>1 with sticky` (Berkeley line-144 precision-preservation trick).
+5. Add and subtract computed unconditionally; select on `same_sign`.
+6. Opposite-sign underflow detect → `_neg128`, sign flip.
+7. Renormalize: stages handle bit-63 and bit-62 pre-shifts (possible
+   after hi_zero fold or same-sign add carry), then 128-bit CLZ to
+   leading-1-at-bit-61 via `_sf_clz128_to_hi_bit61`. Crucial: the CLZ
+   propagates bits from `wr_lo` into `wr_hi` at each shift stage —
+   single-limb CLZ loses precision (bug found during M4).
+8. Collapse to 56-bit working format (`>>6`, sticky from bits 0-5 of hi
+   plus all of lo).
+9. `_sf_handle_subnormal` + `_sf_round_and_pack` reused verbatim.
+10. Priority-ordered select chain (NaN strictly last).
+
+### Helpers added in `src/softfloat/softfloat_common.jl`
+
+All branchless `@inline`. No UInt128.
+
+- `_sf_widemul_u64_to_128(a, b)` — general 64×64 → 128 via 32×32 split.
+- `_shiftRightJam128(hi, lo, dist)` — Berkeley semantics;
+  `dist < 0`, `0 < d < 64`, `64 ≤ d < 128`, `d ≥ 128` cases all
+  computed, selected via `ifelse` ladder.
+- `_add128`, `_sub128`, `_neg128`, `_shl128_by1`, `_shr128jam_by1`.
+- `_sf_clz128_to_hi_bit61(hi, lo, e)` — 128-bit CLZ; stages shift both
+  limbs, bringing wr_lo bits up into wr_hi.
+
+### Bugs hit and fixed (for future agents)
+
+1. **Off-by-one in CLZ target**: first version targeted bit 62 (matching
+   Berkeley's `softfloat_roundPackToF64`'s implicit-1 position). But our
+   `_sf_round_and_pack` expects leading 1 at bit 55 of wr_56; the natural
+   shift from Berkeley's post-normalize (bit 125 = bit 61 of hi) to bit
+   55 is `>> 6`. Targeting bit 62 followed by `>> 7` gave same mantissa
+   but drop-one-exponent. **Fix**: target bit 61 directly
+   (`_sf_clz128_to_hi_bit61`); `wr_56 = wr_hi_norm >> 6`.
+
+2. **Single-limb CLZ loses precision**: a single-limb CLZ on `wr_hi`
+   alone discards bits of `wr_lo` that should migrate up during left-
+   shift. Kahan witness `fma(1-2^-53, 1-2^-53, -1)`: correct result is
+   `-2^-52`, single-limb CLZ gives `-(255/128) · 2^-53` — mantissa bits
+   lost. **Fix**: 128-bit joint CLZ that propagates `lo >> (64-k)` into
+   `hi` at each shift stage.
+
+3. **Sign-flip rule was wrong in the c-dominated case**: original code
+   used `result_sign = nominal_sign ⊻ underflow_flag`. For `expDiff < 0`
+   (c dominates), this double-flipped. **Fix**: `result_sign = underflow
+   ? sc : sign_prod`. This works across all cases (same-sign: underflow
+   always false → sign_prod = sc; opposite-sign: underflow picks whoever
+   actually dominated in magnitude).
+
+4. **Berkeley's bit-63 check defensiveness**: never fires in practice
+   given the <<10/<<9 scaling convention (same-sign add max reaches
+   2^63-ε, not 2^63). But POST-hi_zero-fold, wr_hi_folded CAN have bit
+   63 set (if wr_lo had its MSB set pre-fold). **Fix**: two-stage
+   pre-normalization (bit-63 then bit-62 shift) before CLZ.
+
+### Test coverage
+
+`test/test_softfma.jl` (~280 LOC):
+- 10 hard cases (Kahan witness, exact cancellation → +0 RNE, Inf·0 → NaN,
+  expDiff=-1 opposite-sign precision trick, signed-zero combine, NaN
+  propagation, Inf clash, subnormal mixed-scale, overflow, fma(a,b,0)).
+- Random sweeps: 50k normal range, 25k raw-UInt64 (all regions), 10k
+  subnormal-input forced (Bennett-fnxg), 10k cancellation region (c ≈
+  -a·b).
+- All 85k+ triples bit-exact vs `Base.fma`.
+
+End-to-end circuit: `test/test_float_circuit.jl` — 11 inputs including
+Kahan, cancellation, subnormal, Inf·0, NaN. All bit-exact.
+`verify_reversibility` passes.
+
+### Files changed
+
+- `src/softfloat/softfloat_common.jl` — +8 helpers (~220 LOC).
+- `src/softfloat/fma.jl` — new file (~200 LOC).
+- `src/softfloat/softfloat.jl` — `include("fma.jl")`.
+- `src/Bennett.jl` — export `soft_fma`; `register_callee!(soft_fma)`.
+- `test/test_softfma.jl` — new (~280 LOC).
+- `test/test_float_circuit.jl` — add `soft_fma circuit` testset.
+- `test/runtests.jl` — include new test file.
+- `docs/design/soft_fma_consensus.md` — design doc from 3 research
+  subagents (software algorithm, reversible gate cost, quantum
+  literature).
+- `BENCHMARKS.md` — add soft_fma row.
+- `WORKLOG.md` — this entry.
+
+### Research methodology (mirror for future soft-float primitives)
+
+Three parallel research subagents dispatched:
+
+1. **Software algorithm survey** — read Berkeley SoftFloat 3
+   `s_mulAddF64.c` (496 lines), `s_shiftRightJam128.c`, musl `fma.c`
+   (183 lines) verbatim. Recommended Berkeley FAST_INT64 path, 128-bit
+   intermediate. Agent saved sources to `/tmp/` on its workspace;
+   reproducible via WebFetch from GitHub mirror.
+2. **Reversible gate cost analysis** — estimated 350-420k gates for
+   Alg (2) 160-bit intermediate. Correct on methodology (branchless
+   ifelse doesn't save gates vs case-split, ripple add for gate
+   minimality, raw-product hoist opportunity) but wrong on width:
+   160 bits overprovisions; Berkeley's 128 is provably sufficient.
+3. **Quantum literature survey** — Häner 2018 §7 explicitly flags FMA
+   as a known combination but does not implement; 2024 comprehensive
+   survey §2.3 confirms no reversible FMA in any precision. Novelty
+   claim documented with citations.
+
+All three converged on the Berkeley algorithm. Resolution of width
+disagreement (128 vs 160): ground truth (Berkeley's deliberate design
+choice, battle-tested) trumps estimation. Actual implementation is
+128-bit.
+
+### Gate count vs plan
+
+| Target | Estimate | Actual |
+|--------|---------:|-------:|
+| Gate count (plan A budget) | 300-400k | 447,728 |
+| Toffoli | 110-140k | 148,340 |
+| T-count | ~1M | 1,038,380 |
+
+Actual is 10% over the upper plan estimate. Deltas vs Agent 2's estimate:
+- Used general 32×32 widemul (not 27×26 reuse — wouldn't fit 63-bit
+  Berkeley-scaled inputs).
+- Added two-stage bit-63/bit-62 pre-normalize before CLZ (~2k gates).
+- 128-bit CLZ is wider per-stage than the single-limb estimate.
+
+Trade-off accepted: 48k more gates for correctness on the full Kahan-
+class edge cases.
+
+### Deferred / follow-ups
+
+- `soft_fms` (fused multiply-subtract) = `soft_fma(a, b, c ⊻ SIGN_MASK)`.
+  Trivial; file as separate issue if Julia emits `llvm.fmsub.f64` in
+  transcendentals.
+- Hoist `soft_fmul`'s 27×26 product into the same shared helper
+  architecture. Would require replacing the 32×32 widemul with a 27×26
+  variant (or making `_sf_widemul_u64_to_128` dispatch by input width).
+  Modest gate-count savings; not on critical path.
+- Lowering-level `_sf_fma_fused_wide_add!` primitive if further gate
+  reduction is needed for the transcendental roadmap. Estimated
+  savings ~20-30% of `soft_fma` cost via shared carry chain.
+
+---
+
+## [archived] Pre-0xx3 NEXT AGENT plan — 2026-04-16
+
+Original pre-implementation plan content preserved at commit 71caa5b.
 
 ---
 

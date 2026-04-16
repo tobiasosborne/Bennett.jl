@@ -328,5 +328,43 @@ using Random
             @test verify_reversibility(c)
             println("  soft_exp circuit (bit-exact): ", gate_count(c))
         end
+
+        @testset "soft_fma circuit" begin
+            c = reversible_compile(Bennett.soft_fma, UInt64, UInt64, UInt64)
+
+            function check(a::Float64, b::Float64, cc::Float64)
+                ab = reinterpret(UInt64, a)
+                bb = reinterpret(UInt64, b)
+                cb = reinterpret(UInt64, cc)
+                result = reinterpret(UInt64, Int64(simulate(c, (ab, bb, cb))))
+                expected = reinterpret(UInt64, Base.fma(a, b, cc))
+                if isnan(Base.fma(a, b, cc))
+                    @test isnan(reinterpret(Float64, result))
+                else
+                    @test result == expected
+                end
+            end
+
+            # Basic
+            check(3.0, 7.0, 0.0)
+            check(1.0, 1.0, 1.0)
+            check(2.0, 3.0, 4.0)
+            check(-2.0, 3.0, 1.0)
+            # Kahan single-rounding witness
+            check(0x1.fffffffffffffp-1, 0x1.fffffffffffffp-1, -1.0)
+            # Exact cancellation → +0 under RNE
+            check(1.5, 2.0, -3.0)
+            # Near cancellation
+            check(3.14, 2.72, -1.0)
+            # Subnormal mixed-scale
+            check(0x1p-600, 0x1p-500, 0x1p-1100)
+            # Specials
+            check(Inf, 0.0, 1.0)      # Inf·0 → NaN
+            check(Inf, 1.0, -Inf)     # Inf clash
+            check(NaN, 1.0, 1.0)
+
+            @test verify_reversibility(c)
+            println("  soft_fma circuit: ", gate_count(c))
+        end
     end
 end
