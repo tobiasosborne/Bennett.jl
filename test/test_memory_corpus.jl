@@ -357,6 +357,41 @@ end
         @test simulate(c, (Int8(5), Int8(0), false)) == Int8(0)
     end
 
+    @testset "L7g — T4 × diamond CFG (store inside branch, load in join)" begin
+        # Bennett-cc0 M3a (Bennett-jqyt). Diamond CFG × dynamic-idx store into
+        # a 256-slot array (T4 shadow-checkpoint dispatch). Pins the false-
+        # path-sensitisation concern from CLAUDE.md §"Phi Resolution and
+        # Control Flow — CORRECTNESS RISK": the T4 per-slot fan-out must AND
+        # the idx-equality eq_wire with the block predicate. With pred=false
+        # no slot is written; with pred=true only idx==k slot is written.
+        ir = raw"""
+        define i8 @julia_f_1(i8 %x, i8 %i, i1 %c) {
+        top:
+          %p = alloca i8, i32 256
+          br i1 %c, label %L, label %R
+        L:
+          %idx = zext i8 %i to i32
+          %g = getelementptr i8, ptr %p, i32 %idx
+          store i8 %x, ptr %g
+          br label %J
+        R:
+          br label %J
+        J:
+          %gr = getelementptr i8, ptr %p, i32 0
+          %v = load i8, ptr %gr
+          ret i8 %v
+        }
+        """
+        c = _compile_ir(ir)
+        @test verify_reversibility(c)
+        # Store to idx=0 inside branch → load from idx=0 → if pred=true returns x, else 0.
+        @test simulate(c, (Int8(7), Int8(0), true))  == Int8(7)
+        @test simulate(c, (Int8(7), Int8(0), false)) == Int8(0)
+        # Store to idx=5 inside branch → load from idx=0 → always 0.
+        @test simulate(c, (Int8(7), Int8(5), true))  == Int8(0)
+        @test simulate(c, (Int8(7), Int8(5), false)) == Int8(0)
+    end
+
     @testset "L7c — pointer-typed phi (GREEN, C2, M2b)" begin
         # Different allocas selected by branch + phi. Bennett-cc0 M2b:
         # extractor accepts pointer-typed phi (width=0 sentinel), lowerer
@@ -449,13 +484,15 @@ end
         @test_throws Exception _compile_ir(ir)
     end
 
-    @testset "L10 — multi-word shape (N·W > 64) (RED, bucket A-wide, M1b target)" begin
-        # shape (8, 16) = 128 bits; needs Tuple{UInt64, UInt64} MUX primitive.
-        # Deferred to M1b. The M1 single-UInt64 primitives cannot cover this.
+    @testset "L10 — T4 shadow-checkpoint (N·W > 64) (GREEN, bucket A-wide, M3a)" begin
+        # shape (8, 256) = 2048 bits, dispatcher routes to :shadow_checkpoint
+        # (Bennett-cc0 M3a, Bennett-jqyt). Per-slot fan-out of guarded shadow
+        # stores / per-slot Toffoli-copy load. Gate count is allowed to be
+        # high — this milestone pursues CORRECTNESS, not ReVerC-parity.
         ir = raw"""
         define i8 @julia_f_1(i8 %x, i8 %i) {
         top:
-          %p   = alloca i8, i32 16
+          %p   = alloca i8, i32 256
           %idx = zext i8 %i to i32
           %g   = getelementptr i8, ptr %p, i32 %idx
           store i8 %x, ptr %g
@@ -463,7 +500,15 @@ end
           ret i8 %v
         }
         """
-        @test_throws Exception _compile_ir(ir)
+        c = _compile_ir(ir)
+        @test verify_reversibility(c)
+        # Sampled sweep across idx values and value patterns. Full 65k combos
+        # would cost several minutes on a 256-slot T4 circuit — representative
+        # subset plus edge cases (idx=0, idx=last, negative, zero, saturating).
+        for x in (Int8(-5), Int8(0), Int8(7), Int8(127)),
+            i in (Int8(0), Int8(1), Int8(100), Int8(-1))  # -1 wraps to 255
+            @test simulate(c, (x, i)) == x
+        end
     end
 
     # L11 (MD5 full) is a benchmark target, not a unit test.

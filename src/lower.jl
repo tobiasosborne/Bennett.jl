@@ -1719,6 +1719,8 @@ function _lower_load_via_mux!(ctx::LoweringCtx, inst::IRLoad, origin::PtrOrigin)
         return _lower_load_via_mux_4x16!(ctx, inst, alloca_dest, info, idx_op)
     elseif strategy == :mux_exch_2x32
         return _lower_load_via_mux_2x32!(ctx, inst, alloca_dest, info, idx_op)
+    elseif strategy == :shadow_checkpoint
+        return _lower_load_via_shadow_checkpoint!(ctx, inst, alloca_dest, info, idx_op)
     else
         error("_lower_load_via_mux!: unsupported (elem_width=$(info[1]), n_elems=$(info[2])) for dynamic idx")
     end
@@ -1998,15 +2000,21 @@ store/load into an alloca-backed region, given the (elem_width, n_elems)
 shape and the runtime index operand.
 
 Strategies:
-  :shadow          — static idx (const), any shape. Cheap direct CNOT pattern.
-  :mux_exch_NxW    — dynamic idx. N·W ≤ 64 (single-UInt64 packed).
-                     M1: N ∈ {2,4,8}×W=8, N ∈ {2,4}×W=16, N=2×W=32.
-  :unsupported     — dynamic idx on any shape with N·W > 64, or any shape
-                     outside the covered set; caller must error.
+  :shadow            — static idx (const), any shape. Cheap direct CNOT pattern.
+  :mux_exch_NxW      — dynamic idx. N·W ≤ 64 (single-UInt64 packed).
+                       M1: N ∈ {2,4,8}×W=8, N ∈ {2,4}×W=16, N=2×W=32.
+  :shadow_checkpoint — Bennett-cc0 M3a (Bennett-jqyt) T4 MVP fallback.
+                       Dynamic idx on ANY shape with N·W > 64. Fans out
+                       N per-slot idx-equality-guarded shadow stores /
+                       per-slot Toffoli-copy loads. Gate cost is O(N·W)
+                       per op — universal correctness, not optimised.
+  :unsupported       — dynamic idx on any shape that doesn't match the
+                       above (currently none: T4 catches N·W > 64).
+                       Reserved for future additions.
 
-Priority rule: static idx ALWAYS dispatches to :shadow. MUX EXCH only
-engages when idx is dynamic and the shape matches a soft_mux_*_NxW callee
-registered in Bennett.jl.
+Priority rule: static idx ALWAYS dispatches to :shadow. MUX EXCH is
+preferred for shapes with N·W ≤ 64 (cheaper per-op cost). T4 shadow-
+checkpoint is the universal fallback for N·W > 64.
 """
 function _pick_alloca_strategy(shape::Tuple{Int,Int}, idx::IROperand)
     if idx.kind == :const
@@ -2022,6 +2030,13 @@ function _pick_alloca_strategy(shape::Tuple{Int,Int}, idx::IROperand)
         n == 4 && return :mux_exch_4x16
     elseif elem_w == 32
         n == 2 && return :mux_exch_2x32
+    end
+    # Bennett-cc0 M3a — T4 shadow-checkpoint MVP. Triggers for ANY shape
+    # where the packed bits exceed a single UInt64, which is the only
+    # shape class no MUX EXCH callee covers. Strictly additive — shapes
+    # already returning :shadow or :mux_exch_* above are unaffected.
+    if n * elem_w > 64
+        return :shadow_checkpoint
     end
     return :unsupported
 end
@@ -2104,6 +2119,8 @@ function _lower_store_single_origin!(ctx::LoweringCtx, inst::IRStore,
         _lower_store_via_mux_4x16!(ctx, inst, alloca_dest, idx_op; block_label=block_label)
     elseif strategy == :mux_exch_2x32
         _lower_store_via_mux_2x32!(ctx, inst, alloca_dest, idx_op; block_label=block_label)
+    elseif strategy == :shadow_checkpoint
+        _lower_store_via_shadow_checkpoint!(ctx, inst, alloca_dest, info, idx_op, block_label)
     else
         error("lower_store!: unsupported (elem_width=$(info[1]), n_elems=$(info[2])) for dynamic idx")
     end
@@ -2182,6 +2199,182 @@ function _lower_store_via_shadow!(ctx::LoweringCtx, inst::IRStore,
             error("_lower_store_via_shadow!: expected single-wire predicate for block $block_label, got $(length(pred_wires)) wires")
         emit_shadow_store_guarded!(ctx.gates, ctx.wa, primal_slot, tape, val_wires, elem_w, pred_wires[1])
     end
+    return nothing
+end
+
+# Bennett-cc0 M3a (Bennett-jqyt) — T4 shadow-checkpoint helpers.
+#
+# The MVP universal fallback for dynamic-idx store/load when no MUX EXCH
+# callee covers the shape (N·W > 64). Follows `docs/memory/shadow_design.md`
+# §4.2 "shadow tape = one slot per dynamic store".
+#
+# Contract:
+# - Store: allocate a fresh W-wire tape slot PER possible target slot k ∈ 0:n-1.
+#   Emit a guarded shadow-store into primal[k*W+1:(k+1)*W] with guard =
+#   (block_pred & idx == k). At runtime exactly one k matches so exactly
+#   one primal slot is mutated; all other tape slots remain zero (the
+#   Toffoli with guard=0 is a no-op).
+# - Load: allocate a fresh W-wire result (zero by invariant), then for each
+#   slot k emit Toffoli(idx_eq_k, primal[k*W+i], result[i]) per bit. Exactly
+#   one slot XORs its value into result.
+# - Bennett's reverse unwinds every CNOT/Toffoli self-inversely — tape
+#   slots return to zero, primal returns to pre-store state.
+#
+# Gate cost: O(N·W) Toffolis per store/load (not competitive with MUX EXCH
+# for small N·W; universal for large N·W).
+
+"""
+    _emit_idx_eq_const!(ctx, idx_wires, idx_bits, k) -> Int
+
+Synthesise a single 1-bit wire holding `(idx == k)` at runtime. The
+returned wire is freshly allocated via `ctx.wa` (zero-initialised, then
+raised to 1 via an AND-tree over the matched idx bits).
+
+`idx_wires` is the raw wire vector (LSB first). `idx_bits` is the number
+of low bits to match (bits above `idx_bits` are assumed zero — i.e. the
+idx was produced by `zext i8 %i to i32` on an `n_elems ≤ 2^idx_bits`
+array). `k` is the constant slot index ∈ 0:(2^idx_bits - 1).
+
+Implementation: build a vector of "bit-match" wires (one per idx bit),
+where bit i is `idx_wires[i+1]` if `(k>>i)&1 == 1` else `NOT(idx_wires[i+1])`.
+AND-reduce them into a single output wire via Toffoli tree. Total cost:
+`idx_bits - 1` Toffolis + up to `idx_bits` NOT-wire allocations per call.
+"""
+function _emit_idx_eq_const!(ctx::LoweringCtx, idx_wires::Vector{Int},
+                             idx_bits::Int, k::Int)::Int
+    idx_bits >= 1 || error("_emit_idx_eq_const!: idx_bits must be >= 1, got $idx_bits")
+    length(idx_wires) >= idx_bits ||
+        error("_emit_idx_eq_const!: idx_wires has $(length(idx_wires)) < idx_bits=$idx_bits")
+
+    # Build one bit-match wire per idx bit. If k's bit is 1: use idx_wires[i]
+    # directly. If 0: use NOT(idx_wires[i]) on a fresh wire.
+    bit_matches = Int[]
+    for i in 0:(idx_bits - 1)
+        want = (k >> i) & 1
+        if want == 1
+            push!(bit_matches, idx_wires[i + 1])
+        else
+            not_w = _not_wire!(ctx.gates, ctx.wa, [idx_wires[i + 1]])
+            push!(bit_matches, not_w[1])
+        end
+    end
+
+    # AND-reduce to single output wire.
+    if length(bit_matches) == 1
+        # Single idx bit; return the bit-match directly. Note: the caller
+        # must not mutate the returned wire (it may alias idx_wires).
+        return bit_matches[1]
+    end
+
+    # Iterative AND-tree: fold pairwise into fresh output wires.
+    acc = _and_wire!(ctx.gates, ctx.wa, [bit_matches[1]], [bit_matches[2]])
+    for i in 3:length(bit_matches)
+        acc = _and_wire!(ctx.gates, ctx.wa, acc, [bit_matches[i]])
+    end
+    return acc[1]
+end
+
+"""
+    _lower_store_via_shadow_checkpoint!(ctx, inst, alloca_dest, info, idx_op, block_label)
+
+Bennett-cc0 M3a T4 MVP — dynamic-idx store into an alloca of shape
+`(elem_w, n)` where `n·elem_w > 64` (no MUX EXCH callee available).
+Fans out into `n` guarded shadow stores, each keyed on an idx-equality
+predicate. If `block_label` is a non-entry block, ANDs the eq_wire with
+the block path predicate (critical for false-path sensitisation;
+CLAUDE.md §"Phi Resolution and Control Flow — CORRECTNESS RISK").
+
+Per-slot cost: 1 idx-eq AND-tree (≤ idx_bits - 1 Toffolis, plus NOTs),
+optional 1 Toffoli to AND with block_pred, and 3W Toffolis for the
+guarded shadow store itself.
+"""
+function _lower_store_via_shadow_checkpoint!(ctx::LoweringCtx, inst::IRStore,
+                                             alloca_dest::Symbol, info::Tuple{Int,Int},
+                                             idx_op::IROperand, block_label::Symbol)
+    elem_w, n = info
+    inst.width == elem_w ||
+        error("_lower_store_via_shadow_checkpoint!: store width=$(inst.width) doesn't match alloca elem_width=$elem_w")
+    arr_wires = ctx.vw[alloca_dest]
+    length(arr_wires) == elem_w * n ||
+        error("_lower_store_via_shadow_checkpoint!: primal has $(length(arr_wires)) wires, expected $(elem_w*n)")
+
+    val_wires = resolve!(ctx.gates, ctx.wa, ctx.vw, inst.val, elem_w)
+    # resolve! with width=0 returns the existing SSA wires (may be wider than
+    # log2(n)). We only care about the low idx_bits — upper bits are assumed
+    # zero by construction (e.g. zext from i8 to i32 for an n=256 array).
+    idx_wires = resolve!(ctx.gates, ctx.wa, ctx.vw, idx_op, 0)
+    idx_bits = max(1, ceil(Int, log2(n)))
+    length(idx_wires) >= idx_bits ||
+        error("_lower_store_via_shadow_checkpoint!: idx SSA has $(length(idx_wires)) wires, need at least $idx_bits")
+
+    # Determine the block guard. Entry-block stores (or the sentinel
+    # Symbol("")) skip the block-pred AND — the eq_wire itself is the guard.
+    # Non-entry blocks AND the block's 1-wire path predicate with each
+    # per-slot eq_wire.
+    use_block_guard = !(block_label == Symbol("") || block_label == ctx.entry_label)
+    block_pred_wire = if use_block_guard
+        pw = get(ctx.block_pred, block_label, Int[])
+        length(pw) == 1 ||
+            error("_lower_store_via_shadow_checkpoint!: expected single-wire predicate for block $block_label, got $(length(pw)) wires")
+        pw[1]
+    else
+        0  # unused
+    end
+
+    for k in 0:(n - 1)
+        eq_wire = _emit_idx_eq_const!(ctx, idx_wires, idx_bits, k)
+        guard_w = if use_block_guard
+            _and_wire!(ctx.gates, ctx.wa, [block_pred_wire], [eq_wire])[1]
+        else
+            eq_wire
+        end
+        primal_slot = arr_wires[k * elem_w + 1 : (k + 1) * elem_w]
+        tape = allocate!(ctx.wa, elem_w)
+        emit_shadow_store_guarded!(ctx.gates, ctx.wa, primal_slot, tape,
+                                   val_wires, elem_w, guard_w)
+    end
+    return nothing
+end
+
+"""
+    _lower_load_via_shadow_checkpoint!(ctx, inst, alloca_dest, info, idx_op)
+
+Bennett-cc0 M3a T4 MVP — dynamic-idx load from an alloca of shape
+`(elem_w, n)` where `n·elem_w > 64`. Mirrors `_lower_load_multi_origin!`
+but fans out over the element axis instead of multiple origins. Allocates
+a fresh W-wire result (zero by WireAllocator invariant) and for each slot
+emits `Toffoli(idx_eq_k, primal[k][i], result[i])` per bit.
+
+Load is always unconditional w.r.t. block predicate — a load outside its
+dominating branch would be undefined behaviour in source, so we don't
+need a block guard here. (The store's block guard takes care of the
+false-path-sensitisation concern.)
+"""
+function _lower_load_via_shadow_checkpoint!(ctx::LoweringCtx, inst::IRLoad,
+                                            alloca_dest::Symbol, info::Tuple{Int,Int},
+                                            idx_op::IROperand)
+    elem_w, n = info
+    W = inst.width
+    W == elem_w ||
+        error("_lower_load_via_shadow_checkpoint!: load width=$W doesn't match alloca elem_width=$elem_w")
+    arr_wires = ctx.vw[alloca_dest]
+    length(arr_wires) == elem_w * n ||
+        error("_lower_load_via_shadow_checkpoint!: primal has $(length(arr_wires)) wires, expected $(elem_w*n)")
+
+    idx_wires = resolve!(ctx.gates, ctx.wa, ctx.vw, idx_op, 0)
+    idx_bits = max(1, ceil(Int, log2(n)))
+    length(idx_wires) >= idx_bits ||
+        error("_lower_load_via_shadow_checkpoint!: idx SSA has $(length(idx_wires)) wires, need at least $idx_bits")
+
+    result = allocate!(ctx.wa, W)  # zero by WireAllocator invariant
+    for k in 0:(n - 1)
+        eq_wire = _emit_idx_eq_const!(ctx, idx_wires, idx_bits, k)
+        primal_slot = arr_wires[k * elem_w + 1 : (k + 1) * elem_w]
+        for i in 1:W
+            push!(ctx.gates, ToffoliGate(eq_wire, primal_slot[i], result[i]))
+        end
+    end
+    ctx.vw[inst.dest] = result
     return nothing
 end
 

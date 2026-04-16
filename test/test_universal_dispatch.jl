@@ -103,11 +103,14 @@ end
         @test Bennett._pick_alloca_strategy((32, 2), Bennett.ssa(:idx)) == :mux_exch_2x32
     end
 
-    @testset "strategy picker returns :unsupported for dynamic idx on uncovered shapes" begin
-        # Multi-word (N·W > 64) — deferred to M1b.
-        @test Bennett._pick_alloca_strategy((8, 100), Bennett.ssa(:idx)) == :unsupported
-        @test Bennett._pick_alloca_strategy((16, 8),  Bennett.ssa(:idx)) == :unsupported
-        @test Bennett._pick_alloca_strategy((32, 4),  Bennett.ssa(:idx)) == :unsupported
-        @test Bennett._pick_alloca_strategy((64, 2),  Bennett.ssa(:idx)) == :unsupported
+    @testset "strategy picker returns :shadow_checkpoint for dynamic idx on N·W > 64 shapes" begin
+        # Bennett-cc0 M3a (Bennett-jqyt): multi-word shapes (N·W > 64) now
+        # dispatch to the T4 shadow-checkpoint MVP fallback rather than
+        # :unsupported. MUX EXCH is still preferred for N·W ≤ 64 shapes
+        # (cheaper per-op cost); T4 is the universal correctness fallback.
+        @test Bennett._pick_alloca_strategy((8, 100), Bennett.ssa(:idx)) == :shadow_checkpoint
+        @test Bennett._pick_alloca_strategy((16, 8),  Bennett.ssa(:idx)) == :shadow_checkpoint
+        @test Bennett._pick_alloca_strategy((32, 4),  Bennett.ssa(:idx)) == :shadow_checkpoint
+        @test Bennett._pick_alloca_strategy((64, 2),  Bennett.ssa(:idx)) == :shadow_checkpoint
     end
 end
