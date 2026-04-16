@@ -33,7 +33,7 @@ include("parallel_adder_tree.jl")
 include("mul_qcla_tree.jl")
 
 export reversible_compile, simulate, extract_ir, parse_ir, extract_parsed_ir, register_callee!
-export soft_fadd, soft_fsub, soft_fmul, soft_fdiv, soft_fsqrt, soft_fneg, soft_fcmp_olt, soft_fcmp_oeq, soft_fcmp_ole, soft_fcmp_une, soft_fptosi, soft_sitofp, soft_fpext, soft_fptrunc, soft_exp, soft_exp2
+export soft_fadd, soft_fsub, soft_fmul, soft_fdiv, soft_fsqrt, soft_fneg, soft_fcmp_olt, soft_fcmp_oeq, soft_fcmp_ole, soft_fcmp_une, soft_fptosi, soft_sitofp, soft_fpext, soft_fptrunc, soft_exp, soft_exp2, soft_exp_fast, soft_exp2_fast
 export ReversibleCircuit, ControlledCircuit, controlled
 export gate_count, ancilla_count, constant_wire_count, depth, t_count, t_depth, toffoli_depth, peak_live_wires, print_circuit, verify_reversibility
 export pebbled_bennett, eager_bennett, value_eager_bennett, pebbled_group_bennett, checkpoint_bennett
@@ -146,6 +146,8 @@ register_callee!(soft_fpext)
 register_callee!(soft_fptrunc)
 register_callee!(soft_exp)
 register_callee!(soft_exp2)
+register_callee!(soft_exp_fast)
+register_callee!(soft_exp2_fast)
 register_callee!(soft_fptosi)
 register_callee!(soft_sitofp)
 register_callee!(soft_fcmp_ole)

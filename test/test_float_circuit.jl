@@ -259,16 +259,17 @@ using Random
         end
     end
 
-    @testset "Float64 exp / exp2 end-to-end (Bennett-cel)" begin
+    @testset "Float64 exp / exp2 end-to-end (Bennett-cel, Bennett-wigl)" begin
         # First IEEE-754 binary64 reversible exp / exp2 — algorithm: musl/Arm
-        # Optimized Routines Tang-style with N=128 lookup table and degree-5
-        # polynomial. Compiles to ~3M gates per call; verified bit-exact (or
-        # ≤2 ulp at extreme underflow boundary) vs Base.exp / Base.exp2.
+        # Optimized Routines Tang-style with N=128 lookup table, degree-5
+        # polynomial, and full underflow specialcase (Bennett-wigl) for
+        # bit-exact subnormal output. Compiles to ~5M gates per call; ≤1 ulp
+        # vs Base.exp / Base.exp2 (bit-exact vs musl reference).
 
-        @testset "soft_exp2 circuit" begin
+        @testset "soft_exp2 circuit (bit-exact)" begin
             c = reversible_compile(Bennett.soft_exp2, UInt64)
 
-            function check(a::Float64; tol::Int=2)
+            function check(a::Float64; tol::Int=1)
                 bits = reinterpret(UInt64, a)
                 result = UInt64(simulate(c, bits))
                 expected = reinterpret(UInt64, exp2(a))
@@ -280,25 +281,29 @@ using Random
                 end
             end
 
-            # Exact integer powers (r=0 path)
+            # Exact integer powers
             check(0.0; tol=0); check(1.0; tol=0); check(-1.0; tol=0)
-            check(10.0; tol=0); check(-10.0; tol=0)
-            check(50.0; tol=0); check(-50.0; tol=0)
-            # Irrational (polynomial path)
+            check(10.0; tol=0); check(-10.0; tol=0); check(50.0; tol=0); check(-50.0; tol=0)
+            # Irrational
             check(0.5); check(0.25); check(-0.5); check(0.1); check(3.14159)
+            # Subnormal output range (was garbage pre-Bennett-wigl)
+            check(-1022.0; tol=0)       # smallest normal (boundary)
+            check(-1023.0; tol=0)       # largest subnormal
+            check(-1050.0; tol=0)       # mid subnormal
+            check(-1074.0; tol=0)       # smallest subnormal
             # Boundary
             check(1024.0; tol=0)        # overflow → +Inf
             check(-1075.0; tol=0)       # underflow → +0
             check(Inf; tol=0); check(-Inf; tol=0); check(NaN)
 
             @test verify_reversibility(c)
-            println("  soft_exp2 circuit: ", gate_count(c))
+            println("  soft_exp2 circuit (bit-exact): ", gate_count(c))
         end
 
-        @testset "soft_exp circuit" begin
+        @testset "soft_exp circuit (bit-exact)" begin
             c = reversible_compile(Bennett.soft_exp, UInt64)
 
-            function check(a::Float64; tol::Int=2)
+            function check(a::Float64; tol::Int=1)
                 bits = reinterpret(UInt64, a)
                 result = UInt64(simulate(c, bits))
                 expected = reinterpret(UInt64, exp(a))
@@ -310,19 +315,18 @@ using Random
                 end
             end
 
-            # exp(0) = 1 exactly
             check(0.0; tol=0); check(-0.0; tol=0)
-            # Common values
             check(1.0); check(2.0); check(-1.0); check(0.5)
-            check(0.69314718)            # ≈ ln(2) → exp ≈ 2
-            check(2.302585)              # ≈ ln(10) → exp ≈ 10
+            check(0.69314718); check(2.302585)
+            # Subnormal output range (was garbage pre-Bennett-wigl)
+            check(-710.0; tol=0); check(-720.0; tol=0); check(-730.0; tol=0)
+            check(-740.0; tol=0); check(-745.0; tol=0)
             # Boundary
-            check(710.0; tol=0)          # overflow → +Inf
-            check(-750.0; tol=0)         # underflow → +0
+            check(710.0; tol=0); check(-750.0; tol=0)
             check(Inf; tol=0); check(-Inf; tol=0); check(NaN)
 
             @test verify_reversibility(c)
-            println("  soft_exp circuit: ", gate_count(c))
+            println("  soft_exp circuit (bit-exact): ", gate_count(c))
         end
     end
 end

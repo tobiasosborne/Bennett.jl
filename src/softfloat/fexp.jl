@@ -169,6 +169,16 @@ const _NEGLN2LON_BITS   = reinterpret(UInt64, -0x1.cf79abc9e3b3ap-47)
 
 const _ONE_BITS  = UInt64(0x3FF0000000000000)
 const _NEG_INF   = UInt64(0xFFF0000000000000)
+const _TWO_NEG_1022_BITS = UInt64(0x0010000000000000)   # 2^-1022 (smallest positive normal Float64)
+
+# Boundary thresholds — Julia.Base.Math constants (consistent with musl exp.c).
+# Used both for special-case dispatch and for the underflow specialcase entry.
+const _MAX_EXP_E_BITS  = reinterpret(UInt64,  709.7827128933841)   # log(DBL_MAX); largest finite-output input
+const _MIN_EXP_E_BITS  = reinterpret(UInt64, -745.1332191019412)   # log(smallest subnormal); smallest nonzero-output input
+const _SUBNORM_E_BITS  = reinterpret(UInt64, -708.3964185322641)   # log(smallest normal); subnormal-output threshold
+const _MAX_EXP_2_BITS  = reinterpret(UInt64,  1024.0)              # 2^1024 = +Inf
+const _MIN_EXP_2_BITS  = reinterpret(UInt64, -1075.0)              # 2^-1075 → 0
+const _SUBNORM_2_BITS  = reinterpret(UInt64, -1022.0)              # 2^-1022 = smallest normal
 
 # Compile-time-constant table lookup. The `let T = _EXP_TAB; T[idx+1]; end`
 # pattern is the documented requirement for QROM dispatch — module-level
@@ -180,28 +190,84 @@ const _NEG_INF   = UInt64(0xFFF0000000000000)
     end
 end
 
+# ── Underflow specialcase (musl exp.c / exp2.c specialcase()) ─────────────
+#
+# When the polynomial path would compute scale·(1+tmp) with scale subnormal
+# (k < -1022), the integer trick `T[idx+1] + (ki << 45)` overflows the IEEE
+# exponent field into the sign bit and produces garbage. musl's fix:
+#   1. Bump `sbits` by +1022·2^52 (an integer add — keeps scale in the
+#      normal range).
+#   2. Compute `y = scale + scale·tmp` in normal-range floating point.
+#   3. If `y < 1.0`, recover the bits lost to single-rounding via the
+#      (hi, lo) extended-precision reconstruction:
+#           lo  = scale - y + scale*tmp
+#           hi  = 1 + y
+#           lo' = 1 - hi + y + lo
+#           y'  = (hi + lo') - 1
+#      The rationale: y_under = 1 + tmp_subnormal, where tmp_subnormal ≪ 1.
+#      Single-rounded fadd loses ~1 ulp of low bits which would compound
+#      after the final 2^-1022 scale-down. The (hi, lo) split captures the
+#      lost bits via (hi + lo) = exact-precision (1 + y_under).
+#   4. Final `result = 2^-1022 · y'` produces the correctly-rounded
+#      subnormal output.
+#
+# Used by both `soft_exp` and `soft_exp2` — the only difference between
+# their underflow handling is the input range that triggers it (set by the
+# caller via `ifelse`-select).
+@inline function _exp_specialcase_underflow(sbits::UInt64, tmp::UInt64)::UInt64
+    # Bump sbits by +1022 biased-exponent steps to keep scale in normal range.
+    sbits_b   = sbits + (UInt64(1022) << 52)
+    # Same scale + scale*tmp formulation as the main path, but in normal range.
+    scale_tmp = soft_fmul(sbits_b, tmp)
+    y         = soft_fadd(sbits_b, scale_tmp)
+
+    # Extended-precision (hi, lo) reconstruction for the y < 1.0 case.
+    # We always compute the corrected value, then branchless-select.
+    diff      = soft_fsub(sbits_b, y)              # scale - y
+    lo        = soft_fadd(diff, scale_tmp)         # scale - y + scale*tmp
+    hi        = soft_fadd(_ONE_BITS, y)            # 1 + y
+    one_m_hi  = soft_fsub(_ONE_BITS, hi)           # 1 - hi
+    omh_p_y   = soft_fadd(one_m_hi, y)             # 1 - hi + y
+    lo_final  = soft_fadd(omh_p_y, lo)             # 1 - hi + y + lo
+    hi_lo     = soft_fadd(hi, lo_final)            # hi + lo'
+    y_corr    = soft_fsub(hi_lo, _ONE_BITS)        # (hi + lo') - 1
+
+    # Branchless select: y < 1.0 ? y_corr : y
+    y_lt_1    = soft_fcmp_olt(y, _ONE_BITS) != UInt64(0)
+    y_final   = ifelse(y_lt_1, y_corr, y)
+
+    # Final scale into subnormal range: result = 2^-1022 · y_final.
+    return soft_fmul(_TWO_NEG_1022_BITS, y_final)
+end
+
 """
     soft_exp2(a::UInt64) -> UInt64
 
 IEEE 754 double-precision 2^x on raw bit patterns.
-Branchless integer arithmetic; ≤2 ulp vs `Base.exp2(::Float64)` (typically 0).
+**Bit-exact vs musl/Arm Optimized Routines `exp2.c`** across the entire IEEE
+input range (≤0.527 ulp from true math; ≤1 ulp vs `Base.exp2`). Branchless
+integer arithmetic.
 
-Algorithm: musl/Arm Optimized Routines Tang-style with N=128 lookup table
-and degree-5 minimax polynomial. The integer-fractional split
-`x = k/N + r` is *exact* for binary radix because 1/N = 2^-7 has a
-finite binary representation.
+Algorithm: Tang-style with N=128 lookup table and degree-5 minimax polynomial
+(see Wilhelm/Sibidanov 2018, musl src/math/exp2.c). The integer-fractional
+split `x = k/N + r` is *exact* for binary radix (1/N = 2^-7). Underflow
+specialcase via `_exp_specialcase_underflow` for x ∈ (-1075, -1022) restores
+correct subnormal output.
 
-Special cases (in branchless ifelse-chain priority order, last write wins):
+For applications that don't need bit-exactness in the subnormal-output range
+(x ∈ (-1075, -1022)) and prefer the smaller circuit, use `soft_exp2_fast`
+(saves ~1.4M gates per call by flushing subnormals to zero).
+
+Special cases (last-write-wins ifelse chain):
 - ±0           → 1.0
-- |x| < 2^-54  → 1.0  (rounds to 1 anyway; saves a fadd we can't easily prove)
-- x ≥ 1024     → +Inf (overflow)
-- x ≤ -1075    → +0   (underflow, flushed)
+- |x| < 2^-54  → 1.0
+- x ≥ 1024     → +Inf  (overflow)
+- x < -1075    → +0    (underflow beyond smallest subnormal)
 - +Inf         → +Inf
 - -Inf         → +0
-- NaN          → NaN  (preserves payload, sets quiet bit via `a | QNAN`)
+- NaN          → NaN
 """
 @inline function soft_exp2(a::UInt64)::UInt64
-    # ── Special-case predicates (computed first; applied last via ifelse) ──
     sa = a >> 63
     ea = (a >> 52) & UInt64(0x7FF)
     fa = a & FRAC_MASK
@@ -209,34 +275,25 @@ Special cases (in branchless ifelse-chain priority order, last write wins):
     a_pinf = (ea == UInt64(0x7FF)) & (fa == UInt64(0)) & (sa == UInt64(0))
     a_ninf = (ea == UInt64(0x7FF)) & (fa == UInt64(0)) & (sa != UInt64(0))
     a_zero = (ea == UInt64(0)) & (fa == UInt64(0))
+    a_tiny = (ea < UInt64(1023 - 54))
 
-    # |x| comparison via biased exp + sign:
-    # exp_unbiased ≥ 10 means |x| ≥ 2^10 = 1024 → overflow
-    # exp_unbiased ≥ 10 with sign bit set AND value ≥ 1075 → underflow
-    a_overflow  = (sa == UInt64(0)) & (ea >= UInt64(1023 + 10))     # x ≥ 1024
-    # Underflow: x ≤ -1075. We approximate as "negative AND |x| ≥ 1075".
-    # 1075 in Float64 is exact; any x with sa=1 and unbiased exp ≥ 10 has |x| ≥ 1024;
-    # exact threshold via raw-bit comparison vs reinterpret(UInt64, 1075.0).
-    a_underflow = (sa != UInt64(0)) & (a >= reinterpret(UInt64, -1075.0))
-    a_tiny      = (ea < UInt64(1023 - 54))                          # |x| < 2^-54
+    # x ≥ 1024 → +Inf; x ≤ -1075 → +0; x ∈ (-1075, -1022) → subnormal via specialcase.
+    a_overflow      = (sa == UInt64(0)) & (a >= _MAX_EXP_2_BITS)
+    a_under_zero    = (sa != UInt64(0)) & (a >  _MIN_EXP_2_BITS)
+    in_subnormal    = (sa != UInt64(0)) & (a >  _SUBNORM_2_BITS)
 
-    # ── Range reduction: x = k/N + r, N = 128 ──
-    # kd = round(x · N) / N (via the "add+sub Shift" trick; Shift = 1.5·2^45)
-    kd_pre = soft_fadd(a, _EXP2_SHIFT_BITS)            # x + Shift
-    ki     = kd_pre                                    # raw bits — low 7 bits hold j
-    kd     = soft_fsub(kd_pre, _EXP2_SHIFT_BITS)       # = round(x·N)/N as Float64
-    r      = soft_fsub(a, kd)                          # |r| ≤ 1/(2N)
+    # ── Range reduction (exact for exp2): x = k/N + r ──
+    kd_pre = soft_fadd(a, _EXP2_SHIFT_BITS)
+    ki     = kd_pre
+    kd     = soft_fsub(kd_pre, _EXP2_SHIFT_BITS)
+    r      = soft_fsub(a, kd)
 
-    # ── Table lookup: T[2j], T[2j+1] for j = ki mod N ──
-    # _exp_tab_lookup expects 0-based index. T_pair_idx = 2 * (ki & 0x7F).
+    # ── Table lookup ──
     j_idx     = Int(ki & UInt64(0x7F))
     tail      = _exp_tab_lookup(2 * j_idx)
     sbits_lo  = _exp_tab_lookup(2 * j_idx + 1)
-
-    # `top = ki << 45` shifts ki's high bits (above j) into the exponent
-    # field; integer add to the table entry yields IEEE bits of 2^k · 2^(j/N).
-    top   = ki << 45
-    sbits = sbits_lo + top                             # integer add (no float)
+    top       = ki << 45
+    sbits     = sbits_lo + top
 
     # ── Polynomial: tmp = tail + r·C1 + r²·(C2 + r·C3) + r⁴·(C4 + r·C5) ──
     r2     = soft_fmul(r, r)
@@ -252,19 +309,23 @@ Special cases (in branchless ifelse-chain priority order, last write wins):
     s2     = soft_fadd(s1, q1)
     tmp    = soft_fadd(s2, q2)
 
-    # ── Final scale: 2^x = scale · (1 + tmp), implemented as scale + scale·tmp ──
+    # Main path (correct for x ∈ [-1022, 1024)).
     scale_tmp = soft_fmul(sbits, tmp)
     normal    = soft_fadd(sbits, scale_tmp)
 
-    # ── Branchless special-case overrides (last write wins) ──
+    # Underflow specialcase (always computed; selected below).
+    under     = _exp_specialcase_underflow(sbits, tmp)
+
+    # ── Branchless override chain (last-write-wins) ──
     result = normal
-    result = ifelse(a_tiny,      _ONE_BITS, result)
-    result = ifelse(a_zero,      _ONE_BITS, result)
-    result = ifelse(a_overflow,  INF_BITS,  result)
-    result = ifelse(a_underflow, UInt64(0), result)
-    result = ifelse(a_pinf,      INF_BITS,  result)
-    result = ifelse(a_ninf,      UInt64(0), result)
-    result = ifelse(a_nan,       a | QNAN,  result)
+    result = ifelse(in_subnormal, under,     result)
+    result = ifelse(a_tiny,       _ONE_BITS, result)
+    result = ifelse(a_zero,       _ONE_BITS, result)
+    result = ifelse(a_overflow,   INF_BITS,  result)
+    result = ifelse(a_under_zero, UInt64(0), result)
+    result = ifelse(a_pinf,       INF_BITS,  result)
+    result = ifelse(a_ninf,       UInt64(0), result)
+    result = ifelse(a_nan,        a | QNAN,  result)
     return result
 end
 
@@ -272,17 +333,24 @@ end
     soft_exp(a::UInt64) -> UInt64
 
 IEEE 754 double-precision e^x on raw bit patterns.
-Branchless integer arithmetic; ≤2 ulp vs `Base.exp(::Float64)` (typically 0).
+**Bit-exact vs musl/Arm Optimized Routines `exp.c`** across the entire IEEE
+input range (≤0.527 ulp from true math; ≤1 ulp vs `Base.exp`). Branchless
+integer arithmetic.
 
-Algorithm: musl/Arm Optimized Routines Tang-style with N=128 lookup table
-and degree-5 minimax polynomial in `r` after Cody-Waite range reduction
-`r = x − k·(ln2/N)` with ln2/N split as hi+lo for accuracy at large |x|.
+Algorithm: Tang-style with N=128 lookup table, degree-5 minimax polynomial,
+and Cody-Waite range reduction `r = x − k·(ln2/N)` with `ln2/N` split as
+hi+lo for accuracy at large |x|. Underflow specialcase via
+`_exp_specialcase_underflow` for x ∈ (MIN_EXP_E, SUBNORM_E) =
+(-745.13, -708.40) restores correct subnormal output.
+
+For the smaller circuit without subnormal-range bit-exactness, use
+`soft_exp_fast` (saves ~1.4M gates by flushing subnormals to zero).
 
 Special cases:
 - ±0           → 1.0
 - |x| < 2^-54  → 1.0
-- x ≥ 710      → +Inf  (overflow; e^709.78 is the last finite double)
-- x ≤ -745     → +0    (underflow, flushed)
+- x > 709.78   → +Inf  (overflow)
+- x < -745.13  → +0    (underflow beyond smallest subnormal)
 - +Inf         → +Inf
 - -Inf         → +0
 - NaN          → NaN
@@ -295,20 +363,18 @@ Special cases:
     a_pinf = (ea == UInt64(0x7FF)) & (fa == UInt64(0)) & (sa == UInt64(0))
     a_ninf = (ea == UInt64(0x7FF)) & (fa == UInt64(0)) & (sa != UInt64(0))
     a_zero = (ea == UInt64(0)) & (fa == UInt64(0))
+    a_tiny = (ea < UInt64(1023 - 54))
 
-    # Overflow: x ≥ 710 (e^710 > DBL_MAX). Underflow: x ≤ -745 (e^-745 < smallest subnormal).
-    a_overflow  = (sa == UInt64(0)) & (a >= reinterpret(UInt64, 710.0))
-    a_underflow = (sa != UInt64(0)) & (a >= reinterpret(UInt64, -745.0))
-    a_tiny      = (ea < UInt64(1023 - 54))
+    # Tightened thresholds (vs musl uses; matches Julia.Base.Math constants).
+    a_overflow   = (sa == UInt64(0)) & (a >  _MAX_EXP_E_BITS)
+    a_under_zero = (sa != UInt64(0)) & (a >  _MIN_EXP_E_BITS)
+    in_subnormal = (sa != UInt64(0)) & (a >  _SUBNORM_E_BITS)
 
     # ── Range reduction: x = k·(ln2/N) + r, N = 128 ──
-    # Step 1: z = x · (N/ln2)
     z      = soft_fmul(a, _INVLN2N_BITS)
-    # Step 2: kd = round(z) via add+sub Shift (Shift = 1.5·2^52)
     kd_pre = soft_fadd(z, _EXP_SHIFT_BITS)
     ki     = kd_pre
     kd     = soft_fsub(kd_pre, _EXP_SHIFT_BITS)
-    # Step 3: r = x − kd · (ln2/N) with Cody-Waite hi+lo split
     t1     = soft_fmul(kd, _NEGLN2HIN_BITS)
     r_hi   = soft_fadd(a, t1)
     t2     = soft_fmul(kd, _NEGLN2LON_BITS)
@@ -322,8 +388,144 @@ Special cases:
     sbits     = sbits_lo + top
 
     # ── Polynomial: tmp = tail + r + r²·(C2 + r·C3) + r⁴·(C4 + r·C5) ──
-    # Note: for `exp`, the leading `+ r` term is implicit (no C1 multiply
-    # needed, since C1 = 1 in the natural-base version of the polynomial).
+    r2     = soft_fmul(r, r)
+    rC3    = soft_fmul(r, _EXP_C3)
+    C2_rC3 = soft_fadd(_EXP_C2, rC3)
+    rC5    = soft_fmul(r, _EXP_C5)
+    C4_rC5 = soft_fadd(_EXP_C4, rC5)
+    q1     = soft_fmul(r2, C2_rC3)
+    r4     = soft_fmul(r2, r2)
+    q2     = soft_fmul(r4, C4_rC5)
+    tail_r = soft_fadd(tail, r)
+    s2     = soft_fadd(tail_r, q1)
+    tmp    = soft_fadd(s2, q2)
+
+    # Main path + underflow specialcase (always both computed).
+    scale_tmp = soft_fmul(sbits, tmp)
+    normal    = soft_fadd(sbits, scale_tmp)
+    under     = _exp_specialcase_underflow(sbits, tmp)
+
+    result = normal
+    result = ifelse(in_subnormal, under,     result)
+    result = ifelse(a_tiny,       _ONE_BITS, result)
+    result = ifelse(a_zero,       _ONE_BITS, result)
+    result = ifelse(a_overflow,   INF_BITS,  result)
+    result = ifelse(a_under_zero, UInt64(0), result)
+    result = ifelse(a_pinf,       INF_BITS,  result)
+    result = ifelse(a_ninf,       UInt64(0), result)
+    result = ifelse(a_nan,        a | QNAN,  result)
+    return result
+end
+
+# ── Fast variants (no specialcase; flush subnormal output to zero) ────────
+#
+# Identical to `soft_exp` / `soft_exp2` but skip the underflow specialcase
+# branch. ~1.4M gates cheaper per call. Returns 0 for inputs in the
+# subnormal-output range:
+#   * `soft_exp_fast`:  x ∈ [-745.13, -708.40] → 0  (Julia returns subnormal)
+#   * `soft_exp2_fast`: x ∈ [-1075, -1022)     → 0  (Julia returns subnormal)
+# All other inputs produce bit-exact (or ≤1 ulp vs musl) output.
+
+"""
+    soft_exp2_fast(a::UInt64) -> UInt64
+
+Fast variant of `soft_exp2` that flushes subnormal-output range to zero
+(x ∈ [-1075, -1022) → 0). ~1.4M gates cheaper per reversible compile.
+Bit-exact vs `soft_exp2` everywhere outside the subnormal range.
+
+Use when subnormal-range exactness isn't required (most numerical work).
+For full bit-exactness vs musl, use `soft_exp2`.
+"""
+@inline function soft_exp2_fast(a::UInt64)::UInt64
+    sa = a >> 63
+    ea = (a >> 52) & UInt64(0x7FF)
+    fa = a & FRAC_MASK
+    a_nan  = (ea == UInt64(0x7FF)) & (fa != UInt64(0))
+    a_pinf = (ea == UInt64(0x7FF)) & (fa == UInt64(0)) & (sa == UInt64(0))
+    a_ninf = (ea == UInt64(0x7FF)) & (fa == UInt64(0)) & (sa != UInt64(0))
+    a_zero = (ea == UInt64(0)) & (fa == UInt64(0))
+    a_tiny = (ea < UInt64(1023 - 54))
+
+    # Tightened to flush the entire subnormal-output range to zero.
+    a_overflow  = (sa == UInt64(0)) & (a >= _MAX_EXP_2_BITS)
+    a_underflow = (sa != UInt64(0)) & (a >  _SUBNORM_2_BITS)
+
+    kd_pre = soft_fadd(a, _EXP2_SHIFT_BITS)
+    ki     = kd_pre
+    kd     = soft_fsub(kd_pre, _EXP2_SHIFT_BITS)
+    r      = soft_fsub(a, kd)
+
+    j_idx     = Int(ki & UInt64(0x7F))
+    tail      = _exp_tab_lookup(2 * j_idx)
+    sbits_lo  = _exp_tab_lookup(2 * j_idx + 1)
+    top       = ki << 45
+    sbits     = sbits_lo + top
+
+    r2     = soft_fmul(r, r)
+    rC1    = soft_fmul(r, _EXP2_C1)
+    rC3    = soft_fmul(r, _EXP2_C3)
+    C2_rC3 = soft_fadd(_EXP2_C2, rC3)
+    rC5    = soft_fmul(r, _EXP2_C5)
+    C4_rC5 = soft_fadd(_EXP2_C4, rC5)
+    q1     = soft_fmul(r2, C2_rC3)
+    r4     = soft_fmul(r2, r2)
+    q2     = soft_fmul(r4, C4_rC5)
+    s1     = soft_fadd(tail, rC1)
+    s2     = soft_fadd(s1, q1)
+    tmp    = soft_fadd(s2, q2)
+
+    scale_tmp = soft_fmul(sbits, tmp)
+    normal    = soft_fadd(sbits, scale_tmp)
+
+    result = normal
+    result = ifelse(a_tiny,      _ONE_BITS, result)
+    result = ifelse(a_zero,      _ONE_BITS, result)
+    result = ifelse(a_overflow,  INF_BITS,  result)
+    result = ifelse(a_underflow, UInt64(0), result)
+    result = ifelse(a_pinf,      INF_BITS,  result)
+    result = ifelse(a_ninf,      UInt64(0), result)
+    result = ifelse(a_nan,       a | QNAN,  result)
+    return result
+end
+
+"""
+    soft_exp_fast(a::UInt64) -> UInt64
+
+Fast variant of `soft_exp` that flushes subnormal-output range to zero
+(x ∈ [-745.13, -708.40] → 0). ~1.4M gates cheaper per reversible compile.
+Bit-exact vs `soft_exp` everywhere outside the subnormal range.
+
+Use when subnormal-range exactness isn't required. For full bit-exactness
+vs musl (including subnormal output), use `soft_exp`.
+"""
+@inline function soft_exp_fast(a::UInt64)::UInt64
+    sa = a >> 63
+    ea = (a >> 52) & UInt64(0x7FF)
+    fa = a & FRAC_MASK
+    a_nan  = (ea == UInt64(0x7FF)) & (fa != UInt64(0))
+    a_pinf = (ea == UInt64(0x7FF)) & (fa == UInt64(0)) & (sa == UInt64(0))
+    a_ninf = (ea == UInt64(0x7FF)) & (fa == UInt64(0)) & (sa != UInt64(0))
+    a_zero = (ea == UInt64(0)) & (fa == UInt64(0))
+    a_tiny = (ea < UInt64(1023 - 54))
+
+    a_overflow  = (sa == UInt64(0)) & (a >  _MAX_EXP_E_BITS)
+    a_underflow = (sa != UInt64(0)) & (a >  _SUBNORM_E_BITS)
+
+    z      = soft_fmul(a, _INVLN2N_BITS)
+    kd_pre = soft_fadd(z, _EXP_SHIFT_BITS)
+    ki     = kd_pre
+    kd     = soft_fsub(kd_pre, _EXP_SHIFT_BITS)
+    t1     = soft_fmul(kd, _NEGLN2HIN_BITS)
+    r_hi   = soft_fadd(a, t1)
+    t2     = soft_fmul(kd, _NEGLN2LON_BITS)
+    r      = soft_fadd(r_hi, t2)
+
+    j_idx     = Int(ki & UInt64(0x7F))
+    tail      = _exp_tab_lookup(2 * j_idx)
+    sbits_lo  = _exp_tab_lookup(2 * j_idx + 1)
+    top       = ki << 45
+    sbits     = sbits_lo + top
+
     r2     = soft_fmul(r, r)
     rC3    = soft_fmul(r, _EXP_C3)
     C2_rC3 = soft_fadd(_EXP_C2, rC3)

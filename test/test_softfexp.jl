@@ -1,6 +1,6 @@
 using Test
 using Bennett
-using Bennett: soft_exp2, soft_exp
+using Bennett: soft_exp2, soft_exp, soft_exp2_fast, soft_exp_fast
 using Random
 
 # Bennett.jl soft_exp / soft_exp2 — IEEE 754 double-precision exponential on raw
@@ -127,6 +127,64 @@ end
         @test max_diff <= ULP_TOL
     end
 
+    # ── Bit-exact subnormal-output range tests (Bennett-wigl) ──
+    # Validates that the underflow specialcase produces correct subnormal
+    # output across x ∈ (-1075, -1022). Prior to the specialcase, this range
+    # produced garbage (negative numbers with magnitude up to 1e300).
+
+    @testset "BIT-EXACT subnormal-output range" begin
+        # Sweep every Float64 from -1023 down toward -1075 in -0.5 steps —
+        # covers the entire subnormal-output range with reasonable density.
+        n_pass = 0
+        n_total = 0
+        max_diff = 0
+        x = -1022.0
+        while x > -1076.0
+            n_total += 1
+            result_bits = soft_exp2(reinterpret(UInt64, x))
+            expected = exp2(x)
+            diff = _ulp_diff(result_bits, expected)
+            max_diff = max(max_diff, diff)
+            n_pass += (diff == 0) ? 1 : 0
+            x -= 0.5
+        end
+        # All inputs must be bit-exact
+        @test n_pass == n_total
+        @test max_diff == 0
+    end
+
+    @testset "BIT-EXACT specific subnormal boundary cases" begin
+        # smallest normal output
+        @test soft_exp2(reinterpret(UInt64, -1022.0)) == reinterpret(UInt64, exp2(-1022.0))
+        # largest subnormal output
+        @test soft_exp2(reinterpret(UInt64, -1023.0)) == reinterpret(UInt64, exp2(-1023.0))
+        # mid-range
+        @test soft_exp2(reinterpret(UInt64, -1050.0)) == reinterpret(UInt64, exp2(-1050.0))
+        # smallest representable subnormal
+        @test soft_exp2(reinterpret(UInt64, -1074.0)) == reinterpret(UInt64, exp2(-1074.0))
+        # boundary just above flush
+        @test soft_exp2(reinterpret(UInt64, -1074.999)) == reinterpret(UInt64, exp2(-1074.999))
+        # exact -1075 → should flush to 0 (exp2(-1075) underflows past smallest subnormal)
+        @test soft_exp2(reinterpret(UInt64, -1075.0)) == UInt64(0)
+        @test reinterpret(UInt64, exp2(-1075.0)) == UInt64(0)  # cross-check Julia
+    end
+
+    @testset "soft_exp2_fast: matches soft_exp2 OUTSIDE subnormal range" begin
+        # Outside (-1075, -1022) the two should agree bit-for-bit.
+        for x in (-1500.0, -1100.0, -1075.0, -1022.0, -1000.0, -100.0, -10.0,
+                  -1.0, -0.5, 0.0, 0.5, 1.0, 10.0, 100.0, 500.0, 1000.0, 1023.0,
+                  1024.0, Inf, -Inf)
+            @test soft_exp2_fast(reinterpret(UInt64, x)) == soft_exp2(reinterpret(UInt64, x))
+        end
+        @test isnan(reinterpret(Float64, soft_exp2_fast(reinterpret(UInt64, NaN))))
+    end
+
+    @testset "soft_exp2_fast: flushes subnormal range to 0 (documented)" begin
+        for x in (-1023.0, -1024.0, -1050.0, -1074.0)
+            @test soft_exp2_fast(reinterpret(UInt64, x)) == UInt64(0)
+        end
+    end
+
 end  # soft_exp2
 
 @testset "soft_exp library" begin
@@ -194,6 +252,102 @@ end  # soft_exp2
         end
         @test n_pass >= 4_990
         @test max_diff <= 4
+    end
+
+    # ── ≤1 ulp subnormal-output range tests (Bennett-wigl) ──
+    # Validates that the underflow specialcase produces correct subnormal
+    # output across x ∈ (-745.13, -708.40). Prior to the specialcase, this
+    # range produced garbage (e.g. exp(-710) returned -1.45e308 instead of 4.48e-309).
+    # We are bit-exact vs musl (algorithm-faithful); ≤1 ulp vs Base.exp because
+    # Julia uses FMA-based muladd in range reduction (single-rounded) while
+    # musl/our impl uses separate fmul+fadd (double-rounded). This causes ~1%
+    # of inputs to differ by 1 ulp at round-half boundaries.
+
+    @testset "subnormal-output range: ≤1 ulp vs Base.exp, bit-exact vs musl" begin
+        n_pass_exact = 0
+        n_within_1ulp = 0
+        n_total = 0
+        max_diff = 0
+        x = -708.4
+        while x > -745.13
+            n_total += 1
+            result_bits = soft_exp(reinterpret(UInt64, x))
+            expected = exp(x)
+            diff = _ulp_diff(result_bits, expected)
+            max_diff = max(max_diff, diff)
+            n_pass_exact += (diff == 0) ? 1 : 0
+            n_within_1ulp += (diff <= 1) ? 1 : 0
+            x -= 0.25
+        end
+        # Strict: every input must be within 1 ulp of Julia.
+        @test n_within_1ulp == n_total
+        @test max_diff <= 1
+        # Soft: ≥95% must be bit-exact (the rest are musl/Julia FMA divergence).
+        @test n_pass_exact >= n_total * 95 ÷ 100
+    end
+
+    @testset "BIT-EXACT specific subnormal boundary cases" begin
+        # exp(-708) is still normal output
+        @test soft_exp(reinterpret(UInt64, -708.0)) == reinterpret(UInt64, exp(-708.0))
+        # exp(-708.4) ≈ smallest normal (boundary)
+        @test soft_exp(reinterpret(UInt64, -708.4)) == reinterpret(UInt64, exp(-708.4))
+        # subnormal range — these were ALL garbage before the fix
+        @test soft_exp(reinterpret(UInt64, -710.0)) == reinterpret(UInt64, exp(-710.0))
+        @test soft_exp(reinterpret(UInt64, -720.0)) == reinterpret(UInt64, exp(-720.0))
+        @test soft_exp(reinterpret(UInt64, -730.0)) == reinterpret(UInt64, exp(-730.0))
+        @test soft_exp(reinterpret(UInt64, -740.0)) == reinterpret(UInt64, exp(-740.0))
+        @test soft_exp(reinterpret(UInt64, -744.0)) == reinterpret(UInt64, exp(-744.0))
+        @test soft_exp(reinterpret(UInt64, -745.0)) == reinterpret(UInt64, exp(-745.0))
+        # boundary: smallest x giving smallest subnormal
+        @test soft_exp(reinterpret(UInt64, -745.1332191019411)) == reinterpret(UInt64, exp(-745.1332191019411))
+        # below MIN_EXP → flush to 0
+        @test soft_exp(reinterpret(UInt64, -745.1332191019413)) == UInt64(0)
+        @test soft_exp(reinterpret(UInt64, -750.0)) == UInt64(0)
+    end
+
+    @testset "BIT-EXACT overflow boundary" begin
+        # The polynomial path was returning NaN at x = 709.79 (just past MAX_EXP);
+        # tightened threshold now returns +Inf correctly.
+        @test soft_exp(reinterpret(UInt64, 709.7827128933841)) == reinterpret(UInt64, exp(709.7827128933841))
+        @test soft_exp(reinterpret(UInt64, 709.79)) == reinterpret(UInt64, Inf)
+        @test soft_exp(reinterpret(UInt64, 710.0)) == reinterpret(UInt64, Inf)
+    end
+
+    @testset "soft_exp_fast: matches soft_exp OUTSIDE subnormal range" begin
+        for x in (-1000.0, -800.0, -750.0, -745.13321910194126, -708.0, -100.0,
+                  -1.0, 0.0, 1.0, 100.0, 700.0, 709.78, 709.79, 710.0, Inf, -Inf)
+            @test soft_exp_fast(reinterpret(UInt64, x)) == soft_exp(reinterpret(UInt64, x))
+        end
+        @test isnan(reinterpret(Float64, soft_exp_fast(reinterpret(UInt64, NaN))))
+    end
+
+    @testset "soft_exp_fast: flushes subnormal range to 0 (documented)" begin
+        for x in (-708.4, -710.0, -720.0, -730.0, -740.0, -745.0)
+            @test soft_exp_fast(reinterpret(UInt64, x)) == UInt64(0)
+        end
+    end
+
+    @testset "FULL-RANGE ≤1 ulp random sweep (10k uniform in [-700, 700])" begin
+        # ≤1 ulp vs Base.exp; bit-exact vs musl/AOR. Empirically ~99% of
+        # inputs hit bit-exact agreement with Julia; remaining ~1% differ by
+        # 1 ulp at round-half boundaries (musl uses separate fmul+fadd in
+        # range reduction; Julia uses FMA-based muladd → different rounding).
+        Random.seed!(0xBE9C8DB)
+        n_within_1ulp = 0
+        n_exact = 0
+        max_diff = 0
+        for _ in 1:10_000
+            x = (rand() - 0.5) * 1400.0  # [-700, 700]
+            result_bits = soft_exp(reinterpret(UInt64, x))
+            expected = exp(x)
+            diff = _ulp_diff(result_bits, expected)
+            max_diff = max(max_diff, diff)
+            n_exact += (diff == 0) ? 1 : 0
+            n_within_1ulp += (diff <= 1) ? 1 : 0
+        end
+        @test n_within_1ulp == 10_000
+        @test max_diff <= 1
+        @test n_exact >= 9_800        # ~98%+ bit-exact in practice
     end
 
 end  # soft_exp
