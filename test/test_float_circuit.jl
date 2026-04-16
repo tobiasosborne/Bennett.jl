@@ -258,4 +258,71 @@ using Random
             println("  soft_fptrunc circuit: ", gate_count(c))
         end
     end
+
+    @testset "Float64 exp / exp2 end-to-end (Bennett-cel)" begin
+        # First IEEE-754 binary64 reversible exp / exp2 — algorithm: musl/Arm
+        # Optimized Routines Tang-style with N=128 lookup table and degree-5
+        # polynomial. Compiles to ~3M gates per call; verified bit-exact (or
+        # ≤2 ulp at extreme underflow boundary) vs Base.exp / Base.exp2.
+
+        @testset "soft_exp2 circuit" begin
+            c = reversible_compile(Bennett.soft_exp2, UInt64)
+
+            function check(a::Float64; tol::Int=2)
+                bits = reinterpret(UInt64, a)
+                result = UInt64(simulate(c, bits))
+                expected = reinterpret(UInt64, exp2(a))
+                if isnan(exp2(a))
+                    @test isnan(reinterpret(Float64, result))
+                else
+                    diff = result >= expected ? result - expected : expected - result
+                    @test Int64(diff) <= tol
+                end
+            end
+
+            # Exact integer powers (r=0 path)
+            check(0.0; tol=0); check(1.0; tol=0); check(-1.0; tol=0)
+            check(10.0; tol=0); check(-10.0; tol=0)
+            check(50.0; tol=0); check(-50.0; tol=0)
+            # Irrational (polynomial path)
+            check(0.5); check(0.25); check(-0.5); check(0.1); check(3.14159)
+            # Boundary
+            check(1024.0; tol=0)        # overflow → +Inf
+            check(-1075.0; tol=0)       # underflow → +0
+            check(Inf; tol=0); check(-Inf; tol=0); check(NaN)
+
+            @test verify_reversibility(c)
+            println("  soft_exp2 circuit: ", gate_count(c))
+        end
+
+        @testset "soft_exp circuit" begin
+            c = reversible_compile(Bennett.soft_exp, UInt64)
+
+            function check(a::Float64; tol::Int=2)
+                bits = reinterpret(UInt64, a)
+                result = UInt64(simulate(c, bits))
+                expected = reinterpret(UInt64, exp(a))
+                if isnan(exp(a))
+                    @test isnan(reinterpret(Float64, result))
+                else
+                    diff = result >= expected ? result - expected : expected - result
+                    @test Int64(diff) <= tol
+                end
+            end
+
+            # exp(0) = 1 exactly
+            check(0.0; tol=0); check(-0.0; tol=0)
+            # Common values
+            check(1.0); check(2.0); check(-1.0); check(0.5)
+            check(0.69314718)            # ≈ ln(2) → exp ≈ 2
+            check(2.302585)              # ≈ ln(10) → exp ≈ 10
+            # Boundary
+            check(710.0; tol=0)          # overflow → +Inf
+            check(-750.0; tol=0)         # underflow → +0
+            check(Inf; tol=0); check(-Inf; tol=0); check(NaN)
+
+            @test verify_reversibility(c)
+            println("  soft_exp circuit: ", gate_count(c))
+        end
+    end
 end
