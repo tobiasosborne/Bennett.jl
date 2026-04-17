@@ -93,6 +93,10 @@ include("test_softfdiv_subnormal.jl")
 include("test_tabulate.jl")
 # T5 — persistent map protocol + harness self-test (T5-P3a, GREEN today).
 include("test_persistent_interface.jl")
+# T5-P3b — Okasaki RBT persistent map (insert + lookup; delete deferred).
+include("test_persistent_okasaki.jl")
+# T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
+include("test_persistent_hamt.jl")
 
 # T5 corpora — multi-language RED tests (T5-P2a/b/c).  All currently RED
 # via @test_throws; safe to include unconditionally.  C and Rust corpora

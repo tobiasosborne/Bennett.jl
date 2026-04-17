@@ -8,4 +8,8 @@
 
 include("interface.jl")
 include("linear_scan.jl")
+include("okasaki_rbt.jl")
+include("cf_semi_persistent.jl")
 include("harness.jl")
+include("popcount.jl")
+include("hamt.jl")
