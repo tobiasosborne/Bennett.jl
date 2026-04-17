@@ -39,6 +39,8 @@ export OKASAKI_IMPL, okasaki_pmap_new, okasaki_pmap_set, okasaki_pmap_get, Okasa
 export cf_pmap_new, cf_pmap_set, cf_pmap_get, cf_reroot, CF_IMPL
 export soft_popcount32
 export HAMT_IMPL, hamt_pmap_new, hamt_pmap_set, hamt_pmap_get
+export soft_jenkins96, soft_jenkins_int8
+export soft_feistel32, soft_feistel_int8
 export soft_fadd, soft_fsub, soft_fmul, soft_fma, soft_fdiv, soft_fsqrt, soft_fneg, soft_fcmp_olt, soft_fcmp_oeq, soft_fcmp_ole, soft_fcmp_une, soft_fptosi, soft_sitofp, soft_fpext, soft_fptrunc, soft_exp, soft_exp2, soft_exp_fast, soft_exp2_fast, soft_exp_julia, soft_exp2_julia
 export ReversibleCircuit, ControlledCircuit, controlled
 export gate_count, ancilla_count, constant_wire_count, depth, t_count, t_depth, toffoli_depth, peak_live_wires, print_circuit, verify_reversibility

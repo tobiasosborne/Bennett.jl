@@ -97,6 +97,10 @@ include("test_persistent_interface.jl")
 include("test_persistent_okasaki.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 include("test_persistent_hamt.jl")
+# T5-P3d — Conchon-Filliâtre semi-persistent (Bennett-6thy).
+include("test_persistent_cf.jl")
+# T5-P4 — Hash-cons compression layers (Bennett-gv8g + Bennett-7pgw).
+include("test_persistent_hashcons.jl")
 
 # T5 corpora — multi-language RED tests (T5-P2a/b/c).  All currently RED
 # via @test_throws; safe to include unconditionally.  C and Rust corpora
