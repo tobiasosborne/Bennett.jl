@@ -91,6 +91,9 @@ include("test_self_reversing.jl")
 include("test_mul_dispatcher.jl")
 include("test_softfdiv_subnormal.jl")
 include("test_tabulate.jl")
+# T5 — persistent map protocol + harness self-test (T5-P3a, GREEN today).
+include("test_persistent_interface.jl")
+
 # T5 corpora — multi-language RED tests (T5-P2a/b/c).  All currently RED
 # via @test_throws; safe to include unconditionally.  C and Rust corpora
 # self-skip if clang/rustc not on PATH.  Set BENNETT_T5_TESTS=0 to skip all.
