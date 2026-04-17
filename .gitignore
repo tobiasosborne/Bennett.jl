@@ -5,3 +5,7 @@ docs/literature/*.pdf
 docs/literature/**/*.pdf
 .claude/
 v0.1/
+build/
+*:Zone.Identifier
+scripts/.browser-profile/
+scripts/sources/
