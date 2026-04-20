@@ -93,6 +93,22 @@ Requires Julia 1.10+ and LLVM.jl.
 
 Strategies compose: a function with static-idx stores (shadow) followed by a dynamic-idx load (MUX EXCH) works end-to-end — the MUX reads the post-shadow-mutation primal state.
 
+### Persistent-DS scaling — counterintuitive finding
+
+T5 epic (in progress) extends the dispatcher with a persistent-heap fallback for unbounded `Vector{T}` / `Dict{K,V}` patterns. Three candidate impls were measured against `linear_scan` baseline at workloads `K = max_n` (full structure population):
+
+| max_n | linear_scan | linear_scan per-set | CF semi-persistent | CF per-set |
+|---:|---:|---:|---:|---:|
+| 4 | 6,350 gates | 1,587 | 61,728 | 15,432 |
+| 16 | 22,902 | 1,431 | 1,077,452 | 67,341 |
+| 64 | 89,302 | 1,395 | 17,458,600 | 272,791 |
+| 256 | 355,158 | 1,387 | OOM-skipped (~280M predicted) | — |
+| 1000 | **1,384,726** | **1,385** | OOM-skipped (~4.5B predicted) | — |
+
+**linear_scan per-set cost is constant in max_n.** Bennett.jl's lowering compresses the branchless "preserve N-1 slots, write 1" pattern into ~1,400 gates per set regardless of N. CF's variable-depth Diff-write doesn't compress, giving O(N²) total. HAMT/Okasaki cannot beat linear_scan because their per-set work strictly includes more arithmetic (popcount alone is 2,782 gates standalone — 2× linear_scan's measured per-set floor). N=1000 reaches 1.4M gates / 312K Toffoli / 3.4 GB compile RSS via linear_scan.
+
+**Why this contradicts CPU intuition**: CPU-cheap primitives (popcount, pointer deref, tree balance) are gate-expensive. The right reversible DS is one whose per-op pattern matches what Bennett.jl can compress: a single target slot with N-1 no-op preserves. See [`docs/memory/persistent_ds_scaling.md`](docs/memory/persistent_ds_scaling.md) for the full sweep methodology and cost-model derivation.
+
 ### Benchmark headlines
 
 | Benchmark | Bennett.jl | Baseline | Ratio |
@@ -229,7 +245,7 @@ Julia function          LLVM IR                Parsed IR             Reversible 
 - **[API Reference](docs/src/api.md)** — every exported function with examples
 - **[Architecture Guide](docs/src/architecture.md)** — how the compiler works internally
 - **[Vision PRD](Bennett-VISION-PRD.md)** — the full v1.0 roadmap and Enzyme analogy
-- **[Memory design docs](docs/memory/)** — `memssa_investigation.md`, `shadow_design.md`
+- **[Memory design docs](docs/memory/)** — `memssa_investigation.md`, `shadow_design.md`, `persistent_ds_scaling.md`
 - **[BENCHMARKS.md](BENCHMARKS.md)** — auto-generated head-to-head tables vs published compilers
 - **[WORKLOG.md](WORKLOG.md)** — the full development log; per-task gate counts, gotchas, design decisions
 
