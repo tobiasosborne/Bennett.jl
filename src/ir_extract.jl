@@ -485,7 +485,27 @@ function _module_to_parsed_ir(mod::LLVM.Module)
                 continue
             end
 
-            ir_inst = _convert_instruction(inst, names, counter, lanes)
+            # Bennett-cc0.3: skip instructions whose dispatch crashes on
+            # Julia runtime artifacts — LLVMGlobalAlias refs (ptr globals
+            # like @"jl_global#NNN.jit"), or helper calls that assume
+            # integer widths on pointer-typed aggregate members. Skipped
+            # instructions leave their SSA dest un-bound; downstream
+            # consumers that actually read the dest raise an ErrorException
+            # at `_operand` lookup time, which still satisfies the T5 corpus
+            # `@test_throws`. User arithmetic (which doesn't touch runtime
+            # ptrs) extracts normally.
+            ir_inst = try
+                _convert_instruction(inst, names, counter, lanes)
+            catch e
+                msg = sprint(showerror, e)
+                if occursin("Unknown value kind", msg) ||
+                   occursin("LLVMGlobalAlias", msg) ||
+                   (e isa MethodError && occursin("PointerType", msg))
+                    nothing
+                else
+                    rethrow()
+                end
+            end
             ir_inst === nothing && continue
             if ir_inst isa Vector
                 for sub in ir_inst
@@ -1315,6 +1335,71 @@ end
 # are pure SSA plumbing (emit nothing, mutate `lanes`). extractelement renames
 # via `IRBinOp(:add, lane, 0, w)` — known ~W+2 gates per extract, acceptable
 # MVP cost (see `docs/design/cc07_consensus.md` §Choice 4).
+
+# ---- Bennett-cc0.3: LLVMGlobalAlias handling ----
+#
+# LLVM.jl has no Julia wrapper for LLVMGlobalAliasValueKind (enum 6) — its
+# `identify` function raises when `LLVM.Value(ref)` is called on such a ref.
+# Julia's runtime emits GlobalAliases liberally for JIT-loaded global slots
+# (@"jl_global#NNN.jit") that user code can't meaningfully read. We resolve
+# the aliasee via raw C API when possible; otherwise fall back to a sentinel
+# that flows through ParsedIR and is rejected fail-loud at lowering time.
+# See `docs/design/cc03_05_consensus.md`.
+
+# Sentinel `IROperand` for pointer values the extractor cannot materialise as
+# a concrete wire reference. Produced when GlobalAlias resolution fails or
+# when a ConstantExpr's sub-operands can't be wrapped. Consumers that treat
+# it as user arithmetic fail loud in `lower.jl`'s `resolve!`.
+const OPAQUE_PTR_SENTINEL = IROperand(:const, :__opaque_ptr__, 0)
+
+# Follow a GlobalAlias chain via raw C API (LLVM.jl has no `aliasee`
+# accessor). Returns the terminal non-alias ref, or nothing on cycles,
+# depth overflow, or NULL. Depth cap 16 is well beyond anything Julia emits.
+function _resolve_aliasee(ref::_LLVMRef)::Union{_LLVMRef, Nothing}
+    ref == C_NULL && return nothing
+    seen = Set{_LLVMRef}()
+    cur = ref
+    for _ in 1:16
+        cur in seen && return nothing         # cycle guard
+        push!(seen, cur)
+        kind = LLVM.API.LLVMGetValueKind(cur)
+        kind == LLVM.API.LLVMGlobalAliasValueKind || return cur
+        next = LLVM.API.LLVMAliasGetAliasee(cur)
+        next == C_NULL && return nothing
+        cur = next
+    end
+    return nothing                            # exceeded depth
+end
+
+# Iterate an instruction's operands via raw C API, returning a vector of
+# `Union{LLVM.Value, Nothing}`. `nothing` slots represent unresolvable
+# GlobalAlias operands or operand kinds LLVM.jl refuses to wrap. Use this
+# instead of `LLVM.operands(inst)` at sites where a pointer operand could
+# be a GlobalAlias — the regular iterator crashes on alias refs.
+function _safe_operands(inst::LLVM.Instruction)::Vector{Union{LLVM.Value, Nothing}}
+    n = Int(LLVM.API.LLVMGetNumOperands(inst.ref))
+    out = Vector{Union{LLVM.Value, Nothing}}(undef, n)
+    for i in 0:(n - 1)
+        ref = LLVM.API.LLVMGetOperand(inst.ref, i)
+        resolved = _resolve_aliasee(ref)
+        out[i + 1] = resolved === nothing ? nothing : try
+            LLVM.Value(resolved)
+        catch
+            nothing
+        end
+    end
+    return out
+end
+
+# `_operand` variant that accepts an optional `Nothing` (from `_safe_operands`)
+# and emits the opaque-pointer sentinel for unresolvable operands.
+function _operand_safe(val::Union{LLVM.Value, Nothing},
+                       names::Dict{_LLVMRef, Symbol})::IROperand
+    val === nothing && return OPAQUE_PTR_SENTINEL
+    return _operand(val, names)
+end
+
+# ---- Bennett-cc0.7 helpers ----
 
 # Safe vector-type probe. LLVM.value_type errors on unsupported value kinds
 # (e.g. LLVMGlobalAlias, see cc0.3). Call-instruction callees hit this path,

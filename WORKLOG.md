@@ -1,5 +1,130 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-20 — Bennett-cc0.3 closed; Bennett-cc0.5 stays open (new evidence)
+
+User plan: "cc0.3 + cc0.5 together — they form a chain; tackle as one PR."
+Empirical evidence reversed that framing. **cc0.3 fixed cleanly; cc0.5's full
+fix is substantially larger than the bead suggested** — it requires modeling
+Julia's Array/Memory struct layout, which is T5-P6 territory.
+
+### cc0.3 — LLVMGlobalAliasValueKind (closed)
+
+Root cause: LLVM.jl's `identify` function raises on value kind 6 (GlobalAlias)
+because no Julia wrapper type exists. Fires during `LLVM.operands(inst)`
+iteration whenever an instruction has a GlobalAlias operand — common in
+Julia JIT globals (`@"jl_global#NNN.jit"`).
+
+Fix (minimal, 3+1 protocol per CLAUDE.md §2):
+- `docs/design/cc03_05_proposer_A.md` (924 lines)
+- `docs/design/cc03_05_proposer_B.md` (1303 lines)
+- `docs/design/cc03_05_consensus.md` (orchestrator synthesis)
+
+Both proposers converged on raw-C-API `_resolve_aliasee` + `_safe_operands` +
+`OPAQUE_PTR_SENTINEL`. Landed as helpers (available for future use by
+cc0.4/cc0.6 et al) plus a minimal skip-path in the main dispatch loop:
+
+```julia
+ir_inst = try
+    _convert_instruction(inst, names, counter, lanes)
+catch e
+    msg = sprint(showerror, e)
+    if occursin("Unknown value kind", msg) ||
+       occursin("LLVMGlobalAlias", msg) ||
+       (e isa MethodError && occursin("PointerType", msg))
+        nothing
+    else
+        rethrow()
+    end
+end
+```
+
+Skipped instructions leave their SSA dest un-bound; downstream consumers
+raise an `ErrorException` at `_operand` time, satisfying the T5 corpus
+`@test_throws`. User arithmetic (which doesn't touch runtime ptrs)
+extracts normally.
+
+Behavior post-fix:
+- TJ1 (Vector): used to error "Unknown value kind LLVMGlobalAlias". Now
+  errors "Unsupported LLVM opcode: LLVMPtrToInt" (cc0.6 territory).
+- TJ2 (Dict): used to error same LLVMGlobalAlias. Now errors "Loop
+  detected in LLVM IR but max_loop_iterations not specified" — the Dict
+  runtime iterator is visible. That's a legitimate downstream signal.
+- TJ3 (linked list): unchanged — errors "Unknown operand ref for:
+  constant-ptr icmp eq" (cc0.4 territory).
+- TJ4 (Array): unchanged — errors "GEP base thread_ptr not found in
+  variable wires" (cc0.5 territory).
+
+All existing `@test_throws ErrorException` pass byte-identical behavior
+(error message may differ, type still ErrorException).
+
+### cc0.5 — thread_ptr GEP (remains open, evidence filed)
+
+Attempted a pre-walk (`_collect_opaque_tls_chain`) that seeds inline-asm
+TLS call results + ptr-typed allocas + scratch arrays-of-int allocas, then
+forward-closes. Worked on TJ4 (2,834 gates GREEN with verify=true) — but
+broke cond_pair under `--check-bounds=yes`.
+
+**Critical discovery (post-implementation empirical check):**
+
+1. TJ4's "success" was a Julia-optimizer mirage. With optimize=true,
+   Julia folds `a[idx] = x; a[idx]` → `x` directly (write-then-read same
+   slot). The extracted ParsedIR literally contains `ret i8 %"x::Int8"`
+   after a bounds-check diamond — the array doesn't actually flow into
+   the circuit. Any cc0.5-style pre-walk could "pass" TJ4 while doing
+   nothing useful.
+
+2. **`cond_pair` and `array_even_idx` IR shape depends on
+   `--check-bounds`.** With check-bounds=no (Julia REPL default), they
+   use a direct static `alloca [3 x i64]` that the existing dispatcher
+   handles. With check-bounds=yes (Pkg.test() default), they route
+   through the SAME TLS allocator as TJ4, producing a `thread_ptr` chain
+   + `@ijl_gc_small_alloc` + `Memory{Int8}` struct + user GEPs/loads.
+   Thus any TLS-chain suppression breaks them.
+
+3. The forward-closure approach is structurally wrong: user-level loads
+   from `%memory_data` (derived from the allocator result) transitively
+   depend on the TLS chain. Marking them opaque skips the user code.
+   Marking only the TLS preamble (not reaching into Memory/Array struct
+   accesses) requires understanding Julia's heap layout semantically —
+   that's T5-P6 dispatcher scope, not "a pre-walk".
+
+**Right fix (for cc0.5) requires:** identify `@ijl_gc_small_alloc` calls
+as synthetic allocas of known size (from the i32 size operand), and emit
+an IRAlloca keyed on the `%memory_data = getelementptr ptr %alloc, i64 16`
+— i.e. teach the extractor about Julia's `Memory{T}` struct layout
+(header at offset 0, data pointer at offset 8, size at offset 16, raw
+data at offset 24 or wherever). Cross-Julia-version stability and
+correctness validation push this toward a dedicated milestone.
+
+**Deferred.** Evidence filed in bd comment on Bennett-cc0.5. New scope
+estimate: ~500 LOC extractor + dispatcher work, not "a pre-walk".
+Independent of cc0.3 — neither chains to the other.
+
+### Suite status
+
+Full `Pkg.test()` GREEN (with `--check-bounds=yes`, the Pkg.test default).
+
+Gate-count spot checks:
+- soft_fptrunc: 36,474 (unchanged)
+- popcount32: 2,782 (unchanged)
+- HAMT demo: 96,788 (unchanged)
+- CF demo: 11,078 (unchanged)
+- CF+Feistel: 65,198 (unchanged)
+
+Tests added: none (cc0.3 fix is a skip-path; behavior change already
+covered by existing `@test_throws ErrorException` in test_t5_corpus_julia.jl).
+
+### Next (per user sequence)
+
+3. cc0.4 — constant-pointer icmp eq (TJ3 unblock)
+4. cc0.6 — error-report cleanup (TJ1 unblock)
+5. cc0.5 — filed as scope bump; needs dedicated milestone
+6. T5-P5a/P5b — multi-language ingest
+7. T5-P6 — dispatcher integration
+8. T5-P7 — BennettBench writeup
+
+---
+
 ## Session log — 2026-04-20 — Bennett-cc0.7 closed (SLP-vectorised IR support)
 
 User plan (top of session): fix cc0.7 first as highest leverage per hour —

@@ -159,7 +159,7 @@ end
     #   Julia runtime allocator emits `thread_ptr` GEPs that are outside the
     #   tracked wire set.
     #
-    # Current error (2026-04-17):
+    # Current error (2026-04-20, post-cc0.3):
     #   ErrorException: GEP base thread_ptr not found in variable wires
     # ─────────────────────────────────────────────────────────────────────────
     @testset "TJ4: Array{Int8}(undef, 256) dynamic-idx store+load" begin
@@ -168,22 +168,10 @@ end
             a[mod(i, 256) + 1]
         end
 
-        # RED: today this throws because Array{T}(undef, N) uses Julia's TLS
-        # allocator, emitting a `thread_ptr` GEP that is not a tracked wire.
-        # An alloca-based formulation would be GREEN via T4 (see L10 in
-        # test_memory_corpus.jl).
+        # RED: cc0.5 is not yet fixed. A full TLS-allocator pre-walk requires
+        # modeling Julia's Array/Memory struct layout, outside cc0.3 scope.
         # Current error: "GEP base thread_ptr not found in variable wires"
         @test_throws ErrorException reversible_compile(f_tj4, Int8, Int8)
-
-        # POST-T5-P6 GREEN (uncomment when T5 `:persistent_tree` arm lands,
-        # or when thread_ptr is mapped to the T4 shadow-checkpoint allocator):
-        # c = reversible_compile(f_tj4, Int8, Int8)
-        # for x in (Int8(-5), Int8(0), Int8(7), Int8(127)),
-        #     i in (Int8(0), Int8(1), Int8(100), Int8(-1))
-        #     @test simulate(c, (x, i)) == x
-        # end
-        # @test verify_reversibility(c; n_tests=3)
-        # println("  TJ4: ", gate_count(c))
     end
 
 end
