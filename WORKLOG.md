@@ -1,5 +1,135 @@
 # Bennett.jl Work Log
 
+## NEXT AGENT — start here — 2026-04-20 (cc0.7 + cc0.3 shipped; cc0.4 next)
+
+**Two ir_extract beads closed this session. User's sequence continues with
+cc0.4 (constant-pointer icmp eq, unblocks TJ3) then cc0.6 (error-report
+cleanup, unblocks TJ1). cc0.5 reclassified: bead-suggested pre-walk is
+insufficient; needs T5-P6-scope work. See this session's log for details.**
+
+### Epic status
+
+**Bennett-cc0 memory epic** — T5 Phase 5+ is the current frontier:
+
+| Bead | Status | What it blocks / unblocks |
+|------|--------|---------------------------|
+| cc0.7 (InsertElement/Vector SSA) | ✓ closed 2026-04-20 | Unlocked `optimize=true` everywhere; 3-50× gate-count reduction on SLP-vectorised workloads. 4.4× measured on ls_demo_16 sweep fixture. |
+| cc0.3 (LLVMGlobalAlias) | ✓ closed 2026-04-20 | Unblocks Vector/Dict/metaprogrammed pathways; downstream `@eval`-generated code can extract past runtime-JIT-global references. |
+| **cc0.4** (constant-ptr icmp eq) | ○ **next** (P2) | TJ3 (mutable linked list `isnothing(next)` checks) — same root cause expected: pointer-typed operands flowing through `_operand` / `_iwidth` paths. |
+| **cc0.6** (error-report cleanup) | ○ (P2) | TJ1 now errors with "Unsupported LLVM opcode: LLVMPtrToInt" — needs handler for ptrtoint/inttoptr in runtime contexts, likely via same opaque-ptr sentinel infrastructure cc0.3 landed. |
+| cc0.5 (thread_ptr GEP) | ○ (scope bumped) | TJ4 (Array{T}(undef,N)) — **needs T5-P6-scope milestone**, not a standalone fix. See 2026-04-20 session log §cc0.5 for empirical evidence and right-sized approach. |
+| T5-P5a (Bennett-lmkb) | ○ (P2) | `extract_parsed_ir_from_ll(path)` — raw .ll text ingest for multi-language support |
+| T5-P5b (Bennett-f2p9) | ○ (P2) | `extract_parsed_ir_from_bc(path)` + clang/rustc fixtures |
+| T5-P6 (Bennett-z2dj) | ○ (P2) | `_pick_alloca_strategy :persistent_tree` arm + `mem=` kwarg. User's 2026-04-20 Phase-3-reversed sweep showed **linear_scan beats HAMT/CF/Okasaki at every N up to 1000** — recommended default. Dispatcher design should not prefer tree-shaped structures. |
+| T5-P7a (Bennett-ktt8) | ○ (P2) | Full Pareto-front benchmark; waits on P6 |
+| T5-P7b (Bennett-2uas) | ○ (P2) | BENCHMARKS.md + paper outline; waits on P6/P7a |
+
+### Recommended sequence (per user plan 2026-04-20)
+
+1. **cc0.4** — small, isolated bug fix on constant-pointer icmp eq. The cc0.3
+   helpers (`_resolve_aliasee`, `_safe_operands`, `OPAQUE_PTR_SENTINEL`) are
+   already in place and will likely make this a few-line addition to the
+   icmp handler.
+2. **cc0.6** — chore-level error-report cleanup for user-facing messages.
+   May also surface ptrtoint/inttoptr scope questions.
+3. **T5-P5a + P5b** — multi-language ingest (.ll / .bc). Headline feature
+   ("Enzyme of reversibility" cross-language). Independent of bugs above;
+   could be parallelized to a sonnet subagent.
+4. **T5-P6** dispatcher — using this session's finding that linear_scan is
+   the right default (not CF/HAMT/Okasaki). Needs cc0.4 + cc0.6 GREEN for
+   the test corpus to actually drive the dispatcher.
+5. **cc0.5** — proper TLS-allocator + Memory{T}-struct modeling as part
+   of T5-P6 dispatcher or a dedicated milestone.
+6. **T5-P7** — BennettBench writeup. Final epic close.
+
+### Key recent session insights (don't re-discover)
+
+1. **`freeze` / `x+0` is NOT zero-gate.** Empirically ~W+2 gates per
+   `IRBinOp(:add, x, iconst(0), w)`. Both cc0.7 proposers assumed zero;
+   falsified by direct measurement. If you're designing a "pure rename"
+   primitive, it needs to mutate the `names` table or use a
+   `value_aliases::Dict{_LLVMRef, IROperand}` — not add-0.
+
+2. **TJ4 "succeeds" under optimize=true due to Julia-optimizer folding.**
+   `Array{Int8}(undef, N); a[idx]=x; a[idx]` folds to `ret i8 %x` — the
+   array never flows into the circuit. Any cc0.5 pre-walk can "pass" TJ4
+   while doing nothing useful. Validate against cond_pair under
+   `--check-bounds=yes` (Pkg.test default) to see the actual TLS chain.
+
+3. **Pkg.test uses `--check-bounds=yes`.** This changes IR shape for
+   array-literal patterns — they route through the TLS allocator instead
+   of static allocas. Test your fixes under both modes:
+   `julia --project=. test/runtests.jl` (no bounds check — fast) AND
+   `julia --project=. -e 'using Pkg; Pkg.test()'` (bounds=yes — authoritative).
+
+4. **LLVM.jl's operand iterator raises on unknown value kinds.** Any
+   `LLVM.operands(inst)` + `LLVM.Value(ref)` path can crash on
+   GlobalAlias, inline-asm, and other exotic operand kinds. Use the raw
+   C-API pattern from `_any_vector_operand` (cc0.7) or `_safe_operands`
+   (cc0.3) when a handler might see these. LLVM.jl exposes
+   `LLVMGetNumOperands` / `LLVMGetOperand` / `LLVMGetValueKind` /
+   `LLVMAliasGetAliasee` / `LLVMIsAInlineAsm` for defensive iteration.
+
+5. **Bead descriptions are aspirational, not gospel.** Two beads this
+   session (cc0.3 chain, cc0.5 pre-walk) described simpler fixes than
+   the code actually required. Read the bead, extract real IR, then
+   decide on scope. cc0.3 turned out simpler than described (skip-path
+   > alias resolution); cc0.5 turned out much harder.
+
+### Session close commits (this session)
+
+- `552c802` Bennett-cc0.7: ir_extract handles SLP-vectorised IR
+- `d213bfa` bd: sync dolt cache after Bennett-cc0.7 close
+- `e4673bb` bd: sync dolt cache (post-push drift)
+- `072ca2a` Bennett-cc0.3: ir_extract skips LLVMGlobalAlias instructions
+- `134bd52` bd: sync dolt cache (post-push drift, cc0.3)
+
+Gate-count spot checks (all byte-identical vs pre-session):
+- soft_fptrunc: 36,474
+- popcount32 standalone: 2,782
+- HAMT demo max_n=8: 96,788
+- CF demo max_n=4: 11,078
+- CF+Feistel: 65,198
+
+Two new gate-count wins from cc0.7:
+- ls_demo_16: 22,902 → 5,218 (4.4× reduction; optimize=true unlocked)
+- Any auto-vectorised workload: 3-50× reduction on same pattern
+
+### Ground truth for next agent
+
+Read these before starting:
+- `CLAUDE.md` — the 13 implementation principles (§2 requires 3+1 for
+  `ir_extract.jl` changes)
+- `docs/design/cc07_consensus.md` — the design-doc style model
+- `docs/design/cc03_05_consensus.md` — continuation pattern for ir_extract
+- `src/ir_extract.jl:1341-1500` — cc0.3 helpers + cc0.7 handlers already
+  in place; cc0.4 will build on them
+- `test/test_t5_corpus_julia.jl` — TJ1/TJ2/TJ3/TJ4 `@test_throws` that
+  drive the `ir_extract` gaps. TJ3 is the cc0.4 target. Watch the error
+  message — the existing test passes on **any** ErrorException, so a
+  clean fix will keep the test GREEN but with a message that no longer
+  mentions "Unknown operand ref for: i1 icmp eq (ptr @…RNode…, …)".
+- `test/test_t0_preprocessing.jl` — the "canary" for cc0.5-style
+  regressions. `cond_pair` / `array_even_idx` under bounds=yes use the
+  TLS allocator. If your next change touches the outer dispatch loop,
+  run this test under `--check-bounds=yes` before committing.
+
+### Proposer / implementer protocol (reminder)
+
+Core `ir_extract.jl` / `lower.jl` / `bennett.jl` changes require 3+1 per
+CLAUDE.md §2. Last two beads landed via:
+- 2 proposer subagents (general-purpose, haiku/sonnet-class) with full
+  ground-truth context (IR samples, full source files, constraints)
+- Orchestrator (this agent) synthesises a consensus doc, then
+  implements — OR hands the consensus to a sonnet implementer subagent
+- Red-green TDD: write the failing test FIRST, confirm RED, then build
+  toward GREEN
+
+For small additive changes in a new file (e.g. new primitive library,
+new persistent-DS impl), single-implementer OK — but still red-green.
+
+---
+
 ## Session log — 2026-04-20 — Bennett-cc0.3 closed; Bennett-cc0.5 stays open (new evidence)
 
 User plan: "cc0.3 + cc0.5 together — they form a chain; tackle as one PR."
