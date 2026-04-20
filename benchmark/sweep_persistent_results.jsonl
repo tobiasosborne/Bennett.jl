@@ -1,0 +1,8 @@
+{"timestamp":"2026-04-20T08:43:06.283","impl":"linear_scan","max_n":4,"gates_total":6350,"NOT":72,"CNOT":4772,"Toffoli":1506,"wires":2110,"compile_seconds":28.841,"rss_mb":596,"verified":true}
+{"timestamp":"2026-04-20T08:43:38.076","impl":"linear_scan","max_n":16,"gates_total":22902,"NOT":280,"CNOT":17372,"Toffoli":5250,"wires":6982,"compile_seconds":29.278,"rss_mb":605,"verified":true}
+{"timestamp":"2026-04-20T08:44:43.780","impl":"linear_scan","max_n":64,"gates_total":89302,"NOT":1304,"CNOT":67772,"Toffoli":20226,"wires":26470,"compile_seconds":29.498,"rss_mb":587,"verified":true}
+{"timestamp":"2026-04-20T08:52:27.339","impl":"cf","max_n":4,"gates_total":61728,"NOT":2448,"CNOT":43982,"Toffoli":15298,"wires":18568,"compile_seconds":30.394,"rss_mb":592,"verified":true}
+{"timestamp":"2026-04-20T08:53:12.830","impl":"cf","max_n":16,"gates_total":1077452,"NOT":42548,"CNOT":773678,"Toffoli":261226,"wires":311512,"compile_seconds":31.134,"rss_mb":595,"verified":true}
+{"timestamp":"2026-04-20T08:53:52.298","impl":"cf","max_n":64,"gates_total":17458600,"NOT":695920,"CNOT":12574382,"Toffoli":4188298,"wires":5014168,"compile_seconds":36.026,"rss_mb":1130,"verified":true}
+{"timestamp":"2026-04-20T08:55:56.401","impl":"linear_scan","max_n":256,"gates_total":355158,"NOT":5656,"CNOT":269372,"Toffoli":80130,"wires":104422,"compile_seconds":35.103,"rss_mb":917,"verified":true}
+{"timestamp":"2026-04-20T08:58:15.586","impl":"linear_scan","max_n":1000,"gates_total":1384726,"NOT":21896,"CNOT":1050572,"Toffoli":312258,"wires":406486,"compile_seconds":120.587,"rss_mb":3386,"verified":true}
