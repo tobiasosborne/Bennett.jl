@@ -407,6 +407,9 @@ function _module_to_parsed_ir(mod::LLVM.Module)
 
     # Build name table: LLVMValueRef → Symbol  (two-pass: name everything first)
     names = Dict{_LLVMRef, Symbol}()
+    # Bennett-cc0.7: per-lane side table for vector SSA values. Populated
+    # during pass 2 in source order by `_convert_vector_instruction`.
+    lanes = Dict{_LLVMRef, Vector{IROperand}}()
 
     # Name parameters
     args = Tuple{Symbol,Int}[]
@@ -482,7 +485,7 @@ function _module_to_parsed_ir(mod::LLVM.Module)
                 continue
             end
 
-            ir_inst = _convert_instruction(inst, names, counter)
+            ir_inst = _convert_instruction(inst, names, counter, lanes)
             ir_inst === nothing && continue
             if ir_inst isa Vector
                 for sub in ir_inst
@@ -654,9 +657,25 @@ end
 
 # ---- instruction conversion ----
 
-function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symbol}, counter::Ref{Int})
+function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symbol},
+                              counter::Ref{Int},
+                              lanes::Dict{_LLVMRef, Vector{IROperand}}=Dict{_LLVMRef, Vector{IROperand}}())
     opc = LLVM.opcode(inst)
     dest = names[inst.ref]
+
+    # Bennett-cc0.7: SLP-vectorised IR. `<N x iM>` SSA is modelled as N scalar
+    # per-lane IROperands in `lanes`; vector ops desugar into N scalar IRInsts.
+    # See `docs/design/cc07_consensus.md`. Entire mechanism is contained in
+    # this file — `lower.jl` never sees a vector.
+    #
+    # `_any_vector_operand` catches pre-existing cc0.3 (LLVMGlobalAlias) errors
+    # that fire during operand iteration for call instructions (LLVM.jl's
+    # LLVM.Value wrapper refuses to materialise GlobalAlias values). Callees
+    # are never vectors, so treat iterator exceptions as "no".
+    is_vec_result = _safe_is_vector_type(inst)
+    if is_vec_result || _any_vector_operand(inst)
+        return _convert_vector_instruction(inst, names, lanes, counter)
+    end
 
     # binary arithmetic/logic
     if opc in (LLVM.API.LLVMAdd, LLVM.API.LLVMSub, LLVM.API.LLVMMul,
@@ -1285,6 +1304,326 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
     end
 
     error("Unsupported LLVM opcode: $opc in instruction: $(string(inst))")
+end
+
+# ---- Bennett-cc0.7: vector SSA scalarisation ----
+#
+# LLVM's SLP pass vectorises sequential same-type ops into `<N x iM>` SIMD.
+# Bennett has no native vector lowering. We scalarise at the extractor:
+# every vector SSA ref maps to N per-lane IROperands in `lanes`; vector ops
+# desugar into N independent scalar IRInsts. insertelement / shufflevector
+# are pure SSA plumbing (emit nothing, mutate `lanes`). extractelement renames
+# via `IRBinOp(:add, lane, 0, w)` — known ~W+2 gates per extract, acceptable
+# MVP cost (see `docs/design/cc07_consensus.md` §Choice 4).
+
+# Safe vector-type probe. LLVM.value_type errors on unsupported value kinds
+# (e.g. LLVMGlobalAlias, see cc0.3). Call-instruction callees hit this path,
+# so the dispatcher uses the safe variant. An operand that isn't a plain
+# LLVM value is definitely not a vector — treat the exception as "no".
+function _safe_is_vector_type(val)::Bool
+    try
+        return LLVM.value_type(val) isa LLVM.VectorType
+    catch
+        return false
+    end
+end
+
+# Check whether any operand of `inst` is vector-typed. LLVM.jl raises from
+# within `iterate(LLVM.operands(...))` when the operand's value kind is
+# unsupported (e.g. LLVMGlobalAlias callees on call instructions — cc0.3).
+# Fall back to an index-based scan using the raw C API on iteration failure.
+function _any_vector_operand(inst::LLVM.Instruction)::Bool
+    try
+        return any(_safe_is_vector_type(o) for o in LLVM.operands(inst))
+    catch
+        # Iteration failed partway through. Scan by raw index via the C API,
+        # skipping operands that LLVM.jl cannot materialise.
+        n = Int(LLVM.API.LLVMGetNumOperands(inst.ref))
+        for i in 0:(n - 1)
+            ref = LLVM.API.LLVMGetOperand(inst.ref, i)
+            try
+                if _safe_is_vector_type(LLVM.Value(ref))
+                    return true
+                end
+            catch
+                continue
+            end
+        end
+        return false
+    end
+end
+
+# Returns (n_lanes, elem_width) for <N x iM>; `nothing` for non-vectors.
+# Errors on non-integer lanes or unsupported widths.
+function _vector_shape(val)::Union{Nothing, Tuple{Int, Int}}
+    vt = LLVM.value_type(val)
+    vt isa LLVM.VectorType || return nothing
+    et = LLVM.eltype(vt)
+    et isa LLVM.IntegerType ||
+        error("vector with non-integer element type $et is not supported; " *
+              "got vector type $vt (Bennett-cc0.7 MVP scope)")
+    w = Int(LLVM.width(et))
+    w ∈ (1, 8, 16, 32, 64) ||
+        error("vector element width $w is not supported; expected 1/8/16/32/64. " *
+              "Got vector type $vt")
+    return (Int(LLVM.length(vt)), w)
+end
+
+# Decode a value's N lanes into IROperands. Handles already-populated SSA
+# vectors (via `lanes`), ConstantDataVector, ConstantAggregateZero, and
+# UndefValue/PoisonValue (poison-sentinel lanes that crash if ever read).
+function _resolve_vec_lanes(val::LLVM.Value,
+                            lanes::Dict{_LLVMRef, Vector{IROperand}},
+                            names::Dict{_LLVMRef, Symbol},
+                            n_expected::Int)::Vector{IROperand}
+    # Path A: previously-processed SSA vector → read from `lanes`.
+    if haskey(lanes, val.ref)
+        got = lanes[val.ref]
+        length(got) == n_expected ||
+            error("vector lane-count mismatch on $(string(val)): expected " *
+                  "$n_expected, got $(length(got))")
+        return got
+    end
+    vt = LLVM.value_type(val)
+    vt isa LLVM.VectorType ||
+        error("_resolve_vec_lanes on non-vector: $(string(val)) :: $vt")
+    got_n = Int(LLVM.length(vt))
+    got_n == n_expected ||
+        error("vector lane-count mismatch: expected $n_expected, got $got_n on $(string(val))")
+    # Path B: ConstantDataVector.
+    if val isa LLVM.ConstantDataVector
+        out = Vector{IROperand}(undef, got_n)
+        for i in 0:(got_n - 1)
+            elt_ref = LLVM.API.LLVMGetElementAsConstant(val.ref, i)
+            elt = LLVM.Value(elt_ref)
+            elt isa LLVM.ConstantInt ||
+                error("vector constant element at lane $i is not ConstantInt: $(string(elt))")
+            out[i + 1] = iconst(convert(Int, elt))
+        end
+        return out
+    end
+    # Path C: zeroinitializer.
+    if val isa LLVM.ConstantAggregateZero
+        return [iconst(0) for _ in 1:got_n]
+    end
+    # Path D: poison / undef — sentinel lanes. Reading crashes fail-loud.
+    if val isa LLVM.UndefValue || val isa LLVM.PoisonValue
+        return [IROperand(:const, :__poison_lane__, 0) for _ in 1:got_n]
+    end
+    error("cannot resolve vector lanes for $(string(val)) :: $vt — not an " *
+          "SSA vector, ConstantDataVector, ConstantAggregateZero, or poison/undef")
+end
+
+function _convert_vector_instruction(inst::LLVM.Instruction,
+                                     names::Dict{_LLVMRef, Symbol},
+                                     lanes::Dict{_LLVMRef, Vector{IROperand}},
+                                     counter::Ref{Int})
+    opc = LLVM.opcode(inst)
+    dest = names[inst.ref]
+
+    # insertelement — pure SSA plumbing, emit no IR.
+    if opc == LLVM.API.LLVMInsertElement
+        ops = LLVM.operands(inst)
+        base_vec = ops[1]; elem = ops[2]; idx_val = ops[3]
+        idx_val isa LLVM.ConstantInt ||
+            error("insertelement with dynamic lane index not supported: $(string(inst))")
+        idx = convert(Int, idx_val)
+        n = _vector_shape(inst)[1]
+        (0 <= idx < n) ||
+            error("insertelement lane index $idx outside [0,$n): $(string(inst))")
+        base_lanes = _resolve_vec_lanes(base_vec, lanes, names, n)
+        new_lanes = copy(base_lanes)
+        new_lanes[idx + 1] = _operand(elem, names)
+        lanes[inst.ref] = new_lanes
+        return nothing
+    end
+
+    # shufflevector — pure SSA plumbing.
+    if opc == LLVM.API.LLVMShuffleVector
+        ops = LLVM.operands(inst)
+        v1 = ops[1]; v2 = ops[2]
+        n_src = _vector_shape(v1)[1]
+        n_result = Int(LLVM.API.LLVMGetNumMaskElements(inst.ref))
+        v1_lanes = _resolve_vec_lanes(v1, lanes, names, n_src)
+        v2_lanes = _resolve_vec_lanes(v2, lanes, names, n_src)
+        out = Vector{IROperand}(undef, n_result)
+        for i in 0:(n_result - 1)
+            m = Int(LLVM.API.LLVMGetMaskValue(inst.ref, i))
+            if m == -1                       # poison mask element
+                out[i + 1] = IROperand(:const, :__poison_lane__, 0)
+            elseif 0 <= m < n_src
+                out[i + 1] = v1_lanes[m + 1]
+            elseif n_src <= m < 2 * n_src
+                out[i + 1] = v2_lanes[m - n_src + 1]
+            else
+                error("shufflevector mask element $m out of range [0, $(2*n_src))")
+            end
+        end
+        lanes[inst.ref] = out
+        return nothing
+    end
+
+    # extractelement — rename via add-zero (see consensus §Choice 4).
+    if opc == LLVM.API.LLVMExtractElement
+        ops = LLVM.operands(inst)
+        vec = ops[1]; idx_val = ops[2]
+        n = _vector_shape(vec)[1]
+        vec_lanes = _resolve_vec_lanes(vec, lanes, names, n)
+        idx_val isa LLVM.ConstantInt ||
+            error("extractelement with dynamic lane index not supported: $(string(inst))")
+        idx = convert(Int, idx_val)
+        (0 <= idx < n) ||
+            error("extractelement lane index $idx outside [0,$n)")
+        lane_op = vec_lanes[idx + 1]
+        (lane_op.kind == :const && lane_op.name === :__poison_lane__) &&
+            error("extractelement reads poison lane — undefined behaviour")
+        w = Int(LLVM.width(LLVM.value_type(inst)))
+        return IRBinOp(dest, :add, lane_op, iconst(0), w)
+    end
+
+    # Vector arithmetic / bitwise / shift — N scalar IRBinOps.
+    if opc in (LLVM.API.LLVMAdd, LLVM.API.LLVMSub, LLVM.API.LLVMMul,
+               LLVM.API.LLVMAnd, LLVM.API.LLVMOr,  LLVM.API.LLVMXor,
+               LLVM.API.LLVMShl, LLVM.API.LLVMLShr, LLVM.API.LLVMAShr)
+        ops = LLVM.operands(inst)
+        (n, w) = _vector_shape(inst)
+        a_lanes = _resolve_vec_lanes(ops[1], lanes, names, n)
+        b_lanes = _resolve_vec_lanes(ops[2], lanes, names, n)
+        sym = _opcode_to_sym(opc)
+        insts = IRInst[]
+        out = Vector{IROperand}(undef, n)
+        for i in 1:n
+            lane_dest = _auto_name(counter)
+            push!(insts, IRBinOp(lane_dest, sym, a_lanes[i], b_lanes[i], w))
+            out[i] = ssa(lane_dest)
+        end
+        lanes[inst.ref] = out
+        return insts
+    end
+
+    # Vector icmp — N scalar IRICmps producing <N x i1>.
+    if opc == LLVM.API.LLVMICmp
+        ops = LLVM.operands(inst)
+        (n, _) = _vector_shape(inst)
+        (_, op_w) = _vector_shape(ops[1])
+        pred = _pred_to_sym(LLVM.predicate(inst))
+        a_lanes = _resolve_vec_lanes(ops[1], lanes, names, n)
+        b_lanes = _resolve_vec_lanes(ops[2], lanes, names, n)
+        insts = IRInst[]
+        out = Vector{IROperand}(undef, n)
+        for i in 1:n
+            lane_dest = _auto_name(counter)
+            push!(insts, IRICmp(lane_dest, pred, a_lanes[i], b_lanes[i], op_w))
+            out[i] = ssa(lane_dest)
+        end
+        lanes[inst.ref] = out
+        return insts
+    end
+
+    # Vector select — N scalar IRSelects. Condition may be scalar i1 (broadcast)
+    # or <N x i1> (per-lane).
+    if opc == LLVM.API.LLVMSelect
+        ops = LLVM.operands(inst)
+        (n, w) = _vector_shape(inst)
+        cond = ops[1]
+        cond_is_vec = LLVM.value_type(cond) isa LLVM.VectorType
+        cond_lanes = cond_is_vec ? _resolve_vec_lanes(cond, lanes, names, n) : nothing
+        t_lanes = _resolve_vec_lanes(ops[2], lanes, names, n)
+        f_lanes = _resolve_vec_lanes(ops[3], lanes, names, n)
+        insts = IRInst[]
+        out = Vector{IROperand}(undef, n)
+        for i in 1:n
+            c_op = cond_is_vec ? cond_lanes[i] : _operand(cond, names)
+            lane_dest = _auto_name(counter)
+            push!(insts, IRSelect(lane_dest, c_op, t_lanes[i], f_lanes[i], w))
+            out[i] = ssa(lane_dest)
+        end
+        lanes[inst.ref] = out
+        return insts
+    end
+
+    # Vector casts — N scalar IRCasts.
+    if opc in (LLVM.API.LLVMSExt, LLVM.API.LLVMZExt, LLVM.API.LLVMTrunc)
+        opname = opc == LLVM.API.LLVMSExt ? :sext :
+                 opc == LLVM.API.LLVMZExt ? :zext : :trunc
+        ops = LLVM.operands(inst)
+        (n, w_to) = _vector_shape(inst)
+        (n_src, w_from) = _vector_shape(ops[1])
+        n_src == n || error("vector cast lane-count mismatch: $n_src vs $n")
+        src_lanes = _resolve_vec_lanes(ops[1], lanes, names, n)
+        insts = IRInst[]
+        out = Vector{IROperand}(undef, n)
+        for i in 1:n
+            lane_dest = _auto_name(counter)
+            push!(insts, IRCast(lane_dest, opname, src_lanes[i], w_from, w_to))
+            out[i] = ssa(lane_dest)
+        end
+        lanes[inst.ref] = out
+        return insts
+    end
+
+    # Vector bitcast — two supported shapes:
+    #   (a) vector → same-shape vector: identity alias.
+    #   (b) <N x i1> → scalar iN: bit-position pack (lane i → bit i). Common
+    #       after a vector icmp that LLVM wants to reduce to a single mask byte.
+    if opc == LLVM.API.LLVMBitCast
+        src = LLVM.operands(inst)[1]
+        src_shape = _vector_shape(src)
+        dst_shape = _vector_shape(inst)
+        if src_shape !== nothing && dst_shape !== nothing
+            (n, w_to) = dst_shape
+            (n_src, w_from) = src_shape
+            (n_src == n && w_from == w_to) ||
+                error("vector bitcast with lane/width shape change not supported: " *
+                      "<$n_src x i$w_from> → <$n x i$w_to>")
+            src_lanes = _resolve_vec_lanes(src, lanes, names, n)
+            lanes[inst.ref] = copy(src_lanes)
+            return nothing
+        end
+        if src_shape !== nothing && dst_shape === nothing
+            # vector → scalar: must be <N x i1> → iN (bit-pack).
+            (n_src, w_from) = src_shape
+            dst_vt = LLVM.value_type(inst)
+            dst_vt isa LLVM.IntegerType ||
+                error("vector→scalar bitcast to non-integer type $dst_vt: $(string(inst))")
+            w_to = Int(LLVM.width(dst_vt))
+            (w_from == 1 && w_to == n_src) ||
+                error("vector→scalar bitcast only supported for <N x i1> → iN " *
+                      "(got <$n_src x i$w_from> → i$w_to): $(string(inst))")
+            src_lanes = _resolve_vec_lanes(src, lanes, names, n_src)
+            # Build: result = OR_k (zext(lane_k, n_src) << k)
+            insts = IRInst[]
+            shifted = IROperand[]
+            for k in 0:(n_src - 1)
+                lane = src_lanes[k + 1]
+                (lane.kind == :const && lane.name === :__poison_lane__) &&
+                    error("vector→scalar bitcast reads poison lane at index $k")
+                zext_dest = _auto_name(counter)
+                push!(insts, IRCast(zext_dest, :zext, lane, 1, n_src))
+                if k == 0
+                    push!(shifted, ssa(zext_dest))
+                else
+                    shl_dest = _auto_name(counter)
+                    push!(insts, IRBinOp(shl_dest, :shl, ssa(zext_dest), iconst(k), n_src))
+                    push!(shifted, ssa(shl_dest))
+                end
+            end
+            acc = shifted[1]
+            for i in 2:length(shifted)
+                or_dest = (i == length(shifted)) ? dest : _auto_name(counter)
+                push!(insts, IRBinOp(or_dest, :or, acc, shifted[i], n_src))
+                acc = ssa(or_dest)
+            end
+            if length(shifted) == 1
+                # Single-lane corner: copy via add-0.
+                push!(insts, IRBinOp(dest, :add, shifted[1], iconst(0), n_src))
+            end
+            return insts
+        end
+        error("unsupported bitcast shape for cc0.7: $(string(inst))")
+    end
+
+    error("Unsupported vector opcode $opc in instruction: $(string(inst))")
 end
 
 # ---- helpers ----

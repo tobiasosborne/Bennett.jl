@@ -91,6 +91,11 @@ include("test_self_reversing.jl")
 include("test_mul_dispatcher.jl")
 include("test_softfdiv_subnormal.jl")
 include("test_tabulate.jl")
+# Bennett-cc0.7 — SLP-vectorised IR (insertelement/extractelement/
+# shufflevector + vector arithmetic/icmp/select/cast).
+include("test_cc07_repro.jl")
+include("test_vector_ir.jl")
+
 # T5 — persistent map protocol + harness self-test (T5-P3a, GREEN today).
 include("test_persistent_interface.jl")
 # T5-P3b — Okasaki RBT persistent map (insert + lookup; delete deferred).
