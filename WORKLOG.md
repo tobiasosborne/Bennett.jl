@@ -1,16 +1,139 @@
 # Bennett.jl Work Log
 
-## NEXT AGENT — start here — 2026-04-21 (cc0.4 + cc0.6 + T5-P5a + T5-P5b shipped; T5-P6 next)
+## NEXT AGENT — start here — 2026-04-21 (sret+callee infrastructure shipped; T5-P6 unblocked)
 
-**Six beads closed this session: the cc0.x chain (cc0.4, cc0.6 — plus
-prior cc0.3 and cc0.7) and T5-P5a/P5b (multi-language `.ll` / `.bc`
-ingest). Extraction now works end-to-end for C (all 3 TC fixtures GREEN
-on extract, RED on lower as expected). Rust .ll fails at `parse(Module,
-text)` due to debug-info / target-triple mismatch against Julia's default
-context — caught as `LLVM.LLVMException`. cc0.5 remains T5-P6-scope. Next
-logical milestone: T5-P6 (`:persistent_tree` dispatcher arm with
-linear_scan default), which will flip the C TC tests to GREEN end-to-end
-and unlock the BennettBench writeup.**
+**Three infrastructure bugs shipped this session — α/β/γ — that collectively
+unblock Bennett-z2dj (T5-P6 `:persistent_tree` dispatcher arm):**
+
+- **Bennett-atf4 (α)** — `lower_call!` now derives callee arg types from
+  `methods()` instead of hardcoded `Tuple{UInt64, ...}`. Unblocks any non-scalar
+  callee signature including NTuple-typed persistent-DS callees. +80 LOC in
+  `src/lower.jl` (two helpers + patch at line 1869). Commit `08ba192`.
+
+- **Bennett-0c8o (β)** — `_collect_sret_writes` now handles `<N x iW>` vector
+  stores into sret GEPs via deferred lane resolution (pending_vec sentinel +
+  pass-2 hook). `_convert_vector_instruction` gains an LLVMLoad case that
+  synthesises N scalar IRPtrOffset+IRLoad pairs. Unblocks `optimize=true`
+  extraction of `NTuple{9,UInt64}` returns (the linear_scan state shape SLP
+  vectorises). +~150 LOC in `src/ir_extract.jl`. Commit `6f9bd8d`.
+
+- **Bennett-uyf9 (γ)** — `ir_extract` auto-prepends `["sroa", "mem2reg"]` to
+  the pass pipeline when `_module_has_sret` is true and SROA isn't already in
+  effective_passes. Canonicalises the `alloca+llvm.memcpy → sret` pattern that
+  Julia's `optimize=false` path emits. +~20 LOC in `src/ir_extract.jl`. Commit
+  `9adbc66`.
+
+**Extraction of `linear_scan_pmap_set(::NTuple{9,UInt64}, ::Int8, ::Int8)`
+works end-to-end** under both `optimize=true` and `optimize=false`.
+`reversible_compile` + `verify_reversibility` confirmed GREEN. Semantic simulate
+confirmed GREEN via a scalar-input variant (the simulator API doesn't accept
+>64-bit single inputs, so NTuple-input simulate is a follow-up).
+
+**Next milestone: Bennett-z2dj (T5-P6) implementation proper.** Consensus doc
+at `docs/design/p6_consensus.md` §5 has a 13-step plan. The research step (§2)
+is now resolved; the plan can be executed directly. Estimated ~580 LOC across
+`src/lower.jl` + `src/Bennett.jl` + new test file.
+
+**Follow-up work filed:**
+- Bennett-i3nj (P3) — Rust cross-context LLVM parser for .ll ingest (blocked
+  on Bennett-z2dj per user decision).
+
+### Research artifacts (for anyone picking up T5-P6)
+
+- `docs/design/p6_research_local.md` (1646 lines) — exhaustive local audit of
+  IRCall + lower_call + ir_extract sret + existing callees + test coverage +
+  bug surface analysis.
+- `docs/design/p6_research_online.md` (1157 lines) — Julia NTuple ABI lowering,
+  SYSV x86_64 sret classification, LLVM sret/byval/memcpy/Scalarizer passes,
+  Enzyme.jl `memcpy_sret_split!` source, Julia GitHub issues, reversible-
+  compiler prior art.
+- `docs/design/p6_consensus.md` — T5-P6 design. Research step §2 RESOLVED.
+- `docs/design/{alpha,beta,gamma}_{proposer_A,proposer_B,consensus}.md` —
+  3+1 protocol design docs for each of the three new beads.
+
+### Key empirical findings
+
+1. **Proposer (c) Scalarizer is non-viable.** Both β proposers empirically
+   confirmed LLVM.jl's `NewPMPassBuilder` rejects `"scalarizer<load-store>"`
+   parameter syntax; plain `"scalarizer"` leaves load/store scalarisation
+   defaulted off. The `<N x iW>` store survives both. Don't bother.
+
+2. **The `<4 x i64>` store is an SROA+SLPVectorizer artefact**, not a Julia
+   frontend decision. Julia emits `NTuple{9,UInt64}` as `[9 x i64]`
+   (ArrayType, not VectorType) per `jl_special_vector_alignment` in
+   `src/datatype.c`. The vector form appears only post-`optimize=true`.
+
+3. **`lower_call!` historical UInt64 hardcode was correct for every pre-
+   Bennett-atf4 callee** — all 44 registered callees have scalar `UInt64`
+   signatures. The fix is strictly additive.
+
+4. **R8 instrumentation validated**: zero `arg_widths` mismatches across a
+   representative compile suite (soft_fma, soft_fadd, soft_fcmp_olt, div,
+   rem, x+1, x*y). The width-matching assertion in atf4 ships safely.
+
+5. **SROA promotes alloca-memcpy-to-sret into vector stores** at `-O2`; this
+   is the pipeline chain SLP+VectorCombine then coalesces into the `<4 x i64>`.
+   We leverage this: β handles the post-SROA vector form; γ auto-runs SROA
+   when `-O0` left the memcpy alone.
+
+### Session close baselines (all byte-identical)
+
+| Test | Value |
+|---|---|
+| i8 x+1 | 100 gates / 28 Toffoli |
+| i16 x+1 | 204 |
+| i32 x+1 | 412 |
+| i64 x+1 | 828 |
+| `_ls_demo` | 436 / 90T |
+| HAMT demo | 96,788 |
+| CF demo | 11,078 |
+| CF+Feistel | 65,198 |
+| TJ3 | 180 |
+
+All preserved post-α, post-β, post-γ. Full `Pkg.test()` GREEN after each landing.
+
+---
+
+## Session log — 2026-04-21 — Bennett-atf4 + Bennett-0c8o + Bennett-uyf9 closed (T5-P6 sret+callee infrastructure)
+
+Triple-bead session. The T5-P6 research step (p6_consensus.md §2) turned up
+three distinct bugs blocking the persistent-tree dispatcher arm. Each got its
+own bead, its own 3+1 protocol, its own RED-green cycle. Total new files: 17
+design docs (~10k lines) + 3 source fixes + 3 test files.
+
+### Bug-bead mapping
+
+| Bead | Bug | Location | Fix |
+|---|---|---|---|
+| atf4 | `lower_call!` hardcoded `Tuple{UInt64, ...}` | `lower.jl:1869` | `methods()`-based derivation |
+| 0c8o | `<N x iW>` sret store rejected | `ir_extract.jl:517-520` | Deferred lane resolution + LLVMLoad handler |
+| uyf9 | `llvm.memcpy` sret rejected | `ir_extract.jl:451-461` | Auto-SROA when sret detected |
+
+### Research round
+
+Two parallel subagents: `p6_research_local.md` (1646 lines, local code + live
+IR capture) and `p6_research_online.md` (1157 lines, Julia/Enzyme/LLVM primary
+sources). Found: Enzyme.jl has solved this exact problem with `memcpy_sret_split!`
+(MIT-licensed), LLVM has a `Scalarizer` pass that doesn't work through LLVM.jl's
+NPM builder, reversible-computing literature has no prior art (all prior
+reversible compilers use their own surface languages, not LLVM IR).
+
+### Rust cross-language bead filed
+
+Bennett-i3nj (P3): "Rust cross-context LLVM parser for .ll ingest" — tracks
+the separate problem that rustc .ll fails at `LLVM.parse(LLVM.Module, text)`
+against Julia's default LLVMContext (target-triple + debug-info mismatch).
+Blocked on Bennett-z2dj per user decision.
+
+### Gotchas and empirical findings
+
+Captured in the NEXT AGENT header above. Key ones:
+- Scalarizer<load-store> doesn't work through LLVM.jl
+- SROA+SLPVectorizer produces the `<4 x i64>` form under `-O2`
+- `lower_call!`'s hardcoded UInt64 was correct for every pre-α callee
+- R8 instrumentation: zero arg_widths mismatches in current corpus
+
+---
 
 ### Epic status
 
