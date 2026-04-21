@@ -99,6 +99,9 @@ include("test_vector_ir.jl")
 include("test_cc04_repro.jl")
 # Bennett-cc0.6 — standardized ir_extract error-message format.
 include("test_cc06_error_context.jl")
+# Bennett-atf4 — lower_call! derives callee arg types from methods() instead of
+# hardcoded UInt64; unblocks NTuple-aggregate callees (Bennett-z2dj prereq).
+include("test_atf4_lower_call_nontrivial_args.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")
