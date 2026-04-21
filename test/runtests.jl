@@ -99,6 +99,11 @@ include("test_vector_ir.jl")
 include("test_cc04_repro.jl")
 # Bennett-cc0.6 — standardized ir_extract error-message format.
 include("test_cc06_error_context.jl")
+# Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
+include("test_p5a_ll_ingest.jl")
+include("test_p5a_equivalence.jl")
+include("test_p5b_bc_ingest.jl")
+include("test_p5_fail_loud.jl")
 
 # T5 — persistent map protocol + harness self-test (T5-P3a, GREEN today).
 include("test_persistent_interface.jl")

@@ -80,6 +80,116 @@ function extract_parsed_ir(f, arg_types::Type{<:Tuple};
     return result
 end
 
+# Shared plumbing for the external-IR entry points. Takes an already-parsed
+# module, optionally runs a pass pipeline on it, then walks the selected
+# entry function through the core walker.
+function _extract_from_module(mod::LLVM.Module,
+                              entry_function::Union{Nothing, AbstractString},
+                              effective_passes::Vector{String})
+    if !isempty(effective_passes)
+        _run_passes!(mod, effective_passes)
+    end
+    return _module_to_parsed_ir(mod; entry_function=entry_function)
+end
+
+"""
+    extract_parsed_ir_from_ll(path::String; entry_function::AbstractString,
+                              preprocess=false, passes=nothing,
+                              use_memory_ssa=false) -> ParsedIR
+
+Parse a raw LLVM IR text file (`.ll`) and walk the named entry function
+through the same pipeline as `extract_parsed_ir(f, arg_types)`. Bennett-lmkb
+(T5-P5a).
+
+The entry function must match an exact `LLVM.name(f)` in the module. C and
+Rust fixtures that want a stable name should be compiled with `extern "C"`
+/ `#[no_mangle]`.
+
+`use_memory_ssa=true` runs the MemorySSA printer pass on the loaded IR
+text. Available on this path because the input is already text.
+"""
+function extract_parsed_ir_from_ll(path::AbstractString;
+                                    entry_function::AbstractString,
+                                    preprocess::Bool=false,
+                                    passes::Union{Nothing,Vector{String}}=nothing,
+                                    use_memory_ssa::Bool=false)
+    isfile(path) || error(
+        "ir_extract.jl: extract_parsed_ir_from_ll: file not found: $path")
+
+    ir_string = read(path, String)
+
+    effective_passes = String[]
+    if preprocess
+        append!(effective_passes, DEFAULT_PREPROCESSING_PASSES)
+    end
+    if passes !== nothing
+        append!(effective_passes, passes)
+    end
+
+    memssa = if use_memory_ssa
+        annotated = _run_memssa_on_ir(ir_string; preprocess=preprocess)
+        parse_memssa_annotations(annotated)
+    else
+        nothing
+    end
+
+    local result::ParsedIR
+    LLVM.Context() do _ctx
+        mod = parse(LLVM.Module, ir_string)
+        try
+            result = _extract_from_module(mod, entry_function, effective_passes)
+        finally
+            dispose(mod)
+        end
+    end
+    if memssa !== nothing
+        result = ParsedIR(result.ret_width, result.args, result.blocks,
+                          result.ret_elem_widths, result.globals, memssa)
+    end
+    return result
+end
+
+"""
+    extract_parsed_ir_from_bc(path::String; entry_function::AbstractString,
+                              preprocess=false, passes=nothing) -> ParsedIR
+
+Parse a raw LLVM bitcode file (`.bc`) and walk the named entry function.
+Bennett-f2p9 (T5-P5b). Otherwise identical to `extract_parsed_ir_from_ll`.
+
+`use_memory_ssa` is not exposed on this path: the MemorySSA printer
+operates on textual IR and we do not round-trip bitcode → text here. If
+you need MemorySSA on a bitcode input, convert with `llvm-dis` first and
+use `extract_parsed_ir_from_ll`.
+"""
+function extract_parsed_ir_from_bc(path::AbstractString;
+                                    entry_function::AbstractString,
+                                    preprocess::Bool=false,
+                                    passes::Union{Nothing,Vector{String}}=nothing)
+    isfile(path) || error(
+        "ir_extract.jl: extract_parsed_ir_from_bc: file not found: $path")
+
+    effective_passes = String[]
+    if preprocess
+        append!(effective_passes, DEFAULT_PREPROCESSING_PASSES)
+    end
+    if passes !== nothing
+        append!(effective_passes, passes)
+    end
+
+    local result::ParsedIR
+    LLVM.Context() do _ctx
+        @dispose membuf = LLVM.MemoryBufferFile(String(path)) begin
+            mod = parse(LLVM.Module, membuf)
+            try
+                result = _extract_from_module(mod, entry_function, effective_passes)
+            finally
+                dispose(mod)
+            end
+        end
+    end
+    return result
+end
+
 # Run LLVM New-Pass-Manager passes on `mod` in order. Pass names must be the
 # canonical NPM strings LLVM accepts (e.g. "sroa", "mem2reg", "simplifycfg").
 function _run_passes!(mod::LLVM.Module, passes::Vector{String})
@@ -469,21 +579,58 @@ end
 
 # ---- module walking ----
 
-function _module_to_parsed_ir(mod::LLVM.Module)
-    counter = Ref(0)
-
-    # Find the julia_ function with a body
-    func = nothing
-    for f in LLVM.functions(mod)
-        if startswith(LLVM.name(f), "julia_") && !isempty(LLVM.blocks(f))
-            func = f
-            break
+# Find the entry function. When `entry_function === nothing`, pick the first
+# `julia_*` function with a body (the legacy heuristic used by
+# `extract_parsed_ir(f, T)`). When a name is supplied, do an exact match on
+# `LLVM.name(f)`; fail loud if missing / declaration-only / ambiguous.
+function _find_entry_function(mod::LLVM.Module,
+                              entry_function::Union{Nothing, AbstractString})
+    if entry_function === nothing
+        for f in LLVM.functions(mod)
+            if startswith(LLVM.name(f), "julia_") && !isempty(LLVM.blocks(f))
+                return f
+            end
         end
+        error("ir_extract.jl: no julia_* function found in LLVM module (the " *
+              "extractor expects code_llvm(...; dump_module=true) output with " *
+              "at least one non-declaration `julia_` or `j_` function)")
     end
-    func === nothing && error(
-        "ir_extract.jl: no julia_* function found in LLVM module (the " *
-        "extractor expects code_llvm(...; dump_module=true) output with at " *
-        "least one non-declaration `julia_` or `j_` function)")
+
+    matches = LLVM.Function[]
+    for f in LLVM.functions(mod)
+        LLVM.name(f) == String(entry_function) && push!(matches, f)
+    end
+    if isempty(matches)
+        names = [LLVM.name(f) for f in LLVM.functions(mod)]
+        candidate_blurb = isempty(names) ? "(module has no functions)" :
+            "candidates: " * join(names, ", ")
+        error("ir_extract.jl: entry function `$entry_function` not found in " *
+              "module. $candidate_blurb")
+    end
+    if length(matches) > 1
+        error("ir_extract.jl: entry function `$entry_function` matches " *
+              "$(length(matches)) functions in the module (expected 1)")
+    end
+    f = matches[1]
+    isempty(LLVM.blocks(f)) &&
+        error("ir_extract.jl: entry function `$entry_function` is a " *
+              "declaration (has no body); provide a module that defines it")
+    return f
+end
+
+# Dispatch wrapper: preserves the historical `_module_to_parsed_ir(mod)`
+# behaviour when called with no selector, and routes to the core walker on
+# a selected function.
+function _module_to_parsed_ir(mod::LLVM.Module;
+                              entry_function::Union{Nothing, AbstractString}=nothing)
+    func = _find_entry_function(mod, entry_function)
+    return _module_to_parsed_ir_on_func(mod, func)
+end
+
+# Core walker: `mod` provides module-scope globals / constants; `func` is the
+# entry point (already picked by `_find_entry_function`).
+function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function)
+    counter = Ref(0)
 
     # T1c.2: extract compile-time-constant global arrays so lower_var_gep! can
     # dispatch read-only lookups through QROM instead of a MUX-tree.

@@ -34,6 +34,7 @@ include("mul_qcla_tree.jl")
 include("persistent/persistent.jl")
 
 export reversible_compile, simulate, extract_ir, parse_ir, extract_parsed_ir, register_callee!
+export extract_parsed_ir_from_ll, extract_parsed_ir_from_bc
 export PersistentMapImpl, AbstractPersistentMap, verify_pmap_correctness, pmap_demo_oracle, LINEAR_SCAN_IMPL
 export OKASAKI_IMPL, okasaki_pmap_new, okasaki_pmap_set, okasaki_pmap_get, OkasakiState
 export cf_pmap_new, cf_pmap_set, cf_pmap_get, cf_reroot, CF_IMPL
@@ -88,6 +89,23 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     if bit_width > 0
         parsed = _narrow_ir(parsed, bit_width)
     end
+    lr = lower(parsed; max_loop_iterations, compact_calls, add, mul)
+    return bennett(lr)
+end
+
+"""
+    reversible_compile(parsed::ParsedIR; max_loop_iterations=0,
+                       compact_calls=false, add=:auto, mul=:auto) -> ReversibleCircuit
+
+Compile a pre-extracted `ParsedIR` (e.g. from
+`extract_parsed_ir_from_ll` or `extract_parsed_ir_from_bc`) into a reversible
+circuit. This path skips IR extraction and the `strategy=:tabulate` /
+`bit_width` pre-processing that only apply to Julia-function inputs.
+"""
+function reversible_compile(parsed::ParsedIR;
+                            max_loop_iterations::Int=0,
+                            compact_calls::Bool=false,
+                            add::Symbol=:auto, mul::Symbol=:auto)
     lr = lower(parsed; max_loop_iterations, compact_calls, add, mul)
     return bennett(lr)
 end
