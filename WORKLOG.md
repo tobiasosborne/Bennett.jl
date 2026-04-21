@@ -1,137 +1,331 @@
 # Bennett.jl Work Log
 
-## NEXT AGENT — start here — 2026-04-21 (sret+callee infrastructure shipped; T5-P6 unblocked)
+## NEXT AGENT — start here — 2026-04-21 (α+β+γ shipped; T5-P6 unblocked)
 
-**Three infrastructure bugs shipped this session — α/β/γ — that collectively
-unblock Bennett-z2dj (T5-P6 `:persistent_tree` dispatcher arm):**
+**This session shipped three infrastructure bugs that collectively unblock
+Bennett-z2dj (T5-P6 `:persistent_tree` dispatcher arm). Next work: implement
+T5-P6 proper.**
 
-- **Bennett-atf4 (α)** — `lower_call!` now derives callee arg types from
-  `methods()` instead of hardcoded `Tuple{UInt64, ...}`. Unblocks any non-scalar
-  callee signature including NTuple-typed persistent-DS callees. +80 LOC in
-  `src/lower.jl` (two helpers + patch at line 1869). Commit `08ba192`.
+### Read these, in this order (~30 minutes)
 
-- **Bennett-0c8o (β)** — `_collect_sret_writes` now handles `<N x iW>` vector
-  stores into sret GEPs via deferred lane resolution (pending_vec sentinel +
-  pass-2 hook). `_convert_vector_instruction` gains an LLVMLoad case that
-  synthesises N scalar IRPtrOffset+IRLoad pairs. Unblocks `optimize=true`
-  extraction of `NTuple{9,UInt64}` returns (the linear_scan state shape SLP
-  vectorises). +~150 LOC in `src/ir_extract.jl`. Commit `6f9bd8d`.
+1. **`CLAUDE.md`** — 13 principles, especially §1 (fail fast), §2 (3+1 for core),
+   §3 (red-green TDD), §6 (gate counts are baselines), §7 (bugs are interlocked).
+2. **`Bennett-Memory-T5-PRD.md`** — T5 vision, §6 success criteria, §11 risks.
+3. **`docs/design/p6_consensus.md`** — the T5-P6 design. §2 research step is
+   now RESOLVED (was blocked, now GREEN). §5 has the 13-step implementation
+   plan — the starting point for next session.
+4. **`src/lower.jl:1996-2042`** — current `_pick_alloca_strategy` body (the
+   dispatcher). §2 of p6_consensus describes where the new arm plugs in.
+5. **`src/persistent/linear_scan.jl`** — the winning impl per the 2026-04-20
+   sweep. `_LS_MAX_N = 4`, state is `NTuple{9,UInt64}`. Branchless.
+6. **`test/test_0c8o_vector_sret.jl:61-88`** — confirms
+   `reversible_compile(f, NTuple{9,UInt64}, Int8, Int8)` works end-to-end post-β.
+   Use this as the gate-count baseline sanity check for T5-P6.
 
-- **Bennett-uyf9 (γ)** — `ir_extract` auto-prepends `["sroa", "mem2reg"]` to
-  the pass pipeline when `_module_has_sret` is true and SROA isn't already in
-  effective_passes. Canonicalises the `alloca+llvm.memcpy → sret` pattern that
-  Julia's `optimize=false` path emits. +~20 LOC in `src/ir_extract.jl`. Commit
-  `9adbc66`.
+### Concrete state of the world
 
-**Extraction of `linear_scan_pmap_set(::NTuple{9,UInt64}, ::Int8, ::Int8)`
-works end-to-end** under both `optimize=true` and `optimize=false`.
-`reversible_compile` + `verify_reversibility` confirmed GREEN. Semantic simulate
-confirmed GREEN via a scalar-input variant (the simulator API doesn't accept
->64-bit single inputs, so NTuple-input simulate is a follow-up).
+**What works now that didn't before:**
 
-**Next milestone: Bennett-z2dj (T5-P6) implementation proper.** Consensus doc
-at `docs/design/p6_consensus.md` §5 has a 13-step plan. The research step (§2)
-is now resolved; the plan can be executed directly. Estimated ~580 LOC across
-`src/lower.jl` + `src/Bennett.jl` + new test file.
+```julia
+# This used to hard-error. Now produces a valid reversible circuit.
+using Bennett
+f(s::NTuple{9,UInt64}, k::Int8, v::Int8) = Bennett.linear_scan_pmap_set(s, k, v)
+c = reversible_compile(f, NTuple{9,UInt64}, Int8, Int8)
+@assert verify_reversibility(c)
+@assert c.input_widths == [576, 8, 8]
+@assert c.output_elem_widths == fill(64, 9)
+# Standalone-call gate count: ~22,494. Much higher than inlined _ls_demo (436).
+```
 
-**Follow-up work filed:**
-- Bennett-i3nj (P3) — Rust cross-context LLVM parser for .ll ingest (blocked
-  on Bennett-z2dj per user decision).
+**What still doesn't work (the T5-P6 scope):**
 
-### Research artifacts (for anyone picking up T5-P6)
+- `reversible_compile(f, Int8)` where `f` uses `Vector{Int8}() + push!` — blocked
+  by `jl_array_push`-style LLVMGlobalAliasValueKind in `ir_extract`. Separate
+  bead; out of T5-P6 scope.
+- `Array{Int8}(undef, N)` dynamic-idx — blocked by `thread_ptr` GEP. cc0.5
+  territory; out of T5-P6 scope.
+- Hand-crafted `.ll` with `alloca i8, i32 %n` + store + load → **the T5-P6
+  target**. Currently fails at `lower_alloca!` which rejects dynamic n_elems.
 
-- `docs/design/p6_research_local.md` (1646 lines) — exhaustive local audit of
-  IRCall + lower_call + ir_extract sret + existing callees + test coverage +
-  bug surface analysis.
-- `docs/design/p6_research_online.md` (1157 lines) — Julia NTuple ABI lowering,
-  SYSV x86_64 sret classification, LLVM sret/byval/memcpy/Scalarizer passes,
-  Enzyme.jl `memcpy_sret_split!` source, Julia GitHub issues, reversible-
-  compiler prior art.
-- `docs/design/p6_consensus.md` — T5-P6 design. Research step §2 RESOLVED.
-- `docs/design/{alpha,beta,gamma}_{proposer_A,proposer_B,consensus}.md` —
-  3+1 protocol design docs for each of the three new beads.
+### Start here: implement T5-P6 (Bennett-z2dj)
 
-### Key empirical findings
+**Bead status**: claimed by tobias. Unblocked as of 2026-04-21.
 
-1. **Proposer (c) Scalarizer is non-viable.** Both β proposers empirically
-   confirmed LLVM.jl's `NewPMPassBuilder` rejects `"scalarizer<load-store>"`
-   parameter syntax; plain `"scalarizer"` leaves load/store scalarisation
-   defaulted off. The `<N x iW>` store survives both. Don't bother.
+**Exact first move** — write the RED test per `docs/design/p6_consensus.md` §4.
+The test exercises hand-crafted LLVM IR with a dynamic `alloca`:
 
-2. **The `<4 x i64>` store is an SROA+SLPVectorizer artefact**, not a Julia
-   frontend decision. Julia emits `NTuple{9,UInt64}` as `[9 x i64]`
-   (ArrayType, not VectorType) per `jl_special_vector_alignment` in
-   `src/datatype.c`. The vector form appears only post-`optimize=true`.
+```llvm
+define i8 @julia_p6_roundtrip(i8 %n, i8 %k1, i8 %v1, ...) {
+top:
+  %nz = zext i8 %n to i32
+  %p  = alloca i8, i32 %nz           ; ← dynamic n_elems — current fail site
+  %k1z = zext i8 %k1 to i32
+  %g1 = getelementptr i8, ptr %p, i32 %k1z
+  store i8 %v1, ptr %g1
+  ...
+}
+```
 
-3. **`lower_call!` historical UInt64 hardcode was correct for every pre-
-   Bennett-atf4 callee** — all 44 registered callees have scalar `UInt64`
-   signatures. The fix is strictly additive.
+Put this in `test/test_t5_p6_persistent_dispatch.jl`. Use the `_compile_ir`
+harness pattern from `test/test_universal_dispatch.jl:16-26`. Add
+`include(...)` to `test/runtests.jl`. Confirm RED before any source change.
 
-4. **R8 instrumentation validated**: zero `arg_widths` mismatches across a
-   representative compile suite (soft_fma, soft_fadd, soft_fcmp_olt, div,
-   rem, x+1, x*y). The width-matching assertion in atf4 ships safely.
+**Then follow `p6_consensus.md` §5** verbatim. Step list (paraphrased):
 
-5. **SROA promotes alloca-memcpy-to-sret into vector stores** at `-O2`; this
-   is the pipeline chain SLP+VectorCombine then coalesces into the `<4 x i64>`.
-   We leverage this: β handles the post-SROA vector form; γ auto-runs SROA
-   when `-O0` left the memcpy alone.
+1. RED test as above.
+2. Extend `LoweringCtx` with 3 Symbol fields (`mem`, `persistent_impl`,
+   `hashcons`) + `persistent_info::Dict{Symbol, PersistentMapImpl}`. Backward-
+   compat constructors default them.
+3. Add `_pick_alloca_strategy_dynamic_n(ctx, inst)` sibling in `src/lower.jl`
+   (DO NOT modify the existing `_pick_alloca_strategy` signature — see
+   p6_consensus §1 and the M3a precedent).
+4. Extend `lower_alloca!` with a dynamic-n branch that calls `pmap_new()` and
+   records `persistent_info[inst.dest] = impl`.
+5. Add `_lower_store_via_persistent!` + `_lower_load_via_persistent!` emitting
+   `IRCall` to `linear_scan_pmap_set` / `linear_scan_pmap_get`.
+6. Wire dispatcher early-out in `_lower_store_single_origin!` (at
+   `src/lower.jl:2098`) and `_lower_load_via_mux!` (at `src/lower.jl:1701`).
+7. `register_callee!(linear_scan_pmap_new/set/get)` in
+   `src/Bennett.jl` (after line 209). `:okasaki/:hamt/:cf` stay unregistered
+   in MVP — return NYI error from the dispatcher.
+8. Early-return in `lower_ptr_offset!` / `lower_var_gep!` for persistent base.
+9. `reversible_compile` kwargs: `mem=:auto`, `persistent_impl=:linear_scan`,
+   `hashcons=:none`. Thread through to `lower(..., mem=...)`.
+10. Add `validate_persistent_config` that pre-checks registrations.
+11. SoftFloat wrapper threading (Bennett.jl:268-295).
+12. Full `Pkg.test()` — every baseline below must stay byte-identical.
+13. WORKLOG + close Bennett-z2dj + push.
 
-### Session close baselines (all byte-identical)
+**Expected size**: ~250 LOC in `src/lower.jl`, ~30 LOC in `src/Bennett.jl`,
+~300 LOC new test file. Single atomic commit.
 
-| Test | Value |
-|---|---|
-| i8 x+1 | 100 gates / 28 Toffoli |
-| i16 x+1 | 204 |
-| i32 x+1 | 412 |
-| i64 x+1 | 828 |
-| `_ls_demo` | 436 / 90T |
-| HAMT demo | 96,788 |
-| CF demo | 11,078 |
-| CF+Feistel | 65,198 |
-| TJ3 | 180 |
+### Key invariants for T5-P6
 
-All preserved post-α, post-β, post-γ. Full `Pkg.test()` GREEN after each landing.
+- **Default `mem=:auto` must preserve byte-identical output** for every
+  existing test. `mem=:persistent` is a PERMISSION for dynamic-n allocas, not
+  a FORCING — const-n allocas still route through shadow/MUX/checkpoint.
+- **Non-entry-block persistent stores MUST fail loud in MVP** (false-path
+  sensitization risk). Diamond-CFG RED test should `@test_throws`.
+- **Multi-origin ptr × persistent fails loud** too. Single-origin only in MVP.
+- **`linear_scan` only in MVP**. `:okasaki/:hamt/:cf` and `hashcons=:naive/:feistel`
+  get crisp NYI errors.
+
+### Baselines that must stay byte-identical (run post-T5-P6)
+
+```julia
+julia --project -e '
+using Bennett
+@assert gate_count(reversible_compile(x -> x + Int8(1), Int8)).total == 100
+@assert gate_count(reversible_compile(x -> x + Int8(1), Int8)).Toffoli == 28
+@assert gate_count(reversible_compile(x -> x + Int16(1), Int16)).total == 204
+@assert gate_count(reversible_compile(x -> x + Int32(1), Int32)).total == 412
+@assert gate_count(reversible_compile(x -> x + Int64(1), Int64)).total == 828
+println("arithmetic OK")
+'
+# Run test_persistent_interface.jl — _ls_demo = 436 total / 90 Toffoli
+# Run test_persistent_cf.jl — CF demo = 11,078
+# Run test_persistent_hashcons.jl — CF+Feistel = 65,198
+# Run test_persistent_hamt.jl — HAMT demo = 96,788
+# Run test_t5_corpus_julia.jl — TJ3 = 180
+```
+
+### Follow-up beads filed during this session
+
+| Bead | Title | Priority | Status |
+|---|---|---|---|
+| **Bennett-atf4** (α) | `lower_call!` method-table arg types | P1 | ✓ closed |
+| **Bennett-0c8o** (β) | vector-lane sret stores + vector loads | P1 | ✓ closed |
+| **Bennett-uyf9** (γ) | auto-SROA for memcpy sret | P1 | ✓ closed |
+| **Bennett-i3nj** | Rust cross-context LLVM parser | P3 | open (blocked on z2dj) |
+
+### Known limitations to document in T5-P6 WORKLOG entry
+
+1. **NTuple-input simulate gap** — `Bennett.simulate(c, (state::NTuple{9,UInt64}, ...))`
+   can't pass 576-bit state through the `Tuple{Vararg{Integer}}` API (max 64
+   bits per arg). The T5-P6 end-to-end test uses a scalar-input variant to
+   validate semantics. Real fix: simulator accepts a `Vector{Bool}` or BigInt
+   for wide inputs. File as a follow-up bead when T5-P6 ships.
+2. **Standalone-call gate cost is high** — `f(s::NTuple{9,UInt64}, k, v) =
+   pmap_set(s, k, v)` compiles to ~22,494 gates. That's the per-op cost for
+   T5-P6; measure during T5-P7 Pareto-front work, don't target a budget here.
 
 ---
 
-## Session log — 2026-04-21 — Bennett-atf4 + Bennett-0c8o + Bennett-uyf9 closed (T5-P6 sret+callee infrastructure)
+## Session log — 2026-04-21 — α + β + γ (sret + callee infrastructure)
 
-Triple-bead session. The T5-P6 research step (p6_consensus.md §2) turned up
-three distinct bugs blocking the persistent-tree dispatcher arm. Each got its
-own bead, its own 3+1 protocol, its own RED-green cycle. Total new files: 17
-design docs (~10k lines) + 3 source fixes + 3 test files.
+Triple-bead session. The T5-P6 research step (p6_consensus §2) surfaced three
+distinct bugs blocking the persistent-tree dispatcher arm. Each got its own
+bead, its own 3+1 protocol, its own RED-green cycle. Deliverables:
 
-### Bug-bead mapping
+- 3 source-code commits: `08ba192` (α), `6f9bd8d` (β), `9adbc66` (γ)
+- 1 WORKLOG commit: `f171d0a`
+- 17 design docs (~12,000 lines total)
+- 3 new test files
+- Full `Pkg.test()` GREEN after each landing
 
-| Bead | Bug | Location | Fix |
-|---|---|---|---|
-| atf4 | `lower_call!` hardcoded `Tuple{UInt64, ...}` | `lower.jl:1869` | `methods()`-based derivation |
-| 0c8o | `<N x iW>` sret store rejected | `ir_extract.jl:517-520` | Deferred lane resolution + LLVMLoad handler |
-| uyf9 | `llvm.memcpy` sret rejected | `ir_extract.jl:451-461` | Auto-SROA when sret detected |
+### Bennett-atf4 (α) — `lower_call!` method-table arg types
 
-### Research round
+**Bug** (`src/lower.jl:1869` pre-fix):
+```julia
+arg_types = Tuple{(UInt64 for _ in inst.args)...}
+callee_parsed = extract_parsed_ir(inst.callee, arg_types)
+```
+Hardcoded `UInt64` for every arg. Every pre-existing callee (44 of them) had
+that shape by coincidence; any non-UInt64 signature (Int8, NTuple, etc.)
+threw `MethodError: no unique matching method`.
 
-Two parallel subagents: `p6_research_local.md` (1646 lines, local code + live
-IR capture) and `p6_research_online.md` (1157 lines, Julia/Enzyme/LLVM primary
-sources). Found: Enzyme.jl has solved this exact problem with `memcpy_sret_split!`
-(MIT-licensed), LLVM has a `Scalarizer` pass that doesn't work through LLVM.jl's
-NPM builder, reversible-computing literature has no prior art (all prior
-reversible compilers use their own surface languages, not LLVM IR).
+**Fix** (`src/lower.jl`, +~80 LOC):
+- New `_callee_arg_types(inst::IRCall) -> Type{<:Tuple}` uses
+  `first(methods(inst.callee)).sig.parameters[2:end]`. Fail-loud on
+  zero-method / multi-method / Vararg / arity-mismatch callees.
+- New `_assert_arg_widths_match(inst, arg_types) -> Nothing` cross-checks
+  `inst.arg_widths[i] == sizeof(T_i)*8` for each method param. Closes the
+  latent silent-wire-misalignment bug noted in `p6_research_local.md §12.4`.
+- 2-line patch at `lower_call!` line 1869 replacing the hardcoded derivation.
 
-### Rust cross-language bead filed
+**R8 instrumentation** (A's flagged risk): before shipping, I ran a probe
+across a representative compile suite (`soft_fma`, `soft_fadd`, `soft_fcmp_olt`,
+`div`, `rem`, `x+1`, `x*y`). Zero `arg_widths` mismatches. The assertion
+shipped safely.
 
-Bennett-i3nj (P3): "Rust cross-context LLVM parser for .ll ingest" — tracks
-the separate problem that rustc .ll fails at `LLVM.parse(LLVM.Module, text)`
-against Julia's default LLVMContext (target-triple + debug-info mismatch).
-Blocked on Bennett-z2dj per user decision.
+**Test** (`test/test_atf4_lower_call_nontrivial_args.jl`, 7 testsets, 24 assertions):
+T1 Int8 scalar arg, T2 NTuple{9,UInt64} arg (gets past line 1870, tolerates β-scope
+sret error), T3 width-mismatch assertion, T4 vararg reject, T5 multi-method reject,
+R1 soft_fma regression, R2 arity mismatch.
 
-### Gotchas and empirical findings
+**Regression**: byte-identical by construction — every existing callee's
+`Tuple{params[2:end]...}` equals `Tuple{UInt64, ...}`.
 
-Captured in the NEXT AGENT header above. Key ones:
-- Scalarizer<load-store> doesn't work through LLVM.jl
-- SROA+SLPVectorizer produces the `<4 x i64>` form under `-O2`
-- `lower_call!`'s hardcoded UInt64 was correct for every pre-α callee
-- R8 instrumentation: zero arg_widths mismatches in current corpus
+### Bennett-0c8o (β) — vector-lane sret stores + vector loads
+
+**Bug 1** (`src/ir_extract.jl:517-520` pre-fix): `_collect_sret_writes`
+rejected `store <N x iW>` into sret GEPs with "sret store has non-integer
+value type". SROA+SLPVectorizer produces these under `optimize=true` for
+NTuple returns where the store pattern has 4+ consecutive same-predicate selects.
+
+**Bug 2** (implicit, surfaced during β implementation): the store's value
+cone reaches `load <N x iW>` (`%18 = load <4 x i64>, ptr %"state::Tuple[2]_ptr"`).
+`_convert_vector_instruction` had no LLVMLoad handler — naive store-only fix
+would fail at the load producer.
+
+**Fix** (`src/ir_extract.jl`, +~150 LOC):
+- `_collect_sret_writes` gains a vector-store branch that **reserves slot
+  ranges with `:__pending_vec_lane__` sentinels** (preserves the existing
+  "every slot written" invariant) and records `pending_vec[store.ref] =
+  (first_slot, n_lanes)` + `pending_val_refs[store.ref] = val.ref`.
+- New pass-2 hook `_resolve_pending_vec_for_val!(sret_writes, inst.ref, lanes)`
+  harvests from the `lanes` dict when `_convert_vector_instruction` walks the
+  vector-producing instruction.
+- New `_assert_no_pending_vec_stores!(sret_writes)` fails loud at `ret void`
+  if any sentinel survives.
+- Scalar-store duplicate-slot check at line 532 gains a sharper error when
+  colliding with a vector sentinel.
+- `_convert_vector_instruction` gains an `LLVMLoad` case at line 2237 that
+  synthesises `n` scalar `IRPtrOffset` + `IRLoad` pairs at lane byte offsets,
+  populating `lanes[inst.ref]`.
+
+**Critical design choice** (vs. Proposer B's inline decomposer): the
+structural fix **reuses `_convert_vector_instruction` as the canonical
+vector→scalar decomposer**. Proposer B's design had a local recursive
+walker that would have duplicated that logic (CLAUDE.md §12 violation).
+
+**Test** (`test/test_0c8o_vector_sret.jl`, 7 testsets, 97 assertions):
+primary repro (NTuple{9,UInt64} extract), end-to-end reversible_compile +
+verify_reversibility, scalar-input semantic roundtrip (4 test cases covering
+insert-at-slot-0/1/2, overflow), n=2 swap2 baseline (82 gates), n=3 UInt32
+identity, n=8 UInt32 (no SLP), heterogeneous rejection, and (later updated
+by γ) memcpy auto-canonicalisation.
+
+**Option (c) Scalarizer empirically rejected**: both proposers verified LLVM.jl's
+`NewPMPassBuilder` rejects `"scalarizer<load-store>"` parameter syntax; plain
+`"scalarizer"` leaves load/store scalarisation defaulted off. The vector store
+survives. Documented in `gamma_proposer_A.md` §3.1 and cross-ref'd from
+`beta_consensus.md`.
+
+### Bennett-uyf9 (γ) — auto-SROA for memcpy sret
+
+**Bug** (`src/ir_extract.jl:451-461` pre-fix): `_collect_sret_writes` rejected
+`llvm.memcpy` stores into sret pointer with "sret with llvm.memcpy form is not
+supported". Julia's `optimize=false` specfunc emits aggregate returns as
+`alloca [N x iM]` + memcpy.
+
+**Fix** (`src/ir_extract.jl`, +~25 LOC):
+- New `_module_has_sret(mod::LLVM.Module) -> Bool` predicate walks all
+  functions (with bodies) and checks each parameter for the `sret`
+  enum-attribute. Placed near `_detect_sret`.
+- In `extract_parsed_ir` (post-parse, pre-pass-run) and `_extract_from_module`
+  (shared by `_from_ll` / `_from_bc`): when `_module_has_sret` is true AND
+  `"sroa"` isn't already in `effective_passes`, `prepend!(effective_passes,
+  ["sroa", "mem2reg"])`. SROA decomposes the alloca+memcpy into per-slot
+  scalar stores that `_collect_sret_writes` already handles.
+- Keep the existing memcpy-rejection error as defensive fallback.
+
+**Option comparison**: both proposers independently recommended C1 (auto-SROA)
+over C2 (port Enzyme.jl's `memcpy_sret_split!` + recursive `copy_struct_into!`).
+C1 is ~15 LOC + one stock LLVM pass; C2 is ~120 LOC duplicating logic SROA
+already does correctly. C2's advantage (no pass-ordering churn) doesn't outweigh
+the maintenance cost.
+
+**Test updates**:
+- `test/test_uyf9_memcpy_sret.jl` (new, 5 testsets, 11 assertions): primary
+  NTuple{9,UInt64} under `optimize=false`, explicit `preprocess=false` still
+  auto-SROAs, non-sret function is unaffected (gate-count baseline i8=100/28T),
+  `preprocess=true` doesn't double-run SROA, n=3 UInt32 under `optimize=false`.
+- `test/test_sret.jl:125-136`: flipped from `@test_throws ErrorException` to
+  successful-extraction assertion (previous error contract closed by γ).
+- `test/test_0c8o_vector_sret.jl:158-168`: β's regression test for memcpy
+  rejection updated — β shipped when γ wasn't yet merged, so the contract
+  changed between β landing and γ landing. Documented in the updated test.
+
+### Research artifacts generated
+
+| File | Lines | Purpose |
+|---|---|---|
+| `p6_research_local.md` | 1646 | Local audit of IRCall + lower_call + ir_extract sret + callee corpus + test coverage |
+| `p6_research_online.md` | 1157 | Julia NTuple ABI, SYSV sret classification, Enzyme.jl source, LLVM passes, reversible-compiler prior art |
+| `p6_consensus.md` | (updated) | T5-P6 design; research step §2 flipped from OPEN to RESOLVED |
+| `alpha_proposer_{A,B}.md` | 975 + ~500 | Independent designs for Bennett-atf4 |
+| `alpha_consensus.md` | ~275 | α synthesis |
+| `beta_proposer_{A,B}.md` | 996 + 1351 | Independent designs for Bennett-0c8o |
+| `beta_consensus.md` | ~225 | β synthesis (takes A's structure + includes vector-load scope per "no quick fixes" directive) |
+| `gamma_proposer_{A,B}.md` | ~700 + 978 | Independent designs for Bennett-uyf9 |
+| `gamma_consensus.md` | ~260 | γ synthesis |
+
+### Baselines — session-close spot-check (post-γ, post-full-regression)
+
+All byte-identical to pre-session:
+
+| Test | Expected | Actual |
+|---|---|---|
+| i8 `x+1` total/Toffoli | 100 / 28 | 100 / 28 ✓ |
+| i16 `x+1` total | 204 | 204 ✓ |
+| i32 `x+1` total | 412 | 412 ✓ |
+| i64 `x+1` total | 828 | 828 ✓ |
+| `_ls_demo` total/Toffoli | 436 / 90 | 436 / 90 ✓ |
+| HAMT demo | 96,788 | 96,788 ✓ |
+| CF demo | 11,078 | 11,078 ✓ |
+| CF+Feistel | 65,198 | 65,198 ✓ |
+| TJ3 | 180 | 180 ✓ |
+
+### Lessons (for the NEXT AGENT header above, and for future 3+1 protocols)
+
+- **Bead descriptions are aspirational** (WORKLOG rule rediscovered 3×). T5-P6's
+  bead said "add one dispatcher arm + kwargs". Real scope was "also fix 3
+  independent infrastructure bugs first". Research step saved us.
+- **The 3+1 protocol rewards parallel independent research.** Proposer B of β
+  caught the `load <4 x i64>` issue that Proposer A punted to follow-up.
+  Both independently verified Option (c) Scalarizer is dead. Single-agent
+  design would have missed one or both.
+- **WireAllocator zero invariant + callee inlining + `methods()` dispatch**
+  compose: with α shipped, `register_callee!` can now accept NTuple-arg
+  callees directly; they inline through `lower_call!` the same way scalar
+  soft_* callees do. T5-P6's architecture benefits.
+- **`_convert_vector_instruction` is the canonical vector→scalar gateway**;
+  do not build parallel decomposers. β's deferred-resolution design hinges
+  on this principle.
+- **Julia's `optimize=true` runs SROA 4× plus SLPVectorizer plus VectorCombine**
+  (per `src/pipeline.cpp:362-553`). For Bennett, this means `<N x iW>` stores
+  are the norm for aggregate returns, not the exception. β is load-bearing.
 
 ---
 
