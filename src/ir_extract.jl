@@ -130,6 +130,101 @@ end
 # No-op for backward compatibility (counter is now local to each compilation)
 function _reset_names!() end
 
+# ---- Bennett-cc0.6: standardized error reporting ----
+#
+# When an unsupported LLVM IR pattern fires an error, the message should
+# tell the debugger exactly where to look in the IR: function name, block
+# label, and the full stringified instruction. Canonical format:
+#
+#   ir_extract.jl: <opcode> in @<funcname>:%<blockname>: <serialised> — <reason>
+#
+# `_ir_error(inst, reason)` raises in this format. Callers that have an
+# `inst::LLVM.Instruction` in scope should prefer this helper over a raw
+# `error(...)`. Helper-level errors (in `_operand`, `_fold_constexpr_operand`,
+# `_resolve_vec_lanes`, etc.) keep their value-scoped messages — the stack
+# trace shows the enclosing instruction.
+
+# Opcode-enum → human-readable name. Falls back to `string(opc)`.
+const _LLVM_OPCODE_NAMES = Dict(
+    LLVM.API.LLVMRet            => "ret",
+    LLVM.API.LLVMBr             => "br",
+    LLVM.API.LLVMSwitch         => "switch",
+    LLVM.API.LLVMIndirectBr     => "indirectbr",
+    LLVM.API.LLVMInvoke         => "invoke",
+    LLVM.API.LLVMUnreachable    => "unreachable",
+    LLVM.API.LLVMAdd            => "add",
+    LLVM.API.LLVMFAdd           => "fadd",
+    LLVM.API.LLVMSub            => "sub",
+    LLVM.API.LLVMFSub           => "fsub",
+    LLVM.API.LLVMMul            => "mul",
+    LLVM.API.LLVMFMul           => "fmul",
+    LLVM.API.LLVMUDiv           => "udiv",
+    LLVM.API.LLVMSDiv           => "sdiv",
+    LLVM.API.LLVMFDiv           => "fdiv",
+    LLVM.API.LLVMURem           => "urem",
+    LLVM.API.LLVMSRem           => "srem",
+    LLVM.API.LLVMFRem           => "frem",
+    LLVM.API.LLVMShl            => "shl",
+    LLVM.API.LLVMLShr           => "lshr",
+    LLVM.API.LLVMAShr           => "ashr",
+    LLVM.API.LLVMAnd            => "and",
+    LLVM.API.LLVMOr             => "or",
+    LLVM.API.LLVMXor            => "xor",
+    LLVM.API.LLVMAlloca         => "alloca",
+    LLVM.API.LLVMLoad           => "load",
+    LLVM.API.LLVMStore          => "store",
+    LLVM.API.LLVMGetElementPtr  => "getelementptr",
+    LLVM.API.LLVMTrunc          => "trunc",
+    LLVM.API.LLVMZExt           => "zext",
+    LLVM.API.LLVMSExt           => "sext",
+    LLVM.API.LLVMFPToUI         => "fptoui",
+    LLVM.API.LLVMFPToSI         => "fptosi",
+    LLVM.API.LLVMUIToFP         => "uitofp",
+    LLVM.API.LLVMSIToFP         => "sitofp",
+    LLVM.API.LLVMFPTrunc        => "fptrunc",
+    LLVM.API.LLVMFPExt          => "fpext",
+    LLVM.API.LLVMPtrToInt       => "ptrtoint",
+    LLVM.API.LLVMIntToPtr       => "inttoptr",
+    LLVM.API.LLVMBitCast        => "bitcast",
+    LLVM.API.LLVMAddrSpaceCast  => "addrspacecast",
+    LLVM.API.LLVMICmp           => "icmp",
+    LLVM.API.LLVMFCmp           => "fcmp",
+    LLVM.API.LLVMPHI            => "phi",
+    LLVM.API.LLVMCall           => "call",
+    LLVM.API.LLVMSelect         => "select",
+    LLVM.API.LLVMExtractValue   => "extractvalue",
+    LLVM.API.LLVMInsertValue    => "insertvalue",
+    LLVM.API.LLVMExtractElement => "extractelement",
+    LLVM.API.LLVMInsertElement  => "insertelement",
+    LLVM.API.LLVMShuffleVector  => "shufflevector",
+    LLVM.API.LLVMFNeg           => "fneg",
+    LLVM.API.LLVMFence          => "fence",
+    LLVM.API.LLVMFreeze         => "freeze",
+)
+
+_llvm_opcode_name(opc) = get(_LLVM_OPCODE_NAMES, opc, string(opc))
+
+# Build the canonical error message for an instruction-scoped failure.
+function _ir_error_msg(inst::LLVM.Instruction, reason::AbstractString)::String
+    opc_name = try
+        _llvm_opcode_name(LLVM.opcode(inst))
+    catch
+        "unknown-opcode"
+    end
+    bb = try LLVM.parent(inst) catch; nothing end
+    fname = bb === nothing ? "<unknown-fn>" :
+            try LLVM.name(LLVM.parent(bb)) catch; "<unknown-fn>" end
+    bname = bb === nothing ? "<unknown-block>" :
+            try LLVM.name(bb) catch; "<unknown-block>" end
+    inst_str = try string(inst) catch; "<unprintable-instruction>" end
+    return "ir_extract.jl: $opc_name in @$fname:%$bname: $inst_str — $reason"
+end
+
+# Raise a standardized error for an instruction-scoped failure.
+function _ir_error(inst::LLVM.Instruction, reason::AbstractString)
+    error(_ir_error_msg(inst, reason))
+end
+
 # ---- sret (structure return) support (Bennett-dv1z) ----
 #
 # LLVM LangRef: `sret(<ty>)` is a parameter attribute that marks a pointer
@@ -168,22 +263,26 @@ function _detect_sret(func::LLVM.Function)
     for (i, p) in enumerate(LLVM.parameters(func))
         attr = LLVM.API.LLVMGetEnumAttributeAtIndex(func, UInt32(i), kind_sret)
         attr == C_NULL && continue
+        fname = LLVM.name(func)
         if found !== nothing
-            error("function has multiple sret parameters (LangRef forbids this); " *
-                  "found at parameter indices $(found.param_index) and $i")
+            error("ir_extract.jl: function @$fname has multiple sret parameters " *
+                  "(LangRef forbids this); found at parameter indices " *
+                  "$(found.param_index) and $i")
         end
         ty = LLVM.LLVMType(LLVM.API.LLVMGetTypeAttributeValue(attr))
         ty isa LLVM.ArrayType || error(
-            "sret pointee is $ty; only [N x iM] aggregates are supported " *
-            "(heterogeneous struct returns like Tuple{UInt32,UInt64} are not yet " *
-            "supported — see Bennett-dv1z MVP scope)")
+            "ir_extract.jl: sret pointee is $ty in @$fname; only [N x iM] " *
+            "aggregates are supported (heterogeneous struct returns like " *
+            "Tuple{UInt32,UInt64} are not yet supported — see Bennett-dv1z " *
+            "MVP scope)")
         et = LLVM.eltype(ty)
         et isa LLVM.IntegerType || error(
-            "sret aggregate element type $et is not an integer; " *
-            "float/pointer sret aggregates are not supported")
+            "ir_extract.jl: sret aggregate element type $et in @$fname is not " *
+            "an integer; float/pointer sret aggregates are not supported")
         w = LLVM.width(et)
         w ∈ (8, 16, 32, 64) || error(
-            "sret element width $w is not in {8,16,32,64}; got aggregate $ty")
+            "ir_extract.jl: sret element width $w in @$fname is not in " *
+            "{8,16,32,64}; got aggregate $ty")
         n = LLVM.length(ty)
         elem_bytes = w ÷ 8
         found = (param_index = i, param_ref = p.ref, agg_type = ty,
@@ -241,11 +340,11 @@ function _collect_sret_writes(func::LLVM.Function, sret_info, names::Dict{_LLVMR
                     cname = try LLVM.name(ops[n_ops]) catch; "" end
                     if startswith(cname, "llvm.memcpy")
                         if n_ops >= 2 && ops[1].ref === sret_ref
-                            error("sret with llvm.memcpy form is not supported. " *
-                                  "This pattern is emitted under optimize=false. " *
-                                  "Re-compile with optimize=true (the Bennett.jl " *
-                                  "default) or set preprocess=true to canonicalise " *
-                                  "via SROA/mem2reg.")
+                            _ir_error(inst,
+                                "sret with llvm.memcpy form is not supported " *
+                                "(emitted under optimize=false). Re-compile with " *
+                                "optimize=true (Bennett.jl default) or set " *
+                                "preprocess=true to canonicalise via SROA/mem2reg.")
                         end
                     end
                 end
@@ -264,11 +363,11 @@ function _collect_sret_writes(func::LLVM.Function, sret_info, names::Dict{_LLVMR
                         nothing
                     end
                     if base_off !== nothing
-                        length(ops) == 2 || error(
+                        length(ops) == 2 || _ir_error(inst,
                             "sret-derived GEP has $(length(ops)-1) indices; only " *
                             "single-index constant-offset GEPs from sret are supported")
                         idx = ops[2]
-                        idx isa LLVM.ConstantInt || error(
+                        idx isa LLVM.ConstantInt || _ir_error(inst,
                             "sret pointer is indexed dynamically; only constant-offset " *
                             "GEPs from sret are supported")
                         src_ty = LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(inst))
@@ -277,11 +376,12 @@ function _collect_sret_writes(func::LLVM.Function, sret_info, names::Dict{_LLVMR
                         elseif src_ty === sret_info.agg_type
                             convert(Int, idx) * eb          # typed GEP on [N x iM]
                         else
-                            error("sret GEP source element type $src_ty; expected i8 " *
-                                  "(byte-indexed) or $(sret_info.agg_type) (typed element)")
+                            _ir_error(inst,
+                                "sret GEP source element type $src_ty; expected i8 " *
+                                "(byte-indexed) or $(sret_info.agg_type) (typed element)")
                         end
                         new_off = base_off + add_bytes
-                        (0 <= new_off < agg_bytes) || error(
+                        (0 <= new_off < agg_bytes) || _ir_error(inst,
                             "sret GEP byte offset $new_off is outside aggregate " *
                             "range [0, $agg_bytes)")
                         gep_byte[inst.ref] = new_off
@@ -305,21 +405,21 @@ function _collect_sret_writes(func::LLVM.Function, sret_info, names::Dict{_LLVMR
                 end
                 if byte_off !== nothing
                     vt = LLVM.value_type(val)
-                    vt isa LLVM.IntegerType || error(
+                    vt isa LLVM.IntegerType || _ir_error(inst,
                         "sret store at byte offset $byte_off has non-integer value " *
                         "type $vt; only integer stores are supported")
                     sw = LLVM.width(vt)
-                    sw == ew || error(
+                    sw == ew || _ir_error(inst,
                         "sret store at byte offset $byte_off has value width $sw, " *
                         "but aggregate element width is $ew (partial-element writes " *
                         "are not supported)")
-                    (byte_off % eb == 0) || error(
+                    (byte_off % eb == 0) || _ir_error(inst,
                         "sret store at byte offset $byte_off is not aligned to " *
                         "element size $eb (partial-element writes are not supported)")
                     slot = byte_off ÷ eb
-                    (0 <= slot < n) || error(
+                    (0 <= slot < n) || _ir_error(inst,
                         "sret store slot $slot is out of range [0, $n)")
-                    haskey(slot_values, slot) && error(
+                    haskey(slot_values, slot) && _ir_error(inst,
                         "sret slot $slot has multiple stores; only a single store " *
                         "per slot is supported in MVP (multi-store / conditional " *
                         "sret coverage is a planned extension)")
@@ -332,10 +432,11 @@ function _collect_sret_writes(func::LLVM.Function, sret_info, names::Dict{_LLVMR
     end
 
     # Every slot must be written before ret void
+    fname = LLVM.name(func)
     for k in 0:(n - 1)
         haskey(slot_values, k) || error(
-            "sret slot $k is never written; every element of the aggregate return " *
-            "must be stored before ret void")
+            "ir_extract.jl: sret slot $k in @$fname is never written; every " *
+            "element of the aggregate return must be stored before ret void")
     end
 
     return (slot_values = slot_values, suppressed = suppressed)
@@ -379,7 +480,10 @@ function _module_to_parsed_ir(mod::LLVM.Module)
             break
         end
     end
-    func === nothing && error("No julia_ function found in LLVM module")
+    func === nothing && error(
+        "ir_extract.jl: no julia_* function found in LLVM module (the " *
+        "extractor expects code_llvm(...; dump_module=true) output with at " *
+        "least one non-declaration `julia_` or `j_` function)")
 
     # T1c.2: extract compile-time-constant global arrays so lower_var_gep! can
     # dispatch read-only lookups through QROM instead of a MUX-tree.
@@ -518,7 +622,8 @@ function _module_to_parsed_ir(mod::LLVM.Module)
             end
         end
 
-        terminator === nothing && error("Block $label has no terminator")
+        terminator === nothing && error(
+            "ir_extract.jl: block in @$(LLVM.name(func)):%$label has no terminator")
         push!(blocks, IRBasicBlock(label, insts, terminator))
     end
 
@@ -1257,9 +1362,10 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             callee = _lookup_callee("soft_fcmp_ole")
             op1, op2 = op2, op1  # swap
         else
-            error("Unsupported fcmp predicate: $pred_int in $(string(inst))")
+            _ir_error(inst, "unsupported fcmp predicate $pred_int")
         end
-        callee === nothing && error("soft_fcmp callee not registered for fcmp predicate $pred_int")
+        callee === nothing && _ir_error(inst,
+            "soft_fcmp callee not registered for fcmp predicate $pred_int")
         # soft_fcmp returns UInt64 (0 or 1), but fcmp result is i1.
         # Use IRCall with ret_width=1 and let lowering truncate.
         call_dest = _auto_name(counter)
@@ -1275,7 +1381,7 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         src_w = _iwidth(src)
         dst_w = _iwidth(inst)
         # Same width: identity (just alias the wires). Different width shouldn't happen per LLVM spec.
-        src_w == dst_w || error("bitcast width mismatch: $src_w → $dst_w")
+        src_w == dst_w || _ir_error(inst, "bitcast width mismatch: $src_w → $dst_w")
         return IRCast(dest, :trunc, _operand(src, names), src_w, dst_w)
     end
 
@@ -1323,7 +1429,7 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         return IRAlloca(dest, elem_w, n_elems_op)
     end
 
-    error("Unsupported LLVM opcode: $opc in instruction: $(string(inst))")
+    _ir_error(inst, "unsupported LLVM opcode")
 end
 
 # ---- Bennett-cc0.7: vector SSA scalarisation ----
@@ -1510,13 +1616,13 @@ function _fold_constexpr_operand(ce::LLVM.ConstantExpr,
     opc = LLVM.API.LLVMGetConstOpcode(ce.ref)
 
     if opc == LLVM.API.LLVMPtrToInt || opc == LLVM.API.LLVMIntToPtr
-        error("Bennett-cc0.4/cc0.6: ConstantExpr<$(_constexpr_opcode_name(opc))> " *
-              "in operand position requires ptrtoint/inttoptr handling " *
-              "(cc0.6 scope). Operand: $(string(ce)).")
+        error("ir_extract.jl: Bennett-cc0.4/cc0.6: ConstantExpr<" *
+              "$(_constexpr_opcode_name(opc))> in operand position requires " *
+              "ptrtoint/inttoptr handling (cc0.6 scope). Operand: $(string(ce)).")
     end
 
     if opc != LLVM.API.LLVMICmp
-        error("Bennett-cc0.4: unhandled ConstantExpr opcode " *
+        error("ir_extract.jl: Bennett-cc0.4: unhandled ConstantExpr opcode " *
               "`$(_constexpr_opcode_name(opc))` in operand position. " *
               "Operand: $(string(ce)). File a new bead extending cc0.4 with " *
               "a minimal repro.")
@@ -1524,25 +1630,26 @@ function _fold_constexpr_operand(ce::LLVM.ConstantExpr,
 
     pred = LLVM.API.LLVMGetICmpPredicate(ce.ref)
     pred in (LLVM.API.LLVMIntEQ, LLVM.API.LLVMIntNE) ||
-        error("Bennett-cc0.4: ConstantExpr<icmp $pred> with ordering predicate " *
-              "is not foldable at extraction time (pointer address ordering is " *
-              "allocator-dependent). Operand: $(string(ce)). File a new bead " *
-              "extending cc0.4 if this arises in real code.")
+        error("ir_extract.jl: Bennett-cc0.4: ConstantExpr<icmp $pred> with " *
+              "ordering predicate is not foldable at extraction time (pointer " *
+              "address ordering is allocator-dependent). Operand: $(string(ce)). " *
+              "File a new bead extending cc0.4 if this arises in real code.")
 
     n = Int(LLVM.API.LLVMGetNumOperands(ce.ref))
     n == 2 ||
-        error("Bennett-cc0.4: ConstantExpr<icmp> with $n operands (expected 2): " *
-              "$(string(ce))")
+        error("ir_extract.jl: Bennett-cc0.4: ConstantExpr<icmp> with $n operands " *
+              "(expected 2): $(string(ce))")
 
     a_raw = LLVM.API.LLVMGetOperand(ce.ref, 0)
     b_raw = LLVM.API.LLVMGetOperand(ce.ref, 1)
 
     eq = _ptr_addresses_equal(a_raw, b_raw)
     eq === nothing && error(
-        "Bennett-cc0.4: ConstantExpr<icmp eq/ne> cannot be statically decided " *
-        "— one or both operands did not resolve to a canonical pointer identity " *
-        "(named global, null, or `inttoptr (i64 K to ptr)`). Operand: " *
-        "$(string(ce)). File a new bead extending cc0.4 with a minimal repro.")
+        "ir_extract.jl: Bennett-cc0.4: ConstantExpr<icmp eq/ne> cannot be " *
+        "statically decided — one or both operands did not resolve to a " *
+        "canonical pointer identity (named global, null, or `inttoptr " *
+        "(i64 K to ptr)`). Operand: $(string(ce)). File a new bead extending " *
+        "cc0.4 with a minimal repro.")
 
     result_true = (pred == LLVM.API.LLVMIntEQ) ? eq : !eq
     return iconst(result_true ? 1 : 0)
@@ -1594,12 +1701,12 @@ function _vector_shape(val)::Union{Nothing, Tuple{Int, Int}}
     vt isa LLVM.VectorType || return nothing
     et = LLVM.eltype(vt)
     et isa LLVM.IntegerType ||
-        error("vector with non-integer element type $et is not supported; " *
-              "got vector type $vt (Bennett-cc0.7 MVP scope)")
+        error("ir_extract.jl: vector with non-integer element type $et is not " *
+              "supported; got vector type $vt (Bennett-cc0.7 MVP scope)")
     w = Int(LLVM.width(et))
     w ∈ (1, 8, 16, 32, 64) ||
-        error("vector element width $w is not supported; expected 1/8/16/32/64. " *
-              "Got vector type $vt")
+        error("ir_extract.jl: vector element width $w is not supported; " *
+              "expected 1/8/16/32/64. Got vector type $vt")
     return (Int(LLVM.length(vt)), w)
 end
 
@@ -1614,16 +1721,18 @@ function _resolve_vec_lanes(val::LLVM.Value,
     if haskey(lanes, val.ref)
         got = lanes[val.ref]
         length(got) == n_expected ||
-            error("vector lane-count mismatch on $(string(val)): expected " *
-                  "$n_expected, got $(length(got))")
+            error("ir_extract.jl: vector lane-count mismatch on $(string(val)): " *
+                  "expected $n_expected, got $(length(got))")
         return got
     end
     vt = LLVM.value_type(val)
     vt isa LLVM.VectorType ||
-        error("_resolve_vec_lanes on non-vector: $(string(val)) :: $vt")
+        error("ir_extract.jl: _resolve_vec_lanes on non-vector: " *
+              "$(string(val)) :: $vt")
     got_n = Int(LLVM.length(vt))
     got_n == n_expected ||
-        error("vector lane-count mismatch: expected $n_expected, got $got_n on $(string(val))")
+        error("ir_extract.jl: vector lane-count mismatch: expected $n_expected, " *
+              "got $got_n on $(string(val))")
     # Path B: ConstantDataVector.
     if val isa LLVM.ConstantDataVector
         out = Vector{IROperand}(undef, got_n)
@@ -1631,7 +1740,8 @@ function _resolve_vec_lanes(val::LLVM.Value,
             elt_ref = LLVM.API.LLVMGetElementAsConstant(val.ref, i)
             elt = LLVM.Value(elt_ref)
             elt isa LLVM.ConstantInt ||
-                error("vector constant element at lane $i is not ConstantInt: $(string(elt))")
+                error("ir_extract.jl: vector constant element at lane $i is " *
+                      "not ConstantInt: $(string(elt))")
             out[i + 1] = iconst(convert(Int, elt))
         end
         return out
@@ -1644,8 +1754,9 @@ function _resolve_vec_lanes(val::LLVM.Value,
     if val isa LLVM.UndefValue || val isa LLVM.PoisonValue
         return [IROperand(:const, :__poison_lane__, 0) for _ in 1:got_n]
     end
-    error("cannot resolve vector lanes for $(string(val)) :: $vt — not an " *
-          "SSA vector, ConstantDataVector, ConstantAggregateZero, or poison/undef")
+    error("ir_extract.jl: cannot resolve vector lanes for $(string(val)) :: " *
+          "$vt — not an SSA vector, ConstantDataVector, ConstantAggregateZero, " *
+          "or poison/undef")
 end
 
 function _convert_vector_instruction(inst::LLVM.Instruction,
@@ -1660,11 +1771,11 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
         ops = LLVM.operands(inst)
         base_vec = ops[1]; elem = ops[2]; idx_val = ops[3]
         idx_val isa LLVM.ConstantInt ||
-            error("insertelement with dynamic lane index not supported: $(string(inst))")
+            _ir_error(inst, "insertelement with dynamic lane index not supported")
         idx = convert(Int, idx_val)
         n = _vector_shape(inst)[1]
         (0 <= idx < n) ||
-            error("insertelement lane index $idx outside [0,$n): $(string(inst))")
+            _ir_error(inst, "insertelement lane index $idx outside [0,$n)")
         base_lanes = _resolve_vec_lanes(base_vec, lanes, names, n)
         new_lanes = copy(base_lanes)
         new_lanes[idx + 1] = _operand(elem, names)
@@ -1690,7 +1801,7 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
             elseif n_src <= m < 2 * n_src
                 out[i + 1] = v2_lanes[m - n_src + 1]
             else
-                error("shufflevector mask element $m out of range [0, $(2*n_src))")
+                _ir_error(inst, "shufflevector mask element $m out of range [0, $(2*n_src))")
             end
         end
         lanes[inst.ref] = out
@@ -1704,13 +1815,13 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
         n = _vector_shape(vec)[1]
         vec_lanes = _resolve_vec_lanes(vec, lanes, names, n)
         idx_val isa LLVM.ConstantInt ||
-            error("extractelement with dynamic lane index not supported: $(string(inst))")
+            _ir_error(inst, "extractelement with dynamic lane index not supported")
         idx = convert(Int, idx_val)
         (0 <= idx < n) ||
-            error("extractelement lane index $idx outside [0,$n)")
+            _ir_error(inst, "extractelement lane index $idx outside [0,$n)")
         lane_op = vec_lanes[idx + 1]
         (lane_op.kind == :const && lane_op.name === :__poison_lane__) &&
-            error("extractelement reads poison lane — undefined behaviour")
+            _ir_error(inst, "extractelement reads poison lane — undefined behaviour")
         w = Int(LLVM.width(LLVM.value_type(inst)))
         return IRBinOp(dest, :add, lane_op, iconst(0), w)
     end
@@ -1783,7 +1894,7 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
         ops = LLVM.operands(inst)
         (n, w_to) = _vector_shape(inst)
         (n_src, w_from) = _vector_shape(ops[1])
-        n_src == n || error("vector cast lane-count mismatch: $n_src vs $n")
+        n_src == n || _ir_error(inst, "vector cast lane-count mismatch: $n_src vs $n")
         src_lanes = _resolve_vec_lanes(ops[1], lanes, names, n)
         insts = IRInst[]
         out = Vector{IROperand}(undef, n)
@@ -1808,8 +1919,9 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
             (n, w_to) = dst_shape
             (n_src, w_from) = src_shape
             (n_src == n && w_from == w_to) ||
-                error("vector bitcast with lane/width shape change not supported: " *
-                      "<$n_src x i$w_from> → <$n x i$w_to>")
+                _ir_error(inst,
+                    "vector bitcast with lane/width shape change not supported: " *
+                    "<$n_src x i$w_from> → <$n x i$w_to>")
             src_lanes = _resolve_vec_lanes(src, lanes, names, n)
             lanes[inst.ref] = copy(src_lanes)
             return nothing
@@ -1819,11 +1931,12 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
             (n_src, w_from) = src_shape
             dst_vt = LLVM.value_type(inst)
             dst_vt isa LLVM.IntegerType ||
-                error("vector→scalar bitcast to non-integer type $dst_vt: $(string(inst))")
+                _ir_error(inst, "vector→scalar bitcast to non-integer type $dst_vt")
             w_to = Int(LLVM.width(dst_vt))
             (w_from == 1 && w_to == n_src) ||
-                error("vector→scalar bitcast only supported for <N x i1> → iN " *
-                      "(got <$n_src x i$w_from> → i$w_to): $(string(inst))")
+                _ir_error(inst,
+                    "vector→scalar bitcast only supported for <N x i1> → iN " *
+                    "(got <$n_src x i$w_from> → i$w_to)")
             src_lanes = _resolve_vec_lanes(src, lanes, names, n_src)
             # Build: result = OR_k (zext(lane_k, n_src) << k)
             insts = IRInst[]
@@ -1831,7 +1944,7 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
             for k in 0:(n_src - 1)
                 lane = src_lanes[k + 1]
                 (lane.kind == :const && lane.name === :__poison_lane__) &&
-                    error("vector→scalar bitcast reads poison lane at index $k")
+                    _ir_error(inst, "vector→scalar bitcast reads poison lane at index $k")
                 zext_dest = _auto_name(counter)
                 push!(insts, IRCast(zext_dest, :zext, lane, 1, n_src))
                 if k == 0
@@ -1854,10 +1967,10 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
             end
             return insts
         end
-        error("unsupported bitcast shape for cc0.7: $(string(inst))")
+        _ir_error(inst, "unsupported bitcast shape for cc0.7")
     end
 
-    error("Unsupported vector opcode $opc in instruction: $(string(inst))")
+    _ir_error(inst, "unsupported vector opcode $opc")
 end
 
 # ---- helpers ----
@@ -1908,7 +2021,10 @@ function _operand(val::LLVM.Value, names::Dict{_LLVMRef, Symbol})
         return _fold_constexpr_operand(val, names)
     else
         r = val.ref
-        haskey(names, r) || error("Unknown operand ref for: $(string(val))")
+        haskey(names, r) || error(
+            "ir_extract.jl: unknown operand ref for: $(string(val)) — the " *
+            "producing instruction was skipped or is not yet supported; " *
+            "check the cc0.x gaps in the extractor")
         return ssa(names[r])
     end
 end
@@ -1928,9 +2044,9 @@ function _type_width(tp)
         tp isa LLVM.LLVMDouble && return 64
         tp isa LLVM.LLVMFloat  && return 32
         tp isa LLVM.LLVMHalf   && return 16
-        error("Unsupported float type: $tp")
+        error("ir_extract.jl: unsupported float type for width query: $tp")
     else
-        error("Unsupported LLVM type for width: $tp")
+        error("ir_extract.jl: unsupported LLVM type for width query: $tp")
     end
 end
 

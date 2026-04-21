@@ -1,10 +1,15 @@
 # Bennett.jl Work Log
 
-## NEXT AGENT — start here — 2026-04-21 (cc0.4 shipped; cc0.6 next)
+## NEXT AGENT — start here — 2026-04-21 (cc0.4 + cc0.6 shipped; T5-P5a/P5b or T5-P6 next)
 
-**Three ir_extract beads closed across the cc0.x chain (cc0.7, cc0.3, cc0.4).
-User's sequence continues with cc0.6 (error-report cleanup / ptrtoint in
-runtime contexts, unblocks TJ1). cc0.5 remains T5-P6-scope.**
+**Four ir_extract beads closed across the cc0.x chain (cc0.7, cc0.3, cc0.4,
+cc0.6). cc0.5 remains T5-P6-scope (requires `Memory{T}` struct modeling).
+Next options per user plan: T5-P5a/P5b (multi-language `.ll` / `.bc`
+ingest) or T5-P6 (`:persistent_tree` dispatcher arm with linear_scan
+default). cc0.6 was the error-message chore; actually implementing
+ptrtoint/inttoptr handling for TJ1 is NOT part of cc0.6 (that bead was
+specifically about error-message cleanup per its description). File a new
+bead if TJ1 ptrtoint support becomes a priority.**
 
 ### Epic status
 
@@ -15,7 +20,7 @@ runtime contexts, unblocks TJ1). cc0.5 remains T5-P6-scope.**
 | cc0.7 (InsertElement/Vector SSA) | ✓ closed 2026-04-20 | Unlocked `optimize=true` everywhere; 3-50× gate-count reduction on SLP-vectorised workloads. 4.4× measured on ls_demo_16 sweep fixture. |
 | cc0.3 (LLVMGlobalAlias) | ✓ closed 2026-04-20 | Unblocks Vector/Dict/metaprogrammed pathways; downstream `@eval`-generated code can extract past runtime-JIT-global references. |
 | cc0.4 (constant-ptr icmp eq) | ✓ closed 2026-04-21 | TJ3 (mutable linked list `isnothing(next)`) GREEN at 180 gates. ConstantExpr<icmp eq/ne> on pointer operands folds to iconst(0/1) via canonical `_ptr_identity` (chases alias → inttoptr(ConstantInt) → named global / null). |
-| **cc0.6** (error-report cleanup) | ○ **next** (P2) | TJ1 now errors with "Unsupported LLVM opcode: LLVMPtrToInt" — needs handler for ptrtoint/inttoptr in runtime contexts, likely via same opaque-ptr sentinel infrastructure cc0.3 landed. |
+| cc0.6 (error-report cleanup) | ✓ closed 2026-04-21 | All `error()` calls in `ir_extract.jl` now prefixed `ir_extract.jl:`. Instruction-scoped errors follow canonical format "ir_extract.jl: `<opcode>` in @`<funcname>`:%`<blockname>`: `<instruction>` — `<reason>`" via new `_ir_error(inst, reason)` helper + `_LLVM_OPCODE_NAMES` dict. Behavior-preserving chore; test/test_cc06_error_context.jl gates the format. |
 | cc0.5 (thread_ptr GEP) | ○ (scope bumped) | TJ4 (Array{T}(undef,N)) — **needs T5-P6-scope milestone**, not a standalone fix. See 2026-04-20 session log §cc0.5 for empirical evidence and right-sized approach. |
 | T5-P5a (Bennett-lmkb) | ○ (P2) | `extract_parsed_ir_from_ll(path)` — raw .ll text ingest for multi-language support |
 | T5-P5b (Bennett-f2p9) | ○ (P2) | `extract_parsed_ir_from_bc(path)` + clang/rustc fixtures |
@@ -126,6 +131,87 @@ CLAUDE.md §2. Last two beads landed via:
 
 For small additive changes in a new file (e.g. new primitive library,
 new persistent-DS impl), single-implementer OK — but still red-green.
+
+---
+
+## Session log — 2026-04-21 — Bennett-cc0.6 closed (error-message standardization)
+
+Chore-scope bead explicitly waived the 3+1 protocol in its description
+("Additive (no behavior change), no 3+1 needed"). Respected per
+CLAUDE.md §10 judgment — 3+1 produces novel design; chores don't benefit.
+
+### Scope
+
+Per bead: every `error()` in `ir_extract.jl` should follow the format
+`'ir_extract.jl: <opcode> in @<funcname>:%<blockname>: <serialised
+instruction> — <reason>'`. Motivation: debugging T5-P2a failures required
+mapping each error back to IR by hand.
+
+### RED test
+
+`test/test_cc06_error_context.jl` — two testsets:
+1. Unit: build a synthetic 1-instruction LLVM module, call the new
+   `_ir_error(inst, reason)` helper directly, assert the emitted message
+   contains `ir_extract.jl:`, `@<funcname>`, `%<blockname>`, and the
+   reason text.
+2. End-to-end: synthesise a module containing a `va_arg` instruction
+   (unsupported opcode) via raw C API (`LLVMBuildVAArg`), run it through
+   `_module_to_parsed_ir`, assert the propagated error has the canonical
+   format with the real function + block names.
+
+Pre-fix: RED on both (helper not defined). Post-fix: GREEN.
+
+### Implementation — src/ir_extract.jl (+~120 lines)
+
+Three additions in the cc0.6 helpers block between `_auto_name` and the
+sret section:
+- `_LLVM_OPCODE_NAMES` — Dict mapping LLVM opcodes → human-readable
+  names for the format's `<opcode>` slot (with `string(opc)` fallback).
+- `_ir_error_msg(inst, reason)` — pure string formatter.
+- `_ir_error(inst, reason)` — raising entry point. Robust to
+  `LLVM.parent()` failing (falls back to `<unknown-fn>` / `<unknown-block>`).
+
+### Refactored error sites (~25 call sites)
+
+Instruction-scoped errors in `_convert_instruction`, `_convert_vector_instruction`,
+`_collect_sret_writes`, and `_detect_sret` migrated to `_ir_error(inst, ...)`
+or prefixed `ir_extract.jl:` where no `inst` was in scope but `func`
+was. Helper-level errors in `_operand`, `_fold_constexpr_operand`,
+`_resolve_vec_lanes`, `_type_width` got the `ir_extract.jl:` prefix to
+keep the "which module raised this?" signal consistent.
+
+### Regression check — zero behaviour change
+
+Full `Pkg.test()` GREEN. All baselines byte-identical (soft_fptrunc
+36,474 / popcount32 2,782 / HAMT 96,788 / CF 11,078 / CF+Feistel 65,198 /
+TJ3 180). No `@test_throws ErrorException` test is type-sensitive to
+message content; the cc0.3 skip path in `_module_to_parsed_ir` matches
+only on LLVM.jl-originated strings ("Unknown value kind",
+"LLVMGlobalAlias", MethodError+"PointerType") — none of which were
+touched.
+
+### Deliberately OUT of scope
+
+1. **Threading `inst` through `_operand` / `_fold_constexpr_operand` /
+   `_resolve_vec_lanes`** — would give every helper-level error full
+   canonical context. Adds one parameter to ~30 call sites. Deferred
+   as a strictly additive follow-up.
+2. **Implementing ptrtoint / inttoptr support for TJ1** — the NEXT
+   AGENT header of the previous session conflated cc0.6 (chore) with a
+   "cc0.6 territory" comment about TJ1's ptrtoint error. cc0.6 as filed
+   is error-message cleanup only; TJ1 ptrtoint support is a separate
+   bead if/when prioritised.
+
+### Sequence note
+
+Remaining cc0.x gaps:
+- cc0.5 (thread_ptr GEP / `Memory{T}` struct layout — TJ4 target).
+  Stays T5-P6-scope, not a standalone fix.
+
+Next options (per user plan 2026-04-20):
+- T5-P5a/P5b: multi-language `.ll` / `.bc` ingest (headline feature).
+- T5-P6: `:persistent_tree` dispatcher arm (linear_scan default per
+  2026-04-20 sweep findings).
 
 ---
 
