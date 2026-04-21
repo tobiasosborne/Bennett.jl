@@ -129,20 +129,18 @@ end
             end
         end
 
-        # RED: today this throws because isnothing() on a Union{TJ3Node,Nothing}
-        # field compiles to a constant-pointer icmp eq that ir_extract.jl cannot
-        # resolve.
-        # Current error: "Unknown operand ref for: i1 icmp eq
-        #   (ptr @\"+Main.TJ3Node#….jit\", ptr @\"+Core.Nothing#….jit\")"
-        @test_throws ErrorException reversible_compile(f_tj3, Int8)
-
-        # POST-T5-P6 GREEN (uncomment when constant-ptr operand handling lands):
-        # c = reversible_compile(f_tj3, Int8)
-        # for x in typemin(Int8):typemax(Int8)
-        #     @test simulate(c, Int8(x)) == x + Int8(2)
-        # end
-        # @test verify_reversibility(c; n_tests=3)
-        # println("  TJ3: ", gate_count(c))
+        # Bennett-cc0.4 (2026-04-21): GREEN. `isnothing()` on a
+        # Union{TJ3Node,Nothing} field compiles (post optimize=true) to
+        # `select i1 icmp eq (ptr @TJ3Node, ptr @Nothing), ...` — a
+        # ConstantExpr operand now folded by `_fold_constexpr_operand` in
+        # `src/ir_extract.jl`. Distinct named globals ⇒ icmp eq is statically
+        # false ⇒ the whole function reduces to `x + Int8(2)`.
+        c = reversible_compile(f_tj3, Int8)
+        for x in typemin(Int8):typemax(Int8)
+            @test simulate(c, Int8(x)) == (x + Int8(2)) % Int8
+        end
+        @test verify_reversibility(c; n_tests=3)
+        @info "TJ3 gate count: $(gate_count(c))"
     end
 
     # ─────────────────────────────────────────────────────────────────────────

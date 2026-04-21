@@ -1,11 +1,10 @@
 # Bennett.jl Work Log
 
-## NEXT AGENT — start here — 2026-04-20 (cc0.7 + cc0.3 shipped; cc0.4 next)
+## NEXT AGENT — start here — 2026-04-21 (cc0.4 shipped; cc0.6 next)
 
-**Two ir_extract beads closed this session. User's sequence continues with
-cc0.4 (constant-pointer icmp eq, unblocks TJ3) then cc0.6 (error-report
-cleanup, unblocks TJ1). cc0.5 reclassified: bead-suggested pre-walk is
-insufficient; needs T5-P6-scope work. See this session's log for details.**
+**Three ir_extract beads closed across the cc0.x chain (cc0.7, cc0.3, cc0.4).
+User's sequence continues with cc0.6 (error-report cleanup / ptrtoint in
+runtime contexts, unblocks TJ1). cc0.5 remains T5-P6-scope.**
 
 ### Epic status
 
@@ -15,8 +14,8 @@ insufficient; needs T5-P6-scope work. See this session's log for details.**
 |------|--------|---------------------------|
 | cc0.7 (InsertElement/Vector SSA) | ✓ closed 2026-04-20 | Unlocked `optimize=true` everywhere; 3-50× gate-count reduction on SLP-vectorised workloads. 4.4× measured on ls_demo_16 sweep fixture. |
 | cc0.3 (LLVMGlobalAlias) | ✓ closed 2026-04-20 | Unblocks Vector/Dict/metaprogrammed pathways; downstream `@eval`-generated code can extract past runtime-JIT-global references. |
-| **cc0.4** (constant-ptr icmp eq) | ○ **next** (P2) | TJ3 (mutable linked list `isnothing(next)` checks) — same root cause expected: pointer-typed operands flowing through `_operand` / `_iwidth` paths. |
-| **cc0.6** (error-report cleanup) | ○ (P2) | TJ1 now errors with "Unsupported LLVM opcode: LLVMPtrToInt" — needs handler for ptrtoint/inttoptr in runtime contexts, likely via same opaque-ptr sentinel infrastructure cc0.3 landed. |
+| cc0.4 (constant-ptr icmp eq) | ✓ closed 2026-04-21 | TJ3 (mutable linked list `isnothing(next)`) GREEN at 180 gates. ConstantExpr<icmp eq/ne> on pointer operands folds to iconst(0/1) via canonical `_ptr_identity` (chases alias → inttoptr(ConstantInt) → named global / null). |
+| **cc0.6** (error-report cleanup) | ○ **next** (P2) | TJ1 now errors with "Unsupported LLVM opcode: LLVMPtrToInt" — needs handler for ptrtoint/inttoptr in runtime contexts, likely via same opaque-ptr sentinel infrastructure cc0.3 landed. |
 | cc0.5 (thread_ptr GEP) | ○ (scope bumped) | TJ4 (Array{T}(undef,N)) — **needs T5-P6-scope milestone**, not a standalone fix. See 2026-04-20 session log §cc0.5 for empirical evidence and right-sized approach. |
 | T5-P5a (Bennett-lmkb) | ○ (P2) | `extract_parsed_ir_from_ll(path)` — raw .ll text ingest for multi-language support |
 | T5-P5b (Bennett-f2p9) | ○ (P2) | `extract_parsed_ir_from_bc(path)` + clang/rustc fixtures |
@@ -127,6 +126,149 @@ CLAUDE.md §2. Last two beads landed via:
 
 For small additive changes in a new file (e.g. new primitive library,
 new persistent-DS impl), single-implementer OK — but still red-green.
+
+---
+
+## Session log — 2026-04-21 — Bennett-cc0.4 closed (ConstantExpr icmp folding)
+
+User plan: "ok get to work. red green tdd, read ground trutj always before
+coding" — third cc0.x bead in the ir_extract chain. Small, isolated fix;
+3+1 protocol per CLAUDE.md §2. Full suite GREEN post-fix; all baselines
+byte-identical.
+
+### RED test + ground truth
+
+- `test/test_cc04_repro.jl` — minimal repro using an in-test `mutable
+  struct CC04Node{T}` with `Union{CC04Node{T},Nothing}`, a 3-node linked
+  list, two isnothing checks in the predicate. Exhaustive i8 (256
+  inputs) + `verify_reversibility(c; n_tests=3)`. Pre-fix: "Unknown
+  operand ref for: i1 icmp eq (ptr @..., ptr @...)". Post-fix: GREEN.
+- IR extracted via `InteractiveUtils.code_llvm(... optimize=true)` →
+  the whole function reduces to `select i1 icmp eq (ptr @TJ3Node,
+  ptr @Nothing), i8 -1, i8 %2`. Condition is a `LLVM.ConstantExpr`
+  (value kind `LLVMConstantExprValueKind`), opcode `LLVMICmp`, predicate
+  `LLVMIntEQ`, two operands both `LLVMGlobalAliasValueKind`.
+- **Critical empirical detail discovered mid-implementation**: the
+  alias's aliasee is NOT a GlobalVariable — it is a `ConstantExpr`
+  of shape `inttoptr (i64 <absolute_addr> to ptr)`. Julia's JIT bakes
+  literal runtime addresses of type descriptors as inttoptr-of-const
+  under GlobalAliases. Any design that only traces aliases to named
+  globals (first draft of `_ptr_addresses_equal` per both proposers)
+  returns "undecidable" and fails loud on exactly this pattern. The
+  probe that surfaced this: read the aliasee ref, call
+  `LLVM.Value(aliasee)`, inspect the string.
+
+### 3+1 protocol
+
+- `docs/design/cc04_proposer_A.md` (1,160 lines, general-purpose subagent)
+- `docs/design/cc04_proposer_B.md` (927 lines, general-purpose subagent)
+- `docs/design/cc04_consensus.md` (orchestrator synthesis + tie-breakers)
+
+Both converged on: one `elseif val isa LLVM.ConstantExpr` branch in
+`_operand` dispatching to a file-private helper. MVP scope: icmp eq/ne on
+pointer operands, fold to iconst(0/1). Everything else fails loud with a
+cc0.4 breadcrumb.
+
+Tie-breakers picked:
+- Helper name `_fold_constexpr_operand` (B, more descriptive).
+- Trivial-ptrcast peeling included (A; real IR wraps globals).
+- Separate `_ptr_identity` / `_ptr_addresses_equal` helpers (A-style).
+- cc0.6 hint on `ptrtoint`/`inttoptr` operand opcodes (B).
+
+### Implementation — src/ir_extract.jl (+123 lines, one new branch)
+
+Added ~123 lines in a new cc0.4 helpers block between the cc0.3 helpers
+and the cc0.7 helpers block. Zero other-file changes.
+
+- `_CONSTEXPR_OPCODE_NAMES` — Dict for error-message opcode naming.
+- `_constexpr_opcode_name(opc)` — wrapper with `sprint(show, opc)` fallback.
+- `_ptr_identity(ref) -> Union{Tuple{Symbol, UInt64}, Tuple{Symbol,
+  _LLVMRef}, Nothing}` — canonical identity:
+  - `(:named, r)` — Function / GlobalVariable / GlobalIFunc
+  - `(:null, 0)` — ConstantPointerNull
+  - `(:addr, K::UInt64)` — `inttoptr (i64 K to ptr)` (the Julia-JIT
+    typetag pattern)
+  - `nothing` — undecidable
+  Walks through GlobalAlias (via `LLVMAliasGetAliasee`), peels
+  bitcast/addrspacecast wrappers, recognises `inttoptr(ConstantInt)`.
+  Depth cap 16.
+- `_ptr_addresses_equal(a, b)` — compares identities; returns `nothing`
+  on undecidable (caller fails loud).
+- `_fold_constexpr_operand(ce, names)` — entry point.
+
+`_operand` gains exactly one `elseif val isa LLVM.ConstantExpr` branch.
+
+### Gate-count deltas (cc0.4 target: TJ3)
+
+| Build | Gates | Toffoli | Note |
+|---|---:|---:|---|
+| TJ3 (NEW BASELINE) | **180** | **44** | `x + Int8(2)` after ptr-fold + dead-branch elimination |
+
+The function reduces statically to `select false, -1, (x+2)` → `x+2`. The
+180 gates come from the select circuit's false-arm wiring for `-1` plus
+the add.
+
+### Regression check — all baselines byte-identical
+
+Full `Pkg.test()` GREEN. Spot-checks vs 2026-04-20 WORKLOG numbers:
+
+| Primitive | Pre-fix | Post-fix | Δ |
+|---|---:|---:|---|
+| soft_fptrunc | 36,474 | 36,474 | 0 |
+| popcount32 standalone | 2,782 | 2,782 | 0 |
+| HAMT demo (max_n=8) | 96,788 | 96,788 | 0 |
+| CF demo (max_n=4) | 11,078 | 11,078 | 0 |
+| CF+Feistel | 65,198 | 65,198 | 0 |
+| i8/i16/i32/i64 two-arg add | 98/202/410/826 | 98/202/410/826 | 0 |
+
+Zero-regression guarantee by construction: the new `elseif` is only
+entered on `LLVM.ConstantExpr` inputs — a type disjoint from
+`ConstantInt` / `ConstantAggregateZero` / named SSA. Functions with no
+ConstantExpr operands take byte-identical paths.
+
+### Tests changed
+
+- `test/test_cc04_repro.jl` — new RED→GREEN gate (exhaustive i8).
+- `test/test_t5_corpus_julia.jl` TJ3 — flipped from `@test_throws
+  ErrorException` to exhaustive i8 GREEN (256 inputs + verify).
+- `test/runtests.jl` — include `test_cc04_repro.jl` after cc0.7.
+
+### Gotchas (new, worth recording)
+
+1. **Julia JIT baked-address aliasees.** Given `@alias = alias ptr
+   <inttoptr (i64 K to ptr)>`, `LLVMAliasGetAliasee` returns a
+   `ConstantExpr<inttoptr>` — NOT a named global. Any pointer-identity
+   logic that only recognises Function/GlobalVariable/IFunc/null as
+   terminals will fail loud on exactly the TJ3 pattern. Both cc0.4
+   proposer drafts missed this; surfaced only by running the test and
+   re-probing the aliasee.
+
+2. **`_operand` ordering matters.** The new `ConstantExpr` branch must
+   appear BEFORE the `haskey(names, r)` fallback: a ConstantExpr is not
+   in `names` and would take the existing error path. Put the new
+   `elseif` between `ConstantAggregateZero` and the final `else`.
+
+3. **Empirical probe beats proposer assumptions.** Both cc0.4 proposers
+   correctly identified `_resolve_aliasee` as the key helper; both
+   independently assumed aliasees terminated at named globals. The
+   actual Julia-JIT shape was only visible by running a probe that
+   wrapped `LLVM.Value(aliasee)` and printed the result. CLAUDE.md §10
+   (skepticism) and §5 (LLVM IR not stable) both applied.
+
+4. **ConstantExpr identity recognition is semantic, not syntactic.** A
+   canonical-identity tagged union (`:named` / `:null` / `:addr`) is
+   the right abstraction. Ref-equality alone is unsound when two
+   aliases both point at the same `inttoptr (i64 K)` via distinct
+   ConstantExpr wrappers — but tuple equality on `(:addr, K)` catches
+   that case correctly.
+
+### Sequence note (from user plan)
+
+Remaining ir_extract gaps:
+- cc0.6 (error-report cleanup, ptrtoint/inttoptr in runtime contexts —
+  TJ1 target). Next up per user plan.
+- cc0.5 (thread_ptr GEP / `Memory{T}` struct layout — TJ4 target).
+  Stays T5-P6-scope, not a standalone fix.
 
 ---
 

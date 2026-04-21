@@ -95,6 +95,8 @@ include("test_tabulate.jl")
 # shufflevector + vector arithmetic/icmp/select/cast).
 include("test_cc07_repro.jl")
 include("test_vector_ir.jl")
+# Bennett-cc0.4 — constant-pointer icmp eq (ConstantExpr operand folding).
+include("test_cc04_repro.jl")
 
 # T5 — persistent map protocol + harness self-test (T5-P3a, GREEN today).
 include("test_persistent_interface.jl")
