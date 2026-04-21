@@ -122,16 +122,13 @@ _match(result::Tuple, expected::Tuple) =
         @test_throws ErrorException reversible_compile(f, UInt32, UInt64)
     end
 
-    @testset "error: optimize=false memcpy form rejected with helpful message" begin
+    @testset "optimize=false memcpy form auto-canonicalised (Bennett-uyf9)" begin
+        # Prior behaviour: errored with "sret with llvm.memcpy form is not
+        # supported". Bennett-uyf9 added auto-SROA when sret is detected;
+        # optimize=false now extracts successfully.
         f(a::UInt32, b::UInt32, c::UInt32) = (a, b, c)
-        ex = try
-            extract_parsed_ir(f, Tuple{UInt32, UInt32, UInt32}; optimize=false)
-            nothing
-        catch e
-            e
-        end
-        @test ex isa ErrorException
-        @test occursin("memcpy", ex.msg)
-        @test occursin("optimize=true", ex.msg)
+        pir = extract_parsed_ir(f, Tuple{UInt32, UInt32, UInt32}; optimize=false)
+        @test pir.ret_width == 96
+        @test pir.ret_elem_widths == [32, 32, 32]
     end
 end

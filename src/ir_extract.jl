@@ -66,6 +66,15 @@ function extract_parsed_ir(f, arg_types::Type{<:Tuple};
     local result::ParsedIR
     LLVM.Context() do _ctx
         mod = parse(LLVM.Module, ir_string)
+        # Bennett-uyf9: auto-canonicalise memcpy-form sret. Under optimize=false
+        # Julia emits aggregate returns as `alloca [N x iM]` + llvm.memcpy into
+        # the sret pointer, which _collect_sret_writes cannot decompose. SROA
+        # decomposes the alloca+memcpy into per-slot scalar stores that the
+        # existing sret pre-walk handles natively. Gated on sret presence + SROA
+        # not already in the pass list — byte-identical for non-sret functions.
+        if !("sroa" in effective_passes) && _module_has_sret(mod)
+            prepend!(effective_passes, ["sroa", "mem2reg"])
+        end
         if !isempty(effective_passes)
             _run_passes!(mod, effective_passes)
         end
@@ -86,6 +95,11 @@ end
 function _extract_from_module(mod::LLVM.Module,
                               entry_function::Union{Nothing, AbstractString},
                               effective_passes::Vector{String})
+    # Bennett-uyf9: auto-canonicalise memcpy-form sret (see extract_parsed_ir
+    # for rationale). Shared across extract_parsed_ir_from_ll / _from_bc.
+    if !("sroa" in effective_passes) && _module_has_sret(mod)
+        prepend!(effective_passes, ["sroa", "mem2reg"])
+    end
     if !isempty(effective_passes)
         _run_passes!(mod, effective_passes)
     end
@@ -401,6 +415,29 @@ function _detect_sret(func::LLVM.Function)
                  agg_byte_size = n * elem_bytes)
     end
     return found
+end
+
+"""
+    _module_has_sret(mod::LLVM.Module) -> Bool
+
+Bennett-uyf9: true iff any function in `mod` (with a body) has a parameter
+carrying the `sret` attribute. Used to auto-enable SROA + mem2reg in the pass
+pipeline — Julia's no-optimisation codegen emits aggregate returns via
+`alloca [N x iM]` + `llvm.memcpy` into the sret buffer, which SROA decomposes
+into per-slot scalar stores that `_collect_sret_writes` handles natively.
+Byte-identical for non-sret modules (returns false, auto-prepend skipped).
+"""
+function _module_has_sret(mod::LLVM.Module)::Bool
+    kind_sret = LLVM.API.LLVMGetEnumAttributeKindForName("sret", 4)
+    for func in LLVM.functions(mod)
+        length(LLVM.blocks(func)) == 0 && continue  # declarations
+        for (i, _) in enumerate(LLVM.parameters(func))
+            attr = LLVM.API.LLVMGetEnumAttributeAtIndex(
+                func, UInt32(i), kind_sret)
+            attr == C_NULL || return true
+        end
+    end
+    return false
 end
 
 """

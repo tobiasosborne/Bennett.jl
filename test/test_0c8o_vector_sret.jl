@@ -155,15 +155,13 @@ using Bennett: IRInsertValue, IRRet
         @test_throws ErrorException reversible_compile(f_het, UInt32, UInt64)
     end
 
-    @testset "regression: memcpy-form still rejected under optimize=false" begin
+    @testset "regression: memcpy-form auto-canonicalised under optimize=false (post-Bennett-uyf9)" begin
+        # β shipped when γ wasn't yet merged — this test originally asserted
+        # the memcpy error. γ (Bennett-uyf9) auto-canonicalises via SROA, so
+        # optimize=false now extracts successfully. Test updated to reflect.
         f3(a::UInt32, b::UInt32, c::UInt32) = (a, b, c)
-        ex = try
-            extract_parsed_ir(f3, Tuple{UInt32, UInt32, UInt32}; optimize=false)
-            nothing
-        catch e
-            e
-        end
-        @test ex isa ErrorException
-        @test occursin("memcpy", ex.msg)
+        pir = extract_parsed_ir(f3, Tuple{UInt32, UInt32, UInt32}; optimize=false)
+        @test pir.ret_width == 96
+        @test pir.ret_elem_widths == [32, 32, 32]
     end
 end

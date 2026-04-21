@@ -105,6 +105,8 @@ include("test_atf4_lower_call_nontrivial_args.jl")
 # Bennett-0c8o — vector-lane sret stores + vector loads (SLP-vectorised
 # NTuple{N,UInt64} returns); unblocks Bennett-z2dj.
 include("test_0c8o_vector_sret.jl")
+# Bennett-uyf9 — memcpy-form sret under optimize=false (auto-SROA canonicalisation).
+include("test_uyf9_memcpy_sret.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")
