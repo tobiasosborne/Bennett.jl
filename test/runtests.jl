@@ -102,6 +102,9 @@ include("test_cc06_error_context.jl")
 # Bennett-atf4 — lower_call! derives callee arg types from methods() instead of
 # hardcoded UInt64; unblocks NTuple-aggregate callees (Bennett-z2dj prereq).
 include("test_atf4_lower_call_nontrivial_args.jl")
+# Bennett-0c8o — vector-lane sret stores + vector loads (SLP-vectorised
+# NTuple{N,UInt64} returns); unblocks Bennett-z2dj.
+include("test_0c8o_vector_sret.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")

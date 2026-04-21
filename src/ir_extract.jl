@@ -428,9 +428,13 @@ Errors (no silent miscompile):
   * a slot left unwritten before `ret void`
 """
 function _collect_sret_writes(func::LLVM.Function, sret_info, names::Dict{_LLVMRef, Symbol})
-    slot_values = Dict{Int, IROperand}()
-    suppressed  = Set{_LLVMRef}()
-    gep_byte    = Dict{_LLVMRef, Int}()   # sret-derived GEP result → byte offset
+    slot_values       = Dict{Int, IROperand}()
+    suppressed        = Set{_LLVMRef}()
+    gep_byte          = Dict{_LLVMRef, Int}()   # sret-derived GEP result → byte offset
+    # Bennett-0c8o: vector sret stores reserve slot ranges at pre-walk time;
+    # pass-2 hook fills them in from `lanes` when the vector-producer runs.
+    pending_vec       = Dict{_LLVMRef, Tuple{Int, Int}}()   # store.ref => (first_slot, n_lanes)
+    pending_val_refs  = Dict{_LLVMRef, _LLVMRef}()          # store.ref => val.ref
 
     sret_ref  = sret_info.param_ref
     eb        = sret_info.elem_byte_size
@@ -515,6 +519,39 @@ function _collect_sret_writes(func::LLVM.Function, sret_info, names::Dict{_LLVMR
                 end
                 if byte_off !== nothing
                     vt = LLVM.value_type(val)
+                    # Bennett-0c8o: SLP-emitted vector store into sret GEP.
+                    # Reserve slot range with a sentinel; pass 2 fills it in
+                    # from `lanes` when the vector-producer runs.
+                    if vt isa LLVM.VectorType
+                        lane_ty = LLVM.eltype(vt)
+                        lane_ty isa LLVM.IntegerType || _ir_error(inst,
+                            "sret vector store at byte offset $byte_off has " *
+                            "non-integer lane type $lane_ty")
+                        lw = Int(LLVM.width(lane_ty))
+                        lw == ew || _ir_error(inst,
+                            "sret vector store at byte offset $byte_off has lane " *
+                            "width $lw but aggregate element width is $ew")
+                        (byte_off % eb == 0) || _ir_error(inst,
+                            "sret vector store at byte offset $byte_off is not " *
+                            "aligned to element size $eb")
+                        n_lanes = Int(LLVM.length(vt))
+                        first_slot = byte_off ÷ eb
+                        (0 <= first_slot && first_slot + n_lanes <= n) || _ir_error(inst,
+                            "sret vector store spans slots [$first_slot, " *
+                            "$(first_slot + n_lanes - 1)] which exceed aggregate " *
+                            "range [0, $n)")
+                        for lane in 0:(n_lanes - 1)
+                            slot = first_slot + lane
+                            haskey(slot_values, slot) && _ir_error(inst,
+                                "sret slot $slot already written; vector store " *
+                                "(lane $lane) cannot re-write it")
+                            slot_values[slot] = IROperand(:const, :__pending_vec_lane__, lane)
+                        end
+                        pending_vec[inst.ref] = (first_slot, n_lanes)
+                        pending_val_refs[inst.ref] = val.ref
+                        push!(suppressed, inst.ref)
+                        continue
+                    end
                     vt isa LLVM.IntegerType || _ir_error(inst,
                         "sret store at byte offset $byte_off has non-integer value " *
                         "type $vt; only integer stores are supported")
@@ -529,10 +566,19 @@ function _collect_sret_writes(func::LLVM.Function, sret_info, names::Dict{_LLVMR
                     slot = byte_off ÷ eb
                     (0 <= slot < n) || _ir_error(inst,
                         "sret store slot $slot is out of range [0, $n)")
-                    haskey(slot_values, slot) && _ir_error(inst,
-                        "sret slot $slot has multiple stores; only a single store " *
-                        "per slot is supported in MVP (multi-store / conditional " *
-                        "sret coverage is a planned extension)")
+                    if haskey(slot_values, slot)
+                        prior = slot_values[slot]
+                        if prior.kind == :const && prior.name === :__pending_vec_lane__
+                            _ir_error(inst,
+                                "sret slot $slot was reserved by an earlier " *
+                                "vector sret store; scalar re-write unsupported")
+                        else
+                            _ir_error(inst,
+                                "sret slot $slot has multiple stores; only a single " *
+                                "store per slot is supported in MVP (multi-store / " *
+                                "conditional sret coverage is a planned extension)")
+                        end
+                    end
                     slot_values[slot] = _operand(val, names)
                     push!(suppressed, inst.ref)
                     continue
@@ -549,7 +595,69 @@ function _collect_sret_writes(func::LLVM.Function, sret_info, names::Dict{_LLVMR
             "element of the aggregate return must be stored before ret void")
     end
 
-    return (slot_values = slot_values, suppressed = suppressed)
+    return (slot_values      = slot_values,
+            suppressed       = suppressed,
+            pending_vec      = pending_vec,
+            pending_val_refs = pending_val_refs)
+end
+
+"""
+    _resolve_pending_vec_for_val!(sret_writes, produced_ref, lanes) -> Nothing
+
+Bennett-0c8o: if `produced_ref` is the stored value of any pending vector sret
+store, resolve its per-lane IROperands from the now-populated `lanes` dict and
+write them into `sret_writes.slot_values`. Clears the pending entry. No-op if
+`produced_ref` is not a pending value.
+
+Called by the pass-2 walker after each successful `_convert_instruction`.
+"""
+function _resolve_pending_vec_for_val!(sret_writes,
+                                        produced_ref::_LLVMRef,
+                                        lanes::Dict{_LLVMRef, Vector{IROperand}})
+    isempty(sret_writes.pending_vec) && return nothing
+    store_ref = nothing
+    for (sref, vref) in sret_writes.pending_val_refs
+        if vref === produced_ref
+            store_ref = sref
+            break
+        end
+    end
+    store_ref === nothing && return nothing
+
+    first_slot, n_lanes = sret_writes.pending_vec[store_ref]
+    haskey(lanes, produced_ref) || error(
+        "ir_extract.jl: pending sret vector store's stored value " *
+        "$(produced_ref) was not registered in the vector-lane table " *
+        "during pass 2. The producer of the <N x iM> value is an " *
+        "instruction whose vector output isn't decomposed by " *
+        "_convert_vector_instruction.")
+    per_lane = lanes[produced_ref]
+    length(per_lane) == n_lanes || error(
+        "ir_extract.jl: pending sret vector store expected $n_lanes lanes " *
+        "but got $(length(per_lane)) from the vector-lane table")
+    for lane in 0:(n_lanes - 1)
+        sret_writes.slot_values[first_slot + lane] = per_lane[lane + 1]
+    end
+    delete!(sret_writes.pending_vec, store_ref)
+    delete!(sret_writes.pending_val_refs, store_ref)
+    return nothing
+end
+
+"""
+    _assert_no_pending_vec_stores!(sret_writes) -> Nothing
+
+Bennett-0c8o: fail loud if any pending sret vector store is unresolved by the
+time we synthesise the sret chain at `ret void`. Indicates the producer of the
+vector value was never converted during pass 2 (dead-code path, or cc0.3-style
+skip swallowed it).
+"""
+function _assert_no_pending_vec_stores!(sret_writes)
+    isempty(sret_writes.pending_vec) && return nothing
+    refs = collect(keys(sret_writes.pending_vec))
+    error("ir_extract.jl: $(length(refs)) pending sret vector store(s) " *
+          "remain unresolved at ret void. This means the producer of the " *
+          "stored vector value wasn't processed in pass 2 (likely skipped " *
+          "by _convert_instruction's cc0.3 catch-block).")
 end
 
 """
@@ -729,6 +837,9 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function)
             if sret_writes !== nothing &&
                LLVM.opcode(inst) == LLVM.API.LLVMRet &&
                isempty(LLVM.operands(inst))
+                # Bennett-0c8o: before synthesising, confirm every pending
+                # vector sret store was resolved during pass 2.
+                _assert_no_pending_vec_stores!(sret_writes)
                 chain, ret_inst = _synthesize_sret_chain(
                     sret_info, sret_writes.slot_values, counter)
                 append!(insts, chain)
@@ -758,6 +869,12 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function)
                 end
             end
             ir_inst === nothing && continue
+            # Bennett-0c8o: after each successful conversion, if `inst` was
+            # the producer of a pending sret vector store's stored value,
+            # harvest its lanes now.
+            if sret_writes !== nothing
+                _resolve_pending_vec_for_val!(sret_writes, inst.ref, lanes)
+            end
             if ir_inst isa Vector
                 for sub in ir_inst
                     push!(insts, sub)
@@ -2115,6 +2232,30 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
             return insts
         end
         _ir_error(inst, "unsupported bitcast shape for cc0.7")
+    end
+
+    # Bennett-0c8o: vector load — decompose `%v = load <N x iW>, ptr %p` into
+    # N scalar `IRPtrOffset` + `IRLoad` pairs at lane byte offsets, and record
+    # per-lane IROperands in `lanes[inst.ref]`. Uses only primitives already
+    # handled by lower.jl.
+    if opc == LLVM.API.LLVMLoad
+        shape = _vector_shape(inst)
+        shape === nothing &&
+            _ir_error(inst, "vector load return type is not a vector")
+        n, w = shape
+        ptr = LLVM.operands(inst)[1]
+        eb = w ÷ 8
+        insts = IRInst[]
+        out = Vector{IROperand}(undef, n)
+        for i in 1:n
+            gep_dest = _auto_name(counter)
+            load_dest = _auto_name(counter)
+            push!(insts, IRPtrOffset(gep_dest, _operand(ptr, names), (i - 1) * eb))
+            push!(insts, IRLoad(load_dest, ssa(gep_dest), w))
+            out[i] = ssa(load_dest)
+        end
+        lanes[inst.ref] = out
+        return insts
     end
 
     _ir_error(inst, "unsupported vector opcode $opc")
