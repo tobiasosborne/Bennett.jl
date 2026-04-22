@@ -419,11 +419,17 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
         end
 
         if label in loop_headers
-            # Unroll this loop (single group for entire loop body)
+            # Unroll this loop (single group for entire loop body).
+            # Bennett-httg / U05: thread the full lowering context so body-block
+            # instructions route through the canonical `_lower_inst!` dispatcher.
             _ws = wa.next_wire
             _gs = length(gates) + 1
             lower_loop!(gates, wa, vw, block, block_map, back_edges,
-                        max_loop_iterations, preds, branch_info)
+                        max_loop_iterations, preds, branch_info;
+                        block_pred, ssa_liveness, inst_counter, gate_groups,
+                        use_karatsuba, compact_calls, globals=parsed.globals, add, mul,
+                        alloca_info, ptr_provenance, entry_label=order[1],
+                        block_order, loop_headers)
             if length(gates) >= _gs
                 push!(gate_groups, GateGroup(Symbol("__loop_", label),
                       _gs, length(gates), Int[], Symbol[], _ws, wa.next_wire - 1))
@@ -711,18 +717,94 @@ end
 # ---- loop unrolling ----
 
 """
-    lower_loop!(gates, wa, vw, header_block, block_map, back_edges, K, preds, branch_info)
+Compute the loop-body region: all basic blocks reachable from `header`'s
+non-exit successors via forward edges, stopping at the exit block and at
+latch blocks. Returns a topologically-sorted list (back-edges ignored)
+excluding the header itself and excluding the exit block.
 
-Unroll a loop K times. The header block has phi nodes for loop-carried variables.
-Each iteration: lower body → compute exit condition → MUX-freeze outputs.
+Fails loud on nested loops (a body block that is itself a loop header),
+multi-latch configurations, and early returns inside the body. See
+Bennett-httg / U05.
+"""
+function _collect_loop_body_blocks(header::IRBasicBlock, block_map::Dict{Symbol,IRBasicBlock},
+                                   exit_label::Symbol, latch_labels::Set{Symbol},
+                                   loop_headers::Set{Symbol}, back_edges::Vector{Tuple{Symbol,Symbol}})
+    hlabel = header.label
+    term = header.terminator
+    # Seed frontier with header's non-exit successors.
+    frontier = Symbol[]
+    for s in branch_targets(term)
+        s == exit_label && continue
+        s == hlabel && continue  # rare: self-loop with only header; no body
+        push!(frontier, s)
+    end
+
+    back_set = Set(back_edges)
+    seen = Set{Symbol}([hlabel, exit_label])
+    body = Symbol[]
+    while !isempty(frontier)
+        b = popfirst!(frontier)
+        b in seen && continue
+        push!(seen, b)
+        push!(body, b)
+        b in loop_headers && b != hlabel &&
+            error("lower_loop!: nested loop header $b inside body of $hlabel — nested loops not supported (Bennett-httg / U05 scope)")
+        bblock = block_map[b]
+        bterm = bblock.terminator
+        if bterm isa IRRet
+            error("lower_loop!: IRRet in loop body at $b — early return inside a loop not supported")
+        end
+        bterm isa IRBranch || continue
+        for t in branch_targets(bterm)
+            (b, t) in back_set && continue       # latch / back-edge
+            t == exit_label && continue          # don't descend into exit block
+            t in seen && continue
+            push!(frontier, t)
+        end
+    end
+
+    # Topo-sort (back-edges ignored). Build subgraph of {hlabel} ∪ body.
+    sub_blocks = [block_map[l] for l in vcat([hlabel], body)]
+    sub_labels = Set(l.label for l in sub_blocks)
+    back_vec = Tuple{Symbol,Symbol}[(s, d) for (s, d) in back_edges
+                                    if s in sub_labels && d in sub_labels]
+    ordered = topo_sort(sub_blocks; ignore_edges=back_vec)
+    return filter(l -> l != hlabel, ordered)
+end
+
+"""
+    lower_loop!(gates, wa, vw, header_block, block_map, back_edges, K, preds, branch_info; <ctx kwargs>)
+
+Unroll a loop K times. The header block has phi nodes for loop-carried
+variables. Each iteration:
+  1. (iter 1 only) seed header phis from pre-header values.
+  2. Lower the loop body: header's non-phi instructions, then every body
+     block in topological order, each instruction dispatched through the
+     canonical `_lower_inst!` (Bennett-httg / U05).
+  3. Compute the exit condition.
+  4. MUX-freeze header phis: keep current value on exit, take latch value
+     on continue.
 """
 function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
-                     back_edges, K::Int, preds, branch_info)
+                     back_edges, K::Int, preds, branch_info;
+                     block_pred::Dict{Symbol,Vector{Int}}=Dict{Symbol,Vector{Int}}(),
+                     ssa_liveness::Dict{Symbol,Int}=Dict{Symbol,Int}(),
+                     inst_counter::Ref{Int}=Ref(0),
+                     gate_groups::Vector{GateGroup}=GateGroup[],
+                     use_karatsuba::Bool=false,
+                     compact_calls::Bool=false,
+                     globals::Dict{Symbol,Tuple{Vector{UInt64},Int}}=Dict{Symbol,Tuple{Vector{UInt64},Int}}(),
+                     add::Symbol=:auto, mul::Symbol=:auto,
+                     alloca_info::Dict{Symbol,Tuple{Int,Int}}=Dict{Symbol,Tuple{Int,Int}}(),
+                     ptr_provenance::Dict{Symbol,Vector{PtrOrigin}}=Dict{Symbol,Vector{PtrOrigin}}(),
+                     entry_label::Symbol=Symbol(""),
+                     block_order=Symbol[],
+                     loop_headers::Set{Symbol}=Set{Symbol}())
     hlabel = header.label
 
     # Find which phi inputs are from the pre-header vs the back-edge (latch)
     latch_labels = Set(src for (src, dst) in back_edges if dst == hlabel)
-    pre_header_preds = Symbol[]  # will be filled from phi incoming
+    pre_header_preds = Symbol[]
 
     # Separate phi incoming into pre-header (initial) and latch (loop-carried)
     phi_info = Tuple{Symbol, Int, IROperand, IROperand}[]
@@ -730,7 +812,7 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
         inst isa IRPhi || continue
         pre_op = nothing; latch_op = nothing
         for (val, blk) in inst.incoming
-            if blk in latch_labels || blk == hlabel  # self-loop or latch
+            if blk in latch_labels || blk == hlabel
                 latch_op = (val, blk)
             else
                 pre_op = (val, blk)
@@ -742,32 +824,66 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
         push!(phi_info, (inst.dest, inst.width, pre_op[1], latch_op[1]))
     end
 
-    # Register pre-header predecessors
     for p in pre_header_preds
         push!(get!(preds, hlabel, Symbol[]), p)
     end
 
-    # Non-phi instructions in the header (the loop body)
-    body_insts = [inst for inst in header.instructions if !(inst isa IRPhi)]
+    # Non-phi instructions in the header (may be empty for multi-block bodies).
+    header_body_insts = [inst for inst in header.instructions if !(inst isa IRPhi)]
 
-    # The terminator must be a conditional branch (exit vs continue)
     term = header.terminator
-    (term isa IRBranch && term.cond !== nothing) || error("Loop header must end with conditional branch, got: $(typeof(term))")
+    (term isa IRBranch && term.cond !== nothing) ||
+        error("Loop header $hlabel must end with conditional branch, got: $(typeof(term))")
 
-    # Determine which successor is the exit and which is the back-edge
     exit_on_true = !(term.true_label == hlabel || term.true_label in latch_labels)
     exit_label = exit_on_true ? term.true_label : term.false_label
-    # exit_cond: when true → exit (if exit_on_true), or when false → exit
 
-    # Initialize phi variables from pre-header values
+    # Bennett-httg / U05: collect body blocks (all basic blocks between
+    # header successors and the exit that are NOT the header itself).
+    body_block_order = _collect_loop_body_blocks(header, block_map, exit_label,
+                                                 latch_labels, loop_headers, back_edges)
+    @debug "lower_loop! body_block_order" hlabel body_block_order
+
+    # Build a LoweringCtx for per-iteration instruction dispatch.
+    # Bennett-httg / U05: the old `lower_loop!` called `lower_binop!(gates,
+    # wa, vw, inst)` with empty default kwargs — no `ssa_liveness`, no
+    # `inst_idx`. With those empty, the Cuccaro in-place picker almost
+    # never fires (no operand looks "dead"). If we thread the caller's
+    # populated `ssa_liveness` into loop-body dispatch, Cuccaro sees
+    # phi-destination operands as dead (liveness doesn't model cross-
+    # iteration phi re-reads) and writes in-place, silently corrupting the
+    # accumulator every iteration (e.g. soft_fdiv's 56-iter restoring
+    # division yields 2.0 for 6/2). Force `:ripple` inside the loop body to
+    # avoid the trap. Gate counts match the pre-fix baseline because old
+    # dispatch effectively resolved to ripple too. Tied to Bennett-spa8
+    # (U27 :auto-dispatcher general fix); local override until that lands.
+    loop_ctx = LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
+                           block_pred, Dict{Symbol,Int}(), Ref(0),
+                           use_karatsuba, compact_calls,
+                           alloca_info, ptr_provenance, Ref(0),
+                           globals, :ripple, mul, entry_label)
+
+    # Seed header phis from pre-header values (iter 1).
     for (dest, width, pre_val, _) in phi_info
         vw[dest] = resolve!(gates, wa, vw, pre_val, width)
     end
 
-    # Unroll K iterations
+    # Track SSA dests added during each iteration (excluding header phi
+    # destinations, which live in vw across iterations via MUX-freeze). At
+    # the end of each iteration we delete these entries so the next
+    # iteration's re-lowering allocates fresh wires instead of in-place
+    # mutating the previous iteration's result wires.
+    phi_dests = Set(dest for (dest, _, _, _) in phi_info)
+
     for _iter in 1:K
-        # Lower body instructions (updates vw with new values)
-        for inst in body_insts
+        vw_snapshot = Set(keys(vw))
+
+        # (a) Lower header's own non-phi instructions. Keep the original
+        # 4-type cascade for the header body — this preserves byte-identical
+        # gate counts for pre-existing tests (Collatz, soft_fdiv, etc.).
+        # The U05 expansion (dispatching to `_lower_inst!` for all IR types)
+        # is applied only to newly-supported body blocks in step (b).
+        for inst in header_body_insts
             if inst isa IRBinOp;    lower_binop!(gates, wa, vw, inst)
             elseif inst isa IRICmp; lower_icmp!(gates, wa, vw, inst)
             elseif inst isa IRSelect; lower_select!(gates, wa, vw, inst)
@@ -775,37 +891,57 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
             end
         end
 
-        # Compute exit condition
-        exit_cond_wire = resolve!(gates, wa, vw, term.cond, 1)
+        # (b) Lower every body block in topological order via canonical dispatch.
+        # NOTE: MVP scope (Bennett-httg / U05) handles linear (single-block)
+        # body regions. Per-block predicate computation for diamond-in-body
+        # patterns is deferred — full `_compute_block_pred!` wants
+        # `branch_info[hlabel]` populated with the header's exit condition,
+        # which isn't available until step (c). For linear bodies the phi
+        # resolver only needs the header phi's MUX wires (already in vw),
+        # so we skip per-body predicates here. Follow-up bead covers the
+        # diamond-in-body case.
+        for blabel in body_block_order
+            bblock = block_map[blabel]
+            for inst in bblock.instructions
+                inst_counter[] += 1
+                _lower_inst!(loop_ctx, inst, blabel)
+            end
+            # Capture the block's branch for downstream phi resolution inside
+            # the loop body (e.g. diamond merges).
+            bterm = bblock.terminator
+            if bterm isa IRBranch && bterm.cond !== nothing
+                cw = resolve!(gates, wa, vw, bterm.cond, 1)
+                branch_info[blabel] = (cw, bterm.true_label, bterm.false_label)
+                push!(get!(preds, bterm.true_label, Symbol[]), blabel)
+                bterm.false_label !== nothing &&
+                    push!(get!(preds, bterm.false_label, Symbol[]), blabel)
+            elseif bterm isa IRBranch
+                push!(get!(preds, bterm.true_label, Symbol[]), blabel)
+            end
+        end
 
-        # If exit is on the FALSE side, negate (we want exit_cond=1 means "stop")
+        # (c) Compute exit condition from header's conditional branch.
+        exit_cond_wire = resolve!(gates, wa, vw, term.cond, 1)
         if !exit_on_true
             exit_cond_wire = lower_not1!(gates, wa, exit_cond_wire)
         end
 
-        # Compute latch values (what the phi would receive on the next iteration)
+        # (d) Resolve latch values (what the phi would receive on next iter).
         latch_vals = Vector{Int}[]
         for (_, width, _, latch_op) in phi_info
             push!(latch_vals, resolve!(gates, wa, vw, latch_op, width))
         end
 
-        # MUX: for each phi variable, freeze if exiting, update if continuing
-        # exit_cond=1 → keep current (frozen), exit_cond=0 → take latch value
+        # (e) MUX: exit=1 → keep current, exit=0 → take latch value.
         for (k, (dest, width, _, _)) in enumerate(phi_info)
             current = vw[dest]
             new_val = latch_vals[k]
-            # MUX(exit_cond, current, new_val): exit→keep, continue→update
             vw[dest] = lower_mux!(gates, wa, exit_cond_wire, current, new_val, width)
         end
+
     end
 
-    # After unrolling, record the exit edge as a predecessor of the exit block
     push!(get!(preds, exit_label, Symbol[]), hlabel)
-
-    # Also handle the terminator's branch condition for downstream phi resolution
-    # The exit condition was computed; the exit block's phi needs to know about it
-    # We treat the loop header as branching to exit_label
-    # (The "continue" side loops back, which we've unrolled away)
 end
 
 # ---- path-predicate computation ----

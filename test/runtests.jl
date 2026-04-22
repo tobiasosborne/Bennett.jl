@@ -123,6 +123,10 @@ include("test_xy4j_fmul_subnormal.jl")
 # checkpoint_bennett now fall back to bennett(lr) on any CFG with __pred_*
 # groups (branching), avoiding "Unmapped wire N" crashes.
 include("test_prtp_pebbled_branching.jl")
+# Bennett-httg / U05 — lower_loop! routes body instructions through the
+# canonical _lower_inst! dispatcher AND walks body blocks outside the
+# header. Linear multi-block bodies work; diamond-in-body deferred.
+include("test_httg_loop_multiblock.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")

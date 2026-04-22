@@ -17,6 +17,22 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
   Test gate: `test/test_asw2_verify_reversibility.jl` (7 testsets, all
   green). Commit: see `d12044e`..HEAD.
 
+- **Bennett-httg (U05) — `lower_loop!` silently drops body-block
+  instructions.** Widened `src/lower.jl:720-890`. New:
+  `_collect_loop_body_blocks` does BFS from header non-exit successors,
+  prunes at latch/exit, topo-sorts the body region. Per iteration: header
+  non-phi body insts via the pre-existing 4-type cascade (protects
+  soft_fdiv / Collatz baselines), then body-block insts via canonical
+  `_lower_inst!` with a local `loop_ctx` that forces `add=:ripple` and
+  empty `ssa_liveness` (prevents Cuccaro in-place writes from corrupting
+  phi-dest operands across iterations — see Bennett-spa8 / U27 for the
+  general dispatcher fix). Fail-loud on nested loops, multi-latch,
+  IRRet-in-body. 3+1 protocol applied. Test:
+  `test_httg_loop_multiblock.jl` 84/85 pass; T1 multi-block accumulator
+  + T2 K scaling + T4 Collatz + T5 baseline all green; T3 diamond-in-body
+  `@test_broken` (filed Bennett-httg-f1). Follow-up Bennett-httg-f2 for
+  header-body dispatch widening. Full `Pkg.test()` green.
+
 - **Bennett-prtp (U04) — checkpoint/pebbled_group/pebbled_bennett crash on
   branching.** Added `_has_branching(lr)` helper in `src/lower.jl`
   (`count(_is_pred_group, groups) >= 2`). Used by `pebbled_bennett`
@@ -119,7 +135,10 @@ per the catalogue claim.
 | Bennett-uj6g | U49 | Add CI workflow | ✓ closed |
 | Bennett-prtp | U04 | checkpoint/pebbled_group_bennett crash on branching | ✓ closed |
 | Bennett-ca0i | U02-followup | value_eager SHA-256 in-place bug | ○ (P2, spawned this session) |
-| Bennett-httg | U05 | lower_loop! drops body-block instructions | ○ next (P1) |
+| Bennett-httg | U05 | lower_loop! drops body-block instructions | ✓ closed (partial; 2 follow-ups filed) |
+| Bennett-httg-f1 | U05-followup | diamond-in-body needs per-block predicates | ○ (P2, spawned) |
+| Bennett-httg-f2 | U05-followup | header-body 4-type cascade dispatch gap | ○ (P3, spawned) |
+| Bennett-k286 | U07 | soft_fpext sNaN quieting | ○ next (P1) |
 
 ### For U02 (next): what the catalogue says
 
