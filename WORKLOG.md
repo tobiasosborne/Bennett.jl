@@ -17,6 +17,17 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
   Test gate: `test/test_asw2_verify_reversibility.jl` (7 testsets, all
   green). Commit: see `d12044e`..HEAD.
 
+- **Bennett-uj6g (U49) — CI workflow.** Added
+  `.github/workflows/test.yml`. Matrix: Julia 1.10 (LTS) + 1 (latest
+  stable) on ubuntu-latest. `julia-actions/{setup-julia, cache,
+  julia-buildpkg, julia-runtest}@v2/@v4`. Runs the full `Pkg.test()` on
+  every push to main and every PR. Concurrency group cancels in-flight PR
+  runs on new commits (keeps main pushes uncancelled). Purpose: regression
+  protection for the ongoing Phase 1 cascade — gate-count drift,
+  Bennett-invariant violations, ir_extract/lower.jl drift. Correctness of
+  the YAML verifies on first real CI run; will reopen the bead and fix
+  forward if anything breaks.
+
 - **Bennett-xy4j (U06) — `soft_fmul` subnormal pre-normalisation.**
   2-line fix in `src/softfloat/fmul.jl`: inserted `_sf_normalize_to_bit52`
   calls for `(ma, ea_eff)` and `(mb, eb_eff)` between the effective-exponent
@@ -87,7 +98,8 @@ per the catalogue claim.
 | Bennett-rggq | U02 | value_eager_bennett 100% fail on branching | ✓ closed |
 | Bennett-egu6 | U03 | self_reversing=true unchecked trust | ✓ closed |
 | Bennett-xy4j | U06 | soft_fmul subnormal pre-norm (2-line fix) | ✓ closed |
-| Bennett-uj6g | U49 | Add CI workflow | ○ next (P1) |
+| Bennett-uj6g | U49 | Add CI workflow | ✓ closed |
+| Bennett-prtp | U04 | checkpoint/pebbled_group_bennett crash on branching | ○ next (P1) |
 
 ### For U02 (next): what the catalogue says
 
