@@ -110,6 +110,9 @@ include("test_uyf9_memcpy_sret.jl")
 # Bennett-asw2 / U01 — verify_reversibility now checks Bennett invariants
 # (ancilla-zero + input-preservation) instead of the tautological round-trip.
 include("test_asw2_verify_reversibility.jl")
+# Bennett-rggq / U02 — value_eager_bennett falls back to bennett(lr) on any
+# CFG containing __pred_* groups (branching), avoiding Kahn-topo ordering bug.
+include("test_rggq_value_eager_branching.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")

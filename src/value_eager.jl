@@ -15,6 +15,8 @@ Reference: Parent/Roetteler/Svore 2015, "Reversible circuit compilation
 with space constraints", Algorithm 2.
 """
 
+_is_pred_group(g::GateGroup) = startswith(String(g.ssa_name), "__pred_")
+
 """
     value_eager_bennett(lr::LoweringResult) -> ReversibleCircuit
 
@@ -29,6 +31,19 @@ Falls back to full Bennett if gate_groups is empty.
 function value_eager_bennett(lr::LoweringResult)
     groups = lr.gate_groups
     if isempty(groups)
+        return bennett(lr)
+    end
+
+    # Bennett-rggq / U02: Phase-3 Kahn walks `input_ssa_vars`, but the synthetic
+    # `__pred_*` block-predicate groups emitted by lower.jl:379,389 for every
+    # non-trivial CFG carry `input_ssa_vars = Symbol[]` — their wire-level
+    # cross-deps on other `__pred_*` groups are invisible to the DAG, so
+    # reverse-topo order becomes wrong and predicate wires get reversed out of
+    # order. Result: ancilla leaks and input-wire corruption on 100% of
+    # branching inputs. Refuse the Kahn path and fall back to full Bennett
+    # whenever any `__pred_*` group is present. Straight-line code (no
+    # branching, no __pred_* groups) is unaffected.
+    if any(_is_pred_group, groups)
         return bennett(lr)
     end
 

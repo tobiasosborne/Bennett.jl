@@ -155,14 +155,11 @@
         k, w = UInt32(0x428a2f98), UInt32(0x61626380)
         @test simulate(c_eager, (a,b,c_,d,e,f,g,h,k,w)) ==
               simulate(c_full, (a,b,c_,d,e,f,g,h,k,w))
-        # Bennett-rggq / U02: value_eager_bennett leaks ancillae and corrupts
-        # input wires on any branching CFG. SHA-256's sigma functions branch,
-        # so this exposes the bug. Pre-Bennett-asw2 (U01) the tautological
-        # verify_reversibility returned true here; the rigorous ancilla+input
-        # check now surfaces the violation as expected. Stays @test_broken
-        # until U02 lands (phase-3 Kahn topo order must respect __pred_*
-        # wire-level deps, or refuse when any __pred_* group is present).
-        @test_broken verify_reversibility(c_eager)
+        # Bennett-rggq / U02 fix: value_eager_bennett now detects __pred_*
+        # groups (from branching CFGs such as the sigma functions here) and
+        # falls back to full bennett(lr). Ancilla + input-preservation
+        # invariants hold.
+        @test verify_reversibility(c_eager)
 
         p_full  = peak_live_wires(c_full)
         p_eager = peak_live_wires(c_eager)

@@ -17,6 +17,23 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
   Test gate: `test/test_asw2_verify_reversibility.jl` (7 testsets, all
   green). Commit: see `d12044e`..HEAD.
 
+- **Bennett-rggq (U02) — `value_eager_bennett` 100% fail on branching.**
+  Fixed `src/value_eager.jl:29-33`. Root cause: Phase-3 Kahn reverse-topo
+  uncompute walks `input_ssa_vars`, but synthetic `__pred_*` block-predicate
+  groups (`src/lower.jl:379, 389`) carry `input_ssa_vars = Symbol[]` — their
+  wire-level cross-deps on OTHER `__pred_*` groups' result wires are
+  invisible to the DAG, so the reverse-order is wrong and predicate wires
+  get uncomputed before their consumers, leaking ancillae and corrupting
+  input wires. Safer fix per catalogue: refuse the Kahn path whenever any
+  `__pred_*` group is present, fall back to `bennett(lr)`. Straight-line
+  code unaffected (T3 of new test: 514/514). Pre-fix: 257/257 Int8 inputs
+  failed on `x>0 ? x+1 : x-1`. Post-fix: 1028/1028 across T1 diamond, T2
+  nested, T3 straight-line. Test gate:
+  `test/test_rggq_value_eager_branching.jl`. Also removed the
+  `@test_broken` marker at `test_value_eager.jl:158` (SHA-256 round) that
+  U01 had surfaced. Full `Pkg.test()` green. Gate-count baselines
+  unchanged.
+
 ### Cascade surfaced by U01 fix (now visible as test failures)
 
 The strengthened `verify_reversibility` flipped exactly ONE previously-green
@@ -36,8 +53,8 @@ per the catalogue claim.
 | Bead | U# | Title | Status |
 |---|---|---|---|
 | Bennett-asw2 | U01 | verify_reversibility tautology | ✓ closed |
-| Bennett-rggq | U02 | value_eager_bennett 100% fail on branching | ○ next |
-| Bennett-egu6 | U03 | self_reversing=true unchecked trust | ○ queued |
+| Bennett-rggq | U02 | value_eager_bennett 100% fail on branching | ✓ closed |
+| Bennett-egu6 | U03 | self_reversing=true unchecked trust | ○ next |
 | Bennett-xy4j | U06 | soft_fmul subnormal pre-norm (2-line fix) | ○ queued |
 | Bennett-uj6g | U49 | Add CI workflow | ○ queued (P1) |
 
