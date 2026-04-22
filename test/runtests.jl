@@ -116,6 +116,9 @@ include("test_rggq_value_eager_branching.jl")
 # Bennett-egu6 / U03 — bennett() runtime-validates self_reversing=true
 # primitives via a 4-probe battery checking ancilla-zero + input-preservation.
 include("test_egu6_self_reversing_check.jl")
+# Bennett-xy4j / U06 — soft_fmul now pre-normalises subnormal operands via
+# _sf_normalize_to_bit52 before the 53×53 multiply (mirrors fdiv/fma).
+include("test_xy4j_fmul_subnormal.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")

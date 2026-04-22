@@ -48,6 +48,15 @@ function soft_fmul(a::UInt64, b::UInt64)::UInt64
     ea_eff = ifelse(ea != UInt64(0), Int64(ea), Int64(1))
     eb_eff = ifelse(eb != UInt64(0), Int64(eb), Int64(1))
 
+    # Bennett-xy4j / U06: pre-normalise subnormal operands so the leading 1
+    # sits at bit 52 before the 53×53 multiply. Without this, a subnormal
+    # operand's leading 1 lies below bit 52 and the bit-104/105 extractor
+    # below reads the wrong MSB position, losing up to ~48 mantissa bits.
+    # Mirrors fdiv.jl:42-43 and fma.jl:67-69. No-op on already-normal inputs
+    # (m is ≥ 2^52 and exponent adjustment is zero).
+    (ma, ea_eff) = _sf_normalize_to_bit52(ma, ea_eff)
+    (mb, eb_eff) = _sf_normalize_to_bit52(mb, eb_eff)
+
     # ── Unbiased exponent sum ──
     # result_exp = ea + eb - bias
     # But we work in biased form: result_exp_biased = ea + eb - bias

@@ -17,6 +17,19 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
   Test gate: `test/test_asw2_verify_reversibility.jl` (7 testsets, all
   green). Commit: see `d12044e`..HEAD.
 
+- **Bennett-xy4j (U06) — `soft_fmul` subnormal pre-normalisation.**
+  2-line fix in `src/softfloat/fmul.jl`: inserted `_sf_normalize_to_bit52`
+  calls for `(ma, ea_eff)` and `(mb, eb_eff)` between the effective-exponent
+  computation and the `result_exp` sum, mirroring `fdiv.jl:42-43` and
+  `fma.jl:67-69`. Without the pre-norm, a subnormal operand's leading 1
+  sits below bit 52 and the bit-104/105 extractor reads the wrong MSB,
+  losing ~48 mantissa bits on ~11% of normal×subnormal random pairs.
+  Test gate: `test/test_xy4j_fmul_subnormal.jl` (5 testsets, 13 checks):
+  catalogue's 2-ULP repro, smallest subnormal, subnormal×subnormal, 256-pair
+  deterministic sweep, normal×normal regression. Pre-fix: T1+T4 fail.
+  Post-fix: 13/13 green, full Pkg.test() green. TJ3 baseline (180 gates)
+  unchanged. CLAUDE.md §14 (bit-exact) restored.
+
 - **Bennett-egu6 (U03) — `self_reversing=true` unchecked trust boundary.**
   Fixed `src/bennett_transform.jl:23-88` (new `_validate_self_reversing!`
   helper + `_u03_self_reversing_probes`). Every time `bennett()` hits the
@@ -73,8 +86,8 @@ per the catalogue claim.
 | Bennett-asw2 | U01 | verify_reversibility tautology | ✓ closed |
 | Bennett-rggq | U02 | value_eager_bennett 100% fail on branching | ✓ closed |
 | Bennett-egu6 | U03 | self_reversing=true unchecked trust | ✓ closed |
-| Bennett-xy4j | U06 | soft_fmul subnormal pre-norm (2-line fix) | ○ next |
-| Bennett-uj6g | U49 | Add CI workflow | ○ queued (P1) |
+| Bennett-xy4j | U06 | soft_fmul subnormal pre-norm (2-line fix) | ✓ closed |
+| Bennett-uj6g | U49 | Add CI workflow | ○ next (P1) |
 
 ### For U02 (next): what the catalogue says
 
