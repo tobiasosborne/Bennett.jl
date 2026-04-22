@@ -17,6 +17,24 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
   Test gate: `test/test_asw2_verify_reversibility.jl` (7 testsets, all
   green). Commit: see `d12044e`..HEAD.
 
+- **Bennett-egu6 (U03) — `self_reversing=true` unchecked trust boundary.**
+  Fixed `src/bennett_transform.jl:23-88` (new `_validate_self_reversing!`
+  helper + `_u03_self_reversing_probes`). Every time `bennett()` hits the
+  `self_reversing=true` short-circuit it now runs a 4-probe battery —
+  all-zero, all-one, walking-1 first-lane, walking-1 last-lane — and
+  asserts ancilla-zero + input-preservation per probe. Reuses `apply!`
+  and `_compute_ancillae` (no duplicated lowering). 3+1 protocol applied
+  per CLAUDE.md §2: spawned 2 independent proposer subagents, synthesised
+  Proposer A's 4-probe coverage + Proposer B's reuse discipline. Pre-fix:
+  forged `LoweringResult(self_reversing=true)` leaving wire 3 flipped was
+  silently accepted. Post-fix: raises loud with probe name + violated
+  wire + n_wires + n_gates + fix-hint. 264/264 green including exhaustive
+  Int8 `lower_tabulate` oracle (f=x⊻0x5A, all 256 inputs). Gate-count
+  baseline i8 x+1 = 100/28 pinned. Full `Pkg.test()` green. Design docs
+  preserved in the synthesis commit message; no files written to
+  docs/design/ for this small 3+1 since the conclusions were
+  behaviourally mirrored in the source + tests.
+
 - **Bennett-rggq (U02) — `value_eager_bennett` 100% fail on branching.**
   Fixed `src/value_eager.jl:29-33`. Root cause: Phase-3 Kahn reverse-topo
   uncompute walks `input_ssa_vars`, but synthetic `__pred_*` block-predicate
@@ -54,8 +72,8 @@ per the catalogue claim.
 |---|---|---|---|
 | Bennett-asw2 | U01 | verify_reversibility tautology | ✓ closed |
 | Bennett-rggq | U02 | value_eager_bennett 100% fail on branching | ✓ closed |
-| Bennett-egu6 | U03 | self_reversing=true unchecked trust | ○ next |
-| Bennett-xy4j | U06 | soft_fmul subnormal pre-norm (2-line fix) | ○ queued |
+| Bennett-egu6 | U03 | self_reversing=true unchecked trust | ✓ closed |
+| Bennett-xy4j | U06 | soft_fmul subnormal pre-norm (2-line fix) | ○ next |
 | Bennett-uj6g | U49 | Add CI workflow | ○ queued (P1) |
 
 ### For U02 (next): what the catalogue says

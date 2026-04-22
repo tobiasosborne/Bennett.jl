@@ -113,6 +113,9 @@ include("test_asw2_verify_reversibility.jl")
 # Bennett-rggq / U02 — value_eager_bennett falls back to bennett(lr) on any
 # CFG containing __pred_* groups (branching), avoiding Kahn-topo ordering bug.
 include("test_rggq_value_eager_branching.jl")
+# Bennett-egu6 / U03 — bennett() runtime-validates self_reversing=true
+# primitives via a 4-probe battery checking ancilla-zero + input-preservation.
+include("test_egu6_self_reversing_check.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")
