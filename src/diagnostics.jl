@@ -142,8 +142,25 @@ function peak_live_wires(c::ReversibleCircuit)
     return peak
 end
 
+"""
+    verify_reversibility(c::ReversibleCircuit; n_tests::Int=100) -> true
+
+Verify Bennett's invariants on `c` across `n_tests` random inputs. For each
+input, asserts after running `c.gates` forward:
+  (1) every wire in `c.ancilla_wires` is zero (Bennett ancilla-clean invariant);
+  (2) every wire in `c.input_wires` holds its initial value (Bennett
+      input-preservation — the forward pass must leave inputs untouched);
+  (3) `Iterators.reverse(c.gates)` restores the bit vector to the initial
+      state (self-consistency — tautological for self-inverse gates but cheap
+      and catches harness bugs).
+
+Returns `true` on success; raises `ErrorException` with context on any
+violation. Replaces an earlier version that only checked (3), which was a
+mathematical tautology for any sequence of self-inverse gates and therefore
+missed every ancilla-leak and input-corruption bug. See Bennett-asw2 / U01.
+"""
 function verify_reversibility(c::ReversibleCircuit; n_tests::Int=100)
-    for _ in 1:n_tests
+    for t in 1:n_tests
         bits = zeros(Bool, c.n_wires)
         offset = 0
         for w in c.input_widths
@@ -152,10 +169,22 @@ function verify_reversibility(c::ReversibleCircuit; n_tests::Int=100)
             end
             offset += w
         end
+        orig_input_values = [bits[w] for w in c.input_wires]
         orig = copy(bits)
+
         for g in c.gates; apply!(bits, g); end
+
+        for w in c.ancilla_wires
+            bits[w] && error("verify_reversibility (test $t): ancilla wire $w not zero after forward pass — Bennett ancilla-clean invariant violated")
+        end
+
+        for (k, w) in pairs(c.input_wires)
+            bits[w] == orig_input_values[k] ||
+                error("verify_reversibility (test $t): input wire $w changed from $(orig_input_values[k]) to $(bits[w]) — Bennett input-preservation violated")
+        end
+
         for g in Iterators.reverse(c.gates); apply!(bits, g); end
-        bits == orig || error("Reversibility check failed: $(sum(bits .!= orig)) wires differ")
+        bits == orig || error("verify_reversibility (test $t): $(sum(bits .!= orig)) wires differ after forward+reverse — self-consistency check failed")
     end
     return true
 end

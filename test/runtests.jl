@@ -107,6 +107,9 @@ include("test_atf4_lower_call_nontrivial_args.jl")
 include("test_0c8o_vector_sret.jl")
 # Bennett-uyf9 — memcpy-form sret under optimize=false (auto-SROA canonicalisation).
 include("test_uyf9_memcpy_sret.jl")
+# Bennett-asw2 / U01 — verify_reversibility now checks Bennett invariants
+# (ancilla-zero + input-preservation) instead of the tautological round-trip.
+include("test_asw2_verify_reversibility.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")

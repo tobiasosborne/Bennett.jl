@@ -1,5 +1,69 @@
 # Bennett.jl Work Log
 
+## NEXT AGENT — start here — 2026-04-22 (catalogue → beads → Phase 0 grinding)
+
+**19-report code review (2026-04-21) has been triaged into 173 beads with a
+unified catalogue at `reviews/2026-04-21/UNIFIED_CATALOGUE.md` and a
+U#→bead-ID crosswalk at `reviews/2026-04-21/CATALOGUE_TO_BEADS.md`.
+Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
+
+### Closed this session
+
+- **Bennett-asw2 (U01) — `verify_reversibility` is tautological.** Fixed
+  `src/diagnostics.jl:145-190` and `src/controlled.jl:90-144`. The new
+  function asserts three Bennett invariants per random input:
+  ancilla-zero, input-preservation, and (controlled) ctrl-wire preservation.
+  The round-trip tautology is retained as a cheap harness sanity check.
+  Test gate: `test/test_asw2_verify_reversibility.jl` (7 testsets, all
+  green). Commit: see `d12044e`..HEAD.
+
+### Cascade surfaced by U01 fix (now visible as test failures)
+
+The strengthened `verify_reversibility` flipped exactly ONE previously-green
+test to red: `test/test_value_eager.jl:158` (SHA-256 round via
+`value_eager_bennett`). This is **Bennett-rggq / U02** exactly as the
+catalogue predicted: value_eager_bennett leaks input state on branching
+CFGs (sigma functions branch). Error: `input wire 97 changed from true to
+false — Bennett input-preservation violated`. That single assertion is
+marked `@test_broken` pending U02; the full suite is otherwise green.
+
+All straight-line `value_eager_bennett` tests (257 incr + 257 poly + 442
+two-arg + 516 cuccaro) still pass — confirming U02 is branching-specific
+per the catalogue claim.
+
+### Phase 0 status (per `reviews/2026-04-21/CATALOGUE_TO_BEADS.md` §E)
+
+| Bead | U# | Title | Status |
+|---|---|---|---|
+| Bennett-asw2 | U01 | verify_reversibility tautology | ✓ closed |
+| Bennett-rggq | U02 | value_eager_bennett 100% fail on branching | ○ next |
+| Bennett-egu6 | U03 | self_reversing=true unchecked trust | ○ queued |
+| Bennett-xy4j | U06 | soft_fmul subnormal pre-norm (2-line fix) | ○ queued |
+| Bennett-uj6g | U49 | Add CI workflow | ○ queued (P1) |
+
+### For U02 (next): what the catalogue says
+
+From `reviews/2026-04-21/09_reversibility_invariants.md` §2 and
+UNIFIED_CATALOGUE.md U02:
+
+- **Site:** `src/value_eager.jl:29-137` (esp. 96-135); producers at
+  `src/lower.jl:379,389` (`_compute_block_pred!`).
+- **Root cause:** Phase-3 Kahn topological uncompute walks
+  `input_ssa_vars`; synthetic `__pred_*` groups have
+  `input_ssa_vars = Symbol[]`, so predicate-wire cross-group deps are
+  invisible to the DAG and the entry-block predicate gets reversed before
+  later consumers.
+- **Safer fix (pick this first):** Refuse the Phase-3 Kahn path whenever
+  any `__pred_*` group exists; fall back to `bennett(lr)`.
+- **Harder fix:** Register predicate-to-predicate SSA deps on `__pred_*`
+  groups so Kahn respects them.
+- **RED test already exists:** `test_value_eager.jl:158` is currently
+  `@test_broken`. Unbroken → green after fix.
+- **Ground truth to read before coding:** `src/value_eager.jl` full,
+  `src/lower.jl:379, 389` (pred producers), the failing test.
+
+---
+
 ## NEXT AGENT — start here — 2026-04-21 (mother-of-all code review landed)
 
 **This session spawned 19 independent code-review subagents in parallel; each

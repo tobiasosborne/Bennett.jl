@@ -86,11 +86,27 @@ function _simulate_ctrl(cc::ControlledCircuit, ctrl::Bool, inputs::Tuple)
     return _read_output(bits, c.output_wires, c.output_elem_widths)
 end
 
+"""
+    verify_reversibility(cc::ControlledCircuit; n_tests::Int=100) -> true
+
+Verify Bennett's invariants on a controlled circuit across `n_tests` random
+(ctrl, input) pairs. After running `cc.circuit.gates` forward, asserts:
+  (1) every wire in `ancilla_wires` is zero;
+  (2) every wire in `input_wires` holds its initial value;
+  (3) `cc.ctrl_wire` holds its initial value (control must pass through
+      unchanged);
+  (4) the reverse pass restores the initial state.
+
+Returns `true` on success; raises `ErrorException` with context on any
+violation. Replaces an earlier tautological round-trip check. See
+Bennett-asw2 / U01.
+"""
 function verify_reversibility(cc::ControlledCircuit; n_tests::Int=100)
     c = cc.circuit
-    for _ in 1:n_tests
+    for t in 1:n_tests
         bits = zeros(Bool, c.n_wires)
-        bits[cc.ctrl_wire] = rand(Bool)
+        orig_ctrl = rand(Bool)
+        bits[cc.ctrl_wire] = orig_ctrl
         offset = 0
         for w in c.input_widths
             for i in 1:w
@@ -98,10 +114,25 @@ function verify_reversibility(cc::ControlledCircuit; n_tests::Int=100)
             end
             offset += w
         end
+        orig_input_values = [bits[w] for w in c.input_wires]
         orig = copy(bits)
+
         for g in c.gates; apply!(bits, g); end
+
+        for w in c.ancilla_wires
+            bits[w] && error("verify_reversibility[ctrl] (test $t): ancilla wire $w not zero after forward pass — Bennett ancilla-clean invariant violated")
+        end
+
+        for (k, w) in pairs(c.input_wires)
+            bits[w] == orig_input_values[k] ||
+                error("verify_reversibility[ctrl] (test $t): input wire $w changed from $(orig_input_values[k]) to $(bits[w]) — Bennett input-preservation violated")
+        end
+
+        bits[cc.ctrl_wire] == orig_ctrl ||
+            error("verify_reversibility[ctrl] (test $t): control wire $(cc.ctrl_wire) changed from $orig_ctrl to $(bits[cc.ctrl_wire])")
+
         for g in Iterators.reverse(c.gates); apply!(bits, g); end
-        bits == orig || error("Controlled reversibility check failed: $(sum(bits .!= orig)) wires differ")
+        bits == orig || error("verify_reversibility[ctrl] (test $t): $(sum(bits .!= orig)) wires differ after forward+reverse — self-consistency check failed")
     end
     return true
 end
