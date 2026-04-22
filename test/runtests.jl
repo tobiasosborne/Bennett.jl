@@ -119,6 +119,10 @@ include("test_egu6_self_reversing_check.jl")
 # Bennett-xy4j / U06 — soft_fmul now pre-normalises subnormal operands via
 # _sf_normalize_to_bit52 before the 53×53 multiply (mirrors fdiv/fma).
 include("test_xy4j_fmul_subnormal.jl")
+# Bennett-prtp / U04 — pebbled_bennett / pebbled_group_bennett /
+# checkpoint_bennett now fall back to bennett(lr) on any CFG with __pred_*
+# groups (branching), avoiding "Unmapped wire N" crashes.
+include("test_prtp_pebbled_branching.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")

@@ -276,6 +276,15 @@ function pebbled_group_bennett(lr::LoweringResult; max_pebbles::Int=0)
         return bennett(lr)
     end
 
+    # Bennett-prtp / U04: branching CFGs (≥2 `__pred_*` groups) confuse
+    # group-level wmap-based checkpointing — `__pred_*` groups have empty
+    # input_ssa_vars so the wmap misses wire-level cross-deps and
+    # `_remap_wire` raises "Unmapped wire N". Fall back to full Bennett on
+    # any branching program; straight-line keeps pebbled-group savings.
+    if _has_branching(lr)
+        return bennett(lr)
+    end
+
     # Detect in-place results (Cuccaro): result_wires outside group's wire range.
     # In-place ops modify dependency/input wires, breaking checkpoint replay.
     # See docstring "Fallback behaviour" §2 for full tradeoff analysis and
@@ -351,6 +360,12 @@ Requires lr.gate_groups with wire_start/wire_end populated (from lower()).
 function checkpoint_bennett(lr::LoweringResult)
     groups = lr.gate_groups
     isempty(groups) && return bennett(lr)
+    # Bennett-prtp / U04: branching CFGs (≥2 `__pred_*` groups) confuse
+    # checkpoint replay's wmap — `__pred_*` groups have empty input_ssa_vars
+    # so the wmap misses wire-level cross-deps and `_remap_wire` raises
+    # "Unmapped wire N". Straight-line code has only the entry predicate and
+    # keeps checkpoint savings.
+    _has_branching(lr) && return bennett(lr)
     any(g -> g.wire_start <= 0, groups) && return bennett(lr)
     # In-place results (Cuccaro) modify shared wires — fall back to full bennett
     any(g -> any(w -> w < g.wire_start || w > g.wire_end, g.result_wires), groups) &&

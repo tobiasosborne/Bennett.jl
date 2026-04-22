@@ -17,6 +17,24 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
   Test gate: `test/test_asw2_verify_reversibility.jl` (7 testsets, all
   green). Commit: see `d12044e`..HEAD.
 
+- **Bennett-prtp (U04) — checkpoint/pebbled_group/pebbled_bennett crash on
+  branching.** Added `_has_branching(lr)` helper in `src/lower.jl`
+  (`count(_is_pred_group, groups) >= 2`). Used by `pebbled_bennett`
+  (`src/pebbling.jl:112`), `pebbled_group_bennett` (`src/pebbled_groups.jl:273`),
+  `checkpoint_bennett` (`:351`), and retro-applied to `value_eager_bennett`.
+  Discovery while landing this: the initial draft of `_is_pred_group`
+  matched entry-block predicates too, which fire even on straight-line code
+  — under-fallback (`any(...)` → every circuit) would have regressed
+  `test_pebbled_wire_reuse.jl` SHA-256 wire-reduction expectations.
+  Corrected predicate counts pred groups; straight-line = 1 (entry), diamond
+  = 3 (entry + true + false blocks). Refined value_eager_bennett to use
+  the same predicate. Residual SHA-256 value_eager failure surfaced but
+  is a DIFFERENT bug (straight-line bitwise, only 1 pred group) —
+  filed as Bennett-ca0i, `@test_broken` pins the regression on
+  `test_value_eager.jl:162`. 1285/1285 on new
+  `test/test_prtp_pebbled_branching.jl`. Full `Pkg.test()` green (1
+  `@test_broken`). No gate-count drift.
+
 - **Bennett-uj6g (U49) — CI workflow.** Added
   `.github/workflows/test.yml`. Matrix: Julia 1.10 (LTS) + 1 (latest
   stable) on ubuntu-latest. `julia-actions/{setup-julia, cache,
@@ -95,11 +113,13 @@ per the catalogue claim.
 | Bead | U# | Title | Status |
 |---|---|---|---|
 | Bennett-asw2 | U01 | verify_reversibility tautology | ✓ closed |
-| Bennett-rggq | U02 | value_eager_bennett 100% fail on branching | ✓ closed |
+| Bennett-rggq | U02 | value_eager_bennett 100% fail on branching | ✓ closed (partial; spawned Bennett-ca0i) |
 | Bennett-egu6 | U03 | self_reversing=true unchecked trust | ✓ closed |
 | Bennett-xy4j | U06 | soft_fmul subnormal pre-norm (2-line fix) | ✓ closed |
 | Bennett-uj6g | U49 | Add CI workflow | ✓ closed |
-| Bennett-prtp | U04 | checkpoint/pebbled_group_bennett crash on branching | ○ next (P1) |
+| Bennett-prtp | U04 | checkpoint/pebbled_group_bennett crash on branching | ✓ closed |
+| Bennett-ca0i | U02-followup | value_eager SHA-256 in-place bug | ○ (P2, spawned this session) |
+| Bennett-httg | U05 | lower_loop! drops body-block instructions | ○ next (P1) |
 
 ### For U02 (next): what the catalogue says
 

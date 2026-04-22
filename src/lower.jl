@@ -18,6 +18,33 @@ end
 # Default cleanup_wires to empty
 GateGroup(name, gs, ge, rw, ivars, ws, we) = GateGroup(name, gs, ge, rw, ivars, ws, we, Int[])
 
+"""
+    _is_pred_group(g::GateGroup) -> Bool
+
+True iff `g` is a synthetic block-predicate group emitted at src/lower.jl:379
+and :389. Every non-trivial lowered function produces at least one such
+group (the entry-block predicate `__pred_<entry>`), so this predicate alone
+does NOT distinguish branching from straight-line code — use
+`_has_branching(lr)` for that.
+"""
+_is_pred_group(g::GateGroup) = startswith(String(g.ssa_name), "__pred_")
+
+"""
+    _has_branching(lr::LoweringResult) -> Bool
+
+True iff the lowered IR has a non-trivial control-flow graph, detected by
+the presence of two or more `__pred_*` block-predicate groups. Straight-line
+code produces exactly one such group (for the entry block); branching code
+produces one per merge block beyond the entry.
+
+Strategy-level bennett wrappers (`value_eager_bennett`, `pebbled_bennett`,
+`pebbled_group_bennett`, `checkpoint_bennett`) use SSA-level dependency
+metadata that does NOT track wire-level cross-deps between `__pred_*`
+groups; they must refuse branching `LoweringResult`s and fall back to full
+`bennett(lr)`. See Bennett-rggq / U02 and Bennett-prtp / U04.
+"""
+_has_branching(lr) = count(_is_pred_group, lr.gate_groups) >= 2
+
 struct LoweringResult
     gates::Vector{ReversibleGate}
     n_wires::Int

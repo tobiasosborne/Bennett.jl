@@ -122,6 +122,15 @@ function pebbled_bennett(lr::LoweringResult; max_pebbles::Int=0)
         return bennett(lr)
     end
 
+    # Bennett-prtp / U04: Knill gate-level recursion assumes per-gate fresh
+    # target wires. Branching CFGs (≥2 `__pred_*` groups) violate this
+    # assumption because predicate wires are allocated forward and consumed
+    # by later groups across the same wire range. Fall back to full Bennett
+    # on branching; keep pebbled_bennett's Knill savings for straight-line.
+    if _has_branching(lr)
+        return bennett(lr)
+    end
+
     all_gates = ReversibleGate[]
 
     # Build the copy gates (to be inserted at the right moment)
