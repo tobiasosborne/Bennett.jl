@@ -57,9 +57,13 @@ Bit-exact with Julia's `Float64(::Float32)`.
     subnormal_result = sign64 | (e_sub << 52) | f_sub
 
     # ── NaN / Inf / Zero ──
-    # Hardware fpext preserves the NaN payload by left-shifting 29 bits.
-    # Quiet-bit position maps correctly: Float32 bit 22 → Float64 bit 51.
-    nan_result  = sign64 | UInt64(0x7FF0000000000000) | (UInt64(fa) << 29)
+    # Hardware fpext preserves the NaN payload by left-shifting 29 bits
+    # (Float32 bit 22 → Float64 bit 51) AND force-sets the quiet bit per
+    # IEEE 754-2019 §5.4.1 — a signalling-NaN input must emerge as a
+    # quiet NaN. Using exponent mask 0x7FF8... (vs 0x7FF0...) ORs in
+    # bit 51 unconditionally; qNaN inputs are idempotent because bit 22
+    # was already set, so the remaining payload is unchanged.
+    nan_result  = sign64 | UInt64(0x7FF8000000000000) | (UInt64(fa) << 29)
     inf_result  = sign64 | UInt64(0x7FF0000000000000)
     zero_result = sign64
 

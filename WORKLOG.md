@@ -9,6 +9,22 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
 
 ### Closed this session
 
+- **Bennett-k286 (U07) — `soft_fpext` does not quiet sNaN.** 1-constant fix
+  in `src/softfloat/fpconv.jl:62`: exponent mask `0x7FF0000000000000` →
+  `0x7FF8000000000000`. Pre-fix the NaN path was
+  `sign64 | 0x7FF0_… | (UInt64(fa) << 29)`; Float32 fraction bit 22 maps to
+  Float64 fraction bit 51, so sNaN inputs (bit 22 = 0) propagated as sNaN
+  Float64s. IEEE 754-2019 §5.4.1 requires sNaN→qNaN on any operation
+  (including silent-mode conversion). Hardware `Float64(::Float32)` always
+  sets bit 51; 503/1000 seed-123 random NaN inputs mismatched pre-fix, 0/1000
+  post-fix. Fix is idempotent for qNaN (bit 51 already set via `fa << 29`)
+  and touches no non-NaN path — the walking-1 + anchor regression tests in
+  `test/test_k286_fpext_snan_quiet.jl` (6 testsets, 21 assertions, all green)
+  pin both directions. Comment at line 60-61 updated to cite §5.4.1 and the
+  fptrunc sibling at line 148 (already correct). Full `Pkg.test()` green —
+  TJ3=180, Okasaki=108,106, HAMT=96,788, CF=11,078, i8 x+1=100/28T all
+  byte-identical.
+
 - **Bennett-asw2 (U01) — `verify_reversibility` is tautological.** Fixed
   `src/diagnostics.jl:145-190` and `src/controlled.jl:90-144`. The new
   function asserts three Bennett invariants per random input:

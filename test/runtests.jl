@@ -127,6 +127,9 @@ include("test_prtp_pebbled_branching.jl")
 # canonical _lower_inst! dispatcher AND walks body blocks outside the
 # header. Linear multi-block bodies work; diamond-in-body deferred.
 include("test_httg_loop_multiblock.jl")
+# Bennett-k286 / U07 — soft_fpext force-quiets signalling-NaN inputs per
+# IEEE 754-2019 §5.4.1 (bit 51 of the Float64 result).
+include("test_k286_fpext_snan_quiet.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")
