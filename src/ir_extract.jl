@@ -523,9 +523,9 @@ function _collect_sret_writes(func::LLVM.Function, sret_info, names::Dict{_LLVMR
                             "GEPs from sret are supported")
                         src_ty = LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(inst))
                         add_bytes = if src_ty isa LLVM.IntegerType && LLVM.width(src_ty) == 8
-                            convert(Int, idx)              # byte-indexed GEP (Julia default)
+                            _const_int_as_int(idx)         # byte-indexed GEP (Julia default)
                         elseif src_ty === sret_info.agg_type
-                            convert(Int, idx) * eb          # typed GEP on [N x iM]
+                            _const_int_as_int(idx) * eb    # typed GEP on [N x iM]
                         else
                             _ir_error(inst,
                                 "sret GEP source element type $src_ty; expected i8 " *
@@ -1516,7 +1516,7 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         if haskey(names, base.ref) && length(ops) == 2
             if ops[2] isa LLVM.ConstantInt
                 # Constant-index GEP → IRPtrOffset (wire selection from flat array)
-                offset = convert(Int, ops[2])
+                offset = _const_int_as_int(ops[2])
                 return IRPtrOffset(dest, ssa(names[base.ref]), offset)
             else
                 # Variable-index GEP → IRVarGEP (MUX-tree selection at lowering time)
@@ -1538,7 +1538,7 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             if ops[2] isa LLVM.ConstantInt
                 # Compile-time index into a constant table — still synthesizable
                 # as IRVarGEP with a constant-kind index.
-                offset = convert(Int, ops[2])
+                offset = _const_int_as_int(ops[2])
                 return IRVarGEP(dest, ssa(gname), iconst(offset), ew)
             else
                 idx_op = _operand(ops[2], names)
@@ -1575,7 +1575,7 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         for i in 0:(n_cases - 1)
             case_val = ops[3 + 2*i]     # ConstantInt
             case_bb  = ops[4 + 2*i]     # BasicBlock
-            case_int = convert(Int, case_val)
+            case_int = _const_int_as_int(case_val)
             case_op = IROperand(:const, Symbol(string(case_int)), case_int)
             target_label = Symbol(LLVM.name(case_bb))
             push!(cases, (case_op, target_label))
@@ -1721,7 +1721,7 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         elem_w = LLVM.width(elem_ty)
         ops = LLVM.operands(inst)
         n_elems_op = if !isempty(ops) && ops[1] isa LLVM.ConstantInt
-            iconst(convert(Int, ops[1]))
+            iconst(_const_int_as_int(ops[1]))
         elseif !isempty(ops) && haskey(names, ops[1].ref)
             ssa(names[ops[1].ref])
         else
@@ -1889,7 +1889,7 @@ function _ptr_identity(ref::_LLVMRef)::Union{Tuple{Symbol, UInt64}, Tuple{Symbol
                     return nothing
                 end
                 inner_val isa LLVM.ConstantInt || return nothing
-                return (:addr, UInt64(convert(Int, inner_val) % UInt64))
+                return (:addr, UInt64(_const_int_as_int(inner_val) % UInt64))
             else
                 return nothing   # ptrtoint / gep / … not handled
             end
@@ -2043,7 +2043,7 @@ function _resolve_vec_lanes(val::LLVM.Value,
             elt isa LLVM.ConstantInt ||
                 error("ir_extract.jl: vector constant element at lane $i is " *
                       "not ConstantInt: $(string(elt))")
-            out[i + 1] = iconst(convert(Int, elt))
+            out[i + 1] = iconst(_const_int_as_int(elt))
         end
         return out
     end
@@ -2073,7 +2073,7 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
         base_vec = ops[1]; elem = ops[2]; idx_val = ops[3]
         idx_val isa LLVM.ConstantInt ||
             _ir_error(inst, "insertelement with dynamic lane index not supported")
-        idx = convert(Int, idx_val)
+        idx = _const_int_as_int(idx_val)
         n = _vector_shape(inst)[1]
         (0 <= idx < n) ||
             _ir_error(inst, "insertelement lane index $idx outside [0,$n)")
@@ -2117,7 +2117,7 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
         vec_lanes = _resolve_vec_lanes(vec, lanes, names, n)
         idx_val isa LLVM.ConstantInt ||
             _ir_error(inst, "extractelement with dynamic lane index not supported")
-        idx = convert(Int, idx_val)
+        idx = _const_int_as_int(idx_val)
         (0 <= idx < n) ||
             _ir_error(inst, "extractelement lane index $idx outside [0,$n)")
         lane_op = vec_lanes[idx + 1]
@@ -2335,9 +2335,29 @@ function _get_deref_bytes(func::LLVM.Function, param::LLVM.Argument)
     return 0
 end
 
+"""
+    _const_int_as_int(v::LLVM.ConstantInt) -> Int
+
+Bennett-l9cl / U09: LLVM.jl's `convert(Int, ::ConstantInt)` uses the C API
+`LLVMConstIntGetSExtValue`, which returns only the low 64 bits; any wider
+constant is silently truncated (`i128 2^127` → 0). IROperand.value is Int64,
+so there is no safe place for a >64-bit constant to go. Fail loud until
+IROperand widens to Int128/BigInt (tracked in U09 bead).
+"""
+@inline function _const_int_as_int(v::LLVM.ConstantInt)
+    w = LLVM.width(LLVM.value_type(v))
+    w > 64 && error(
+        "ir_extract.jl: ConstantInt with width $w bits encountered (>64); " *
+        "LLVM.jl `convert(Int, ::ConstantInt)` silently truncates to the low " *
+        "64 bits and IROperand.value is Int64 — widen IROperand to " *
+        "Int128/BigInt before enabling i128+ constants (Bennett-l9cl / U09)." *
+        "\n  Source constant: $(string(v))")
+    return convert(Int, v)
+end
+
 function _operand(val::LLVM.Value, names::Dict{_LLVMRef, Symbol})
     if val isa LLVM.ConstantInt
-        return iconst(convert(Int, val))
+        return iconst(_const_int_as_int(val))
     elseif val isa LLVM.ConstantAggregateZero
         return IROperand(:const, :__zero_agg__, 0)  # special: zero aggregate
     elseif val isa LLVM.ConstantExpr

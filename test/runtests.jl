@@ -134,6 +134,10 @@ include("test_k286_fpext_snan_quiet.jl")
 # for invalid ops, sNaN quieting in trunc/floor/ceil, fptosi saturation
 # to INT_MIN. All bit-exact against Julia native / LLVM cvttsd2si.
 include("test_r84x_nan_bit_exact.jl")
+# Bennett-l9cl / U09 — ir_extract fails loud on ConstantInt width > 64.
+# LLVM.jl's `convert(Int, ::ConstantInt)` silently truncates; IROperand.value
+# is Int64, so i128+ constants cannot round-trip without data loss.
+include("test_l9cl_i128_constantint.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")

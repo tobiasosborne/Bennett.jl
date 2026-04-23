@@ -9,6 +9,28 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
 
 ### Closed this session
 
+- **Bennett-l9cl (U09) — i128 ConstantInt truncation.** LLVM.jl's
+  `convert(Int, ::LLVM.ConstantInt)` calls `LLVMConstIntGetSExtValue`,
+  which returns only the low 64 bits — `i128 2^127` silently comes
+  across as `0`. IROperand.value is `Int64`, so there is no safe
+  destination for a wider constant without changing 150+ downstream
+  iconst consumers. New `_const_int_as_int(v::LLVM.ConstantInt)` helper
+  added near `_operand`: asserts `LLVM.width(value_type(v)) <= 64` and
+  raises loud with the full constant text if not. All 10 call sites in
+  `src/ir_extract.jl` (`_operand`, sret GEP byte/element paths at 526/528,
+  constant-index GEP at 1519, constant-index global GEP at 1541, switch
+  case values at 1578, alloca count operand at 1724, constant pointer
+  address at 1892, ConstantDataVector element at 2046, insertelement lane
+  at 2076, extractelement lane at 2120) routed through the helper. The
+  helper itself contains the single remaining `convert(Int, v)` call,
+  reached only after the width guard. Test gate:
+  `test/test_l9cl_i128_constantint.jl` — hand-crafted `define i128 …`
+  fed through `extract_parsed_ir_from_ll`; pre-fix returned silently,
+  post-fix raises naming the width. Full `Pkg.test()` green; all
+  baselines byte-identical. Follow-up (still open under the same bead):
+  widen IROperand.value to Int128/BigInt so i128+ constants can actually
+  round-trip; the fail-loud guard is the Phase-0 safety net.
+
 - **Bennett-r84x (U08) — NaN payload/sign canonicalised across every
   soft-float op; `soft_fptosi` wraps on overflow.** Six files edited.
   Two constants + two helpers added to `src/softfloat/softfloat_common.jl`
