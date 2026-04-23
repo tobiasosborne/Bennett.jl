@@ -9,6 +9,36 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
 
 ### Closed this session
 
+- **Bennett-u21m (U11) — switch phi patching incomplete + duplicate-target
+  overwrite.** Refactored `_expand_switches` in `src/ir_extract.jl:981-1079`.
+  Pre-fix had two bugs: (1) the phi-patching pass ran INSIDE the per-switch
+  `for block in blocks` loop, so it only saw blocks already appended to
+  `result` — any successor block processed AFTER its switch never got its
+  phis rewritten. (2) `phi_remap::Dict{Symbol,Symbol}` was keyed by
+  target_label, so when two cases pointed at the same block, the second
+  overwrote the first and the phi ended up with a single wrong incoming.
+  Fix: split into Phase A (expand every switch, populate a
+  `pred_map::Dict{(orig,target), Vector{Symbol}}`) + Phase B (single
+  global sweep over `result` rewriting phi incomings). For each
+  pre-expansion `(val, orig_switch)` incoming, emit one `(val, syn_src)`
+  per unique synthetic predecessor of the phi's host block. Dedup is
+  structural (`src in lst || push!(lst, src)`) so targets that default and
+  a case route into via the same syn block (e.g. last-cmp's true and
+  false branches both ending at L) get one incoming, not two. Test gate:
+  `test/test_u21m_switch_phi_patching.jl` — hand-crafted switch with
+  cases 1→L, 2→M, 3→L and default→default; asserts the phi at L cites
+  both `:top` AND `:_sw_top_3`, values preserved, end-to-end circuit
+  correct on all 256 inputs (the constant-value case is silent because
+  the phi value is the same regardless of which predecessor fires — so
+  T3 all 256 passed even pre-fix; T1 is the true bug-witness).
+  **Silent-bug gotcha**: the bug only crashes downstream phi resolution
+  when the phi value actually differs per predecessor — switch cases
+  funnel through one predecessor in LLVM, so LLVM phis after a switch
+  usually have one constant incoming. The missing-predecessor phi is
+  semantically wrong but often doesn't manifest as a crash. The test
+  asserts EXTRACTED STRUCTURE, not just end-to-end behaviour.
+  Full `Pkg.test()` green; baselines byte-identical.
+
 - **Bennett-tu6i (U10) — `extractvalue`/`insertvalue` on StructType raised
   raw UndefRefError.** `src/ir_extract.jl:1182-1206` (before this fix) called
   `LLVM.eltype(agg_type)` without first checking `agg_type isa LLVM.ArrayType`.

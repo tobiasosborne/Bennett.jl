@@ -141,6 +141,10 @@ include("test_l9cl_i128_constantint.jl")
 # Bennett-tu6i / U10 — extractvalue/insertvalue on StructType aggregates
 # now fail loud (prev: raw UndefRefError deep in LLVM.jl).
 include("test_tu6i_struct_extractvalue.jl")
+# Bennett-u21m / U11 — switch phi patching runs globally and emits one
+# incoming per unique synthetic predecessor (duplicate targets no longer
+# collapse; later successor blocks no longer missed).
+include("test_u21m_switch_phi_patching.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")

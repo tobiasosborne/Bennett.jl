@@ -983,16 +983,40 @@ Expand IRSwitch terminators into cascaded comparison blocks.
 
 switch val, default [c1 → L1, c2 → L2, ...] becomes:
 
-    _sw_0: icmp eq val, c1 → br (L1, _sw_1)
-    _sw_1: icmp eq val, c2 → br (L2, _sw_2)
+    orig   : icmp eq val, c1 → br (L1, _sw_orig_2)
+    _sw_2  : icmp eq val, c2 → br (L2, _sw_orig_3)
     ...
-    _sw_N: unconditional br → default
+    _sw_N  : icmp eq val, cN → br (LN, default)
 
-Phi nodes in target blocks are updated to reference the new synthetic blocks
-instead of the original switch block.
+Phi nodes in successor blocks are rewritten: each pre-expansion incoming
+`(val, orig_switch_label)` is replaced by one incoming per unique
+post-expansion predecessor block of the phi's host (a target shared by
+several cases is reached from the case-1 slot AND the syn block of every
+other case pointing at it; the default may share a syn block with the
+last case).
+
+Bennett-u21m / U11 fixes:
+  (1) Phi patching runs as a single global sweep AFTER all switches have
+      been expanded — the old per-switch sweep missed phis in successor
+      blocks that hadn't been appended to `result` yet.
+  (2) `pred_map` is keyed by `(orig_switch_label, target_label)` and
+      stores the full set of synthetic predecessors, so duplicate targets
+      no longer collapse into a single wrong incoming.
 """
 function _expand_switches(blocks::Vector{IRBasicBlock})
     result = IRBasicBlock[]
+    orig_switches = Set{Symbol}()
+    # (orig_switch_label, target_label) → ordered list of unique synthetic
+    # predecessors of target_label inherited from this switch.
+    pred_map = Dict{Tuple{Symbol, Symbol}, Vector{Symbol}}()
+
+    @inline function _add_pred!(orig_label::Symbol, tgt::Symbol, src::Symbol)
+        lst = get!(pred_map, (orig_label, tgt), Symbol[])
+        src in lst || push!(lst, src)
+        return nothing
+    end
+
+    # ── Phase A: expand every switch into cmp blocks; populate pred_map ──
     for block in blocks
         if !(block.terminator isa IRSwitch)
             push!(result, block)
@@ -1004,52 +1028,59 @@ function _expand_switches(blocks::Vector{IRBasicBlock})
         n_cases = length(sw.cases)
 
         if n_cases == 0
-            # Degenerate: just unconditional branch to default
+            # Degenerate: just unconditional branch to default.
             push!(result, IRBasicBlock(orig_label, block.instructions,
                                        IRBranch(nothing, sw.default_label, nothing)))
+            push!(orig_switches, orig_label)
+            _add_pred!(orig_label, sw.default_label, orig_label)
             continue
         end
 
-        # Generate synthetic block labels
+        push!(orig_switches, orig_label)
         syn_labels = [Symbol("_sw_$(orig_label)_$i") for i in 1:n_cases]
 
-        # First block: original block with first comparison
+        # First block — the original block keeps its label so existing
+        # predecessors still see it, with the first icmp appended.
         cmp_dest_1 = Symbol("_sw_cmp_$(orig_label)_1")
         first_cmp = IRICmp(cmp_dest_1, :eq, sw.cond, sw.cases[1][1], sw.cond_width)
-        first_br = IRBranch(ssa(cmp_dest_1), sw.cases[1][2],
-                            n_cases >= 2 ? syn_labels[2] : sw.default_label)
+        first_false = n_cases >= 2 ? syn_labels[2] : sw.default_label
+        first_br = IRBranch(ssa(cmp_dest_1), sw.cases[1][2], first_false)
         push!(result, IRBasicBlock(orig_label,
                                    vcat(block.instructions, [first_cmp]),
                                    first_br))
+        _add_pred!(orig_label, sw.cases[1][2], orig_label)
 
-        # Middle comparison blocks (cases 2..N-1)
+        # Middle comparison blocks (cases 2..N-1).
         for i in 2:(n_cases - 1)
             cmp_dest = Symbol("_sw_cmp_$(orig_label)_$i")
             cmp = IRICmp(cmp_dest, :eq, sw.cond, sw.cases[i][1], sw.cond_width)
             br = IRBranch(ssa(cmp_dest), sw.cases[i][2], syn_labels[i + 1])
             push!(result, IRBasicBlock(syn_labels[i], [cmp], br))
+            _add_pred!(orig_label, sw.cases[i][2], syn_labels[i])
         end
 
-        # Last comparison block (case N)
+        # Last comparison block: its false-branch goes to the switch default.
         if n_cases >= 2
             cmp_dest_n = Symbol("_sw_cmp_$(orig_label)_$n_cases")
             cmp_n = IRICmp(cmp_dest_n, :eq, sw.cond, sw.cases[n_cases][1], sw.cond_width)
             br_n = IRBranch(ssa(cmp_dest_n), sw.cases[n_cases][2], sw.default_label)
             push!(result, IRBasicBlock(syn_labels[n_cases], [cmp_n], br_n))
+            _add_pred!(orig_label, sw.cases[n_cases][2], syn_labels[n_cases])
+            _add_pred!(orig_label, sw.default_label,     syn_labels[n_cases])
+        else
+            # n_cases == 1: default is reached from orig_label's false-branch.
+            _add_pred!(orig_label, sw.default_label, orig_label)
         end
+    end
 
-        # Update phi nodes: replace references to orig_label with the
-        # correct synthetic block that actually branches to the target.
-        # For case i → target Li, the branch comes from:
-        #   case 1: orig_label, case 2..N: syn_labels[i], default: syn_labels[N]
-        phi_remap = Dict{Symbol, Symbol}()  # target_label => source block
-        phi_remap[sw.cases[1][2]] = orig_label
-        for i in 2:n_cases
-            phi_remap[sw.cases[i][2]] = syn_labels[i]
-        end
-        phi_remap[sw.default_label] = n_cases >= 2 ? syn_labels[n_cases] : orig_label
-
-        # Patch phi nodes in all blocks that reference orig_label
+    # ── Phase B: global phi patching ───────────────────────────────────
+    # For every phi, an incoming `(val, from)` where `from` is an expanded
+    # switch label expands to one incoming per unique synthetic predecessor
+    # of the phi's host block inherited from that switch. Multiple cases
+    # sharing a target produce multiple incomings; a target reached by
+    # both default and a case through the same syn block gets deduped by
+    # `_add_pred!` above.
+    if !isempty(orig_switches)
         for j in eachindex(result)
             blk = result[j]
             new_insts = IRInst[]
@@ -1058,11 +1089,21 @@ function _expand_switches(blocks::Vector{IRBasicBlock})
                 if inst isa IRPhi
                     new_incoming = Tuple{IROperand, Symbol}[]
                     for (val, from_block) in inst.incoming
-                        if from_block == orig_label
-                            # Find which synthetic block branches to this phi's block
-                            actual_from = get(phi_remap, blk.label, from_block)
-                            push!(new_incoming, (val, actual_from))
-                            changed = true
+                        if from_block in orig_switches
+                            preds = get(pred_map, (from_block, blk.label), Symbol[])
+                            if isempty(preds)
+                                # Defensive: phi cited a switch block that
+                                # doesn't actually branch to this block.
+                                # Leave the incoming alone rather than
+                                # silently dropping it; a downstream phi
+                                # resolver will raise if this is malformed.
+                                push!(new_incoming, (val, from_block))
+                            else
+                                for p in preds
+                                    push!(new_incoming, (val, p))
+                                end
+                                changed = true
+                            end
                         else
                             push!(new_incoming, (val, from_block))
                         end
