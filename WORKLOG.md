@@ -9,6 +9,48 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
 
 ### Closed this session
 
+- **Bennett-6fg9 (U19) — `simulate` had no arity/bit-width guard.**
+  `src/simulator.jl:_simulate` (and `src/controlled.jl:_simulate_ctrl`)
+  iterated `for (k, w) in enumerate(circuit.input_widths)` and
+  dereferenced `inputs[k]` — extra tuple elements silently dropped,
+  too-short tuples crashed deep with BoundsError, over-wide scalar
+  values silently chopped via `(v >> i) & 1`. Added an `ArgumentError`
+  at entry of both `_simulate` paths: exact tuple-length match,
+  `n_wires > 0`, and new `_assert_input_fits(v, w, k)` helper that
+  checks `Int128(v)` lies in either the signed or unsigned `w`-bit
+  range. Returns early for `w ≥ 64` (UInt64 upper-bound subsumes
+  Int64). Test gate: `test/test_6fg9_simulate_arity.jl` — 10 assertions.
+  Baseline 2-arg call still works; too-short / too-long / empty tuples
+  raise; single-input circuit with 2-tuple raises; scalar overload
+  with 2-input circuit still raises via the pre-existing guard; `1 <<
+  40` into an 8-bit input raises instead of wrapping. Pre-fix 3/10
+  missed the silent cases.
+
+- **Bennett-g27k (U18) — cc0.3 catch-block swallowed unrelated errors
+  by substring.** `src/ir_extract.jl:887-907` (before this fix) did a
+  bare substring test on `sprint(showerror, e)` against "Unknown value
+  kind" / "LLVMGlobalAlias" / "PointerType" (the last gated on
+  MethodError). Any error — including a Bennett-authored `_ir_error` —
+  whose message happened to contain one of those words got silently
+  dropped, undoing the fail-loud cleanup from U09–U17. Narrowed: now
+  require BOTH an exception type match (`ErrorException` for the first
+  two, `MethodError` for the last) AND the message pattern AND the
+  error is NOT Bennett-authored (message prefix `ir_extract.jl:` or
+  contains `Bennett-`). Test gate:
+  `test/test_g27k_cc03_catch_narrow.jl` — structural source-read assert
+  that the catch block now gates on `e isa ErrorException` /
+  `e isa MethodError` and mentions the Bennett-authored exclusion, plus
+  a smoke test that ordinary extraction still works. The broader
+  validation is that existing skip-path tests (test_t0_preprocessing
+  GC-frame artifacts, test_persistent_* with LLVMGlobalAlias globals)
+  still pass, AND the fail-loud tests from U09–U17 confirm
+  Bennett-authored errors now propagate. **Monkey-patch gotcha**: my
+  first RED-test draft tried `@eval Bennett function _convert_instruction(...)`
+  to inject an error, but Julia's method-table specialization means the
+  caller (`_extract_from_module`) still resolves to the original typed
+  dispatch even when a generic monkey-patch is added. Switched to a
+  structural source-read assertion; existing tests cover behaviour.
+
 - **Bennett-8b2f (U17) — `_get_deref_bytes` IR-string fallback regex
   leaked across params.** `src/ir_extract.jl:2514-2524` (pre-fix) matched
   `dereferenceable\((\d+)\)` against the full `define` line, returning

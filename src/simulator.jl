@@ -2,6 +2,29 @@
 @inline apply!(b::Vector{Bool}, g::CNOTGate)    = (b[g.target] ⊻= b[g.control]; nothing)
 @inline apply!(b::Vector{Bool}, g::ToffoliGate) = (b[g.target] ⊻= b[g.control1] & b[g.control2]; nothing)
 
+"""
+    _assert_input_fits(v, w, k) -> nothing
+
+Bennett-6fg9 / U19: per-input bit-width bounds check. An `Integer` value
+`v` intended for a `w`-bit input at position `k` must be representable
+in `w` bits under either signed or unsigned semantics. Silent truncation
+via `(v >> i) & 1` would otherwise mis-ingest over-wide inputs.
+"""
+@inline function _assert_input_fits(v::Integer, w::Int, k::Int)
+    w > 0 || throw(ArgumentError("simulate: input $k has width $w (must be > 0)"))
+    w >= 64 && return nothing   # UInt64 upper-bound subsumes Int64
+    # Allow signed-representable [-2^(w-1), 2^(w-1)) OR unsigned
+    # [0, 2^w). Anything outside both ranges would silently wrap.
+    signed_lo  = -(Int128(1) << (w - 1))
+    signed_hi  =  (Int128(1) << (w - 1)) - 1
+    unsigned_hi = (Int128(1) <<  w     ) - 1
+    vi = Int128(v)
+    ok = (signed_lo <= vi <= signed_hi) || (0 <= vi <= unsigned_hi)
+    ok || throw(ArgumentError(
+        "simulate: input $k value $v does not fit in $w bits"))
+    return nothing
+end
+
 function simulate(circuit::ReversibleCircuit, input::Integer)
     length(circuit.input_widths) == 1 || error("simulate(circuit, input) requires single-input circuit, got $(length(circuit.input_widths)) inputs")
     return _simulate(circuit, (input,))
@@ -12,6 +35,19 @@ function simulate(circuit::ReversibleCircuit, inputs::Tuple{Vararg{Integer}})
 end
 
 function _simulate(circuit::ReversibleCircuit, inputs::Tuple)
+    # Bennett-6fg9 / U19: guard arity and per-input bit-width at entry.
+    # Pre-fix, a too-long tuple silently dropped the extras, a too-short
+    # tuple crashed with a raw BoundsError deep in the input-ingest loop,
+    # and an over-wide value silently wrapped via `(v >> i) & 1`.
+    length(inputs) == length(circuit.input_widths) || throw(ArgumentError(
+        "simulate: expected $(length(circuit.input_widths)) inputs, got " *
+        "$(length(inputs)) (input_widths = $(circuit.input_widths))"))
+    for (k, (v, w)) in enumerate(zip(inputs, circuit.input_widths))
+        _assert_input_fits(v, w, k)
+    end
+    circuit.n_wires > 0 || throw(ArgumentError(
+        "simulate: circuit has n_wires = 0 (empty circuit)"))
+
     bits = zeros(Bool, circuit.n_wires)
 
     offset = 0

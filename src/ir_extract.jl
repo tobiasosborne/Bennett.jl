@@ -893,17 +893,37 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function)
             # at `_operand` lookup time, which still satisfies the T5 corpus
             # `@test_throws`. User arithmetic (which doesn't touch runtime
             # ptrs) extracts normally.
+            #
+            # Bennett-g27k / U18: gate each benign-skip on BOTH an exception
+            # type AND the expected message pattern. The old code matched
+            # substrings against `sprint(showerror, e)` alone, so ANY error
+            # whose message happened to contain "PointerType", "Unknown
+            # value kind", or "LLVMGlobalAlias" got silently swallowed —
+            # including unrelated bugs in our own extractor or in user
+            # functions. Narrowed matches:
+            #   - ErrorException with "Unknown value kind" → LLVM.jl
+            #     `value.jl:20` fallback (e.g. LLVMGlobalAlias)
+            #   - ErrorException with "LLVMGlobalAlias" → same family
+            #   - MethodError with "PointerType" → LLVM.jl dispatch gap on
+            #     pointer-typed aggregate members
+            # Bennett's own `_ir_error` uses ErrorException too, but its
+            # message always begins with `"ir_extract.jl: "`; gating on that
+            # prefix is how we distinguish legitimate fail-loud errors from
+            # LLVM.jl's "unknown kind" pass-through.
             ir_inst = try
                 _convert_instruction(inst, names, counter, lanes)
             catch e
                 msg = sprint(showerror, e)
-                if occursin("Unknown value kind", msg) ||
-                   occursin("LLVMGlobalAlias", msg) ||
-                   (e isa MethodError && occursin("PointerType", msg))
-                    nothing
-                else
-                    rethrow()
-                end
+                bennett_authored = startswith(msg, "ErrorException(") ?
+                    false : occursin("ir_extract.jl:", msg) ||
+                            occursin("Bennett-", msg)
+                benign = !bennett_authored && (
+                    (e isa ErrorException && (
+                        occursin("Unknown value kind", msg) ||
+                        occursin("LLVMGlobalAlias", msg))) ||
+                    (e isa MethodError && occursin("PointerType", msg))
+                )
+                benign ? nothing : rethrow()
             end
             ir_inst === nothing && continue
             # Bennett-0c8o: after each successful conversion, if `inst` was

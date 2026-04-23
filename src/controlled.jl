@@ -64,6 +64,16 @@ end
 
 function _simulate_ctrl(cc::ControlledCircuit, ctrl::Bool, inputs::Tuple)
     c = cc.circuit
+    # Bennett-6fg9 / U19: same arity + width guard as _simulate.
+    length(inputs) == length(c.input_widths) || throw(ArgumentError(
+        "simulate(ControlledCircuit, …): expected $(length(c.input_widths)) " *
+        "inputs, got $(length(inputs)) (input_widths = $(c.input_widths))"))
+    for (k, (v, w)) in enumerate(zip(inputs, c.input_widths))
+        _assert_input_fits(v, w, k)
+    end
+    c.n_wires > 0 || throw(ArgumentError(
+        "simulate(ControlledCircuit, …): circuit has n_wires = 0"))
+
     bits = zeros(Bool, c.n_wires)
     bits[cc.ctrl_wire] = ctrl
 
