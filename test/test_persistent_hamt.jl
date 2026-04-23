@@ -148,7 +148,11 @@ end
                                Int8, Int8, Int8, Int8, Int8, Int8, Int8)
         gc = gate_count(c)
         @info "T5-P3c HAMT demo gate count" gates=gc
-        # Sanity bounds.  Measured 2026-04-17: 96788 total / 25576 Toffoli at max_n=8.
+        # Sanity bounds. Measured 2026-04-17: 96788 total / 25576 Toffoli at max_n=8.
+        # Bennett-hmn0 / U20 (2026-04-23): added 9th-distinct-hash-slot overflow
+        # guard via a 17-way ifelse mux over all keys+bitmap+values; demo rose
+        # to 121884 total / 32452 Toffoli. Correctness cost ~26%; HAMT is on
+        # the EoL shortlist (U79) so further optimisation is not prioritised.
         # Wide bounds: HAMT is large; we want to catch regressions without blocking
         # valid optimisations.
         @test 10_000 < gc.total < 1_000_000

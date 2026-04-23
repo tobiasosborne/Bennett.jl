@@ -9,6 +9,43 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
 
 ### Closed this session
 
+- **Bennett-n3z4 (U21) — `cf_reroot` treated `r_key == 0` as the empty-slot
+  sentinel.** `src/persistent/cf_semi_persistent.jl:350-357` decremented
+  `arr_count` whenever the diff-entry's old key was zero. Int8(0) is a
+  valid protocol key, so any sequence like `set(0, 99); set(0, 42);
+  reroot` (overwrite-then-undo) wrongly decremented count — leaving Arr
+  slot 0 populated with (k=0, v=99) but reporting count=0, so
+  `cf_pmap_get(0)` returned 0 (miss). Fix: encode a was-allocated flag
+  in bit 63 of the stored `diff_idx` — slots occupy bits 0..1 (range
+  0..3), so bit 63 is free real estate. `cf_reroot` masks to
+  `r_idx & 0x3` for Arr restoration and reads bit 63 for the
+  count-decrement decision. **Cost**: surprisingly zero — CF demo gate
+  count 11,078 byte-identical pre/post-fix. Test gate:
+  `test/test_n3z4_cf_reroot_key_zero.jl` (4 scenarios, 9 asserts):
+  reviewer repro + reroot-all-the-way + mixed key=0/key=1 state +
+  regression for nonzero-key overwrite (which pre-fix handled correctly).
+  Pre-fix 7/9; post-fix 9/9. Full `Pkg.test()` green.
+
+- **Bennett-hmn0 (U20) — HAMT silently lost 9th distinct-hash-slot key.**
+  `src/persistent/hamt.jl:hamt_pmap_set` computed
+  `idx = popcount(bitmap & (bit-1))` where with 8 hash slots already
+  occupied and a new slot outside them, idx lands at 8 — no
+  `idx == UInt32(N)` case matches any of the unrolled 0..7 branches.
+  New key silently dropped; bitmap mutated to include the new bit →
+  bitmap inconsistent with compressed 8-slot key/value array. Added
+  overflow detection: `is_overflow = is_new & (popcount(bitmap) >= 8)`,
+  plus a final 17-way `ifelse(keep_old, old, new)` mux over bitmap +
+  k0..k7 + v0..v7 that returns the unchanged state on overflow. 9th
+  insert becomes a no-op (documented 8-slot limitation; HAMT is on the
+  U79 EoL shortlist). **Gate-count cost**: HAMT demo rose from 96,788
+  → 121,884 (+26%). Updated the regression comment in
+  `test/test_persistent_hamt.jl:151`; the `@test` bounds are wide
+  enough to still pass. Test gate: `test/test_hmn0_hamt_overflow.jl`
+  — 8 distinct-hash keys + attempted 9th, asserts (a) the first 8 still
+  retrievable post-overflow-attempt and (b) bitmap is unchanged
+  (invariant: popcount stays at 8). Pre-fix: bitmap gained a bit →
+  desync; post-fix: consistent. Full `Pkg.test()` green.
+
 - **Bennett-6fg9 (U19) — `simulate` had no arity/bit-width guard.**
   `src/simulator.jl:_simulate` (and `src/controlled.jl:_simulate_ctrl`)
   iterated `for (k, w) in enumerate(circuit.input_widths)` and

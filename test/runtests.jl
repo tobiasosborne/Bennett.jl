@@ -172,6 +172,14 @@ include("test_g27k_cc03_catch_narrow.jl")
 # Bennett-6fg9 / U19 — simulate arity + per-input bit-width guard (was:
 # silent drop of extra tuple elements, silent wrap of over-wide values).
 include("test_6fg9_simulate_arity.jl")
+# Bennett-hmn0 / U20 — HAMT 9th-distinct-hash-slot overflow guard (was:
+# silent key loss + bitmap desync). Correctness cost ~26% gates; HAMT
+# is on the U79 EoL shortlist.
+include("test_hmn0_hamt_overflow.jl")
+# Bennett-n3z4 / U21 — cf_reroot now uses a was-allocated flag in bit 63
+# of the encoded diff_idx, not `r_key == 0` (which corrupted Int8(0)-key
+# overwrite-reroot sequences).
+include("test_n3z4_cf_reroot_key_zero.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")

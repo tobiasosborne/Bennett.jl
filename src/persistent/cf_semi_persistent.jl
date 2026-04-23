@@ -220,20 +220,30 @@ All branches expressed via `ifelse`.
              ifelse(target_slot == UInt64(2), s[_cf_arr_val_idx(2)],
                                               s[_cf_arr_val_idx(3)])))
 
+    # Bennett-n3z4 / U21: record whether this diff represents a new-slot
+    # allocation in bit 63 of `encoded_idx`. Pre-fix, `cf_reroot` inferred
+    # this from `r_key == 0`, corrupting count when the caller stored Int8(0).
+    # The target_slot is ≤ 3 so bits 0..1 are the slot index, bit 63 is the
+    # was-allocated flag. `cf_reroot` masks before indexing and checks bit 63
+    # for the count-decrement decision.
+    was_new_alloc_u = ifelse(any_match | (count >= UInt64(_CF_MAX_N)),
+                             UInt64(0), UInt64(1))
+    encoded_idx = target_slot | (was_new_alloc_u << 63)
+
     # Write diff entries: for each diff slot d, write if d == safe_depth
-    d_idx0 = ifelse(safe_depth == UInt64(0), target_slot, s[_cf_diff_idx_idx(0)])
+    d_idx0 = ifelse(safe_depth == UInt64(0), encoded_idx, s[_cf_diff_idx_idx(0)])
     d_key0 = ifelse(safe_depth == UInt64(0), old_k,       s[_cf_diff_key_idx(0)])
     d_val0 = ifelse(safe_depth == UInt64(0), old_v,       s[_cf_diff_val_idx(0)])
 
-    d_idx1 = ifelse(safe_depth == UInt64(1), target_slot, s[_cf_diff_idx_idx(1)])
+    d_idx1 = ifelse(safe_depth == UInt64(1), encoded_idx, s[_cf_diff_idx_idx(1)])
     d_key1 = ifelse(safe_depth == UInt64(1), old_k,       s[_cf_diff_key_idx(1)])
     d_val1 = ifelse(safe_depth == UInt64(1), old_v,       s[_cf_diff_val_idx(1)])
 
-    d_idx2 = ifelse(safe_depth == UInt64(2), target_slot, s[_cf_diff_idx_idx(2)])
+    d_idx2 = ifelse(safe_depth == UInt64(2), encoded_idx, s[_cf_diff_idx_idx(2)])
     d_key2 = ifelse(safe_depth == UInt64(2), old_k,       s[_cf_diff_key_idx(2)])
     d_val2 = ifelse(safe_depth == UInt64(2), old_v,       s[_cf_diff_val_idx(2)])
 
-    d_idx3 = ifelse(safe_depth == UInt64(3), target_slot, s[_cf_diff_idx_idx(3)])
+    d_idx3 = ifelse(safe_depth == UInt64(3), encoded_idx, s[_cf_diff_idx_idx(3)])
     d_key3 = ifelse(safe_depth == UInt64(3), old_k,       s[_cf_diff_key_idx(3)])
     d_val3 = ifelse(safe_depth == UInt64(3), old_v,       s[_cf_diff_val_idx(3)])
 
@@ -337,22 +347,29 @@ Branchless: uses `ifelse` throughout.
              ifelse(pop_d == UInt64(2), s[_cf_diff_val_idx(2)],
                                         s[_cf_diff_val_idx(3)])))
 
-    # Restore Arr at slot r_idx
-    new_ku0 = ifelse(r_idx == UInt64(0), r_key, s[_cf_arr_key_idx(0)])
-    new_vu0 = ifelse(r_idx == UInt64(0), r_val, s[_cf_arr_val_idx(0)])
-    new_ku1 = ifelse(r_idx == UInt64(1), r_key, s[_cf_arr_key_idx(1)])
-    new_vu1 = ifelse(r_idx == UInt64(1), r_val, s[_cf_arr_val_idx(1)])
-    new_ku2 = ifelse(r_idx == UInt64(2), r_key, s[_cf_arr_key_idx(2)])
-    new_vu2 = ifelse(r_idx == UInt64(2), r_val, s[_cf_arr_val_idx(2)])
-    new_ku3 = ifelse(r_idx == UInt64(3), r_key, s[_cf_arr_key_idx(3)])
-    new_vu3 = ifelse(r_idx == UInt64(3), r_val, s[_cf_arr_val_idx(3)])
+    # Bennett-n3z4 / U21: decode the encoded diff_idx. Bits 0..1 hold
+    # the actual slot (0..3); bit 63 holds the was-allocation flag.
+    # Pre-fix `r_key == 0` inferred allocation from the key value, which
+    # corrupted count whenever the caller had stored Int8(0).
+    r_slot      = r_idx & UInt64(0x3)
+    r_was_alloc = (r_idx >> 63) & UInt64(1)
 
-    # arr_count decreases if old_key was zero (sentinel for "empty slot")
-    # — i.e., if we're undoing an allocation into a previously empty slot.
+    # Restore Arr at slot r_slot
+    new_ku0 = ifelse(r_slot == UInt64(0), r_key, s[_cf_arr_key_idx(0)])
+    new_vu0 = ifelse(r_slot == UInt64(0), r_val, s[_cf_arr_val_idx(0)])
+    new_ku1 = ifelse(r_slot == UInt64(1), r_key, s[_cf_arr_key_idx(1)])
+    new_vu1 = ifelse(r_slot == UInt64(1), r_val, s[_cf_arr_val_idx(1)])
+    new_ku2 = ifelse(r_slot == UInt64(2), r_key, s[_cf_arr_key_idx(2)])
+    new_vu2 = ifelse(r_slot == UInt64(2), r_val, s[_cf_arr_val_idx(2)])
+    new_ku3 = ifelse(r_slot == UInt64(3), r_key, s[_cf_arr_key_idx(3)])
+    new_vu3 = ifelse(r_slot == UInt64(3), r_val, s[_cf_arr_val_idx(3)])
+
+    # arr_count decreases only if this diff represents a NEW slot allocation.
+    # Overwrite-diffs leave the slot allocated, so count is unchanged.
     count = s[_CF_OFF_COUNT]
     new_count = ifelse(depth == UInt64(0),
                        count,    # nothing to undo
-                       ifelse(r_key == UInt64(0),
+                       ifelse(r_was_alloc == UInt64(1),
                               ifelse(count > UInt64(0), count - UInt64(1), UInt64(0)),
                               count))  # overwrite undo: slot stays allocated
 

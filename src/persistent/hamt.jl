@@ -235,9 +235,39 @@ end
     nv7_ins = ifelse(idx == UInt32(7), v_u, ifelse(idx < UInt32(7), v6, v7))
     new_v7  = is_occupied * nv7_upd + is_new * nv7_ins
 
-    return (new_bitmap,
-            new_k0, new_k1, new_k2, new_k3, new_k4, new_k5, new_k6, new_k7,
-            new_v0, new_v1, new_v2, new_v3, new_v4, new_v5, new_v6, new_v7)
+    # Bennett-hmn0 / U20: 9th distinct-hash-slot overflow check.
+    # With 8 occupied hash positions (bitmap popcount == 8), a new
+    # insertion whose hash slot is not in {0..7} produces `idx = 8` —
+    # no `idx == UInt32(N)` case matches, the key is silently dropped,
+    # AND the bitmap is mutated to include the new bit → bitmap
+    # inconsistent with the compressed array. Detect overflow and
+    # reject the insert (keep state unchanged). Documented limitation
+    # of the 8-slot design; proper resolution is to EoL HAMT per U79.
+    bitmap_full = UInt64(soft_popcount32(bitmap) >= UInt32(8))
+    is_overflow = is_new & bitmap_full
+    keep_old    = is_overflow == UInt64(1)
+
+    safe_bitmap = ifelse(keep_old, UInt64(bitmap), new_bitmap)
+    safe_k0 = ifelse(keep_old, k0, new_k0)
+    safe_k1 = ifelse(keep_old, k1, new_k1)
+    safe_k2 = ifelse(keep_old, k2, new_k2)
+    safe_k3 = ifelse(keep_old, k3, new_k3)
+    safe_k4 = ifelse(keep_old, k4, new_k4)
+    safe_k5 = ifelse(keep_old, k5, new_k5)
+    safe_k6 = ifelse(keep_old, k6, new_k6)
+    safe_k7 = ifelse(keep_old, k7, new_k7)
+    safe_v0 = ifelse(keep_old, v0, new_v0)
+    safe_v1 = ifelse(keep_old, v1, new_v1)
+    safe_v2 = ifelse(keep_old, v2, new_v2)
+    safe_v3 = ifelse(keep_old, v3, new_v3)
+    safe_v4 = ifelse(keep_old, v4, new_v4)
+    safe_v5 = ifelse(keep_old, v5, new_v5)
+    safe_v6 = ifelse(keep_old, v6, new_v6)
+    safe_v7 = ifelse(keep_old, v7, new_v7)
+
+    return (safe_bitmap,
+            safe_k0, safe_k1, safe_k2, safe_k3, safe_k4, safe_k5, safe_k6, safe_k7,
+            safe_v0, safe_v1, safe_v2, safe_v3, safe_v4, safe_v5, safe_v6, safe_v7)
 end
 
 # ---- Lookup (pmap_get) ----
