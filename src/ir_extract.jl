@@ -1570,8 +1570,35 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         # Case A: base is a local SSA value that we've already named
         if haskey(names, base.ref) && length(ops) == 2
             if ops[2] isa LLVM.ConstantInt
-                # Constant-index GEP → IRPtrOffset (wire selection from flat array)
-                offset = _const_int_as_int(ops[2])
+                # Constant-index GEP → IRPtrOffset (wire selection from flat array).
+                # Bennett-vz5n / U12: `IRPtrOffset.offset_bytes` is consumed at
+                # `lower.jl:1691` as `bit_offset = offset_bytes * 8`. The raw
+                # GEP index must be scaled by the source element's byte stride
+                # before being stored — for `gep i32, ptr %p, i64 1` the raw
+                # index is 1 but the actual byte offset is 4. Reading
+                # LLVMGetGEPSourceElementType and multiplying by `width÷8`
+                # keeps the consumer semantics (`offset_bytes * 8 == bit_offset`)
+                # correct for every integer stride.
+                # Non-integer source types (struct/array/float/vector) fall
+                # through to the pre-existing raw-index behaviour — their
+                # correctness gap is tracked separately under U16
+                # (multi-index struct GEPs). For integer strides the fix
+                # here is unconditional; other paths are unchanged.
+                raw_idx = _const_int_as_int(ops[2])
+                src_ty_ref_const = LLVM.API.LLVMGetGEPSourceElementType(inst)
+                src_type_const = LLVM.LLVMType(src_ty_ref_const)
+                offset = if src_type_const isa LLVM.IntegerType
+                    stride_bytes = LLVM.width(src_type_const) ÷ 8
+                    stride_bytes >= 1 || _ir_error(inst,
+                        "constant-index GEP with sub-byte source element " *
+                        "width $(LLVM.width(src_type_const)) bits not " *
+                        "supported (Bennett-vz5n / U12)")
+                    raw_idx * stride_bytes
+                else
+                    # Struct / array / float / vector base: legacy raw-index
+                    # behaviour. Silent-pass, tracked in U16.
+                    raw_idx
+                end
                 return IRPtrOffset(dest, ssa(names[base.ref]), offset)
             else
                 # Variable-index GEP → IRVarGEP (MUX-tree selection at lowering time)

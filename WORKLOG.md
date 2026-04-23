@@ -9,6 +9,32 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
 
 ### Closed this session
 
+- **Bennett-vz5n (U12) — GEP `offset_bytes` stored the raw index, not bytes.**
+  `src/ir_extract.jl:1572` converted a constant-index GEP to IRPtrOffset
+  by storing `_const_int_as_int(ops[2])` directly. The consumer at
+  `src/lower.jl:1691` computes `bit_offset = inst.offset_bytes * 8` —
+  correct only when the GEP source element is `i8` (stride 1 byte). For
+  `getelementptr i32, ptr %p, i64 3` the stored offset_bytes was 3 rather
+  than 12 → the load read bits 24..55 instead of bits 96..127. Silent
+  wrong for every non-i8 integer stride. Fix: read
+  `LLVMGetGEPSourceElementType`, assert integer + width ≥ 8 bits, store
+  `raw_idx * (width ÷ 8)`. Non-integer source types (struct / array /
+  float / vector) fall back to the legacy raw-index behaviour — their
+  correctness gap is tracked separately under **U16** (multi-index struct
+  GEPs), which needs a proper `LLVMOffsetOfElement` path, not the U12
+  byte-stride formula. **Iteration gotcha**: my first draft fail-louded
+  on non-integer sources; this broke `test_t0_preprocessing`'s
+  `cond_pair` corpus function, whose Julia-emitted IR occasionally
+  contains a 2-op GEP into the `%jl_gcframe_t` GC root (appearance is
+  Julia-instance-dependent — single-function reproduction passed, but
+  some runs of Pkg.test hit a context where Julia emitted the
+  gcframe-prev access). Relaxed to silent-pass for non-integer sources;
+  the integer case remains the intended scope of U12.
+  Test gate: `test/test_vz5n_gep_offset_bytes.jl` — 4 strides (i8/i16/
+  i32/i64) × constant idx = 3 → assert offset_bytes ∈ {3, 6, 12, 24}.
+  Pre-fix: 1/4 pass (i8 coincidence). Post-fix: 4/4. Full `Pkg.test()`
+  green; baselines byte-identical.
+
 - **Bennett-u21m (U11) — switch phi patching incomplete + duplicate-target
   overwrite.** Refactored `_expand_switches` in `src/ir_extract.jl:981-1079`.
   Pre-fix had two bugs: (1) the phi-patching pass ran INSIDE the per-switch
