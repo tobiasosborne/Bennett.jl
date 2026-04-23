@@ -158,6 +158,10 @@ include("test_4mmt_atomic_volatile_load_store.jl")
 # silent drop, leaving dest SSA undefined). Benign-intrinsic allowlist
 # keeps llvm.lifetime/trap/memset/etc. correctness-neutral.
 include("test_5oyt_unregistered_callee.jl")
+# Bennett-qal5 / U16 — multi-index GEPs and GEPs on unsupported bases
+# reject loud (was silent drop, leaving dest SSA undefined). Full
+# type-walking byte-offset accumulation deferred.
+include("test_qal5_multi_index_gep.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")

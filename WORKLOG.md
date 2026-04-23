@@ -9,6 +9,23 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
 
 ### Closed this session
 
+- **Bennett-qal5 (U16) — multi-index GEP / unsupported-base GEP silently
+  dropped.** `src/ir_extract.jl:1706` was `return nothing  # GEP with
+  unknown base — skip` — dest SSA left undefined, consumers crashed far
+  downstream. Minimum-viable fix per catalogue: `_ir_error` naming the
+  number of indices and the supported forms. Full support (type-walking
+  byte-offset accumulation via `LLVMOffsetOfElement`) is future work;
+  the fail-loud gate is the Phase 0 safety net. Test gate:
+  `test/test_qal5_multi_index_gep.jl` — hand-crafted `getelementptr [4
+  x i32], ptr @tbl, i32 0, i32 %i` (3 operands); pre-fix extraction
+  silently succeeds (dropping the GEP); post-fix raises naming the
+  index count. No cascade — existing tests either use 2-op GEPs
+  (already supported) or didn't hit the old silent-drop path in Pkg.test.
+  All targeted regression tests green (test_t0_preprocessing, test_var_gep,
+  test_t5_corpus_c, test_persistent_{hashcons, hamt, cf, okasaki}).
+  Lesson from U15's cascade applied: single targeted-run cycle instead
+  of repeated full Pkg.test.
+
 - **Bennett-5oyt (U15) — unregistered callee / inline-asm call silently
   dropped.** `src/ir_extract.jl` LLVMCall handler's fall-through at the
   end of the arm was `return nothing`, so any call that didn't match an

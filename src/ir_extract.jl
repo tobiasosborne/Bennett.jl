@@ -1703,7 +1703,21 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 return IRVarGEP(dest, ssa(gname), idx_op, ew)
             end
         end
-        return nothing  # GEP with unknown base — skip
+        # Bennett-qal5 / U16: anything that reaches here is either a
+        # multi-index GEP (`length(ops) > 2`, e.g. `getelementptr
+        # [N x iM], ptr %p, i64 0, i64 %i`) or a GEP whose base is
+        # neither a named local SSA nor a constant global. Full support
+        # needs type-walking byte-offset accumulation (via
+        # `LLVMOffsetOfElement`), which is out of scope for the U-series
+        # Phase 0 hardening. Fail loud so the missing handler surfaces
+        # immediately instead of leaving dest SSA undefined and crashing
+        # downstream with "Undefined SSA variable".
+        n_idx = length(ops) - 1
+        _ir_error(inst,
+            "getelementptr with $(n_idx) index(es) or unsupported base " *
+            "shape is not handled; supported forms are 2-op GEPs on a " *
+            "local SSA value or on a constant GlobalVariable " *
+            "(Bennett-qal5 / U16)")
     end
 
     # Load from pointer → IRLoad (CNOT-copy from wire subset)
