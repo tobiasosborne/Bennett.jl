@@ -83,12 +83,15 @@ end
 @testset "toffoli_depth agrees with legacy t_depth on compiled circuits" begin
     # Any real circuit: toffoli_depth(c) must equal t_depth(c) under :ammr,
     # since :ammr is the decomposition the legacy t_depth implicitly assumed.
+    # Bennett-11xt / U23: verify each compiled circuit's Bennett invariants
+    # — toffoli-depth alone doesn't prove correctness.
     for (f, T) in [
         (x -> x + Int8(3),      Int8),
         (x -> x * x,             Int8),
         (x -> x > Int8(5) ? x : -x, Int8),
     ]
         c = reversible_compile(f, T)
+        @test Bennett.verify_reversibility(c)
         @test Bennett.toffoli_depth(c) == Bennett.t_depth(c; decomp=:ammr)
         @test Bennett.t_depth(c)       == Bennett.t_depth(c; decomp=:ammr)
         @test Bennett.t_depth(c; decomp=:nc_7t) == 3 * Bennett.toffoli_depth(c)

@@ -6,12 +6,25 @@ using Bennett
     # These values reflect the current pipeline with path-predicate phi resolution.
     # Toffoli counts match the original baselines (28, 60, 124, 252).
     # Total is higher due to block-predicate overhead (NOT + CNOT gates).
+    #
+    # Bennett-11xt / U23: each compiled circuit below now carries a
+    # `verify_reversibility` call — gate counts alone are not
+    # correctness proof; a Bennett-invariant-violating circuit could
+    # hit the same count.
 
     @testset "Addition gate counts (x + 1)" begin
         c8  = reversible_compile(x -> x + Int8(1), Int8)
         c16 = reversible_compile(x -> x + Int16(1), Int16)
         c32 = reversible_compile(x -> x + Int32(1), Int32)
         c64 = reversible_compile(x -> x + Int64(1), Int64)
+        @test verify_reversibility(c8)
+        @test verify_reversibility(c16)
+        @test verify_reversibility(c32)
+        @test verify_reversibility(c64)
+        @test simulate(c8,  Int8(0))  == Int8(1)
+        @test simulate(c16, Int16(0)) == Int16(1)
+        @test simulate(c32, Int32(0)) == Int32(1)
+        @test simulate(c64, Int64(0)) == Int64(1)
 
         gc8, gc16, gc32, gc64 = gate_count(c8), gate_count(c16), gate_count(c32), gate_count(c64)
 
@@ -45,12 +58,16 @@ using Bennett
         c = reversible_compile(x -> x * x + Int8(3) * x + Int8(1), Int8)
         @test gate_count(c).total == 872
         @test toffoli_depth(c) == 90
+        @test verify_reversibility(c)
+        @test simulate(c, Int8(0)) == Int8(1)
     end
 
     @testset "x + 3 gate count" begin
         c = reversible_compile(x -> x + Int8(3), Int8)
         @test gate_count(c).total == 102
         @test toffoli_depth(c) == 28
+        @test verify_reversibility(c)
+        @test simulate(c, Int8(0)) == Int8(3)
     end
 
     @testset "Multiplication Toffoli-depth (shift-and-add)" begin
@@ -62,5 +79,9 @@ using Bennett
         @test gate_count(c16).Toffoli == 1232
         @test toffoli_depth(c8)  == 68
         @test toffoli_depth(c16) == 214
+        @test verify_reversibility(c8)
+        @test verify_reversibility(c16)
+        @test simulate(c8,  Int8(3))  == Int8(9)
+        @test simulate(c16, Int16(7)) == Int16(49)
     end
 end

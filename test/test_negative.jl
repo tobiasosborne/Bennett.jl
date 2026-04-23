@@ -30,6 +30,10 @@ using Bennett
     @testset "Single-input simulate with multi-input circuit" begin
         m(x::Int8, y::Int8) = x + y
         c = reversible_compile(m, Int8, Int8)
+        # Bennett-11xt / U23: the real circuit we compiled to exercise
+        # the negative path must itself satisfy the Bennett invariants.
+        @test verify_reversibility(c)
+        @test simulate(c, (Int8(3), Int8(4))) == Int8(7)
         @test_throws ErrorException simulate(c, Int8(1))
     end
 end

@@ -9,6 +9,38 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
 
 ### Closed this session
 
+- **Bennett-11xt (U23) — 5 test files compiled circuits without an
+  ancilla-zero check.** Per CLAUDE.md §4, "runs without errors" is not a
+  passing test; the test must verify Bennett's invariants on the actual
+  circuit. Added `@test verify_reversibility(c)` + one simulate sanity
+  call to every `reversible_compile` site in:
+  `test/test_constant_wire_count.jl` (4 circuits),
+  `test/test_dep_dag.jl` (3 circuits),
+  `test/test_gate_count_regression.jl` (8 circuits),
+  `test/test_negative.jl` (1 real-compile site, 3 negative paths kept
+  as-is), and `test/test_toffoli_depth.jl` (1 real-compile loop, 3
+  functions; synthetic `_mk` circuits not touched since they're
+  intentionally incomplete). U01's `verify_reversibility` fix is what
+  makes this meaningful — pre-U01 the check was tautological and adding
+  it here would have been theater. Now it actually checks
+  ancilla-zero + input-preservation per random input. All touched tests
+  pass green on targeted run; full `Pkg.test()` green.
+
+- **Bennett-sqtd (U22) — `soft_feistel_int8` was documented as a
+  bijection; it isn't.** The Int8 → UInt32 zero-extend → `soft_feistel32`
+  → low-byte truncate pipeline produces 207 distinct Int8 images out
+  of 256 inputs (max collision 5, 49 unreachable outputs). Fix: rewrote
+  docstring + header comment to cite "low-collision hash" with the
+  exact image size; kept the underlying algorithm unchanged (no gate
+  cost impact). Test gate: `test/test_sqtd_feistel_not_bijection.jl`
+  (4 testsets, 67 asserts): pins image size at exactly 207, max
+  collision at exactly 5, verifies the 32-bit `soft_feistel32` IS a
+  bijection on walking-1 + walking-~1 bit sweeps (full 2³² enumeration
+  too slow), and a docstring-honesty check that "bijection" no longer
+  appears without "not a". `test_persistent_hashcons.jl:158` already
+  asserts `length(images) > 200` which hedges correctly and still
+  passes. Full `Pkg.test()` green.
+
 - **Bennett-n3z4 (U21) — `cf_reroot` treated `r_key == 0` as the empty-slot
   sentinel.** `src/persistent/cf_semi_persistent.jl:350-357` decremented
   `arr_count` whenever the diff-entry's old key was zero. Int8(0) is a

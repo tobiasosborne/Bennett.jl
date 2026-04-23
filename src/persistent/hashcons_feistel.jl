@@ -11,10 +11,14 @@
 # Rotations [1, 3, 5, 7] are odd, pairwise-unequal — matches the gate-level
 # emitter in src/feistel.jl.
 #
-# Why "perfect hash" — Feistel is a bijection on UInt32 → UInt32.  No
-# collisions.  Used as a pre-hash on persistent-map keys: every key maps to
-# a unique image.  Cheaper than Jenkins for the same effect when only
-# uniformity (not avalanche strength) is needed.
+# Pre-hash for persistent-map keys.  `soft_feistel32` is a bijection on
+# UInt32 → UInt32 (Luby-Rackoff).  `soft_feistel_int8` wraps it for Int8
+# keys by zero-extending to UInt32, hashing, and truncating the low byte
+# — which is NOT a bijection on Int8 → Int8 (Bennett-sqtd / U22). The
+# zero-extend-then-truncate loses information: of the 256 Int8 inputs,
+# only 207 distinct low-byte outputs are produced, with max collision
+# count 5. For HAMT hash-slot distribution this is still a very low-
+# collision hash; docstrings are honest about the non-bijection.
 #
 # Cost prediction: ~8W Toffoli per evaluation (W=16 per half, 4 rounds).
 # Compared to Jenkins-96: fewer total ops (~5 per round vs 24 total).
@@ -67,8 +71,16 @@ end
 """
     soft_feistel_int8(k::Int8) -> Int8
 
-Convenience wrapper: hash an Int8 key.  Zero-extends to UInt32, runs
-Feistel, returns the low byte reinterpreted as Int8.
+Low-collision 8-bit hash. Zero-extends to UInt32, runs `soft_feistel32`,
+truncates the low byte, reinterprets as Int8.
+
+**Not a bijection** (Bennett-sqtd / U22): the zero-extend→Feistel→low-byte
+pipeline loses information since Feistel is bijective on UInt32 but only
+256 of the 2³² outputs are reachable from 8-bit inputs, and their low
+bytes collide. Measured image set size: 207 distinct values / 256 inputs
+(max collision count 5, 49 unreachable outputs). Adequate as a HAMT
+hash-slot pre-mixer; insufficient if strict bijection is required —
+widen to UInt16 or UInt32 codomain in that case (see `soft_feistel32`).
 """
 @inline function soft_feistel_int8(k::Int8)::Int8
     k_u32 = UInt32(reinterpret(UInt8, k))

@@ -180,6 +180,10 @@ include("test_hmn0_hamt_overflow.jl")
 # of the encoded diff_idx, not `r_key == 0` (which corrupted Int8(0)-key
 # overwrite-reroot sequences).
 include("test_n3z4_cf_reroot_key_zero.jl")
+# Bennett-sqtd / U22 — soft_feistel_int8 is NOT a bijection (was claimed
+# to be); docstring + comment corrected, exact image size (207/256)
+# pinned as a regression baseline.
+include("test_sqtd_feistel_not_bijection.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")

@@ -1,8 +1,13 @@
+# Bennett-11xt / U23: each compiled circuit below now carries a
+# `verify_reversibility` call (+ simulate sanity) so the DAG extraction
+# is rooted in a circuit that actually satisfies Bennett's invariants.
 @testset "Dependency DAG extraction" begin
 
     @testset "simple addition DAG" begin
         f(x::Int8) = x + Int8(1)
         c = reversible_compile(f, Int8)
+        @test verify_reversibility(c)
+        @test simulate(c, Int8(0)) == Int8(1)
         dag = Bennett.extract_dep_dag(c)
 
         # DAG should have nodes for each gate
@@ -20,6 +25,8 @@
     @testset "polynomial DAG" begin
         g(x::Int8) = x * x + Int8(3) * x + Int8(1)
         c = reversible_compile(g, Int8)
+        @test verify_reversibility(c)
+        @test simulate(c, Int8(0)) == Int8(1)
         dag = Bennett.extract_dep_dag(c)
 
         # More complex function = more nodes
@@ -30,6 +37,7 @@
     @testset "DAG edge correctness" begin
         f(x::Int8) = x + Int8(1)
         c = reversible_compile(f, Int8)
+        @test verify_reversibility(c)
         dag = Bennett.extract_dep_dag(c)
 
         # Every pred/succ relationship must be symmetric
