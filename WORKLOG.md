@@ -9,6 +9,20 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
 
 ### Closed this session
 
+- **Bennett-plb7 (U13) — IRVarGEP.elem_width silently defaulted to 8.**
+  `src/ir_extract.jl:1608` and `:1619` (local-SSA and global-constant GEP
+  paths) had `ew = src_type isa LLVM.IntegerType ? LLVM.width(src_type) :
+  8` — silently substituting 8 whenever the GEP source was double /
+  vector / struct / whatever. A `getelementptr double, ptr %p, i64 %i`
+  got recorded with `elem_width = 8`, so downstream `lower_var_gep!`
+  selected bit 2 instead of double 2. Fixed both sites: fail loud via
+  `_ir_error` naming the offending LLVM type. Test gate:
+  `test/test_plb7_irvargep_elem_width.jl` — T1 `gep double` raises with
+  "non-integer source" in the message; T2 `gep i16` correctly extracts
+  `elem_width = 16`. Unlike U12, the fail-loud here didn't surface
+  latent struct-GEP silent-drops — variable-index GEPs on structs are
+  rare in the corpus. Full `Pkg.test()` green; baselines byte-identical.
+
 - **Bennett-vz5n (U12) — GEP `offset_bytes` stored the raw index, not bytes.**
   `src/ir_extract.jl:1572` converted a constant-index GEP to IRPtrOffset
   by storing `_const_int_as_int(ops[2])` directly. The consumer at

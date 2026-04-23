@@ -148,6 +148,9 @@ include("test_u21m_switch_phi_patching.jl")
 # Bennett-vz5n / U12 — constant-index GEP scales the raw index by the
 # source element's byte stride (was raw_idx; now raw_idx * bytes).
 include("test_vz5n_gep_offset_bytes.jl")
+# Bennett-plb7 / U13 — variable-index GEP fails loud on non-integer source
+# element types (was: silent default to elem_width = 8).
+include("test_plb7_irvargep_elem_width.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")

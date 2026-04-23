@@ -1602,10 +1602,18 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 return IRPtrOffset(dest, ssa(names[base.ref]), offset)
             else
                 # Variable-index GEP → IRVarGEP (MUX-tree selection at lowering time)
+                # Bennett-plb7 / U13: fail loud when the source element isn't
+                # an integer. The old `? LLVM.width : 8` default silently turned
+                # a `gep double, ptr %p, i64 %i` (stride 64) into an
+                # `elem_width = 8` GEP, selecting bit 2 instead of double 2.
                 idx_op = _operand(ops[2], names)
                 src_ty_ref = LLVM.API.LLVMGetGEPSourceElementType(inst)
                 src_type = LLVM.LLVMType(src_ty_ref)
-                ew = src_type isa LLVM.IntegerType ? LLVM.width(src_type) : 8
+                src_type isa LLVM.IntegerType || _ir_error(inst,
+                    "variable-index getelementptr with non-integer source " *
+                    "element type $(src_type) not supported; cannot infer " *
+                    "a bit-exact elem_width (Bennett-plb7 / U13)")
+                ew = LLVM.width(src_type)
                 return IRVarGEP(dest, ssa(names[base.ref]), idx_op, ew)
             end
         end
@@ -1616,7 +1624,12 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             gname = Symbol(LLVM.name(base))
             src_ty_ref = LLVM.API.LLVMGetGEPSourceElementType(inst)
             src_type = LLVM.LLVMType(src_ty_ref)
-            ew = src_type isa LLVM.IntegerType ? LLVM.width(src_type) : 8
+            # Same guard as above (Bennett-plb7 / U13).
+            src_type isa LLVM.IntegerType || _ir_error(inst,
+                "getelementptr on global with non-integer source element " *
+                "type $(src_type) not supported; cannot infer elem_width " *
+                "(Bennett-plb7 / U13)")
+            ew = LLVM.width(src_type)
             if ops[2] isa LLVM.ConstantInt
                 # Compile-time index into a constant table — still synthesizable
                 # as IRVarGEP with a constant-kind index.
