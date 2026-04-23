@@ -2489,7 +2489,18 @@ end
 
 # ---- helpers ----
 
-"""Get the dereferenceable byte count from a pointer parameter, or 0 if unknown."""
+"""Get the dereferenceable byte count from a pointer parameter, or 0 if unknown.
+
+Bennett-8b2f / U17: the IR-string fallback previously did
+`match(r"dereferenceable\\((\\d+)\\)", defline)` — function-wide,
+returning the FIRST N on the `define` line regardless of which
+parameter was being queried. On multi-ptr functions where the params
+had different dereferenceable counts (or where some had none), every
+call returned the same first-found value → phantom input-wire widths
+for non-matching params. Fix: anchor the fallback regex to the specific
+`%paramname`, matching `dereferenceable\\((\\d+)\\)[^,)]*%NAME\\b` which
+walks within a single param slot (bounded by `,` / `)`).
+"""
 function _get_deref_bytes(func::LLVM.Function, param::LLVM.Argument)
     # Find the parameter index (1-based)
     idx = 0
@@ -2511,15 +2522,46 @@ function _get_deref_bytes(func::LLVM.Function, param::LLVM.Argument)
     catch e
         e isa MethodError || rethrow()
     end
-    # Fallback: parse from function definition line
+    # Fallback: walk the param slot list on the `define` line and read
+    # `dereferenceable(N)` only from the slot whose `%NAME` matches.
+    # Regex is fragile here because Julia mangled names arrive as
+    # `%"t::Tuple"` with quotes — a simple `%NAME\b` won't match.
+    # Slice by parameter, then look for both `%NAME` and `%"NAME"`.
     ir_str = string(func)
-    # Match "dereferenceable(N) %paramname" pattern
-    pname = LLVM.name(param)
-    # Look for dereferenceable(N) near the param name on the define line
     defline = split(ir_str, "\n")[1]
-    m = match(r"dereferenceable\((\d+)\)", defline)
-    if m !== nothing
-        return parse(Int, m.captures[1])
+    pname = LLVM.name(param)
+    # Extract the (...) parameter list.
+    lp = findfirst('(', defline)
+    rp = findlast(')', defline)
+    (lp === nothing || rp === nothing || lp >= rp) && return 0
+    param_list = defline[lp+1:rp-1]
+    # Split on top-level commas. Paren nesting within a slot (e.g.
+    # `sret([2 x i64])`, `dereferenceable(16)`) must not split the slot.
+    slots = String[]
+    depth = 0
+    slot_start = 1
+    for (i, c) in pairs(param_list)
+        if c == '('
+            depth += 1
+        elseif c == ')'
+            depth -= 1
+        elseif c == ',' && depth == 0
+            push!(slots, param_list[slot_start:prevind(param_list, i)])
+            slot_start = nextind(param_list, i)
+        end
+    end
+    push!(slots, param_list[slot_start:end])
+    # Find the slot containing our %NAME (quoted or bare).
+    needle_q = "%\"" * pname * "\""
+    needle_b = "%" * pname
+    for slot in slots
+        has_q = occursin(needle_q, slot)
+        has_b = !has_q && (occursin(" " * needle_b, slot) ||
+                           startswith(strip(slot), needle_b))
+        if has_q || has_b
+            m = match(r"dereferenceable\((\d+)\)", slot)
+            return m === nothing ? 0 : parse(Int, m.captures[1])
+        end
     end
     return 0
 end

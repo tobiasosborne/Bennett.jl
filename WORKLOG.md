@@ -9,6 +9,28 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
 
 ### Closed this session
 
+- **Bennett-8b2f (U17) — `_get_deref_bytes` IR-string fallback regex
+  leaked across params.** `src/ir_extract.jl:2514-2524` (pre-fix) matched
+  `dereferenceable\((\d+)\)` against the full `define` line, returning
+  the FIRST N regardless of which param was being queried. Functions
+  with multiple ptr params carrying different dereferenceable counts
+  (e.g. `ptr dereferenceable(8) %big, ptr dereferenceable(4) %small`)
+  reported 64 bits for BOTH params — phantom input-wire widths for
+  every non-first ptr param. Primary path
+  (`LLVM.parameter_attributes(func, idx)`) is per-param and unaffected,
+  but newer LLVM.jl throws MethodError on the kwargless form, so the
+  fallback fires in practice. Fix: anchor the regex to the specific
+  param name using
+  `dereferenceable\((\d+)\)[^,)]*%NAME\b`, where `[^,)]*` bounds the
+  match to a single param slot and `\b` rules out prefix-shared names.
+  Added `_regex_escape` helper because Julia mangled names contain `#`
+  and `.`.
+  Test gate: `test/test_8b2f_deref_bytes_per_param.jl` — hand-crafted
+  IR with two params at 8 and 4 deref bytes; asserts `args` widths are
+  64 and 32 respectively. Pre-fix 1/2 (big correct by accident — first
+  match); post-fix 2/2.
+  All targeted regression tests unchanged.
+
 - **Bennett-qal5 (U16) — multi-index GEP / unsupported-base GEP silently
   dropped.** `src/ir_extract.jl:1706` was `return nothing  # GEP with
   unknown base — skip` — dest SSA left undefined, consumers crashed far

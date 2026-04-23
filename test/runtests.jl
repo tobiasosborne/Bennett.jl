@@ -162,6 +162,9 @@ include("test_5oyt_unregistered_callee.jl")
 # reject loud (was silent drop, leaving dest SSA undefined). Full
 # type-walking byte-offset accumulation deferred.
 include("test_qal5_multi_index_gep.jl")
+# Bennett-8b2f / U17 — `_get_deref_bytes` IR-string fallback regex now
+# anchored to the specific param name (was: function-wide first-match).
+include("test_8b2f_deref_bytes_per_param.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")
