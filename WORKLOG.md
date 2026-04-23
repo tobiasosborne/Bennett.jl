@@ -9,6 +9,78 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
 
 ### Closed this session
 
+- **Bennett-7stg (U26) — `register_callee!` / `_lookup_callee` mutated
+  a module-global `Dict{String,Function}` without locking.** Added a
+  `ReentrantLock` (`_known_callees_lock`) at `src/ir_extract.jl:224`.
+  Both mutation and lookup now wrap their Dict access in a `lock do …
+  end` block. Reentrant entry allows the (pathological) case where
+  lookup triggers a registration during compilation. Test gate:
+  `test/test_7stg_register_callee_locking.jl` — 2 testsets: idempotent
+  single-thread registers, then 8 `Threads.@spawn` tasks that all
+  concurrently register 4 soft-hash functions and compile them.
+  Asserts no exception escapes. Under `julia -t 8` the test finishes
+  cleanly. Full `Pkg.test()` green.
+
+### Session end — 2026-04-23
+
+**20 P1 catalogue beads closed this session** (U07–U10, U11–U17, U18,
+U19–U26 excluding the reserved U06 which was closed in the prior
+session). Progress:
+
+| U# | Bead | Summary |
+|---|---|---|
+| U07 | k286 | `soft_fpext` quiets sNaN |
+| U08 | r84x | NaN payload/sign bit-exact + fptosi saturates INT_MIN |
+| U09 | l9cl | fail loud on i128+ ConstantInts |
+| U10 | tu6i | fail loud on StructType extract/insertvalue |
+| U11 | u21m | switch phi patching: global + duplicate-target safe |
+| U12 | vz5n | GEP offset_bytes scales by source element byte stride |
+| U13 | plb7 | IRVarGEP fail-loud on non-integer source |
+| U14 | 4mmt | reject atomic/volatile load/store |
+| U15 | 5oyt | fail loud on unregistered/inline-asm calls |
+| U16 | qal5 | fail loud on multi-index / unsupported-base GEPs |
+| U17 | 8b2f | `_get_deref_bytes` fallback anchored per-param |
+| U18 | g27k | cc0.3 catch narrowed to exception type + non-Bennett |
+| U19 | 6fg9 | simulate arity + per-input bit-width guard |
+| U20 | hmn0 | HAMT 9th-hash-slot overflow detection (+26% gates) |
+| U21 | n3z4 | cf_reroot: was-allocated flag in diff_idx bit 63 |
+| U22 | sqtd | soft_feistel_int8 docs honest (207/256 image) |
+| U23 | 11xt | `verify_reversibility` added to 5 metric-only test files |
+| U24 | swee | WireAllocator n<0 + double-free guards |
+| U25 | k0bg | reversible_compile kwarg + arg-type validation |
+| U26 | 7stg | register_callee! ReentrantLock |
+
+**Still open** from the Phase 0 catalogue list:
+- **U27** (spa8) — `:auto` add dispatcher strictly worse than `:ripple`
+  for 2-op adds. Claim released mid-session after probing.
+  `_pick_add_strategy` currently picks Cuccaro whenever op2 is dead
+  (SSA last-use OR const). Cuccaro produces more Toffolis AND more
+  total gates than ripple at every width — i8/i16/i32/i64 both 2-op
+  `a+b` and 1-op `x+1` cases. Fix is one line in
+  `src/lower.jl:1240` but **ripples through ~10+ gate-count baselines**
+  (i8 x+1 = 100 → 88; BENCHMARKS.md; CLAUDE.md §6; many tests). Needs
+  a separate session with dedicated baseline-refresh pass, or a
+  decision to keep :auto → :cuccaro as the documented default and
+  annotate the catalogue finding as "this IS the intended default per
+  wire-savings priority".
+- U28 (epwy) — `fold_constants=false` default despite being safe
+- U29 (xlsz) — divergent kwargs across `reversible_compile` overloads
+- U30 (4fri) — `:auto` mul dispatcher never picks qcla_tree/karatsuba
+- U31 (b1vp) — `fptoui` routed through `soft_fptosi`; `soft_fptoui`
+  missing
+
+**Workflow notes for next agent**:
+- Full `Pkg.test()` is ~4 min. When a catalogue fix triggers a cascade
+  of test-file updates, iterate on the affected test files first
+  (~30 s each), run one final Pkg.test as a sanity gate.
+- Existing per-file test includes at `test/runtests.jl:106-end` are
+  one-line per catalogue fix; keep them anchored by U# reference in
+  the comment for future bisect.
+- `test_t0_preprocessing.jl`'s `skipped` allowlist is the accumulation
+  point for "Julia optimize=true emits something we correctly reject
+  loud". Add new keywords to that tuple rather than weakening fail-loud
+  fixes.
+
 - **Bennett-k0bg (U25) — `reversible_compile` accepted garbage kwargs +
   types silently.** `bit_width=-5` produced a 26-wire circuit; `=200`
   on Int8 silently accepted and produced a 602-wire circuit;

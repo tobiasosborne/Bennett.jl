@@ -189,6 +189,9 @@ include("test_swee_wire_allocator_negative.jl")
 # Bennett-k0bg / U25 — reversible_compile validates bit_width,
 # max_loop_iterations, and arg_types up-front.
 include("test_k0bg_compile_validation.jl")
+# Bennett-7stg / U26 — register_callee! / _lookup_callee wrapped in a
+# ReentrantLock for safe concurrent use.
+include("test_7stg_register_callee_locking.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")

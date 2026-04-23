@@ -218,27 +218,38 @@ end
 # ---- known callee registry for gate-level inlining ----
 
 const _known_callees = Dict{String, Function}()
+# Bennett-7stg / U26: wrap mutations and lookups in a ReentrantLock.
+# Multi-threaded compiles (e.g. parallel Pkg.test workers) could race on
+# Dict mutation; the lock makes register_callee! / _lookup_callee safe.
+# ReentrantLock allows recursive entry — matters for pathological cases
+# where _lookup_callee somehow triggers a register during compilation.
+const _known_callees_lock = ReentrantLock()
 
 """Register a Julia function for gate-level inlining when encountered as an LLVM call."""
 function register_callee!(f::Function)
     # Get the LLVM name Julia would give this function (j_name_NNN pattern)
     # We match by substring, so just store the Julia function name
-    _known_callees[string(nameof(f))] = f
+    lock(_known_callees_lock) do
+        _known_callees[string(nameof(f))] = f
+    end
+    return nothing
 end
 
 function _lookup_callee(llvm_name::String)
-    # First: try exact match (for hardcoded lookups like "soft_fcmp_ole")
-    haskey(_known_callees, llvm_name) && return _known_callees[llvm_name]
+    lock(_known_callees_lock) do
+        # First: try exact match (for hardcoded lookups like "soft_fcmp_ole")
+        haskey(_known_callees, llvm_name) && return _known_callees[llvm_name]
 
-    # Second: LLVM-mangled names follow julia_<funcname>_<NNN> or j_<funcname>_<NNN>.
-    # Extract the function name and do exact dict lookup.
-    lname = lowercase(llvm_name)
-    m = match(r"^(?:julia_|j_)(.+)_(\d+)$", lname)
-    if m !== nothing
-        fname = m.captures[1]
-        haskey(_known_callees, fname) && return _known_callees[fname]
+        # Second: LLVM-mangled names follow julia_<funcname>_<NNN> or j_<funcname>_<NNN>.
+        # Extract the function name and do exact dict lookup.
+        lname = lowercase(llvm_name)
+        m = match(r"^(?:julia_|j_)(.+)_(\d+)$", lname)
+        if m !== nothing
+            fname = m.captures[1]
+            haskey(_known_callees, fname) && return _known_callees[fname]
+        end
+        return nothing
     end
-    return nothing
 end
 
 # ---- value identity via C pointer ----
