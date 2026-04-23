@@ -49,6 +49,26 @@ export pebbled_bennett, eager_bennett, value_eager_bennett, pebbled_group_bennet
 
 reversible_compile(f, types::Type...; kw...) = reversible_compile(f, Tuple{types...}; kw...)
 
+# Bennett-k0bg / U25: shared validation for the Julia-function entry points.
+const _SUPPORTED_SCALAR_ARGS = (Int8, Int16, Int32, Int64,
+                                UInt8, UInt16, UInt32, UInt64,
+                                Float64, Bool)
+
+"Check whether `T` is an argument type supported by `reversible_compile`."
+@inline function _is_supported_arg_type(T::Type)
+    T in _SUPPORTED_SCALAR_ARGS && return true
+    # Flat NTuple whose element type is a supported scalar (common sret
+    # pattern for aggregate returns; Bennett-0c8o).
+    if T <: Tuple && isconcretetype(T)
+        params = T.parameters
+        # NTuple{N, Elt} expands to (Elt, Elt, ...) — every param equal and supported.
+        !isempty(params) || return false
+        all(p -> p in _SUPPORTED_SCALAR_ARGS, params) || return false
+        return true
+    end
+    return false
+end
+
 """
     reversible_compile(f, arg_types::Type{<:Tuple}) -> ReversibleCircuit
 
@@ -60,6 +80,23 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
                             compact_calls::Bool=false, bit_width::Int=0,
                             add::Symbol=:auto, mul::Symbol=:auto,
                             strategy::Symbol=:auto)
+    # Bennett-k0bg / U25: up-front kwarg + type validation.
+    # `bit_width == 0` means "infer from arg_types"; otherwise the width
+    # must be in [1, 64] (powers-of-2 are the common case but narrow
+    # widths like 2 and 4 are exercised by test_narrow.jl).
+    (bit_width == 0 || 1 <= bit_width <= 64) || throw(ArgumentError(
+        "reversible_compile: bit_width must be 0 (infer) or in [1, 64] — " *
+        "got $bit_width"))
+    max_loop_iterations >= 0 || throw(ArgumentError(
+        "reversible_compile: max_loop_iterations must be >= 0, got " *
+        "$max_loop_iterations"))
+    for (i, T) in enumerate(arg_types.parameters)
+        _is_supported_arg_type(T) || throw(ArgumentError(
+            "reversible_compile: arg_types[$i] = $T is not supported; " *
+            "expected one of $(_SUPPORTED_SCALAR_ARGS) or an NTuple of " *
+            "those"))
+    end
+
     strategy in (:auto, :tabulate, :expression) ||
         error("reversible_compile: unknown strategy :$strategy; " *
               "supported: :auto, :tabulate, :expression")

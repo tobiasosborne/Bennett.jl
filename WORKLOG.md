@@ -9,6 +9,40 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
 
 ### Closed this session
 
+- **Bennett-k0bg (U25) — `reversible_compile` accepted garbage kwargs +
+  types silently.** `bit_width=-5` produced a 26-wire circuit; `=200`
+  on Int8 silently accepted and produced a 602-wire circuit;
+  `max_loop_iterations=-1` silently accepted; non-supported types like
+  `Float32`/`BigInt`/`String` reached internals and threw LLVM-internal
+  errors. Added up-front validation in `reversible_compile(f,
+  arg_types::Type{<:Tuple})`: `bit_width ∈ {0, 8, 16, 32, 64}`,
+  `max_loop_iterations >= 0`, and each `arg_types.parameters[i]` must
+  be in `_SUPPORTED_SCALAR_ARGS = (Int8..Int64, UInt8..UInt64,
+  Float64, Bool)` OR a concrete Tuple whose parameters are all in that
+  set (handles `NTuple{N,T}` returns used by Bennett-0c8o). **Scope
+  tuning gotcha**: first draft constrained `bit_width ∈ {0, 8, 16, 32,
+  64}` per the catalogue, but `test_narrow.jl` intentionally exercises
+  narrow widths 2, 3, 4, 6 via `bit_width=N`. Relaxed to
+  `bit_width == 0 || 1 <= bit_width <= 64`. Test gate:
+  `test/test_k0bg_compile_validation.jl` (5 testsets, 20 asserts):
+  invalid bit_widths {-5, 200, 65} and max_loop_iterations {-1, -100}
+  raise ArgumentError; valid values {0, 4, 8, 16} and {0, 10} compile;
+  unsupported types (Float32, BigInt, String) raise; scalar integers
+  Int8..Int64, UInt8 compile; NTuple{3,Int8} compiles. Pre-fix 13/20;
+  post-fix 20/20. Full `Pkg.test()` green.
+
+- **Bennett-swee (U24) — `WireAllocator.allocate!(wa, -1)` silent empty
+  return.** `src/wire_allocator.jl:8`'s `for _ in 1:n` loop was
+  zero-trip for `n < 0`, returning `Int[]`. An empty wire vector
+  propagated into the Bennett construction and crashed much later with
+  BoundsError. `free!` had no double-free detection either. Added:
+  `n >= 0 || throw(ArgumentError(...))` at entry of `allocate!` (zero
+  stays legal for loop-unroll corner cases); linear `w in wa.free_list`
+  scan before insert in `free!` — O(N²) worst case but Bennett's
+  allocator sizes are small (~thousands) so the cost is negligible.
+  Test gate: `test/test_swee_wire_allocator_negative.jl` (10 asserts).
+  Full `Pkg.test()` green.
+
 - **Bennett-11xt (U23) — 5 test files compiled circuits without an
   ancilla-zero check.** Per CLAUDE.md §4, "runs without errors" is not a
   passing test; the test must verify Bennett's invariants on the actual

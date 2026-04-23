@@ -184,6 +184,11 @@ include("test_n3z4_cf_reroot_key_zero.jl")
 # to be); docstring + comment corrected, exact image size (207/256)
 # pinned as a regression baseline.
 include("test_sqtd_feistel_not_bijection.jl")
+# Bennett-swee / U24 — WireAllocator rejects negative n and double-free.
+include("test_swee_wire_allocator_negative.jl")
+# Bennett-k0bg / U25 — reversible_compile validates bit_width,
+# max_loop_iterations, and arg_types up-front.
+include("test_k0bg_compile_validation.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")
