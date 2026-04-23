@@ -1179,19 +1179,29 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         return IRRet(_operand(ops[1], names), _iwidth(ops[1]))
     end
 
-    # extractvalue — select one element from an aggregate
+    # extractvalue — select one element from an aggregate.
+    # Bennett-tu6i / U10: only ArrayType aggregates are supported (homogeneous,
+    # scalar-element). StructType aggregates ({iN, i1}, mixed-width tuples,
+    # .with.overflow intrinsics, cmpxchg results) need field-wise width
+    # tracking that IRExtractValue doesn't carry. Fail loud on StructType —
+    # without this guard, `LLVM.eltype(struct_type)` raises a raw UndefRefError
+    # deep in the LLVM.jl bindings with no Bennett context.
     if opc == LLVM.API.LLVMExtractValue
         ops = LLVM.operands(inst)
         agg_val = ops[1]
         idx_ptr = LLVM.API.LLVMGetIndices(inst)
         idx = unsafe_load(idx_ptr)  # 0-based
         agg_type = LLVM.value_type(agg_val)
+        agg_type isa LLVM.ArrayType || _ir_error(inst,
+            "extractvalue on StructType aggregates not supported; " *
+            "only homogeneous ArrayType aggregates are. Source type: " *
+            string(agg_type))
         ew = LLVM.width(LLVM.eltype(agg_type))
         ne = LLVM.length(agg_type)
         return IRExtractValue(dest, _operand(agg_val, names), idx, ew, ne)
     end
 
-    # insertvalue
+    # insertvalue — same ArrayType-only restriction as extractvalue.
     if opc == LLVM.API.LLVMInsertValue
         ops = LLVM.operands(inst)
         agg_val = ops[1]
@@ -1199,6 +1209,10 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         idxs_ptr = LLVM.API.LLVMGetIndices(inst)
         idx = Int(unsafe_wrap(Array, idxs_ptr, 1)[1])
         agg_type = LLVM.value_type(inst)
+        agg_type isa LLVM.ArrayType || _ir_error(inst,
+            "insertvalue on StructType aggregates not supported; " *
+            "only homogeneous ArrayType aggregates are. Destination type: " *
+            string(agg_type))
         ew = LLVM.width(LLVM.eltype(agg_type))
         ne = LLVM.length(agg_type)
         return IRInsertValue(dest, _operand(agg_val, names),

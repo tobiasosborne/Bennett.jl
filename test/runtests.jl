@@ -138,6 +138,9 @@ include("test_r84x_nan_bit_exact.jl")
 # LLVM.jl's `convert(Int, ::ConstantInt)` silently truncates; IROperand.value
 # is Int64, so i128+ constants cannot round-trip without data loss.
 include("test_l9cl_i128_constantint.jl")
+# Bennett-tu6i / U10 — extractvalue/insertvalue on StructType aggregates
+# now fail loud (prev: raw UndefRefError deep in LLVM.jl).
+include("test_tu6i_struct_extractvalue.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")

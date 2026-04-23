@@ -9,6 +9,28 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
 
 ### Closed this session
 
+- **Bennett-tu6i (U10) — `extractvalue`/`insertvalue` on StructType raised
+  raw UndefRefError.** `src/ir_extract.jl:1182-1206` (before this fix) called
+  `LLVM.eltype(agg_type)` without first checking `agg_type isa LLVM.ArrayType`.
+  For `{iN, i1}` structs (e.g. produced by `llvm.sadd.with.overflow.i64`) or
+  mixed-width tuples (e.g. `{i64, i32}`), that raised a bare UndefRefError
+  deep in LLVM.jl with no Bennett context. Added `isa ArrayType` precondition
+  with `_ir_error` that names the opcode + the offending LLVM type. The
+  `IRExtractValue` / `IRInsertValue` records carry a single `elem_width`
+  so field-wise width tracking for heterogeneous structs isn't expressible
+  today; this is a fail-loud gate, not an enablement — full struct support
+  would require extending `ir_types.jl`. Test gate:
+  `test/test_tu6i_struct_extractvalue.jl` — 2 testsets, 6 asserts. T1
+  hand-crafted `.with.overflow` (struct operand to extractvalue); T2 dead
+  insertvalue inside a scalar-return function. Pre-fix: both raise
+  UndefRefError. Post-fix: both raise a Bennett error naming the opcode
+  and "StructType aggregates not supported". **Test-design gotcha**: the
+  first T2 draft returned the struct directly, which failed much earlier
+  at `_type_width` during signature parsing (struct return type) and never
+  reached the insertvalue-convert path. Rewrote to put a dead insertvalue
+  inside a scalar-return body so the guard under test actually fires.
+  Full `Pkg.test()` green; baselines byte-identical.
+
 - **Bennett-l9cl (U09) — i128 ConstantInt truncation.** LLVM.jl's
   `convert(Int, ::LLVM.ConstantInt)` calls `LLVMConstIntGetSExtValue`,
   which returns only the low 64 bits — `i128 2^127` silently comes
