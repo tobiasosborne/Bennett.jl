@@ -1645,6 +1645,16 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
 
     # Load from pointer → IRLoad (CNOT-copy from wire subset)
     if opc == LLVM.API.LLVMLoad
+        # Bennett-4mmt / U14: reject atomic / volatile loads. Reversible
+        # circuit compilation has no semantics for ordering guarantees;
+        # silently producing a plain IRLoad would erase the source
+        # program's atomic contract and turn a correctness bug into a
+        # perf "feature".
+        LLVM.API.LLVMGetVolatile(inst) == 0 || _ir_error(inst,
+            "volatile load not supported (Bennett-4mmt / U14)")
+        LLVM.API.LLVMGetOrdering(inst) == LLVM.API.LLVMAtomicOrderingNotAtomic ||
+            _ir_error(inst,
+                "atomic load not supported (Bennett-4mmt / U14)")
         ops = LLVM.operands(inst)
         ptr = ops[1]
         if haskey(names, ptr.ref)
@@ -1793,6 +1803,13 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
     # store: `store ty val, ptr p` -> IRStore (no dest — void in LLVM).
     # Skip when the stored value isn't an integer type (matches IRLoad policy).
     if opc == LLVM.API.LLVMStore
+        # Bennett-4mmt / U14: reject atomic / volatile stores — same
+        # reasoning as the load guard above.
+        LLVM.API.LLVMGetVolatile(inst) == 0 || _ir_error(inst,
+            "volatile store not supported (Bennett-4mmt / U14)")
+        LLVM.API.LLVMGetOrdering(inst) == LLVM.API.LLVMAtomicOrderingNotAtomic ||
+            _ir_error(inst,
+                "atomic store not supported (Bennett-4mmt / U14)")
         ops = LLVM.operands(inst)
         val = ops[1]
         ptr = ops[2]

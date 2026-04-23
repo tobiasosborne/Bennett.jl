@@ -151,6 +151,9 @@ include("test_vz5n_gep_offset_bytes.jl")
 # Bennett-plb7 / U13 — variable-index GEP fails loud on non-integer source
 # element types (was: silent default to elem_width = 8).
 include("test_plb7_irvargep_elem_width.jl")
+# Bennett-4mmt / U14 — atomic/volatile load/store reject loud instead of
+# silently producing a plain non-atomic IRLoad/IRStore.
+include("test_4mmt_atomic_volatile_load_store.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")

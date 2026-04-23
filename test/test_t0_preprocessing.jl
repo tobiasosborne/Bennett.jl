@@ -133,9 +133,27 @@ _corpus = [
     end
     println("  ==================================================")
 
-    # All corpus functions must extract without error (no sret/memcpy surprises,
-    # no unhandled IR).
-    @test isempty(skipped)
+    # All corpus functions must extract without error, EXCEPT for benign
+    # fail-loud rejections from the U-series ir_extract hardening (Phase 0
+    # catalogue). Julia's optimize=true sometimes emits GC-frame atomic
+    # stores / struct GEPs / etc. which the hardened extractor now correctly
+    # rejects rather than silently producing wrong IR. Those skips are
+    # evidence that the fail-loud guards fire — not a regression.
+    # If you see a NEW kind of skip here, investigate: it's likely an
+    # unintended extractor gap.
+    allowlist = (
+        "store atomic", "load atomic",           # Bennett-4mmt / U14 (LLVM IR order)
+        "atomic store", "atomic load",           # Bennett-4mmt / U14 (Bennett error msg order)
+        "volatile",                              # Bennett-4mmt / U14
+        "extractvalue on StructType",            # Bennett-tu6i / U10
+        "insertvalue on StructType",             # Bennett-tu6i / U10
+        "non-integer source",                    # Bennett-plb7 / U13
+        "width 128 bits encountered",            # Bennett-l9cl / U09
+    )
+    unexpected = filter(skipped) do msg
+        !any(kw -> occursin(kw, msg), allowlist)
+    end
+    @test isempty(unexpected)
 
     # Corpus-wide survival bound: naive memory patterns should NOT reach
     # the Bennett pipeline in unbounded quantity. ≤10 surviving stores+allocas
