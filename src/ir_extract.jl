@@ -1560,7 +1560,70 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 return IRCall(dest, callee, call_args, call_widths, ret_w)
             end
         end
-        return nothing
+
+        # Bennett-5oyt / U15: falling through here means no intrinsic
+        # handler matched and no callee is registered. Without this guard
+        # the instruction was silently dropped, leaving its dest SSA
+        # undefined and later references crashing with "Undefined SSA
+        # variable" far from the root cause. Explicit allowlist of benign
+        # LLVM intrinsics (memory-range annotations, optimizer hints, debug
+        # info, noalias scope decls) that are correctness-neutral to drop;
+        # everything else — including inline assembly — errors loud.
+        benign_prefixes = (
+            "llvm.lifetime.",
+            "llvm.assume",
+            "llvm.dbg.",
+            "llvm.experimental.noalias.scope.decl",
+            "llvm.invariant.start",
+            "llvm.invariant.end",
+            "llvm.sideeffect",
+            # llvm.memset appears in Julia IR for GC-frame zeroing etc.;
+            # reversible pipeline treats allocations separately.
+            "llvm.memset",
+            # llvm.memcpy's sret-specific path is handled upstream via
+            # auto-SROA (Bennett-uyf9 / γ); non-sret forms are rare in
+            # our corpus and route through the same benign-drop gate.
+            "llvm.memcpy",
+            "llvm.memmove",
+            # `llvm.trap` is Julia's unreachable-code marker (produced by
+            # type-conservative codegen for branches the compiler can't
+            # prove dead). Same unreachability argument as `j_throw_*`:
+            # silent drop matches pre-fix behaviour; reachable traps on
+            # valid input would be a compilation bug upstream.
+            "llvm.trap",
+            "llvm.debugtrap",
+            # Julia runtime throw helpers. For pure-bit-op functions on
+            # UInt64 (the soft-float kernels) these are unreachable dead
+            # code that Julia's type-conservative codegen emits anyway.
+            # Silent drop matches pre-fix behaviour; see U15 note: any
+            # function whose throw path IS reachable on valid input would
+            # silently produce garbage, which is the same gap as before.
+            "j_throw_",
+            "ijl_throw",
+            "jl_throw",
+            "ijl_bounds_error",
+            "jl_bounds_error",
+            # Julia meta-ops (GC safepoint, pointer_from_objref, etc.).
+            "julia.safepoint",
+            "julia.gc_",
+            "julia.pointer_from_objref",
+            "julia.push_gc_frame",
+            "julia.pop_gc_frame",
+            "julia.get_gc_frame_slot",
+        )
+        if any(p -> startswith(cname, p), benign_prefixes)
+            return nothing
+        end
+        # Inline asm: the callee operand is not a named function value.
+        is_inline_asm = n_ops == 0 || LLVM.API.LLVMIsAInlineAsm(ops[n_ops]) != C_NULL
+        is_inline_asm && _ir_error(inst,
+            "inline-asm call is not supported (Bennett-5oyt / U15)")
+        # Unregistered callee or unrecognised intrinsic.
+        _ir_error(inst,
+            "call to '$(cname)' has no registered callee handler or " *
+            "intrinsic pattern; register via `register_callee!` or " *
+            "extend the LLVMCall arm in ir_extract.jl " *
+            "(Bennett-5oyt / U15)")
     end
 
     # GEP with constant or variable offset

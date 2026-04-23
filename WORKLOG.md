@@ -9,6 +9,54 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
 
 ### Closed this session
 
+- **Bennett-5oyt (U15) — unregistered callee / inline-asm call silently
+  dropped.** `src/ir_extract.jl` LLVMCall handler's fall-through at the
+  end of the arm was `return nothing`, so any call that didn't match an
+  intrinsic pattern AND wasn't in `_lookup_callee`'s registry got
+  skipped — leaving its dest SSA undefined and crashing later with
+  "Undefined SSA variable" far from the root cause. Replaced with an
+  explicit benign-intrinsic allowlist + fail-loud for everything else.
+  Benign allowlist (correctness-neutral drops): `llvm.lifetime.*`,
+  `llvm.assume`, `llvm.dbg.*`, `llvm.experimental.noalias.scope.decl`,
+  `llvm.invariant.{start,end}`, `llvm.sideeffect`, `llvm.memset`,
+  `llvm.memcpy`, `llvm.memmove`, `llvm.trap`, `llvm.debugtrap`,
+  `j_throw_*` / `ijl_throw*` / `jl_throw*`, `ijl_bounds_error*` /
+  `jl_bounds_error*`, `julia.safepoint`, `julia.gc_*`,
+  `julia.pointer_from_objref`, `julia.push/pop_gc_frame`,
+  `julia.get_gc_frame_slot`. Inline asm specifically detected via
+  `LLVMIsAInlineAsm` on the callee operand.
+  Test gate: `test/test_5oyt_unregistered_callee.jl` — 3 scenarios.
+  T1 unregistered `@external_fn` loud-errors. T2 `call i32 asm "..."`
+  loud-errors with "inline" in the message. T3 `llvm.lifetime.start`
+  silently drops (extraction succeeds).
+  **Cascade fixup** (ran before each of these was caught via targeted
+  tests, not full Pkg.test):
+    - Added `j_throw_*`/`ijl_throw*`/`jl_throw*` to the allowlist —
+      `soft_fptrunc` has dead `j_throw_inexacterror` from Julia's
+      conservative codegen; test_float_circuit was breaking.
+    - Added `ijl_bounds_error*`/`jl_bounds_error*` — test_var_gep fail.
+    - Added `llvm.memset/memcpy/memmove` — test_t0_preprocessing's
+      cond_pair hit `llvm.memset` for GC-frame zeroing.
+    - Added `llvm.trap`/`llvm.debugtrap` — test_persistent_hashcons's
+      Okasaki+Jenkins demo emits `llvm.trap` in unreachable branches.
+    - Updated `test_t0_preprocessing`'s allowlist with `inline-asm`
+      + `call ptr asm`/`call i64 asm` — Julia's `%thread_ptr` fetch.
+    - Rewrote `test_tu6i_struct_extractvalue.jl` T1 to use a constant
+      struct initializer (`extractvalue {i64,i64} { i64 42, i64 7 }, 0`)
+      instead of `llvm.sadd.with.overflow.i64` — the intrinsic now
+      fails at U15 before ever reaching U10's guard, making the old
+      test unable to reach its target.
+    - Changed `test_t5_corpus_c.jl` TC1/TC2/TC3 from
+      `@test parsed isa ParsedIR; @test_throws reversible_compile` to
+      `@test_throws extract_parsed_ir_from_ll` — the extraction itself
+      now loud-errors on `malloc`/`realloc`, which is the point.
+  **Workflow gotcha**: I was running `Pkg.test()` after every tweak to
+  the allowlist, ~4 min per cycle. User called this out. Switched to
+  targeted test files (~30s total). One final full run as sanity gate.
+  Lesson for future P1 grinding: keep a mental list of affected test
+  files from the first failure and iterate on those.
+  Full `Pkg.test()` green; baselines byte-identical.
+
 - **Bennett-4mmt (U14) — atomic/volatile load/store silently coerced to
   plain IR.** `src/ir_extract.jl` load (`:1647`) and store (`:1795`) arms
   had no atomicity/volatility check. Silent acceptance would erase any

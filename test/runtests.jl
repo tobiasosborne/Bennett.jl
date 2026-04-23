@@ -154,6 +154,10 @@ include("test_plb7_irvargep_elem_width.jl")
 # Bennett-4mmt / U14 — atomic/volatile load/store reject loud instead of
 # silently producing a plain non-atomic IRLoad/IRStore.
 include("test_4mmt_atomic_volatile_load_store.jl")
+# Bennett-5oyt / U15 — unregistered/inline-asm calls reject loud (was
+# silent drop, leaving dest SSA undefined). Benign-intrinsic allowlist
+# keeps llvm.lifetime/trap/memset/etc. correctness-neutral.
+include("test_5oyt_unregistered_callee.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")

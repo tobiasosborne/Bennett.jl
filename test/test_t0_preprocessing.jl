@@ -149,6 +149,7 @@ _corpus = [
         "insertvalue on StructType",             # Bennett-tu6i / U10
         "non-integer source",                    # Bennett-plb7 / U13
         "width 128 bits encountered",            # Bennett-l9cl / U09
+        "inline-asm", "call ptr asm", "call i64 asm",  # Bennett-5oyt / U15
     )
     unexpected = filter(skipped) do msg
         !any(kw -> occursin(kw, msg), allowlist)

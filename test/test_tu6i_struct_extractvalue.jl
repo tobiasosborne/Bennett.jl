@@ -11,13 +11,11 @@ using Bennett: extract_parsed_ir_from_ll
 # StructType context.
 
 const STRUCT_EV_IR = """
-define i64 @julia_struct_ev(i64 %x, i64 %y) {
+define i64 @julia_struct_ev() {
 top:
-  %pair = call {i64, i1} @llvm.sadd.with.overflow.i64(i64 %x, i64 %y)
-  %sum  = extractvalue {i64, i1} %pair, 0
+  %sum = extractvalue {i64, i64} { i64 42, i64 7 }, 0
   ret i64 %sum
 }
-declare {i64, i1} @llvm.sadd.with.overflow.i64(i64, i64)
 """
 
 const STRUCT_IV_IR = """

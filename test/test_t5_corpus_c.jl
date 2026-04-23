@@ -55,13 +55,17 @@ have_clang = !isempty(CLANG) && success(`bash -lc "$CLANG --version"`)
             run(`bash -lc "$CLANG -O0 -emit-llvm -S -o $ll_out $c_src"`)
             @test isfile(ll_out)
 
-            # Post-T5-P5a: extraction succeeds; lowering still throws (T5-P6).
-            parsed = Bennett.extract_parsed_ir_from_ll(
+            # Post-Bennett-5oyt / U15: extraction now loud-errors on the
+            # unregistered `malloc` callee (pre-U15 silent-dropped it and
+            # the subsequent `reversible_compile` was what threw). Same
+            # bottom-line assertion — the pipeline cannot handle malloc
+            # until T5-P6 — but the failure surfaces earlier.
+            @test_throws ErrorException Bennett.extract_parsed_ir_from_ll(
                 ll_out; entry_function="malloc_idx_inc")
-            @test parsed isa Bennett.ParsedIR
-            @test_throws ErrorException reversible_compile(parsed)
 
             # POST-T5-P6 GREEN (uncomment when :persistent_tree arm lands):
+            # parsed = Bennett.extract_parsed_ir_from_ll(
+            #     ll_out; entry_function="malloc_idx_inc")
             # c = reversible_compile(parsed)
             # for x in typemin(Int8):typemax(Int8), i in typemin(Int8):typemax(Int8)
             #     expected = x + Int8(i & 7)    # v[i & 7] = x + (i & 7)
@@ -90,11 +94,10 @@ have_clang = !isempty(CLANG) && success(`bash -lc "$CLANG --version"`)
             run(`bash -lc "$CLANG -O0 -emit-llvm -S -o $ll_out $c_src"`)
             @test isfile(ll_out)
 
-            # Post-T5-P5a: extraction succeeds; lowering still throws (T5-P6).
-            parsed = Bennett.extract_parsed_ir_from_ll(
+            # Post-Bennett-5oyt / U15: extraction loud-errors on the
+            # unregistered malloc/realloc callees.
+            @test_throws ErrorException Bennett.extract_parsed_ir_from_ll(
                 ll_out; entry_function="realloc_buf")
-            @test parsed isa Bennett.ParsedIR
-            @test_throws ErrorException reversible_compile(parsed)
 
             # POST-T5-P6 GREEN (uncomment when :persistent_tree arm lands):
             # c = reversible_compile(parsed)
@@ -125,11 +128,10 @@ have_clang = !isempty(CLANG) && success(`bash -lc "$CLANG --version"`)
             run(`bash -lc "$CLANG -O0 -emit-llvm -S -o $ll_out $c_src"`)
             @test isfile(ll_out)
 
-            # Post-T5-P5a: extraction succeeds; lowering still throws (T5-P6).
-            parsed = Bennett.extract_parsed_ir_from_ll(
+            # Post-Bennett-5oyt / U15: extraction loud-errors on the
+            # unregistered malloc callee.
+            @test_throws ErrorException Bennett.extract_parsed_ir_from_ll(
                 ll_out; entry_function="malloc_list")
-            @test parsed isa Bennett.ParsedIR
-            @test_throws ErrorException reversible_compile(parsed)
 
             # POST-T5-P6 GREEN (uncomment when :persistent_tree arm lands):
             # c = reversible_compile(parsed)
