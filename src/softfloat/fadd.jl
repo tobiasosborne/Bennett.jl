@@ -34,9 +34,9 @@ function soft_fadd(a::UInt64, b::UInt64)::UInt64
     b_zero = (eb == UInt64(0)) & (fb == UInt64(0))
 
     # ── Special-case results ──
-    # NaN: any NaN input → QNAN
-    # Inf+Inf same sign → Inf, Inf-Inf → NaN
-    inf_inf_result = ifelse(sa == sb, a, QNAN)
+    # NaN: any NaN input → propagate quietened operand (Bennett-r84x / U08).
+    # Inf+Inf same sign → Inf; Inf-Inf → x86 indefinite (INDEF).
+    inf_inf_result = ifelse(sa == sb, a, INDEF)
     # Inf + finite → Inf
     inf_finite_a = a   # a is Inf
     inf_finite_b = b   # b is Inf
@@ -130,7 +130,7 @@ function soft_fadd(a::UInt64, b::UInt64)::UInt64
     result = ifelse(a_inf & b_inf, inf_inf_result, result)
     result = ifelse(b_inf & (!a_inf), inf_finite_b, result)
     result = ifelse(a_inf & (!b_inf), inf_finite_a, result)
-    result = ifelse(a_nan | b_nan, QNAN, result)
+    result = ifelse(a_nan | b_nan, _sf_propagate_nan2(a, b, a_nan, b_nan), result)
 
     return result
 end

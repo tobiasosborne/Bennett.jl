@@ -130,6 +130,10 @@ include("test_httg_loop_multiblock.jl")
 # Bennett-k286 / U07 — soft_fpext force-quiets signalling-NaN inputs per
 # IEEE 754-2019 §5.4.1 (bit 51 of the Float64 result).
 include("test_k286_fpext_snan_quiet.jl")
+# Bennett-r84x / U08 — soft-float NaN payload/sign preservation, x86 INDEF
+# for invalid ops, sNaN quieting in trunc/floor/ceil, fptosi saturation
+# to INT_MIN. All bit-exact against Julia native / LLVM cvttsd2si.
+include("test_r84x_nan_bit_exact.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")

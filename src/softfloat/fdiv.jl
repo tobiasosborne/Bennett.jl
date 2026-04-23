@@ -86,13 +86,14 @@ Fully branchless.
     result = normal_result
     result = ifelse(exp_overflow | exp_overflow_after_round, inf_result, result)
     result = ifelse(subnormal & flush_to_zero, flushed_result, result)
-    result = ifelse(a_zero & b_zero, QNAN, result)
+    # 0/0 and Inf/Inf are invalid — emit x86 INDEF (Bennett-r84x / U08).
+    result = ifelse(a_zero & b_zero, INDEF, result)
     result = ifelse(a_zero & (!b_zero), zero_result, result)
     result = ifelse(b_zero & (!a_zero), inf_result, result)
-    result = ifelse(a_inf & b_inf, QNAN, result)
+    result = ifelse(a_inf & b_inf, INDEF, result)
     result = ifelse(a_inf & (!b_inf), inf_result, result)
     result = ifelse(b_inf & (!a_inf), zero_result, result)
-    result = ifelse(a_nan | b_nan, QNAN, result)
+    result = ifelse(a_nan | b_nan, _sf_propagate_nan2(a, b, a_nan, b_nan), result)
 
     return result
 end

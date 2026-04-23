@@ -3,6 +3,9 @@
 
 Convert IEEE 754 double-precision float (as UInt64 bit pattern) to signed Int64
 (as UInt64 bit pattern). Branchless implementation for reversible circuit compilation.
+Bit-exact with LLVM `fptosi double to i64` lowered for x86 SSE
+(`cvttsd2si`): any NaN, ±Inf, or out-of-range operand saturates to
+INT_MIN = 0x8000000000000000 per Intel SDM Vol 1 §4.8.3.7.
 
 Algorithm:
 1. Extract sign, exponent, mantissa from IEEE 754 encoding
@@ -10,7 +13,11 @@ Algorithm:
 3. If exponent >= 1023+52: shift left (large values)
 4. If exponent < 1023+52: shift right (truncate fractional part)
 5. Apply sign (two's complement negation if negative)
-6. Special cases: 0 (exp=0), overflow (exp≥1086), NaN/Inf → undefined (match hardware)
+6. Saturate NaN / ±Inf / |x| ≥ 2^63 to INT_MIN (Bennett-r84x / U08).
+   The single in-range value with biased exp = 1086 is x = -2^63 exactly
+   (sign=1, fraction=0), and its natural `(~mag) + 1` computation also
+   yields INT_MIN, so the unconditional saturation at exp ≥ 1086 is
+   idempotent on that value.
 """
 @inline function soft_fptosi(a::UInt64)::UInt64
     sign = (a >> 63) & UInt64(1)
@@ -51,7 +58,13 @@ Algorithm:
 
     # Apply sign: if sign == 1, negate (two's complement: -x = ~x + 1)
     negated = (~magnitude) + UInt64(1)
-    result = ifelse(sign == UInt64(1), negated, magnitude)
+    signed_result = ifelse(sign == UInt64(1), negated, magnitude)
+
+    # Saturate to INT_MIN for NaN / ±Inf (biased exp = 2047) and |x| ≥ 2^63
+    # (biased exp ≥ 1086). x86 `cvttsd2si` returns 0x8000000000000000 on the
+    # invalid-operation flag.
+    is_invalid = exp >= UInt64(1086)
+    result = ifelse(is_invalid, UInt64(0x8000000000000000), signed_result)
 
     return result
 end

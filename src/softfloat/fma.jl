@@ -203,8 +203,9 @@ IEEE 754 binary64 reversible FMA in the quantum/reversible literature).
     result = ifelse(prod_is_zero, prod_zero_result, result)
     result = ifelse(c_inf & !prod_is_inf, c, result)
     result = ifelse(prod_is_inf, (sign_prod << 63) | INF_BITS, result)
-    result = ifelse(inf_clash, QNAN, result)
-    result = ifelse(inf_times_zero, QNAN, result)
-    result = ifelse(any_nan, QNAN, result)
+    result = ifelse(inf_clash, INDEF, result)                                        # Bennett-r84x
+    result = ifelse(inf_times_zero, INDEF, result)                                   # Bennett-r84x
+    result = ifelse(any_nan, _sf_propagate_nan3(a, b, c, a_nan, b_nan, c_nan),       # Bennett-r84x
+                    result)
     return result
 end

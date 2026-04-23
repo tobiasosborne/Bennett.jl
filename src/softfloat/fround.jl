@@ -17,8 +17,15 @@ function soft_trunc(a::UInt64)::UInt64
     sign = a & UInt64(0x8000000000000000)
     exp = Int64((a >> 52) & UInt64(0x7ff))
 
-    # Special cases: NaN, Inf → return as-is
+    # Special cases: NaN passes through quietened; Inf passes through as-is.
+    # Both share biased exponent 0x7FF; NaN has a nonzero fraction, Inf has 0.
+    # Per Bennett-r84x / U08 + IEEE 754-2019 §6.2.3, a signalling-NaN input
+    # must be force-quieted by OR-ing bit 51. OR-ing QUIET_BIT unconditionally
+    # on Inf would corrupt the encoding (Inf has fraction == 0, setting bit 51
+    # makes it a NaN), so split the two.
     is_special = exp == Int64(0x7ff)
+    is_nan_input = is_special & ((a & FRAC_MASK) != UInt64(0))
+    special_result = ifelse(is_nan_input, a | QUIET_BIT, a)
     # |x| < 1.0 (biased exp < 1023) → trunc = ±0
     is_small = exp < Int64(1023)
     # |x| >= 2^52 (biased exp >= 1075) → already integer, return as-is
@@ -34,8 +41,8 @@ function soft_trunc(a::UInt64)::UInt64
     # Normal case: zero out fractional bits
     normal_result = a & mask
 
-    # Select: special → a, small → ±0, integer → a, else → normal_result
-    result = ifelse(is_special, a,
+    # Select: special → special_result, small → ±0, integer → a, else → normal_result
+    result = ifelse(is_special, special_result,
              ifelse(is_small, sign,
              ifelse(is_integer, a,
                     normal_result)))

@@ -207,9 +207,9 @@ function soft_fmul(a::UInt64, b::UInt64)::UInt64
     result = ifelse(exp_overflow | exp_overflow_after_round, overflow_result, result)
     result = ifelse(subnormal & flush_to_zero, flushed_result, result)
     result = ifelse(a_zero | b_zero, zero_result, result)
-    result = ifelse((a_inf | b_inf) & (a_zero | b_zero), QNAN, result)  # Inf * 0
+    result = ifelse((a_inf | b_inf) & (a_zero | b_zero), INDEF, result)  # Inf * 0 (Bennett-r84x)
     result = ifelse((a_inf | b_inf) & !(a_zero | b_zero), inf_result, result)
-    result = ifelse(a_nan | b_nan, QNAN, result)
+    result = ifelse(a_nan | b_nan, _sf_propagate_nan2(a, b, a_nan, b_nan), result)
 
     return result
 end

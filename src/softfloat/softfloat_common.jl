@@ -9,7 +9,30 @@ const FRAC_MASK = UInt64(0x000FFFFFFFFFFFFF)   # 52-bit stored fraction
 const IMPLICIT  = UInt64(0x0010000000000000)   # bit 52 (implicit leading 1)
 const EXP_MASK  = UInt64(0x7FF0000000000000)   # exponent field
 const INF_BITS  = UInt64(0x7FF0000000000000)   # +Inf
-const QNAN      = UInt64(0x7FF8000000000000)   # canonical quiet NaN
+const QNAN      = UInt64(0x7FF8000000000000)   # canonical quiet NaN (payload 0)
+const QUIET_BIT = UInt64(0x0008000000000000)   # fraction bit 51 (IEEE 754-2019 §6.2.1 quiet-bit convention)
+const INDEF     = UInt64(0xFFF8000000000000)   # x86 "indefinite" invalid-op result (Intel SDM Vol 1 §4.8.3.7)
+
+"""
+    _sf_propagate_nan2(a, b, a_nan, b_nan) -> UInt64
+
+Propagate first-operand NaN (x86 SSE rule): if `a` is NaN return `a | QUIET_BIT`,
+else `b | QUIET_BIT`. Preserves sign and payload; force-quiets signalling NaNs
+per IEEE 754-2019 §6.2.3. Caller must guard entry with `a_nan | b_nan`.
+"""
+@inline _sf_propagate_nan2(a::UInt64, b::UInt64, a_nan, b_nan) =
+    ifelse(a_nan, a | QUIET_BIT, b | QUIET_BIT)
+
+"""
+    _sf_propagate_nan3(a, b, c, a_nan, b_nan, c_nan) -> UInt64
+
+Three-operand variant for FMA: a > b > c precedence, matching Intel VFMADD*'s
+NaN-handling order. Caller must guard entry with `a_nan | b_nan | c_nan`.
+"""
+@inline _sf_propagate_nan3(a::UInt64, b::UInt64, c::UInt64, a_nan, b_nan, c_nan) =
+    ifelse(a_nan, a | QUIET_BIT,
+    ifelse(b_nan, b | QUIET_BIT,
+                  c | QUIET_BIT))
 
 """
     _sf_normalize_to_bit52(m, e) -> (m, e)

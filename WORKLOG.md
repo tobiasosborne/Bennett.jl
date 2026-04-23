@@ -9,6 +9,42 @@ Phase 0 has begun. Bennett-asw2 (U01) is CLOSED; Bennett-rggq (U02) is next.**
 
 ### Closed this session
 
+- **Bennett-r84x (U08) — NaN payload/sign canonicalised across every
+  soft-float op; `soft_fptosi` wraps on overflow.** Six files edited.
+  Two constants + two helpers added to `src/softfloat/softfloat_common.jl`
+  (`QUIET_BIT = 0x0008000000000000`, `INDEF = 0xFFF8000000000000`,
+  `_sf_propagate_nan2`, `_sf_propagate_nan3`). Invalid-op producers
+  (Inf−Inf in fadd/fsub line 39, Inf×0 in fmul line 210, 0/0 and Inf/Inf
+  in fdiv lines 89/92, sqrt of neg-finite/-Inf in fsqrt line 112,
+  `inf_clash` + `inf_times_zero` in fma lines 206-207) now emit the x86
+  "indefinite" value (`0xFFF8...`) per Intel SDM Vol 1 §4.8.3.7 instead
+  of the canonical positive qNaN. NaN-operand paths propagate the first
+  NaN OR'd with `QUIET_BIT`, preserving sign + payload per IEEE 754-2019
+  §6.2.3. `soft_trunc` splits `is_special` into `is_nan_input` vs Inf so
+  sNaN inputs are force-quieted while ±Inf passes through unchanged;
+  `soft_floor`/`soft_ceil` inherit the fix transitively (they call
+  `soft_trunc` then `soft_fadd`, both of which now preserve NaN properly).
+  `soft_fptosi` saturates biased-exp ≥ 1086 to `0x8000000000000000`
+  matching `cvttsd2si` on x86 — `-2^63` naturally lands on `INT_MIN` via
+  the existing two's-complement compute, so the unconditional saturation
+  is idempotent on that single in-range value. `fsub` and `fneg` untouched
+  — fsub delegates to fadd(·, fneg(b)) which now propagates NaN correctly;
+  fneg is a pure XOR on bit 63, already payload-preserving.
+  Test gate: `test/test_r84x_nan_bit_exact.jl` — 8 testsets, 98 assertions.
+  T1 invalid-op producers (22); T2 sqrt(±0) preserved; T3/T4 NaN
+  propagation for 4+fma ops (20); T5 fsqrt NaN + hw cross-check;
+  T6 rounding quiets sNaN, preserves Inf; T7 fptosi saturates (16,
+  cross-checked via LLVM `fptosi i64` llvmcall); T8 non-NaN regression
+  anchors (18). Pre-fix RED: 60/98 fail — exactly the catalogue-predicted
+  four classes (invalid-op, NaN prop, sNaN round, fptosi overflow). Test
+  constants **gotcha**: my initial `QNAN_P = 0x7FF4...` had the quiet bit
+  CLEAR (bit 51 is in the 0x0008 slot, not 0x0004) — accidentally an
+  sNaN. Corrected to `0x7FFC...` (quiet bit + payload bit 50). Worth
+  remembering for future softfloat bit-pattern tests.
+  Full `Pkg.test()` green. Baselines byte-identical: TJ3=180,
+  Okasaki=108,106, HAMT=96,788, CF=11,078, i8 x+1=100/28T. CLAUDE.md §13
+  (soft-float bit-exactness) restored for the seven NaN-touching ops.
+
 - **Bennett-k286 (U07) — `soft_fpext` does not quiet sNaN.** 1-constant fix
   in `src/softfloat/fpconv.jl:62`: exponent mask `0x7FF0000000000000` →
   `0x7FF8000000000000`. Pre-fix the NaN path was

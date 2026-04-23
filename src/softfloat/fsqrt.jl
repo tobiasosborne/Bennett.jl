@@ -103,12 +103,16 @@ overflow also impossible.
         _sf_round_and_pack(wr, result_exp, UInt64(0))
 
     # ── Special-case select chain ──
-    # Order (last override wins): normal → +Inf → ±0 → NaN/negative-nonzero.
-    # `a_zero` and `a_neg_nonzero` are disjoint; `a_nan` is disjoint from both.
+    # Order (last override wins): normal → +Inf → ±0 → -finite/-Inf → NaN.
+    # `a_nan` must fire strictly last so the NaN passthrough (preserving
+    # sign + payload, force-quieting sNaN per Bennett-r84x / U08) wins over
+    # the negative-argument invalid-op, since `a_neg_nonzero` also includes
+    # negative NaNs (sign=1, fraction!=0).
     a_neg_nonzero = a_neg & (!a_zero)
     result = normal_result
-    result = ifelse(a_inf & (!a_neg), INF_BITS, result)          # +Inf → +Inf
-    result = ifelse(a_zero, a, result)                            # ±0 → ±0
-    result = ifelse(a_nan | a_neg_nonzero, QNAN, result)          # NaN / -finite / -Inf → qNaN
+    result = ifelse(a_inf & (!a_neg), INF_BITS, result)                        # +Inf → +Inf
+    result = ifelse(a_zero, a, result)                                          # ±0 → ±0 (incl. sqrt(-0) = -0)
+    result = ifelse(a_neg_nonzero & (!a_nan), INDEF, result)                    # -finite / -Inf → x86 INDEF
+    result = ifelse(a_nan, a | QUIET_BIT, result)                               # NaN → preserve + quiet
     return result
 end
