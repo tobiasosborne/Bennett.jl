@@ -24,7 +24,7 @@ These are NON-NEGOTIABLE. Every agent, every session, every commit.
 
 5. **LLVM IR IS NOT STABLE.** LLVM IR output is not a stable API. Never assume specific IR formatting, instruction ordering, or naming conventions. The LLVM.jl C API walker (`ir_extract.jl`) is the source of truth — not regex parsing. When LLVM changes its output, `ir_extract.jl` must adapt. Always use `optimize=false` for predictable IR when testing.
 
-6. **GATE COUNTS ARE REGRESSION BASELINES.** Verified gate counts (documented in WORKLOG.md) are regression tests. If a change alters gate counts for a known function, that is a signal — investigate whether it's an improvement or a bug. Key baselines: i8 addition = 86 gates, i16 = 174, i32 = 350, i64 = 702 (exactly 2x per width doubling).
+6. **GATE COUNTS ARE REGRESSION BASELINES.** Verified gate counts (documented in WORKLOG.md) are regression tests. If a change alters gate counts for a known function, that is a signal — investigate whether it's an improvement or a bug. Key baselines (post-U27 `add=:auto`→`:ripple` + U28 `fold_constants=true`): i8 `x+1` = 58 gates, i16 = 114, i32 = 226, i64 = 450; each doubling obeys `total(2W) == 2·total(W) - 2`. Toffoli counts: 12/28/60/124 (each doubling obeys `T(2W) == 2·T(W) + 4`). See `test/test_gate_count_regression.jl` for the pinned assertions.
 
 7. **BUGS ARE DEEP AND INTERLOCKED.** Never assume a bug is shallow. Phi resolution bugs, LLVM naming bugs, false-path sensitization — these are subtle and interconnected. Investigate root causes. A fix that passes one test but breaks the invariant elsewhere is not a fix.
 
