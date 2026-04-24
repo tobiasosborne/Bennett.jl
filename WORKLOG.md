@@ -1,6 +1,190 @@
 # Bennett.jl Work Log
 
-## NEXT AGENT — start here — 2026-04-24 (Phase 0 P1 catalogue grinding, continued)
+## NEXT AGENT — start here — 2026-04-24 (session close)
+
+**Phase 0 P1 catalogue is clean.** All catalogue-tagged P1 beads
+(U01–U31, excluding the `Bennett-cc0` memory epic which is a parent
+bead tracking ongoing T5 work) are closed. `Bennett-cc0.5` and
+`Bennett-z2dj` (the two in-progress children) carry forward to the
+next session.
+
+### What shipped today
+
+Six HIGH-severity catalogue beads closed with RED→GREEN TDD
+(compile/verify/simulate all green after each), plus an infrastructure
+change (no CI policy + local pre-push hook).
+
+| Bead | U# | One-line | Headline effect |
+|---|---|---|---|
+| Bennett-epwy | U28 | `fold_constants` default → `true` | Post-fold poly 872→562 gates; `_fold_constants` preserves self_reversing |
+| Bennett-b1vp | U31 | `soft_fptoui` + `LLVMFPToUI` dispatch | fptoui was signed-routed; fixed bit-exact vs native |
+| Bennett-xlsz | U29 | Unified kwargs across 3 overloads | MethodError → ArgumentError; `add`/`mul`/`fold_constants` now reach Float64 |
+| Bennett-4fri | U30 | `target=:depth` kwarg on mul dispatcher | Promotes `mul=:auto`→`qcla_tree`; 3-6× T-depth win at W≥32 |
+| Bennett-spa8 | U27 | `add=:auto`→`:ripple` (was Cuccaro) | i8 x+1 100→58 gates, depth 28→12; fixes value_eager SHA-256 invariant |
+| Bennett-6azb | U58 | simulator input-preservation + partition | Caught a real latent bug in `controlled()` |
+| — | (§14) | CLAUDE.md §14 no GitHub CI + `scripts/pre-push` | Local quality gate; `SKIP_PUSH_TESTS=1` escape hatch |
+
+### Big-picture wins
+
+**Gate-count baselines rewritten.** U27+U28 interact to roughly
+halve every integer-add baseline. CLAUDE.md §6's "key baselines"
+line (86/174/350/702) is now triply stale — was 100/204/412/828
+after U28 updated `test_gate_count_regression.jl`; now 58/114/226/
+450 post-U27. U53 (refresh CLAUDE.md §6) is the cheapest next win.
+
+**value_eager SHA-256 unblocked as a side-effect.** `test_value_
+eager.jl:166` was `@test_broken` because Cuccaro's in-place adder
+wrote to wires still live later in Kahn's reverse-topo. With U27's
+ripple default, writes go to fresh wires; `verify_reversibility`
+passes. Upgraded to `@test`. The `Bennett-ca0i` (U02-followup) bead
+is effectively resolved for SHA-256; can be closed separately.
+
+**Partition assert caught a real bug in `controlled()`.** U58's
+new `ReversibleCircuit` inner constructor surfaced that the
+`controlled` wrapper was adding `ctrl_wire` without classifying it —
+every wrapped circuit had an unaccounted wire. Fixed by making
+ctrl the inner's first input. Side benefit:
+`verify_reversibility(cc::ControlledCircuit)` now delegates to the
+`ReversibleCircuit` probe — no duplicate probe code.
+
+**`fptoui(1e19, UInt64)` is correct again.** U31: before the fix,
+the LLVM `fptoui` opcode was silently routed through the signed
+`soft_fptosi`, corrupting every in-range UInt64 value whose MSB
+was set. Julia's `unsafe_trunc(UInt64, 1e19)` is a legitimate use
+site; this was a live bug.
+
+### Infrastructure / policy
+
+**CLAUDE.md §14 — no GitHub CI.** User has a durable rejection of
+GitHub Actions / remote automation: failure-email noise is "worse
+than zero info — garbage noise." Added as a NON-NEGOTIABLE rule:
+no `.github/workflows/`, no propose-CI beads, no email-on-failure
+services. Future agents must substitute local gates. Saved as a
+feedback memory (`feedback_no_github_ci.md`) so the rule carries
+across projects, not just Bennett.jl.
+
+**Local pre-push hook replaces CI.** `scripts/pre-push` runs
+`Pkg.test()` before every `git push`, aborts on failure. Installed
+via `scripts/install-hooks.sh` into `.git/hooks/pre-push` (both
+versioned in `scripts/` so a fresh clone can re-install with one
+command). Escape hatches: `SKIP_PUSH_TESTS=1` to bypass for WIP /
+docs / emergency; `BENNETT_HOOK_CMD=...` to override the command.
+All four paths smoke-tested before landing.
+
+### Test files added / modified this session
+
+Added (6 new RED-GREEN test files, all registered in `runtests.jl`):
+- `test/test_epwy_fold_constants_default.jl` (264 asserts)
+- `test/test_b1vp_fptoui.jl` (40 asserts)
+- `test/test_xlsz_kwargs_unified.jl` (23 asserts)
+- `test/test_4fri_mul_target.jl` (36 asserts)
+- `test/test_spa8_add_auto_ripple.jl` (33 asserts)
+- `test/test_6azb_input_preservation.jl` (387 asserts)
+
+Baseline-cascade updates (U27+U28 rippled through pinned gate
+counts):
+- `test/test_gate_count_regression.jl` — every addition baseline;
+  scaling invariant `2W+4`→`2W-2`; Toffoli counts halved
+- `test/test_sret.jl`, `test/test_0c8o_vector_sret.jl` — swap2
+  total 82→66 (post-fold)
+- `test/test_uyf9_memcpy_sret.jl`, `test/test_egu6_self_reversing_
+  check.jl`, `test/test_httg_loop_multiblock.jl` — i8 x+1 100/28→
+  58/12 (post-U27/U28)
+- `test/test_value_eager.jl`, `test/test_pebbled_wire_reuse.jl` —
+  added `fold_constants=false` at every `lower()` call site where
+  the test consumes `lr.gate_groups` (fold invalidates them);
+  SHA-256 `@test_broken` upgraded to `@test`
+- `test/test_soft_mux_scaling.jl` — gate-level scaling test now
+  measures pre-fold to keep the N=4 < N=8 invariant robust
+- `test/test_add_dispatcher.jl` — `:auto != :ripple` probe
+  inverted to the intended `:auto == :ripple` (U27); cuccaro
+  distinguished via the explicit kwarg
+- `test/test_toffoli_depth.jl` — `_mk` helper classifies every wire
+  as ancilla to satisfy U58's partition invariant
+
+### Learnings / gotchas worth keeping
+
+1. **`_fold_constants` silently cleared `self_reversing`** via the
+   7-arg `LoweringResult` constructor. A self-reversing primitive
+   routed through fold would have been double-run by `bennett()`.
+   Fix was an early-return on `lr.self_reversing`. Look for
+   similar additive-passes-that-drop-fields bugs in other LR-
+   rewriting transforms.
+
+2. **`simulate` returns `Int64` for i64 outputs regardless of
+   Julia signedness.** `reinterpret(UInt64, simulate(c, xb))` or
+   `simulate(c, xb) % UInt64` for bit-exact comparisons. Logged
+   as `Bennett-zc50` (U100, P3) — quick next-session fix.
+
+3. **Variant-Bennett tests must opt out of fold.** `value_eager_
+   bennett`, `pebbled_group_bennett`, `checkpoint_bennett` all
+   consume `lr.gate_groups`. `_fold_constants` rewrites the gate
+   list and empties groups, so the variants silently fall back to
+   full `bennett`. Pass `fold_constants=false` to `lower()` in any
+   test that's actually exercising a variant's optimisation path
+   (correctness paths are fine either way — fallback is safe).
+
+4. **Cuccaro's in-place 1-wire saving is erased by Bennett copy-
+   out.** The theoretical advantage doesn't survive the
+   reversibilisation pass, while Cuccaro's MAJ/UMA chain ships a
+   strictly worse Toffoli-depth. Ripple wins on every measured
+   metric at every width. `:auto` should have been `:ripple` from
+   day one; Cuccaro was a premature optimisation.
+
+5. **`target=:depth` pre-resolution at `lower()` entry** avoids
+   plumbing a new field through `LoweringCtx` (which per §2 is a
+   "core change" demanding 3+1). Rewriting `mul=:auto` to
+   `:qcla_tree` up-front lets every downstream site treat it as
+   user-explicit. Pattern reusable for future target-aware
+   heuristics.
+
+6. **Beads sync to GitHub through `.beads/`** — no separate sync
+   step. `bd dolt push` updates the embedded-Dolt git-remote-cache
+   inside `.beads/`; `git push` ships everything in the working
+   tree. If `.beads/push-state.json` is recent and `git status` is
+   clean, beads are on GitHub.
+
+### What's left — priority ordering for next session
+
+**Phase 0 P1 catalogue is empty except for Bennett-cc0 (memory
+epic parent, already has in-progress children).**
+
+**Highest-leverage next beads (all P2, catalogue-HIGH):**
+
+1. **U53 (no bead yet) — refresh CLAUDE.md §6 baselines.** Now
+   triply stale. Cheap chore (~30 min).
+2. **U57 (Bennett-5qrn) — trivial peepholes (x+0, x|0).**
+   Extends U28's fold arc. Catalogue claims 20-40% gate reduction
+   on persistent-DS sweep, though U54 EoL may delete the
+   beneficiary.
+3. **U100 (Bennett-zc50) — simulate signedness loss.** Caught it
+   myself during U31 work; shallow fix, high ergonomic payoff.
+4. **U110 (Bennett-p94b) — phi-mutex assert.** P3 but phi-
+   territory is CLAUDE.md's highest-risk zone. Consider escalating
+   to P2.
+5. **U54 — persistent-DS EoL** (delete ~1,500 LOC of losing
+   impls). **Needs user decision** — delete vs move to
+   `src/persistent/research/`. Subsumes U20/U21/U22 fixes.
+6. **U47 (Bennett-59jj) — type instability in hot paths.** Bigger
+   lift; needs profiling pass first.
+
+**3+1 refactor clusters (each a separate session):**
+- U40 / U41 / U42 — split `lower.jl` (2.6k LOC) / kill
+  `_convert_instruction` god function / delete `ir_parser.jl`.
+- U43 / U44 / U69 — concretise `LoweringCtx` `::Any` fields /
+  delete legacy phi resolver.
+- U55 — collapse five `*_bennett` variants into `BennettStrategy`.
+
+**Session-close context for the next agent:** the pre-push hook is
+active and will run `Pkg.test()` (~4 min) before every push. Set
+`SKIP_PUSH_TESTS=1` if you've already run the suite in the same
+shell session and want to skip the retry. The hook file lives at
+`scripts/pre-push` (versioned); `scripts/install-hooks.sh` installs
+it into `.git/hooks/` after a fresh clone.
+
+---
+
+## NEXT AGENT — previous context — 2026-04-24 (Phase 0 P1 catalogue grinding, continued)
 
 **19-report code review (2026-04-21) has been triaged into 173 beads with a
 unified catalogue at `reviews/2026-04-21/UNIFIED_CATALOGUE.md` and a
