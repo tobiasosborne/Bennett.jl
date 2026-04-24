@@ -43,6 +43,8 @@ These are NON-NEGOTIABLE. Every agent, every session, every commit.
 
 13. **SOFT-FLOAT MUST BE BIT-EXACT.** The soft-float library (`src/softfloat/`) implements IEEE 754 operations in pure integer arithmetic. Every soft-float function must be bit-exact against Julia's native floating-point operations. Test with random inputs AND edge cases (0, -0, Inf, NaN, subnormals, overflow boundaries).
 
+14. **NO GITHUB CI, NO REMOTE AUTOMATION.** Quality checks run LOCALLY via `Pkg.test()`, `bd`, and git hooks — never via GitHub Actions, workflows, scheduled runs, or any service that sends email on failure. The user has explicitly rejected automated CI: the failure-email noise is worse than zero signal. Do NOT create `.github/workflows/`, do NOT propose "add CI" beads, do NOT reference external build/test services. When the catalogue or a review mentions CI, treat it as out-of-scope and substitute local gates (pre-push git hook, `Pkg.test()` on every commit per rule 8, `bd` tracking per the Beads section). If a future agent re-proposes CI, point them at this rule.
+
 ## Phi Resolution and Control Flow — CORRECTNESS RISK
 
 **CRITICAL FOR ALL AGENTS**: The phi resolution algorithm in `lower.jl` is the most complex and bug-prone part of the compiler. Phi nodes from LLVM IR represent value merging at control flow join points. The lowering converts them to nested MUX circuits (select via condition bits).

@@ -11,6 +11,27 @@ Phase 0 continues; U01–U26 closed previously. U28 closed today.**
 
 ### Closed this session
 
+- **CLAUDE.md §14 + pre-push hook — no GitHub CI, ever.** The
+  catalogue's U49 ("no CI workflow, load-bearing for every invariant
+  claim") proposed filing `.github/workflows/test.yml`. User has a
+  durable, explicit rejection of GitHub Actions / remote automation:
+  the failure-email stream is "worse than zero info — garbage noise."
+  Action taken:
+  - Added CLAUDE.md §14 as a NON-NEGOTIABLE rule: no `.github/
+    workflows/`, no propose-CI beads, no email-on-failure services,
+    ever. Future agents must substitute local gates.
+  - Saved feedback memory `feedback_no_github_ci.md` so the rule
+    carries across projects, not just Bennett.jl.
+  - Local replacement: `scripts/pre-push` runs `Pkg.test()` before
+    every `git push`. Installed into `.git/hooks/pre-push` via
+    `scripts/install-hooks.sh`. Escape hatch:
+    `SKIP_PUSH_TESTS=1 git push` (for WIP/emergency/docs-only
+    pushes). `BENNETT_HOOK_CMD=...` overrides the command. All four
+    paths smoke-tested (bypass, empty-push, success, failure-aborts
+    push).
+  - U49 was never filed as a bead, so nothing to close — the §14
+    rule + feedback memory prevent re-filing.
+
 - **Bennett-spa8 (U27) — `add=:auto` picked Cuccaro when op2 was
   dead; Cuccaro is strictly worse than ripple after Bennett's copy-out
   pass**. Cuccaro's "1-wire in-place" advantage is erased by the

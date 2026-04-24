@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+#
+# Pre-push hook: run the Julia test suite before allowing a push.
+# Local replacement for GitHub CI — project rule: no remote automation
+# (CLAUDE.md §14).
+#
+# Installed by scripts/install-hooks.sh into .git/hooks/pre-push.
+#
+# Escape hatches:
+#   SKIP_PUSH_TESTS=1 git push        — skip the test suite (emergency /
+#                                       WIP / docs-only pushes)
+#   BENNETT_HOOK_CMD="..." git push   — override the test command
+#
+# The suite runs ~4 minutes on this project. If that's too slow for a
+# specific push, use SKIP_PUSH_TESTS=1 explicitly rather than editing
+# this hook.
+
+set -euo pipefail
+
+if [[ "${SKIP_PUSH_TESTS:-}" == "1" ]]; then
+    echo "pre-push: SKIP_PUSH_TESTS=1 set — skipping local Pkg.test()"
+    exit 0
+fi
+
+# Find the repo root regardless of cwd (hooks run from .git/hooks/).
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+# Don't run on an empty push (deletes, tags only, etc.). `git push`
+# pipes one ref per line to stdin; if no line says we're pushing a
+# commit, bail cleanly.
+while read -r local_ref local_sha remote_ref remote_sha; do
+    if [[ "$local_sha" != "0000000000000000000000000000000000000000" ]]; then
+        have_commits=1
+    fi
+done
+
+if [[ -z "${have_commits:-}" ]]; then
+    exit 0
+fi
+
+test_cmd="${BENNETT_HOOK_CMD:-julia --project -e 'using Pkg; Pkg.test()'}"
+
+echo "pre-push: running local quality gate — $test_cmd"
+echo "pre-push: (set SKIP_PUSH_TESTS=1 to bypass for emergency / WIP)"
+echo
+
+start=$(date +%s)
+if ! eval "$test_cmd"; then
+    echo
+    echo "pre-push: FAIL — Pkg.test() did not pass. Push aborted."
+    echo "pre-push: Fix the failure, or set SKIP_PUSH_TESTS=1 to bypass."
+    exit 1
+fi
+elapsed=$(( $(date +%s) - start ))
+
+echo
+echo "pre-push: OK — Pkg.test() green in ${elapsed}s. Proceeding."
+exit 0
