@@ -59,12 +59,29 @@ function _simulate(circuit::ReversibleCircuit, inputs::Tuple)
         offset += w
     end
 
+    # Bennett-6azb / U58: snapshot input wires before running gates so we
+    # can verify the other half of Bennett's invariant — not just
+    # "ancillae return to zero" but "inputs come out unchanged". A circuit
+    # that silently mutates an input but produces the right output used
+    # to pass every test. The snapshot is bit-copied out of `bits` in
+    # input_wires order so the post-run comparison reports the wire
+    # index the user can bisect on.
+    input_snapshot = Bool[bits[w] for w in circuit.input_wires]
+
     for gate in circuit.gates
         apply!(bits, gate)
     end
 
     for w in circuit.ancilla_wires
         bits[w] && error("Ancilla wire $w not zero — Bennett construction bug")
+    end
+
+    for (k, w) in pairs(circuit.input_wires)
+        bits[w] == input_snapshot[k] || error(
+            "input wire $w changed from $(input_snapshot[k]) to $(bits[w]) " *
+            "— Bennett input-preservation invariant violated " *
+            "(input index $k of $(length(circuit.input_wires)); n_wires=" *
+            "$(circuit.n_wires), n_gates=$(length(circuit.gates)))")
     end
 
     return _read_output(bits, circuit.output_wires, circuit.output_elem_widths)

@@ -29,9 +29,19 @@ function controlled(circuit::ReversibleCircuit)
     new_anc = copy(circuit.ancilla_wires)
     has_toff && push!(new_anc, anc_wire)
 
+    # Bennett-6azb / U58: classify `ctrl_wire` as an input of the inner
+    # `ReversibleCircuit`. It's caller-provided, must round-trip
+    # unchanged, and satisfies all input-wire invariants. Without this
+    # the partition-assert in `ReversibleCircuit`'s inner constructor
+    # rejects the wire as unclassified. The public `simulate(cc, ctrl,
+    # input)` / `verify_reversibility(cc)` API still takes `ctrl`
+    # separately — we just prepend it internally.
+    inner_input_wires  = pushfirst!(copy(circuit.input_wires), ctrl_wire)
+    inner_input_widths = pushfirst!(copy(circuit.input_widths), 1)
+
     inner = ReversibleCircuit(total, new_gates,
-                              circuit.input_wires, circuit.output_wires,
-                              new_anc, circuit.input_widths,
+                              inner_input_wires, circuit.output_wires,
+                              new_anc, inner_input_widths,
                               circuit.output_elem_widths)
     return ControlledCircuit(inner, ctrl_wire)
 end
@@ -54,7 +64,13 @@ end
 # ---- simulate for ControlledCircuit ----
 
 function simulate(cc::ControlledCircuit, ctrl::Bool, input::Integer)
-    length(cc.circuit.input_widths) == 1 || error("simulate(cc, ctrl, input) requires single-input circuit, got $(length(cc.circuit.input_widths)) inputs")
+    # Bennett-6azb / U58: the inner `ReversibleCircuit` now carries
+    # ctrl as its first input. User-facing f still takes its own
+    # inputs; check against `length(c.input_widths) - 1` here.
+    length(cc.circuit.input_widths) == 2 || error(
+        "simulate(cc, ctrl, input) requires single-f-input circuit, got " *
+        "$(length(cc.circuit.input_widths) - 1) f-inputs " *
+        "($(length(cc.circuit.input_widths)) total including ctrl)")
     return _simulate_ctrl(cc, ctrl, (input,))
 end
 
@@ -64,36 +80,16 @@ end
 
 function _simulate_ctrl(cc::ControlledCircuit, ctrl::Bool, inputs::Tuple)
     c = cc.circuit
-    # Bennett-6fg9 / U19: same arity + width guard as _simulate.
-    length(inputs) == length(c.input_widths) || throw(ArgumentError(
-        "simulate(ControlledCircuit, …): expected $(length(c.input_widths)) " *
-        "inputs, got $(length(inputs)) (input_widths = $(c.input_widths))"))
-    for (k, (v, w)) in enumerate(zip(inputs, c.input_widths))
-        _assert_input_fits(v, w, k)
-    end
-    c.n_wires > 0 || throw(ArgumentError(
-        "simulate(ControlledCircuit, …): circuit has n_wires = 0"))
-
-    bits = zeros(Bool, c.n_wires)
-    bits[cc.ctrl_wire] = ctrl
-
-    offset = 0
-    for (k, w) in enumerate(c.input_widths)
-        v = inputs[k]
-        for i in 1:w
-            bits[c.input_wires[offset + i]] = (v >> (i - 1)) & 1 == 1
-        end
-        offset += w
-    end
-
-    for gate in c.gates; apply!(bits, gate); end
-
-    for w in c.ancilla_wires
-        bits[w] && error("Ancilla wire $w not zero — controlled circuit bug")
-    end
-    bits[cc.ctrl_wire] == ctrl || error("Control wire changed from $ctrl to $(bits[cc.ctrl_wire])")
-
-    return _read_output(bits, c.output_wires, c.output_elem_widths)
+    # Bennett-6azb / U58: ctrl is now input_widths[1] of the inner.
+    # Synthesise the full input tuple and delegate to `_simulate`,
+    # which already handles per-input arity + fit checks AND the new
+    # input-preservation invariant. Ctrl preservation falls out for
+    # free — it's just input_wires[1].
+    length(inputs) + 1 == length(c.input_widths) || throw(ArgumentError(
+        "simulate(ControlledCircuit, …): expected " *
+        "$(length(c.input_widths) - 1) f-inputs, got $(length(inputs)) " *
+        "(inner input_widths = $(c.input_widths), first is ctrl)"))
+    return _simulate(c, (Int(ctrl), inputs...))
 end
 
 """
@@ -112,37 +108,10 @@ violation. Replaces an earlier tautological round-trip check. See
 Bennett-asw2 / U01.
 """
 function verify_reversibility(cc::ControlledCircuit; n_tests::Int=100)
-    c = cc.circuit
-    for t in 1:n_tests
-        bits = zeros(Bool, c.n_wires)
-        orig_ctrl = rand(Bool)
-        bits[cc.ctrl_wire] = orig_ctrl
-        offset = 0
-        for w in c.input_widths
-            for i in 1:w
-                bits[c.input_wires[offset + i]] = rand(Bool)
-            end
-            offset += w
-        end
-        orig_input_values = [bits[w] for w in c.input_wires]
-        orig = copy(bits)
-
-        for g in c.gates; apply!(bits, g); end
-
-        for w in c.ancilla_wires
-            bits[w] && error("verify_reversibility[ctrl] (test $t): ancilla wire $w not zero after forward pass — Bennett ancilla-clean invariant violated")
-        end
-
-        for (k, w) in pairs(c.input_wires)
-            bits[w] == orig_input_values[k] ||
-                error("verify_reversibility[ctrl] (test $t): input wire $w changed from $(orig_input_values[k]) to $(bits[w]) — Bennett input-preservation violated")
-        end
-
-        bits[cc.ctrl_wire] == orig_ctrl ||
-            error("verify_reversibility[ctrl] (test $t): control wire $(cc.ctrl_wire) changed from $orig_ctrl to $(bits[cc.ctrl_wire])")
-
-        for g in Iterators.reverse(c.gates); apply!(bits, g); end
-        bits == orig || error("verify_reversibility[ctrl] (test $t): $(sum(bits .!= orig)) wires differ after forward+reverse — self-consistency check failed")
-    end
-    return true
+    # Bennett-6azb / U58: ctrl is now `cc.circuit.input_wires[1]`, so
+    # delegating to the `ReversibleCircuit` probe covers all three
+    # invariants — ancilla-zero, input-preservation (which now
+    # includes ctrl), and forward+reverse self-consistency — without
+    # duplicating the probe logic.
+    return verify_reversibility(cc.circuit; n_tests)
 end

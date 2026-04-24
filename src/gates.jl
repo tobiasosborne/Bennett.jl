@@ -36,4 +36,50 @@ struct ReversibleCircuit
     ancilla_wires::Vector{WireIndex}
     input_widths::Vector{Int}
     output_elem_widths::Vector{Int}  # e.g. [8] for Int8, [8,8] for Tuple{Int8,Int8}
+
+    # Bennett-6azb / U58: validate the wire partition at construction
+    # time. `ancilla ∩ input` or `ancilla ∩ output` would make the
+    # ancilla-zero check in `simulate` fire on an input/output value
+    # (false positive or -negative). `input ∩ output` overlap IS
+    # permitted — self-reversing primitives (soft-float, QROM tabulate)
+    # legitimately write results back onto input wires. `union` must
+    # cover `1:n_wires` so no wire escapes classification.
+    function ReversibleCircuit(n_wires::Int, gates::Vector{ReversibleGate},
+                               input_wires::Vector{WireIndex},
+                               output_wires::Vector{WireIndex},
+                               ancilla_wires::Vector{WireIndex},
+                               input_widths::Vector{Int},
+                               output_elem_widths::Vector{Int})
+        in_set = Set(input_wires)
+        out_set = Set(output_wires)
+        anc_set = Set(ancilla_wires)
+
+        bad_in_anc = intersect(in_set, anc_set)
+        isempty(bad_in_anc) || error(
+            "ReversibleCircuit: ancilla wires $(sort!(collect(bad_in_anc))) " *
+            "overlap input wires — the ancilla-zero check in `simulate` " *
+            "would fire on input values")
+
+        bad_out_anc = intersect(out_set, anc_set)
+        isempty(bad_out_anc) || error(
+            "ReversibleCircuit: ancilla wires $(sort!(collect(bad_out_anc))) " *
+            "overlap output wires — the ancilla-zero check in `simulate` " *
+            "would depend on f(x)")
+
+        covered = union(in_set, out_set, anc_set)
+        expected = Set(1:n_wires)
+        missing_wires = setdiff(expected, covered)
+        isempty(missing_wires) || error(
+            "ReversibleCircuit: wires $(sort!(collect(missing_wires))) are " *
+            "not classified as input, output, or ancilla " *
+            "(n_wires=$n_wires)")
+
+        stray = setdiff(covered, expected)
+        isempty(stray) || error(
+            "ReversibleCircuit: wire indices $(sort!(collect(stray))) exceed " *
+            "n_wires=$n_wires")
+
+        return new(n_wires, gates, input_wires, output_wires, ancilla_wires,
+                   input_widths, output_elem_widths)
+    end
 end

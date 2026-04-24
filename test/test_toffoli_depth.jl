@@ -2,16 +2,20 @@ using Test
 using Bennett
 
 # Helper: build a minimal ReversibleCircuit carrying only a gate list.
-# Metrics under test don't inspect inputs/outputs/ancillae, only gates + n_wires.
+# Metrics under test don't inspect inputs/outputs/ancillae, only gates +
+# n_wires. Bennett-6azb / U58: the `ReversibleCircuit` inner constructor
+# now enforces `input ∪ output ∪ ancilla == 1:n_wires`, so we classify
+# every wire as ancilla to keep the helper valid without giving
+# metrics-only tests a real input/output shape they don't care about.
 function _mk(n_wires::Int, gates::Vector{<:Bennett.ReversibleGate})
     return Bennett.ReversibleCircuit(
         n_wires,
         Vector{Bennett.ReversibleGate}(gates),
-        Int[],          # input_wires
-        Int[],          # output_wires
-        Int[],          # ancilla_wires
-        Int[],          # input_widths
-        Int[],          # output_elem_widths
+        Int[],              # input_wires
+        Int[],              # output_wires
+        collect(1:n_wires), # ancilla_wires (satisfies partition)
+        Int[],              # input_widths
+        Int[],              # output_elem_widths
     )
 end
 

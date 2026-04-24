@@ -11,6 +11,47 @@ Phase 0 continues; U01–U26 closed previously. U28 closed today.**
 
 ### Closed this session
 
+- **Bennett-6azb (U58) — simulator now verifies Bennett's
+  input-preservation invariant; `ReversibleCircuit` asserts the
+  input/output/ancilla partition.** Previously `simulate` only
+  checked the ancilla-zero half of Bennett's `(x, 0) → (x, f(x))`
+  invariant; a circuit that silently mutated an input while still
+  producing the right output passed every test. Added an
+  input-snapshot / post-run comparison pointing at the specific
+  wire index on mismatch (same shape as
+  `_validate_self_reversing!` from U03 — deliberate symmetry).
+
+  `ReversibleCircuit` got an inner constructor asserting:
+  - `ancilla ∩ input == ∅` (otherwise ancilla-zero check fires on
+    the input value)
+  - `ancilla ∩ output == ∅` (otherwise ancilla-zero depends on f(x))
+  - `input ∪ output ∪ ancilla == 1:n_wires` (covering)
+  - no wire index > n_wires
+  `input ∩ output` overlap is explicitly allowed — self-reversing
+  primitives (soft-float, QROM tabulate) legitimately write results
+  back onto input wires.
+
+  **Real bug caught**: `controlled(circuit)` was adding a
+  `ctrl_wire` but not classifying it — the partition assert
+  rejected every wrapped circuit. Fixed `controlled()` to classify
+  `ctrl_wire` as the inner's first input (width 1). Side benefit:
+  `verify_reversibility(cc::ControlledCircuit)` now delegates to the
+  `ReversibleCircuit` probe — same code path, no duplicate probe
+  logic. `simulate(cc, ctrl, input)` still takes ctrl separately;
+  internally synthesises `(Int(ctrl), input...)` and goes through
+  `_simulate`.
+
+  Cascade absorbed: `test/test_toffoli_depth.jl:_mk` helper that
+  built circuits with empty `input/output/ancilla` for metrics-only
+  tests now classifies every wire as ancilla to satisfy the new
+  partition.
+
+  Test gate: `test/test_6azb_input_preservation.jl` (6 testsets,
+  387 asserts): full regression guard across all compiled circuit
+  shapes, synthetic broken-circuit detection, three constructor
+  rejection cases, and the `input == output` overlap permission.
+  Full `Pkg.test()` green.
+
 - **CLAUDE.md §14 + pre-push hook — no GitHub CI, ever.** The
   catalogue's U49 ("no CI workflow, load-bearing for every invariant
   claim") proposed filing `.github/workflows/test.yml`. User has a

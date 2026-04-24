@@ -207,6 +207,9 @@ include("test_4fri_mul_target.jl")
 # Bennett-spa8 / U27 — add dispatcher `:auto` → `:ripple` (Cuccaro
 # is strictly worse post-Bennett copy-out at every measured width).
 include("test_spa8_add_auto_ripple.jl")
+# Bennett-6azb / U58 — simulator verifies input-preservation
+# invariant; ReversibleCircuit asserts input/output/ancilla partition.
+include("test_6azb_input_preservation.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")
