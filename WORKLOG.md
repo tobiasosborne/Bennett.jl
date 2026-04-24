@@ -11,6 +11,38 @@ Phase 0 continues; U01–U26 closed previously. U28 closed today.**
 
 ### Closed this session
 
+- **Bennett-4fri (U30) — `:auto` mul dispatcher never picked
+  `:qcla_tree` / `:karatsuba`**: `_pick_mul_strategy` defaulted to
+  `:shift_add` unconditionally, leaving the advertised 6× T-depth win
+  at W=32/64 locked behind the opt-in `mul=:qcla_tree` kwarg. Fix:
+  added a `target::Symbol=:gate_count` kwarg that selects the objective
+  the dispatcher optimises for. `:gate_count` preserves the pre-U30
+  choices; `:depth` promotes `mul=:auto` to `qcla_tree`.
+
+  Implementation note: instead of plumbing `target` through the
+  `LoweringCtx` struct (a "core change" per CLAUDE.md §2), the
+  pre-resolution happens at the `lower()` entry point — if
+  `mul===:auto && target===:depth`, `mul` is rewritten to `:qcla_tree`
+  before any downstream call sees it. Downstream dispatchers treat
+  this as explicit user choice. Keeps the core ctx struct untouched.
+
+  `target` is validated (only `:gate_count | :depth` accepted today —
+  `:ancilla` arm deferred until there's a dispatcher that actually
+  swaps strategy on wire budget). Reachable via all three
+  `reversible_compile` overloads (Tuple / Float64 / ParsedIR).
+
+  Measured Toffoli-depth reduction at W=32 on `(x,y) -> x*y`:
+  `:gate_count` → 190; `:depth` → 56 (3.4× improvement). W=64:
+  382 → 64 (6×). Cost: ~5× more total Toffoli and ~2.5× more wires —
+  hence `:gate_count` stays the default.
+
+  Test gate: `test/test_4fri_mul_target.jl` (36 asserts / 5 testsets):
+  default unchanged at W=32; `target=:depth` yields ≥3× depth
+  reduction + simulated equality on sampled inputs; explicit
+  `mul=:shift_add` wins over `target=:depth`; invalid target raises
+  `ArgumentError`; kwarg reachable on all three overloads. Full
+  `Pkg.test()` green.
+
 - **Bennett-xlsz (U29) — three `reversible_compile` overloads had
   divergent kwarg surfaces and raised raw `MethodError` on any
   typo or cross-overload kwarg.** Unified the surface: each overload

@@ -108,7 +108,7 @@ Uses LLVM.jl to walk the IR as typed objects (no regex parsing).
 """
 const _TUPLE_OVERLOAD_KWARGS = (:optimize, :max_loop_iterations,
                                :compact_calls, :bit_width, :add, :mul,
-                               :strategy, :fold_constants)
+                               :strategy, :fold_constants, :target)
 
 function reversible_compile(f, arg_types::Type{<:Tuple};
                             optimize::Bool=true, max_loop_iterations::Int=0,
@@ -116,6 +116,7 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
                             add::Symbol=:auto, mul::Symbol=:auto,
                             strategy::Symbol=:auto,
                             fold_constants::Bool=true,
+                            target::Symbol=:gate_count,
                             kwargs...)
     _reject_unknown_kwargs("Tuple overload", _TUPLE_OVERLOAD_KWARGS,
                            (), kwargs)
@@ -165,12 +166,13 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     if bit_width > 0
         parsed = _narrow_ir(parsed, bit_width)
     end
-    lr = lower(parsed; max_loop_iterations, compact_calls, add, mul, fold_constants)
+    lr = lower(parsed; max_loop_iterations, compact_calls, add, mul,
+               fold_constants, target)
     return bennett(lr)
 end
 
 const _PARSED_OVERLOAD_KWARGS = (:max_loop_iterations, :compact_calls,
-                                :add, :mul, :fold_constants)
+                                :add, :mul, :fold_constants, :target)
 # Kwargs that only make sense on the Julia-function entry path (they
 # configure IR extraction or pre-extraction narrowing); rejected
 # loudly if sent to the ParsedIR overload.
@@ -192,10 +194,12 @@ function reversible_compile(parsed::ParsedIR;
                             compact_calls::Bool=false,
                             add::Symbol=:auto, mul::Symbol=:auto,
                             fold_constants::Bool=true,
+                            target::Symbol=:gate_count,
                             kwargs...)
     _reject_unknown_kwargs("ParsedIR overload", _PARSED_OVERLOAD_KWARGS,
                            _PARSED_OVERLOAD_CROSS_REJECT, kwargs)
-    lr = lower(parsed; max_loop_iterations, compact_calls, add, mul, fold_constants)
+    lr = lower(parsed; max_loop_iterations, compact_calls, add, mul,
+               fold_constants, target)
     return bennett(lr)
 end
 
@@ -357,7 +361,7 @@ with direct `call @j_soft_fdiv` instructions that the callee registry recognizes
 """
 const _FLOAT64_OVERLOAD_KWARGS = (:optimize, :max_loop_iterations,
                                   :compact_calls, :strategy, :add, :mul,
-                                  :fold_constants)
+                                  :fold_constants, :target)
 # Kwargs that only make sense on the Tuple-of-integers path.
 const _FLOAT64_OVERLOAD_CROSS_REJECT = (:bit_width,)
 
@@ -367,6 +371,7 @@ function reversible_compile(f::F, float_types::Type{Float64}...;
                             strategy::Symbol=:auto,
                             add::Symbol=:auto, mul::Symbol=:auto,
                             fold_constants::Bool=true,
+                            target::Symbol=:gate_count,
                             kwargs...) where {F}
     _reject_unknown_kwargs("Float64 overload", _FLOAT64_OVERLOAD_KWARGS,
                            _FLOAT64_OVERLOAD_CROSS_REJECT, kwargs)
@@ -384,15 +389,15 @@ function reversible_compile(f::F, float_types::Type{Float64}...;
     if N == 1
         w = (x::UInt64) -> (@inline f(SoftFloat(x))).bits
         return reversible_compile(w, UInt64; optimize, max_loop_iterations,
-                                  compact_calls, add, mul, fold_constants)
+                                  compact_calls, add, mul, fold_constants, target)
     elseif N == 2
         w = (a::UInt64, b::UInt64) -> (@inline f(SoftFloat(a), SoftFloat(b))).bits
         return reversible_compile(w, UInt64, UInt64; optimize, max_loop_iterations,
-                                  compact_calls, add, mul, fold_constants)
+                                  compact_calls, add, mul, fold_constants, target)
     elseif N == 3
         w = (a::UInt64, b::UInt64, c::UInt64) -> (@inline f(SoftFloat(a), SoftFloat(b), SoftFloat(c))).bits
         return reversible_compile(w, UInt64, UInt64, UInt64; optimize, max_loop_iterations,
-                                  compact_calls, add, mul, fold_constants)
+                                  compact_calls, add, mul, fold_constants, target)
     else
         error("Float64 compile supports up to 3 arguments (got $N)")
     end

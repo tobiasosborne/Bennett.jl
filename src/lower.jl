@@ -333,11 +333,24 @@ end
 
 function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=true,
                use_karatsuba::Bool=false, fold_constants::Bool=true, compact_calls::Bool=false,
-               add::Symbol=:auto, mul::Symbol=:auto)
+               add::Symbol=:auto, mul::Symbol=:auto,
+               target::Symbol=:gate_count)
     add in (:auto, :ripple, :cuccaro, :qcla) ||
         error("lower: unknown add strategy :$add; supported: :auto, :ripple, :cuccaro, :qcla")
     mul in (:auto, :shift_add, :karatsuba, :qcla_tree) ||
         error("lower: unknown mul strategy :$mul; supported: :auto, :shift_add, :karatsuba, :qcla_tree")
+    # Bennett-4fri / U30: `target` selects the objective the `:auto`
+    # dispatchers optimise for. `:gate_count` (default) preserves the
+    # pre-U30 choices; `:depth` switches `mul=:auto` to `qcla_tree`
+    # (O(log² n) T-depth vs shift-and-add's O(n)).
+    target in (:gate_count, :depth) || throw(ArgumentError(
+        "lower: unknown target :$target; supported: :gate_count, :depth"))
+    # Pre-resolve `mul=:auto` when the user asks for depth-optimised
+    # output. Downstream sees this as an explicit choice — no ctx field
+    # needed and no per-call-site threading beyond the existing `mul`.
+    if mul === :auto && target === :depth
+        mul = :qcla_tree
+    end
     wa = WireAllocator()
     gates = ReversibleGate[]
     vw = Dict{Symbol,Vector{Int}}()
@@ -1247,18 +1260,30 @@ function _pick_add_strategy(user_choice::Symbol, W::Int, op2_dead::Bool, livenes
 end
 
 """
-    _pick_mul_strategy(user_choice, W, use_karatsuba) -> Symbol
+    _pick_mul_strategy(user_choice, W, use_karatsuba;
+                       target=:gate_count) -> Symbol
 
 Resolve `mul=:auto|:shift_add|:karatsuba|:qcla_tree` into a concrete
-strategy. `:auto` preserves the pre-P2 default: Karatsuba when the legacy
-`use_karatsuba` kwarg is set AND W > 4, else shift-and-add. Explicit
-choices bypass the heuristic.
+strategy. Explicit choices bypass the heuristic entirely.
+
+For `:auto`:
+- `target=:gate_count` (default): Karatsuba when the legacy
+  `use_karatsuba` kwarg is set AND W > 4; else shift-and-add.
+  Shift-and-add wins on total Toffoli count and wire budget.
+- `target=:depth`: `qcla_tree` (Sun-Borissov 2023). O(log² n) Toffoli
+  depth vs shift-and-add's O(n); depth drops ~3-6× at W=32/64.
+  Costs ~5× more total Toffoli and ~2.5× more wires.
+
+Bennett-4fri / U30: the `target` arm closes the "qcla_tree is never
+picked by :auto" gap.
 """
-function _pick_mul_strategy(user_choice::Symbol, W::Int, use_karatsuba::Bool)
+function _pick_mul_strategy(user_choice::Symbol, W::Int, use_karatsuba::Bool;
+                            target::Symbol=:gate_count)
     user_choice === :shift_add && return :shift_add
     user_choice === :karatsuba && return :karatsuba
     user_choice === :qcla_tree && return :qcla_tree
     user_choice === :auto || error("_pick_mul_strategy: unknown choice :$user_choice")
+    target === :depth && return :qcla_tree
     (use_karatsuba && W > 4) ? :karatsuba : :shift_add
 end
 

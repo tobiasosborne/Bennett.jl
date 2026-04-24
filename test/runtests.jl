@@ -201,6 +201,9 @@ include("test_b1vp_fptoui.jl")
 # Bennett-xlsz / U29 — unify reversible_compile kwargs across the three
 # overloads; unknown kwargs raise ArgumentError with the supported set.
 include("test_xlsz_kwargs_unified.jl")
+# Bennett-4fri / U30 — mul dispatcher `target=:depth` promotes `:auto`
+# to `qcla_tree` (O(log² n) Toffoli-depth).
+include("test_4fri_mul_target.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")
