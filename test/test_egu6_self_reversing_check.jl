@@ -80,9 +80,10 @@ using Bennett: ReversibleGate, NOTGate, CNOTGate, ToffoliGate, GateGroup,
     @testset "T5: gate counts unchanged (validator reads only, never mutates)" begin
         # Regression barrier: if the probe ever touches lr.gates, gate_count
         # drifts. Run full pipeline and pin the baseline Int8 x+1 total.
+        # Post-U27/U28: 58/12 (was 100/28 pre-U27 Cuccaro default).
         c = reversible_compile(x -> x + Int8(1), Int8)
         gc = gate_count(c)
-        @test gc.total == 100
-        @test gc.Toffoli == 28
+        @test gc.total == 58
+        @test gc.Toffoli == 12
     end
 end

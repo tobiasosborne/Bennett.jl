@@ -2,25 +2,25 @@ using Test
 using Bennett
 
 # D1: verify the add-op strategy dispatcher can force each available strategy
-# via a kwarg and that :auto preserves pre-D1 default behavior.
+# via a kwarg. U27 / Bennett-spa8: `:auto` was pre-D1 Cuccaro-when-op2-dead
+# but Cuccaro loses on every measured metric, so `:auto` → `:ripple` now.
 
-@testset "add dispatcher: :auto preserves pre-D1 defaults" begin
-    # x + 1 at Int8: pre-D1 baseline is Cuccaro (op2=const is dead, in-place fires).
-    # This exact gate count matches test_gate_count_regression.jl.
+@testset "add dispatcher: :auto equals :ripple (U27)" begin
+    # x + 1 at Int8: the `:auto` path was Cuccaro pre-U27; now ripple.
+    # Pin the equivalence explicitly so silent re-regression would fail here.
     c_auto = reversible_compile(x -> x + Int8(1), Int8; add=:auto)
-    c_now  = reversible_compile(x -> x + Int8(1), Int8)   # unchanged call
-    @test gate_count(c_auto).total == gate_count(c_now).total
-    @test gate_count(c_auto).Toffoli == gate_count(c_now).Toffoli
+    c_rip  = reversible_compile(x -> x + Int8(1), Int8; add=:ripple)
+    @test gate_count(c_auto).total   == gate_count(c_rip).total
+    @test gate_count(c_auto).Toffoli == gate_count(c_rip).Toffoli
 end
 
-@testset "add dispatcher: :ripple forces ripple-carry" begin
+@testset "add dispatcher: :ripple distinguishable from :cuccaro" begin
     c_rip = reversible_compile(x -> x + Int8(1), Int8; add=:ripple)
-    c_auto = reversible_compile(x -> x + Int8(1), Int8; add=:auto)
-    # Ripple has different structure than Cuccaro, so gate counts must differ
-    # at some level (either total or Toffoli). Verify at least one differs.
-    @test gate_count(c_rip) != gate_count(c_auto)
+    c_cuc = reversible_compile(x -> x + Int8(1), Int8; add=:cuccaro)
+    # Cuccaro and ripple produce genuinely different gate lists — if
+    # they matched, the explicit kwarg wasn't being honored.
+    @test gate_count(c_rip) != gate_count(c_cuc)
     @test verify_reversibility(c_rip)
-    # Simulate + check: x + 1 still works
     for x in Int8(-5):Int8(5)
         @test simulate(c_rip, x) == x + Int8(1)
     end

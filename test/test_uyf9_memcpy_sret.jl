@@ -50,9 +50,10 @@ using Bennett: extract_parsed_ir, reversible_compile, simulate,
         f(x::Int8)::Int8 = x + Int8(1)
         c = reversible_compile(f, Int8)
         @test verify_reversibility(c)
-        # Baseline: i8 x+1 = 100 gates / 28 Toffoli (CLAUDE.md §6).
-        @test gate_count(c).total == 100
-        @test gate_count(c).Toffoli == 28
+        # Baseline: i8 x+1 = 58 gates / 12 Toffoli post-U27/U28.
+        # (Pre-U28 Cuccaro+no-fold was 100 / 28.)
+        @test gate_count(c).total == 58
+        @test gate_count(c).Toffoli == 12
     end
 
     # ---------------- explicit preprocess=true: no double-SROA ------------

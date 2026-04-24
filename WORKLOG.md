@@ -11,6 +11,51 @@ Phase 0 continues; U01–U26 closed previously. U28 closed today.**
 
 ### Closed this session
 
+- **Bennett-spa8 (U27) — `add=:auto` picked Cuccaro when op2 was
+  dead; Cuccaro is strictly worse than ripple after Bennett's copy-out
+  pass**. Cuccaro's "1-wire in-place" advantage is erased by the
+  output-wire doubling in `bennett(lr)`, while shipping a worse
+  Toffoli-depth (the MAJ/UMA chain serialises every Toffoli — both
+  the forward pass and the reverse). Flipped `_pick_add_strategy`'s
+  `:auto` arm to always return `:ripple`. Explicit `add=:cuccaro`
+  still works for callers who genuinely want in-place.
+
+  Measured on `(x,y) -> x+y`:
+
+  | W  | cuccaro total/depth | ripple total/depth |
+  |----|---------------------|--------------------|
+  | 8  | 98 / 28             | 82 / 14            |
+  | 32 | 410 / 124           | 346 / 62           |
+  | 64 | 826 / 252           | 698 / 126          |
+
+  **Cascade absorbed (4 baselines pinned elsewhere)**:
+  - `test_gate_count_regression.jl`: i8 x+1 100 → 58 (42% fewer gates,
+    Toffoli 28 → 12). Scaling invariant shifts from `2W+4` to `2W-2`
+    (the constant-1 high-bit fold-out under U28 interacts with ripple's
+    shorter carry structure). Polynomial `x*x+3x+1` 562 → 482 / depth
+    64 → 36. `x+3` 102 → 64 / depth 28 → 12.
+  - `test_uyf9_memcpy_sret.jl:54-55`: 100/28 → 58/12
+  - `test_egu6_self_reversing_check.jl:85-86`: 100/28 → 58/12
+  - `test_httg_loop_multiblock.jl:117-118`: 100/28 → 58/12
+  - `test_add_dispatcher.jl`: `:auto != :ripple` probe inverted — now
+    pin `:auto == :ripple` (the intent) and distinguish ripple from
+    Cuccaro via `!=` instead.
+
+  **Side-effect: Bennett-ca0i (U02 follow-up) effectively resolved for
+  SHA-256**. `value_eager_bennett` on the SHA-256 round used to fail
+  `verify_reversibility` because the Cuccaro adder wrote in-place to
+  wires still live later in Kahn's reverse-topo schedule. With ripple
+  as the default, writes go to fresh wires and the schedule stays
+  consistent. Upgraded `test_value_eager.jl:166` from `@test_broken`
+  to `@test`. The `ca0i` bead is still P2 and can be closed out
+  separately once the general multi-pattern case has been probed.
+
+  Test gate: `test/test_spa8_add_auto_ripple.jl` (33 asserts / 4
+  testsets): `:auto == :ripple` for 2-op and 1-op adds across
+  i8/i16/i32/i64, explicit `:cuccaro` remains reachable and produces
+  a different gate list, depth-wins margin ≥ 1.5× on W ≥ 16. Full
+  `Pkg.test()` green.
+
 - **Bennett-4fri (U30) — `:auto` mul dispatcher never picked
   `:qcla_tree` / `:karatsuba`**: `_pick_mul_strategy` defaulted to
   `:shift_add` unconditionally, leaving the advertised 6× T-depth win

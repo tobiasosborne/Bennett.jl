@@ -1247,16 +1247,24 @@ end
     _pick_add_strategy(user_choice, W, op2_dead, liveness_enabled) -> Symbol
 
 Resolve an `add=:auto|:ripple|:cuccaro|:qcla` user choice into one of the
-three concrete strategies. `:auto` preserves the pre-D1 default:
-Cuccaro when in-place is safe (liveness available AND op2 is dead), ripple
-otherwise. Explicit choices bypass the heuristic.
+three concrete strategies. Explicit choices bypass the heuristic.
+
+Bennett-spa8 / U27: `:auto` always returns `:ripple`. The pre-U27
+default preferred Cuccaro on an op2-dead path, but Cuccaro's one-wire
+in-place saving is immediately erased by Bennett's copy-out pass,
+while shipping a strictly worse Toffoli-depth (the Cuccaro MAJ/UMA
+chain serialises every Toffoli). On `(x,y)->x+y` at W=32:
+  cuccaro: 410 total / T-depth 124
+  ripple : 346 total / T-depth 62
+`op2_dead` / `liveness_enabled` are retained in the signature for
+backward compatibility with callers that still thread them.
 """
 function _pick_add_strategy(user_choice::Symbol, W::Int, op2_dead::Bool, liveness_enabled::Bool)
     user_choice === :ripple  && return :ripple
     user_choice === :cuccaro && return :cuccaro
     user_choice === :qcla    && return :qcla
     user_choice === :auto || error("_pick_add_strategy: unknown choice :$user_choice")
-    (liveness_enabled && op2_dead) ? :cuccaro : :ripple
+    return :ripple
 end
 
 """

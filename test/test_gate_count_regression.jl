@@ -3,9 +3,9 @@ using Bennett
 
 @testset "Gate count regression baselines" begin
     # CLAUDE.md Principle 6: gate counts are regression baselines.
-    # These values reflect the current pipeline with path-predicate phi resolution.
-    # Toffoli counts match the original baselines (28, 60, 124, 252).
-    # Total is higher due to block-predicate overhead (NOT + CNOT gates).
+    # Current pipeline: path-predicate phi resolution, fold_constants
+    # on by default (U28 / Bennett-epwy), `add=:auto` → `:ripple` (U27 /
+    # Bennett-spa8).
     #
     # Bennett-11xt / U23: each compiled circuit below now carries a
     # `verify_reversibility` call — gate counts alone are not
@@ -28,49 +28,57 @@ using Bennett
 
         gc8, gc16, gc32, gc64 = gate_count(c8), gate_count(c16), gate_count(c32), gate_count(c64)
 
-        @test gc8.total  == 100
-        @test gc16.total == 204
-        @test gc32.total == 412
-        @test gc64.total == 828
+        # Post-U27/U28 baselines. Pre-U27 (Cuccaro default): 100/204/412/828
+        # with 28/60/124/252 Toffoli. Ripple + fold collapses the
+        # known-zero carry-in path AND the constant-1 operand: most of
+        # the carry Toffolis fold to CNOTs where one control is known
+        # false, landing at these ~2× smaller totals.
+        @test gc8.total  == 58
+        @test gc16.total == 114
+        @test gc32.total == 226
+        @test gc64.total == 450
 
-        # Toffoli counts (original baselines, unaffected by predicate overhead)
-        @test gc8.Toffoli  == 28
-        @test gc16.Toffoli == 60
-        @test gc32.Toffoli == 124
-        @test gc64.Toffoli == 252
+        @test gc8.Toffoli  == 12
+        @test gc16.Toffoli == 28
+        @test gc32.Toffoli == 60
+        @test gc64.Toffoli == 124
 
-        # 2x+4 scaling invariant (4 extra from path-predicate per doubling)
-        @test gc16.total == 2 * gc8.total + 4
-        @test gc32.total == 2 * gc16.total + 4
-        @test gc64.total == 2 * gc32.total + 4
+        # Scaling invariant (post-ripple+fold): each doubling adds
+        # essentially one extra carry + the prior width's work minus
+        # the constant-1 head-bit fold-out.  Empirically `2*W - 2`.
+        @test gc16.total == 2 * gc8.total - 2
+        @test gc32.total == 2 * gc16.total - 2
+        @test gc64.total == 2 * gc32.total - 2
 
-        # Toffoli-depth baselines (M2, bd Bennett-z29g).
+        # Toffoli-depth baselines.
         # Ripple-carry adder: Toffoli-depth == Toffoli count because the carry
         # chain serializes every Toffoli. This is the reason QCLA (O(log n)
         # Toffoli-depth) is the natural next primitive.
-        @test toffoli_depth(c8)  == 28
-        @test toffoli_depth(c16) == 60
-        @test toffoli_depth(c32) == 124
-        @test toffoli_depth(c64) == 252
+        @test toffoli_depth(c8)  == 12
+        @test toffoli_depth(c16) == 28
+        @test toffoli_depth(c32) == 60
+        @test toffoli_depth(c64) == 124
     end
 
     @testset "Polynomial gate count (x*x + 3x + 1)" begin
-        # U28 / Bennett-epwy: fold_constants default flipped to true.
-        # Pre-fix: total=872, toffoli_depth=90 (352 Toffoli).
-        # Post-fix: total=562, toffoli_depth=64 (200 Toffoli). The
-        # constants 3 and 1 propagate through the multiply-and-add chain
-        # and collapse partially-constant Toffolis to CNOTs.
+        # Pre-U28/U27: total=872, toffoli_depth=90 (352 Toffoli).
+        # Post-U28 (fold default): total=562, depth=64.
+        # Post-U27 (:auto add → ripple): total=482, depth=36. The
+        # ripple-add carry chain shortens post-fold significantly —
+        # the constant `1` operand's high bits fold out cleanly.
         c = reversible_compile(x -> x * x + Int8(3) * x + Int8(1), Int8)
-        @test gate_count(c).total == 562
-        @test toffoli_depth(c) == 64
+        @test gate_count(c).total == 482
+        @test toffoli_depth(c) == 36
         @test verify_reversibility(c)
         @test simulate(c, Int8(0)) == Int8(1)
     end
 
     @testset "x + 3 gate count" begin
+        # Pre-U27 (Cuccaro default): total=102, toffoli_depth=28.
+        # Post-U27 (ripple): total=64, toffoli_depth=12.
         c = reversible_compile(x -> x + Int8(3), Int8)
-        @test gate_count(c).total == 102
-        @test toffoli_depth(c) == 28
+        @test gate_count(c).total == 64
+        @test toffoli_depth(c) == 12
         @test verify_reversibility(c)
         @test simulate(c, Int8(0)) == Int8(3)
     end

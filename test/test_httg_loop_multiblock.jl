@@ -110,11 +110,12 @@ end
         @test verify_reversibility(c; n_tests=16)
     end
 
-    @testset "T5: gate-count regression baselines unchanged (i8 x+1 = 100/28)" begin
+    @testset "T5: gate-count regression baselines unchanged (i8 x+1 = 58/12)" begin
         # Sanity check: non-loop lowerings remain byte-identical to baselines.
+        # Post-U27/U28: 58/12 (was 100/28 pre-U27 Cuccaro default).
         c = reversible_compile(x -> x + Int8(1), Int8)
         gc = gate_count(c)
-        @test gc.total == 100
-        @test gc.Toffoli == 28
+        @test gc.total == 58
+        @test gc.Toffoli == 12
     end
 end

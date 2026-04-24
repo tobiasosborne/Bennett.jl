@@ -160,15 +160,19 @@
         k, w = UInt32(0x428a2f98), UInt32(0x61626380)
         @test simulate(c_eager, (a,b,c_,d,e,f,g,h,k,w)) ==
               simulate(c_full, (a,b,c_,d,e,f,g,h,k,w))
-        # Bennett-rggq / U02 fix landed the branching-CFG fallback. SHA-256
-        # round is straight-line arithmetic (sigma/ch/maj are bitwise — no
-        # `if`), so it has only one `__pred_*` group (entry) and does NOT
-        # trigger the `_has_branching` fallback. Yet value_eager still fails
-        # Bennett's input-preservation invariant here — Kahn's reverse-topo
-        # is broken by a second, distinct pattern (likely Cuccaro-adder
-        # in-place writes on shared wires). Filed as a follow-up bead
-        # pending investigation; stays @test_broken until that lands.
-        @test_broken verify_reversibility(c_eager)
+        # Bennett-rggq / U02 landed the branching-CFG fallback. SHA-256
+        # round is straight-line arithmetic (sigma/ch/maj are bitwise —
+        # no `if`), so it has only one `__pred_*` group (entry) and
+        # doesn't trigger the `_has_branching` fallback.
+        # Was previously `@test_broken` because value_eager failed
+        # Bennett's input-preservation invariant — root cause was the
+        # Cuccaro-adder in-place writes on wires still live later in
+        # the schedule. U27 / Bennett-spa8 flipped `add=:auto` to
+        # `:ripple`, which writes to fresh wires, so the reverse topo
+        # now stays consistent. Upgraded to `@test`; the ca0i
+        # follow-up bead is effectively resolved for this SHA-256
+        # pattern as a side-effect of U27.
+        @test verify_reversibility(c_eager)
 
         p_full  = peak_live_wires(c_full)
         p_eager = peak_live_wires(c_eager)
