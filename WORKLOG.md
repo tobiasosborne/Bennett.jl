@@ -11,6 +11,32 @@ Phase 0 continues; U01–U26 closed previously. U28 closed today.**
 
 ### Closed this session
 
+- **Bennett-xlsz (U29) — three `reversible_compile` overloads had
+  divergent kwarg surfaces and raised raw `MethodError` on any
+  typo or cross-overload kwarg.** Unified the surface: each overload
+  now captures `kwargs...`, validates against its allowed set via a
+  shared `_reject_unknown_kwargs` helper, and raises `ArgumentError`
+  naming the offending kwarg(s) and the supported set for that
+  overload. Same helper routes cross-overload kwargs (e.g. passing
+  `bit_width=32` to the Float64 path, or `optimize=false` to the
+  ParsedIR path) into a specific "not supported on this overload"
+  message instead of a generic "unknown" one.
+
+  Also filled in gaps in the surface itself:
+  - `add`, `mul`, `fold_constants` now reach the Float64 overload.
+    Soft-float lowers to integer arithmetic internally, so the
+    strategy picks ARE meaningful — you just couldn't reach them
+    before without MethodError.
+  - `fold_constants` reachable on all three overloads (so users of
+    U28's fold-on-by-default can opt out when it matters, e.g. when
+    building an `lr` for `value_eager_bennett`).
+
+  Test gate: `test/test_xlsz_kwargs_unified.jl` (23 asserts) — 6
+  testsets covering unknown-kwarg rejection for each overload,
+  cross-overload rejection with specific messages, Float64 accepting
+  `add`/`mul`/`fold_constants`, and a regression guard that every
+  previously-valid kwarg call still compiles. Full `Pkg.test()` green.
+
 - **Bennett-b1vp (U31) — `fptoui` was silently dispatched through
   `soft_fptosi`, sign-reinterpreting any in-range value whose MSB is
   set** (the canonical repro: `unsafe_trunc(UInt64, 1e19)` = 10^19,

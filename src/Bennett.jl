@@ -54,6 +54,37 @@ const _SUPPORTED_SCALAR_ARGS = (Int8, Int16, Int32, Int64,
                                 UInt8, UInt16, UInt32, UInt64,
                                 Float64, Bool)
 
+# Bennett-xlsz / U29: unified kwargs validation across all three
+# `reversible_compile` overloads. A raw `MethodError` on a typo or on
+# a cross-overload kwarg (e.g. `bit_width` sent to the Float64 path)
+# used to dump LLVM-backed lookup spew; now each overload enumerates
+# the kwargs it accepts and raises a scoped `ArgumentError` pointing
+# the user at the valid set.
+function _reject_unknown_kwargs(overload::String, supported::Tuple,
+                                 rejected_cross::Tuple, passed::Base.Pairs)
+    unknown = Symbol[]
+    cross   = Symbol[]
+    for (k, _) in passed
+        k in supported && continue
+        if k in rejected_cross
+            push!(cross, k)
+        else
+            push!(unknown, k)
+        end
+    end
+    isempty(unknown) && isempty(cross) && return nothing
+    msgs = String[]
+    if !isempty(unknown)
+        push!(msgs, "unknown kwarg(s) $unknown")
+    end
+    if !isempty(cross)
+        push!(msgs, "kwarg(s) $cross not supported on this overload (see docstring)")
+    end
+    throw(ArgumentError(
+        "reversible_compile ($overload): " * join(msgs, "; ") *
+        ". Supported kwargs here: $(collect(supported))."))
+end
+
 "Check whether `T` is an argument type supported by `reversible_compile`."
 @inline function _is_supported_arg_type(T::Type)
     T in _SUPPORTED_SCALAR_ARGS && return true
@@ -75,11 +106,19 @@ end
 Compile a plain Julia function into a reversible circuit via LLVM IR.
 Uses LLVM.jl to walk the IR as typed objects (no regex parsing).
 """
+const _TUPLE_OVERLOAD_KWARGS = (:optimize, :max_loop_iterations,
+                               :compact_calls, :bit_width, :add, :mul,
+                               :strategy, :fold_constants)
+
 function reversible_compile(f, arg_types::Type{<:Tuple};
                             optimize::Bool=true, max_loop_iterations::Int=0,
                             compact_calls::Bool=false, bit_width::Int=0,
                             add::Symbol=:auto, mul::Symbol=:auto,
-                            strategy::Symbol=:auto)
+                            strategy::Symbol=:auto,
+                            fold_constants::Bool=true,
+                            kwargs...)
+    _reject_unknown_kwargs("Tuple overload", _TUPLE_OVERLOAD_KWARGS,
+                           (), kwargs)
     # Bennett-k0bg / U25: up-front kwarg + type validation.
     # `bit_width == 0` means "infer from arg_types"; otherwise the width
     # must be in [1, 64] (powers-of-2 are the common case but narrow
@@ -126,24 +165,37 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     if bit_width > 0
         parsed = _narrow_ir(parsed, bit_width)
     end
-    lr = lower(parsed; max_loop_iterations, compact_calls, add, mul)
+    lr = lower(parsed; max_loop_iterations, compact_calls, add, mul, fold_constants)
     return bennett(lr)
 end
 
+const _PARSED_OVERLOAD_KWARGS = (:max_loop_iterations, :compact_calls,
+                                :add, :mul, :fold_constants)
+# Kwargs that only make sense on the Julia-function entry path (they
+# configure IR extraction or pre-extraction narrowing); rejected
+# loudly if sent to the ParsedIR overload.
+const _PARSED_OVERLOAD_CROSS_REJECT = (:optimize, :bit_width, :strategy)
+
 """
     reversible_compile(parsed::ParsedIR; max_loop_iterations=0,
-                       compact_calls=false, add=:auto, mul=:auto) -> ReversibleCircuit
+                       compact_calls=false, add=:auto, mul=:auto,
+                       fold_constants=true) -> ReversibleCircuit
 
 Compile a pre-extracted `ParsedIR` (e.g. from
 `extract_parsed_ir_from_ll` or `extract_parsed_ir_from_bc`) into a reversible
 circuit. This path skips IR extraction and the `strategy=:tabulate` /
-`bit_width` pre-processing that only apply to Julia-function inputs.
+`bit_width` pre-processing that only apply to Julia-function inputs;
+passing `optimize`, `bit_width`, or `strategy` here raises `ArgumentError`.
 """
 function reversible_compile(parsed::ParsedIR;
                             max_loop_iterations::Int=0,
                             compact_calls::Bool=false,
-                            add::Symbol=:auto, mul::Symbol=:auto)
-    lr = lower(parsed; max_loop_iterations, compact_calls, add, mul)
+                            add::Symbol=:auto, mul::Symbol=:auto,
+                            fold_constants::Bool=true,
+                            kwargs...)
+    _reject_unknown_kwargs("ParsedIR overload", _PARSED_OVERLOAD_KWARGS,
+                           _PARSED_OVERLOAD_CROSS_REJECT, kwargs)
+    lr = lower(parsed; max_loop_iterations, compact_calls, add, mul, fold_constants)
     return bennett(lr)
 end
 
@@ -303,10 +355,21 @@ Implementation: The user's function is called with SoftFloat arguments inside a
 soft_fdiv etc., eliminating struct-passing ABI and producing clean integer IR
 with direct `call @j_soft_fdiv` instructions that the callee registry recognizes.
 """
+const _FLOAT64_OVERLOAD_KWARGS = (:optimize, :max_loop_iterations,
+                                  :compact_calls, :strategy, :add, :mul,
+                                  :fold_constants)
+# Kwargs that only make sense on the Tuple-of-integers path.
+const _FLOAT64_OVERLOAD_CROSS_REJECT = (:bit_width,)
+
 function reversible_compile(f::F, float_types::Type{Float64}...;
                             optimize::Bool=true, max_loop_iterations::Int=0,
                             compact_calls::Bool=false,
-                            strategy::Symbol=:auto) where {F}
+                            strategy::Symbol=:auto,
+                            add::Symbol=:auto, mul::Symbol=:auto,
+                            fold_constants::Bool=true,
+                            kwargs...) where {F}
+    _reject_unknown_kwargs("Float64 overload", _FLOAT64_OVERLOAD_KWARGS,
+                           _FLOAT64_OVERLOAD_CROSS_REJECT, kwargs)
     strategy in (:auto, :expression) ||
         error("reversible_compile: strategy=:$strategy not supported for Float64 " *
               "(2^64 table would be absurd); use :auto or :expression")
@@ -320,13 +383,16 @@ function reversible_compile(f::F, float_types::Type{Float64}...;
     # with direct soft_* calls that the callee registry recognizes.
     if N == 1
         w = (x::UInt64) -> (@inline f(SoftFloat(x))).bits
-        return reversible_compile(w, UInt64; optimize, max_loop_iterations, compact_calls)
+        return reversible_compile(w, UInt64; optimize, max_loop_iterations,
+                                  compact_calls, add, mul, fold_constants)
     elseif N == 2
         w = (a::UInt64, b::UInt64) -> (@inline f(SoftFloat(a), SoftFloat(b))).bits
-        return reversible_compile(w, UInt64, UInt64; optimize, max_loop_iterations, compact_calls)
+        return reversible_compile(w, UInt64, UInt64; optimize, max_loop_iterations,
+                                  compact_calls, add, mul, fold_constants)
     elseif N == 3
         w = (a::UInt64, b::UInt64, c::UInt64) -> (@inline f(SoftFloat(a), SoftFloat(b), SoftFloat(c))).bits
-        return reversible_compile(w, UInt64, UInt64, UInt64; optimize, max_loop_iterations, compact_calls)
+        return reversible_compile(w, UInt64, UInt64, UInt64; optimize, max_loop_iterations,
+                                  compact_calls, add, mul, fold_constants)
     else
         error("Float64 compile supports up to 3 arguments (got $N)")
     end
