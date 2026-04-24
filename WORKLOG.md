@@ -1,12 +1,136 @@
 # Bennett.jl Work Log
 
-## NEXT AGENT — start here — 2026-04-24 (session close)
+## NEXT AGENT — start here — 2026-04-24 (evening session close)
 
-**Phase 0 P1 catalogue is clean.** All catalogue-tagged P1 beads
-(U01–U31, excluding the `Bennett-cc0` memory epic which is a parent
-bead tracking ongoing T5 work) are closed. `Bennett-cc0.5` and
-`Bennett-z2dj` (the two in-progress children) carry forward to the
-next session.
+**Two more catalogue items shipped; all of Section A (U01–U31) + two of
+Section B (U53, U58) + one Section C (U100) now closed. Section B has 33
+items remaining, Section C has 85, Section D has 20 — ~138 remaining out
+of 173 total.** `Bennett-cc0.5` and `Bennett-z2dj` still in-progress and
+carry forward.
+
+### What shipped in the evening session
+
+Two RED-GREEN catalogue closes, plus a preparatory sync commit to get
+the embedded-Dolt state aligned with the canonical remote.
+
+| Bead | U# | One-line | Effect |
+|---|---|---|---|
+| — | — | `d4bd7ac` bd: sync dolt cache | Pulled Dolt remote into committed cache; noms/vvvvv was 3 bytes ahead of `e1bd81a`. Prepared the tree for further bd operations. |
+| Bennett-sljv | U53 | refresh CLAUDE.md §6 baselines | 86/174/350/702 → 58/114/226/450 (post-U27/U28). Scaling: `total(2W) == 2·total(W) - 2`, `T(2W) == 2·T(W) + 4`. Added pointer to `test_gate_count_regression.jl`. |
+| Bennett-zc50 | U100 | simulate preserves signedness | `UInt8` in → `UInt8` out; tuple outputs keep declared widths with input-derived signedness. Width-alignment gate protects packed inputs (`NTuple{3,Int8}` as `UInt64` still → `Int8`). 10 test files' `reinterpret(UIntN, IntN(simulate(...)))` workarounds dropped. |
+
+Filed as follow-up but not worked: **Bennett-ji9n** (CLAUDE.md §2 and
+§93 still reference the old filename `bennett.jl`; the file was renamed
+to `bennett_transform.jl`).
+
+### Velocity on the catalogue — honest measurement (and why my first estimate was wrong)
+
+**Closed so far**: 35 of 173 Uxx items. Wall-clock observations:
+
+| Day | Span | Items | Min/item | Shape |
+|---|---|---|---|---|
+| 04-22 | 2h 51m | 7 (U01–U06, U49) | 24 | Meta-bug U01 unlocks everything below |
+| 04-23 AM | 2h 16m | 8 (U07–U14) | 17 | ir_extract fail-loud rhythm; peak velocity |
+| 04-23 PM | 2h 25m | 12 (U15–U26) | 12 | Some bundled 2-in-1s; still single-site |
+| 04-24 AM | 2h 16m | 6 (U27–U31, U58) | 22 | Dispatcher tweaks, partition invariants |
+| 04-24 PM | 56m | 2 (U53, U100) | 28 | U100 dragged 10 test files into a cascade |
+
+Initial extrapolation from these numbers (my first pass, recorded here
+because it's useful to remember the failure mode): Section B 33 × 60min +
+Section C 85 × 20min + Section D 20 × 10min = **~64h active**. User
+pushed back: **that's off by a factor of 5–10×**. Realistic is
+**~320–640h of active work** — months of half-days, not weeks.
+
+Why the naive estimate was too optimistic:
+
+1. **Section A's 17 min/item pace is an artefact of the easy-tail distribution**.
+   Most of U07–U26 were identical-shape fail-loud asserts. Muscle
+   memory, not deepening understanding. That pace doesn't generalise
+   to heterogeneous work.
+2. **3+1 refactors are the real variance, and my estimate was 60min**.
+   U40 (split `lower.jl`, 2,662 LOC) is not a 1-hour task — it's
+   multi-session: proposer divergence, synthesis, cascade regression.
+   Similarly U41 (`_convert_instruction` god function), U43
+   (`LoweringCtx::Any`), U55 (bennett-variant collapse), U69 (legacy
+   phi resolver). Each is 4-12h of active work, not 1h.
+3. **Test cascade is underestimated**. U100 fixed 4 lines in
+   `simulator.jl` and dragged 10 test files behind it — each needed
+   inspection to tell "was this a workaround?" from "does this test
+   actually care about signed output?". Multiply across 138 items.
+4. **Infrastructure friction is real**. Dolt remote HTTPS↔SSH drift
+   (see below), pre-push hook ~4min, Pkg.test ~5min per cold run,
+   bd sync cadence, context-load per session. Each session eats
+   30-60min of non-work overhead before the first productive edit.
+5. **Section B items interact**. U54 (persistent-DS EoL) blocks U57
+   (peepholes) and simplifies T5-P6. U40 (split lower.jl) touches
+   everything else under B. Can't pipeline them independently.
+6. **The items get harder from here**. Section A was CRIT + HIGH-easy.
+   Section B is HIGH-structural. Section C is MED. If the MED items
+   have the complexity of "single-site but touches a hot path" — which
+   is what MED usually means — the 20min estimate is wrong too.
+
+Revised wall-clock projection at sustainable rate (user's calibration):
+**several months of steady 3-4h/day work**, not weeks. Not all 138
+items are equally worth closing — the structural ones (U40, U41, U43,
+U55, U69) gate the paper and T5-P6 more than the long MED tail does.
+
+### Gotchas found this session
+
+1. **Dolt remote silently reverts to `git+https://`** in this checkout,
+   even after you fix it to SSH. Symptom: `bd create` / `bd close` /
+   `bd dolt push` fail with
+   `fatal: could not read Username for 'https://github.com': No such device`.
+   Fix (matches the existing `bennett-beads-dolt-ssh-fix` bd memory):
+   ```
+   pushd .beads/embeddeddolt/beads >/dev/null
+   dolt remote remove origin
+   dolt remote add origin git+ssh://git@github.com/tobiasosborne/Bennett.jl.git
+   popd >/dev/null
+   ```
+   Hit this twice in one session — needs a bead to investigate why the
+   URL drifts back. Candidate root causes: some `bd` command rewrites
+   the remote; or `repo_state.json` is the wrong file being checked.
+
+2. **`repo_state.json` carries env-specific `/home/tobias/…` path**.
+   Committed form has `/home/tobias`, this machine is `/home/tobiasosborne`
+   — every `bd dolt pull` re-dirties this file. Workaround: after pull,
+   `git checkout -- .beads/embeddeddolt/beads/.dolt/repo_state.json`
+   to preserve the committed form. Real fix: add that single file to
+   `.gitignore`, or make the backup path relative. Needs a bead.
+
+3. **`widths_align` heuristic in `simulate` is a guess, not a proof**.
+   `src/simulator.jl` now infers unsigned output iff `input_widths ==
+   output_elem_widths` AND all inputs Unsigned. Two known edge cases
+   where this guesses wrong (documented in the commit):
+   - `unsafe_trunc(Int64, x::Float64)` compiled against `Tuple{Float64}`,
+     called via `reinterpret(UInt64, x)` — heuristic says unsigned
+     (widths match, input UInt64), function declares Int64. Test
+     normalises via `% Int64`.
+   - Heterogeneous tuple returns like `Tuple{Int8, UInt16}` — no
+     per-element signedness record on the circuit.
+   Proper fix is to carry `input_types::Vector{DataType}` +
+   `output_elem_types::Vector{DataType}` on `ReversibleCircuit`, but
+   that's CLAUDE.md §2 core-change territory — needs 3+1.
+
+### Recommended next-session starting points
+
+1. **Bennett-p94b (U110) phi-resolver mutex assert** — small, tight,
+   lives in CLAUDE.md's highest-risk zone. Two `@assert`s + diamond-CFG
+   RED test. ~45 min if nothing goes sideways.
+2. **U54 decision** — delete-or-archive persistent-DS impls (`hamt`,
+   `cf`, `okasaki`, ~1,500 LOC of losing strategies). Needs user ruling.
+   Unlocks U20/U21/U22 (bug fixes in those impls become wontfix) +
+   simplifies T5-P6.
+3. **Bennett-ji9n** — two-line CLAUDE.md filename drift fix. 5 min
+   snack-task if context allows.
+
+Avoid until ready for a multi-session block:
+- **T5-P6 (Bennett-z2dj)** — claimed, 13-step plan in
+  `docs/design/p6_consensus.md`. Depends on U54 verdict.
+- **3+1 refactors** (U40/U41/U43/U55/U69) — each a dedicated session,
+  not a snack.
+
+### Previous context (superseded by above but kept for continuity)
 
 ### What shipped today
 
