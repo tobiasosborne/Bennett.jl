@@ -55,9 +55,14 @@ using Bennett
     end
 
     @testset "Polynomial gate count (x*x + 3x + 1)" begin
+        # U28 / Bennett-epwy: fold_constants default flipped to true.
+        # Pre-fix: total=872, toffoli_depth=90 (352 Toffoli).
+        # Post-fix: total=562, toffoli_depth=64 (200 Toffoli). The
+        # constants 3 and 1 propagate through the multiply-and-add chain
+        # and collapse partially-constant Toffolis to CNOTs.
         c = reversible_compile(x -> x * x + Int8(3) * x + Int8(1), Int8)
-        @test gate_count(c).total == 872
-        @test toffoli_depth(c) == 90
+        @test gate_count(c).total == 562
+        @test toffoli_depth(c) == 64
         @test verify_reversibility(c)
         @test simulate(c, Int8(0)) == Int8(1)
     end
@@ -73,12 +78,16 @@ using Bennett
     @testset "Multiplication Toffoli-depth (shift-and-add)" begin
         # Baselines BEFORE the Sun-Borissov qcla_tree multiplier lands.
         # Expected: gets replaced by O(log^2 n) once mul=:qcla_tree is wired.
+        # U28 / Bennett-epwy: fold_constants default flipped to true.
+        # Pre-fix: Toffoli 296 / 1232, depth 68 / 214.
+        # Post-fix: Toffoli 144 / 664, depth 62 / 208. The shift-and-add
+        # chain on `x*x` folds the zero-initialised accumulator words.
         c8  = reversible_compile(x -> x * x, Int8)
         c16 = reversible_compile(x -> x * x, Int16)
-        @test gate_count(c8).Toffoli  == 296
-        @test gate_count(c16).Toffoli == 1232
-        @test toffoli_depth(c8)  == 68
-        @test toffoli_depth(c16) == 214
+        @test gate_count(c8).Toffoli  == 144
+        @test gate_count(c16).Toffoli == 664
+        @test toffoli_depth(c8)  == 62
+        @test toffoli_depth(c16) == 208
         @test verify_reversibility(c8)
         @test verify_reversibility(c16)
         @test simulate(c8,  Int8(3))  == Int8(9)

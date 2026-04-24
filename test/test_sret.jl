@@ -113,7 +113,9 @@ _match(result::Tuple, expected::Tuple) =
         @test verify_reversibility(circuit)
         # Gate-count baseline (regression guard per CLAUDE.md rule 6).
         # Measured pre-sret-fix; sret detection must leave this byte-identical.
-        @test gate_count(circuit).total == 82
+        # U28 / Bennett-epwy: fold_constants default flipped to true ⇒
+        # 82 → 66 (the pre-zeroed output-tuple words collapse in the fold).
+        @test gate_count(circuit).total == 66
     end
 
     @testset "error: struct-typed sret (heterogeneous tuple)" begin

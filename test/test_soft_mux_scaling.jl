@@ -38,10 +38,21 @@ using Bennett: soft_mux_store_4x8, soft_mux_load_4x8,
     end
 
     @testset "gate-level scaling: N=4 vs N=8" begin
-        c4_load  = reversible_compile(soft_mux_load_4x8,  UInt64, UInt64)
-        c8_load  = reversible_compile(soft_mux_load_8x8,  UInt64, UInt64)
-        c4_store = reversible_compile(soft_mux_store_4x8, UInt64, UInt64, UInt64)
-        c8_store = reversible_compile(soft_mux_store_8x8, UInt64, UInt64, UInt64)
+        # U28 / Bennett-epwy: the scaling measurement is pre-fold. With
+        # fold_constants=true (the new default) the N=8 load collapses
+        # more aggressively than N=4 (more constant MUX-tree indices fold
+        # into CNOTs), inverting the `g4 < g8` invariant by a narrow
+        # margin (2409 vs 2364). Pin the compile step to `fold_constants=
+        # false` so this test measures raw lowered-gate scaling of the
+        # soft_mux_* primitives, which is what it was written to check.
+        mk(f, types) = begin
+            parsed = Bennett.extract_parsed_ir(f, Tuple{types...})
+            Bennett.bennett(Bennett.lower(parsed; fold_constants=false))
+        end
+        c4_load  = mk(soft_mux_load_4x8,  (UInt64, UInt64))
+        c8_load  = mk(soft_mux_load_8x8,  (UInt64, UInt64))
+        c4_store = mk(soft_mux_store_4x8, (UInt64, UInt64, UInt64))
+        c8_store = mk(soft_mux_store_8x8, (UInt64, UInt64, UInt64))
 
         g4_load  = gate_count(c4_load).total
         g8_load  = gate_count(c8_load).total

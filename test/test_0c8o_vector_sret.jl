@@ -132,7 +132,9 @@ using Bennett: IRInsertValue, IRRet
         swap2(a::Int8, b::Int8) = (b, a)
         cs = reversible_compile(swap2, Int8, Int8)
         @test verify_reversibility(cs)
-        @test gate_count(cs).total == 82
+        # U28 / Bennett-epwy: fold_constants default flipped to true ⇒
+        # 82 → 66 for swap2 (pre-zeroed output-tuple words collapse).
+        @test gate_count(cs).total == 66
     end
 
     @testset "regression: n=3 UInt32 identity sret" begin

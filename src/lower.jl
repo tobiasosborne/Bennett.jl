@@ -332,7 +332,7 @@ end
 # ==== main lowering entry point ====
 
 function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=true,
-               use_karatsuba::Bool=false, fold_constants::Bool=false, compact_calls::Bool=false,
+               use_karatsuba::Bool=false, fold_constants::Bool=true, compact_calls::Bool=false,
                add::Symbol=:auto, mul::Symbol=:auto)
     add in (:auto, :ripple, :cuccaro, :qcla) ||
         error("lower: unknown add strategy :$add; supported: :auto, :ripple, :cuccaro, :qcla")
@@ -504,6 +504,12 @@ eliminating gates whose controls are all constant and simplifying partially-
 constant gates.
 """
 function _fold_constants(lr::LoweringResult)
+    # U03 / Bennett-egu6: a self-reversing primitive (e.g. Sun-Borissov
+    # mul, tabulate) is a closed sequence whose output lives on primary
+    # output wires and whose ancillae are already clean. Folding across
+    # it would rewrite the gate list and almost certainly break the
+    # self-uncomputing property. Skip it.
+    lr.self_reversing && return lr
     input_set = Set(lr.input_wires)
     # Initialize known values: all non-input wires start at 0
     known = Dict{Int, Bool}()

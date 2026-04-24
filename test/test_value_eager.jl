@@ -1,4 +1,9 @@
 @testset "Value-level EAGER cleanup (PRS15 Algorithm 2)" begin
+    # U28 / Bennett-epwy: `fold_constants` is on by default. The fold rewrites
+    # the gate list and invalidates `lr.gate_groups`, which `value_eager_bennett`
+    # and friends consume. Every `lower()` call in this file opts out so the
+    # tests actually exercise the eager / gate-group machinery rather than
+    # silently falling back to full Bennett.
 
     # ================================================================
     # Test 1: GateGroup annotation exists in LoweringResult
@@ -7,7 +12,7 @@
         f(x::Int8) = x + Int8(3)
         Bennett._reset_names!()
         parsed = Bennett.extract_parsed_ir(f, Tuple{Int8})
-        lr = Bennett.lower(parsed)
+        lr = Bennett.lower(parsed; fold_constants=false)
 
         @test isdefined(lr, :gate_groups)
         @test length(lr.gate_groups) > 0
@@ -36,7 +41,7 @@
         g(x::Int8) = x * x + Int8(3) * x + Int8(1)
         Bennett._reset_names!()
         parsed = Bennett.extract_parsed_ir(g, Tuple{Int8})
-        lr = Bennett.lower(parsed)
+        lr = Bennett.lower(parsed; fold_constants=false)
 
         @test length(lr.gate_groups) >= 4
 
@@ -66,7 +71,7 @@
     @testset "value_eager_bennett: increment correctness" begin
         f(x::Int8) = x + Int8(3)
         Bennett._reset_names!()
-        lr = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}))
+        lr = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}); fold_constants=false)
         c_eager = Bennett.value_eager_bennett(lr)
         c_full  = Bennett.bennett(lr)
         for x in typemin(Int8):typemax(Int8)
@@ -81,7 +86,7 @@
     @testset "value_eager_bennett: polynomial correctness" begin
         g(x::Int8) = x * x + Int8(3) * x + Int8(1)
         Bennett._reset_names!()
-        lr = Bennett.lower(Bennett.extract_parsed_ir(g, Tuple{Int8}))
+        lr = Bennett.lower(Bennett.extract_parsed_ir(g, Tuple{Int8}); fold_constants=false)
         c_eager = Bennett.value_eager_bennett(lr)
         c_full  = Bennett.bennett(lr)
         for x in typemin(Int8):typemax(Int8)
@@ -96,7 +101,7 @@
     @testset "value_eager_bennett: two-arg correctness" begin
         h(x::Int8, y::Int8) = x + y
         Bennett._reset_names!()
-        lr = Bennett.lower(Bennett.extract_parsed_ir(h, Tuple{Int8, Int8}))
+        lr = Bennett.lower(Bennett.extract_parsed_ir(h, Tuple{Int8, Int8}); fold_constants=false)
         c_eager = Bennett.value_eager_bennett(lr)
         c_full  = Bennett.bennett(lr)
         for x in Int8(-10):Int8(10), y in Int8(-10):Int8(10)
@@ -111,7 +116,7 @@
     @testset "value_eager_bennett: peak liveness" begin
         g(x::Int8) = x * x + Int8(3) * x + Int8(1)
         Bennett._reset_names!()
-        lr = Bennett.lower(Bennett.extract_parsed_ir(g, Tuple{Int8}))
+        lr = Bennett.lower(Bennett.extract_parsed_ir(g, Tuple{Int8}); fold_constants=false)
         c_full  = Bennett.bennett(lr)
         c_eager = Bennett.value_eager_bennett(lr)
         p_full  = peak_live_wires(c_full)
@@ -143,7 +148,7 @@
         Bennett._reset_names!()
         parsed = Bennett.extract_parsed_ir(sha256_round,
                      Tuple{ntuple(_ -> UInt32, 10)...})
-        lr = Bennett.lower(parsed)
+        lr = Bennett.lower(parsed; fold_constants=false)
         c_full  = Bennett.bennett(lr)
         c_eager = Bennett.value_eager_bennett(lr)
 
@@ -177,7 +182,7 @@
     @testset "value_eager + Cuccaro in-place" begin
         f(x::Int8) = x + Int8(3)
         Bennett._reset_names!()
-        lr = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}); use_inplace=true)
+        lr = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}); use_inplace=true, fold_constants=false)
         c_full  = Bennett.bennett(lr)
         c_eager = Bennett.value_eager_bennett(lr)
         for x in typemin(Int8):typemax(Int8)
@@ -192,7 +197,7 @@
 
         g(x::Int8) = x * x + Int8(3) * x + Int8(1)
         Bennett._reset_names!()
-        lr2 = Bennett.lower(Bennett.extract_parsed_ir(g, Tuple{Int8}); use_inplace=true)
+        lr2 = Bennett.lower(Bennett.extract_parsed_ir(g, Tuple{Int8}); use_inplace=true, fold_constants=false)
         c_full2  = Bennett.bennett(lr2)
         c_eager2 = Bennett.value_eager_bennett(lr2)
         for x in typemin(Int8):typemax(Int8)

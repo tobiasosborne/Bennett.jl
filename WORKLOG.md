@@ -1,6 +1,67 @@
 # Bennett.jl Work Log
 
-## NEXT AGENT — start here — 2026-04-22 (catalogue → beads → Phase 0 grinding)
+## NEXT AGENT — start here — 2026-04-24 (Phase 0 P1 catalogue grinding, continued)
+
+**19-report code review (2026-04-21) has been triaged into 173 beads with a
+unified catalogue at `reviews/2026-04-21/UNIFIED_CATALOGUE.md` and a
+U#→bead-ID crosswalk at `reviews/2026-04-21/CATALOGUE_TO_BEADS.md`.
+Phase 0 continues; U01–U26 closed previously. U28 closed today.**
+
+## Session — 2026-04-24
+
+### Closed this session
+
+- **Bennett-epwy (U28) — `fold_constants=false` was the default in
+  `lower()` despite the pass being strictly safe** (can only remove
+  or simplify gates — never adds one). Flipped `src/lower.jl:335`
+  default to `true`. On `optimize=true` (default `reversible_compile`
+  path): polynomial `x*x + 3x + 1` drops from 872 gates (352 Toffoli)
+  to 562 / 200 (35% / 43% reductions); `x*x Int8` Toffoli drops 296
+  → 144; `x*x Int16` Toffoli 1232 → 664. Straight-line integer
+  increments (`x+1`, `x+3`) are unaffected — the constant operand
+  isn't the one LLVM hands us as the "known" wire after peepholes.
+
+  **Subtle correctness issue fixed alongside the flip**: `_fold_constants`
+  at `src/lower.jl:506` rebuilds the `LoweringResult` via the 7-arg
+  legacy constructor, which sets `self_reversing=false`. A
+  self-reversing primitive (`lower_mul_qcla_tree!`, tabulate) going
+  through fold would have its flag silently cleared — `bennett()`
+  would then double-run it. Added an early-return for
+  `lr.self_reversing`, plus a pinning test in the new test file.
+
+  **Gate-group invalidation handled by opt-out in variant-consuming
+  tests**: the fold rewrites gate indices, so `lr.gate_groups`
+  becomes stale. `value_eager_bennett` / `pebbled_group_bennett` /
+  `checkpoint_bennett` fall back to full Bennett when the groups
+  array is empty — semantically safe but silently demotes what the
+  test is measuring. Added `fold_constants=false` to every
+  `lower()` call in `test_value_eager.jl`, `test_pebbled_wire_reuse.jl`,
+  and the MUX-scaling test (`test_soft_mux_scaling.jl` — where the
+  `g4_load < g8_load` invariant breaks by a narrow margin because
+  N=8's larger constant MUX tree folds more aggressively).
+
+  **Pinned baseline updates** (all for the `reversible_compile`
+  user-facing path):
+
+  | Pin site | Was | Is |
+  |---|---|---|
+  | `test_gate_count_regression.jl` poly total / `toffoli_depth` | 872 / 90 | 562 / 64 |
+  | `test_gate_count_regression.jl` `x*x Int8` Toffoli / depth | 296 / 68 | 144 / 62 |
+  | `test_gate_count_regression.jl` `x*x Int16` Toffoli / depth | 1232 / 214 | 664 / 208 |
+  | `test_sret.jl` swap2 total | 82 | 66 |
+  | `test_0c8o_vector_sret.jl` swap2 total | 82 | 66 |
+
+  **SHA-256 `@test_broken` stays broken**: the `value_eager_bennett`
+  SHA-256 test (`test_value_eager.jl:166`) appeared to upgrade to
+  passing during the flip — but only because fold was pushing gate-group
+  lookup through the fallback. With `fold_constants=false` restored
+  for that testset the `@test_broken` is still the honest state;
+  kept as-is.
+
+  Test gate: `test/test_epwy_fold_constants_default.jl` (264 asserts;
+  RED→GREEN confirmed pre/post flip). Full `Pkg.test()` green.
+
+## NEXT AGENT — previous context — 2026-04-22 (catalogue → beads → Phase 0 grinding)
 
 **19-report code review (2026-04-21) has been triaged into 173 beads with a
 unified catalogue at `reviews/2026-04-21/UNIFIED_CATALOGUE.md` and a

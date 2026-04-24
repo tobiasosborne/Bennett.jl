@@ -1,4 +1,9 @@
 @testset "Pebbled Bennett with wire reuse" begin
+    # U28 / Bennett-epwy: `fold_constants` is on by default. The fold
+    # rewrites the gate list and invalidates `lr.gate_groups`, which the
+    # pebbled_group_bennett / checkpoint_bennett strategies consume. Every
+    # `lower()` call below opts out so the pebble/checkpoint paths stay
+    # exercised rather than silently falling back to full Bennett.
 
     # ================================================================
     # Test 1: pebbled_group_bennett correctness — increment
@@ -6,7 +11,7 @@
     @testset "pebbled_group_bennett: increment correctness" begin
         f(x::Int8) = x + Int8(3)
         Bennett._reset_names!()
-        lr = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}))
+        lr = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}); fold_constants=false)
         c_full = Bennett.bennett(lr)
         s = max(Bennett.min_pebbles(length(lr.gate_groups)), 2)
         c_peb = pebbled_group_bennett(lr; max_pebbles=s)
@@ -22,7 +27,7 @@
     @testset "pebbled_group_bennett: polynomial correctness" begin
         g(x::Int8) = x * x + Int8(3) * x + Int8(1)
         Bennett._reset_names!()
-        lr = Bennett.lower(Bennett.extract_parsed_ir(g, Tuple{Int8}))
+        lr = Bennett.lower(Bennett.extract_parsed_ir(g, Tuple{Int8}); fold_constants=false)
         c_full = Bennett.bennett(lr)
         s = Bennett.min_pebbles(length(lr.gate_groups))
         c_peb = pebbled_group_bennett(lr; max_pebbles=s)
@@ -55,7 +60,7 @@
         Bennett._reset_names!()
         parsed = Bennett.extract_parsed_ir(sha256_round,
                      Tuple{ntuple(_ -> UInt32, 10)...})
-        lr = Bennett.lower(parsed)
+        lr = Bennett.lower(parsed; fold_constants=false)
         c_full = Bennett.bennett(lr)
 
         s = Bennett.min_pebbles(length(lr.gate_groups))
@@ -101,7 +106,7 @@
         Bennett._reset_names!()
         parsed = Bennett.extract_parsed_ir(sha256_round,
                      Tuple{ntuple(_ -> UInt32, 10)...})
-        lr = Bennett.lower(parsed; use_inplace=false)
+        lr = Bennett.lower(parsed; use_inplace=false, fold_constants=false)
         c_full = Bennett.bennett(lr)
         c_ckpt = Bennett.checkpoint_bennett(lr)
 
@@ -126,7 +131,7 @@
     @testset "GateGroup wire range tracking" begin
         f(x::Int8) = x + Int8(3)
         Bennett._reset_names!()
-        lr = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}))
+        lr = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}); fold_constants=false)
         for g in lr.gate_groups
             # Every group must have wire_start and wire_end
             @test g.wire_start >= 1
@@ -144,7 +149,7 @@
     @testset "checkpoint_bennett: increment correctness" begin
         f(x::Int8) = x + Int8(3)
         Bennett._reset_names!()
-        lr = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}))
+        lr = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}); fold_constants=false)
         c_full = Bennett.bennett(lr)
         c_ckpt = Bennett.checkpoint_bennett(lr)
         for x in typemin(Int8):typemax(Int8)
@@ -160,7 +165,7 @@
     @testset "checkpoint_bennett: polynomial correctness + wire reduction" begin
         g(x::Int8) = x * x + Int8(3) * x + Int8(1)
         Bennett._reset_names!()
-        lr = Bennett.lower(Bennett.extract_parsed_ir(g, Tuple{Int8}))
+        lr = Bennett.lower(Bennett.extract_parsed_ir(g, Tuple{Int8}); fold_constants=false)
         c_full = Bennett.bennett(lr)
         c_ckpt = Bennett.checkpoint_bennett(lr)
         for x in typemin(Int8):typemax(Int8)
