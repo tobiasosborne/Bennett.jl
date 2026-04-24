@@ -31,7 +31,8 @@ using Bennett: emit_shadow_store!, emit_shadow_load!,
                                     [W], [W], Set{Int}()))
         @test verify_reversibility(c)
         for xv in UInt8(0):UInt8(255)
-            @test simulate(c, xv) == reinterpret(Int8, xv)
+            # Bennett-zc50 / U100: simulate preserves UInt8-in → UInt8-out.
+            @test simulate(c, xv) == xv
         end
     end
 
@@ -53,7 +54,7 @@ using Bennett: emit_shadow_store!, emit_shadow_load!,
                                     [W, W], [W], Set{Int}()))
         @test verify_reversibility(c)
         for xv in UInt8(0):UInt8(15), yv in UInt8(0):UInt8(15)
-            @test simulate(c, (xv, yv)) == reinterpret(Int8, yv)
+            @test simulate(c, (xv, yv)) == yv
         end
     end
 
@@ -79,7 +80,7 @@ using Bennett: emit_shadow_store!, emit_shadow_load!,
         @test verify_reversibility(c)
         for xv in UInt8(0):UInt8(3), yv in UInt8(0):UInt8(3)
             got = simulate(c, (xv, yv))
-            @test got == (Int64(xv), Int64(yv))
+            @test got == (xv, yv)
         end
     end
 
@@ -129,7 +130,7 @@ using Bennett: emit_shadow_store!, emit_shadow_load!,
         # Sample inputs (exhaustive 16^5 is infeasible)
         for _ in 1:50
             vs = Tuple(rand(UInt16) for _ in 1:5)
-            @test simulate(c, vs) == reinterpret(Int16, vs[5])
+            @test simulate(c, vs) == vs[5]
         end
     end
 end

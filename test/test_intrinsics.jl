@@ -123,7 +123,11 @@
         for x in [0.0, 1.0, 2.0, 3.0, -1.0, -5.0, 100.0, -100.0,
                   0.5, 0.99, -0.5, 1e10, -1e10]
             xb = reinterpret(UInt64, x)
-            result = simulate(c, xb)
+            # Bennett-zc50 / U100: simulate sees input_widths == output_widths
+            # == 64 and all-UInt64 inputs → infers unsigned output. The
+            # function's declared return is Int64, so normalize via `% Int64`
+            # (same pattern as test_b1vp_fptoui.jl:71).
+            result = simulate(c, xb) % Int64
             expected = unsafe_trunc(Int64, x)
             @test result == expected
         end

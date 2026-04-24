@@ -84,38 +84,64 @@ function _simulate(circuit::ReversibleCircuit, inputs::Tuple)
             "$(circuit.n_wires), n_gates=$(length(circuit.gates)))")
     end
 
-    return _read_output(bits, circuit.output_wires, circuit.output_elem_widths)
+    # Bennett-zc50 / U100: signedness was lost by hard-coding signed
+    # reinterpret in `_read_int`. Infer from input types when the
+    # width layout matches output element widths — that's the signal
+    # that signedness is being propagated rather than bit-packed. If
+    # every input width equals every output element width AND every
+    # input is unsigned, return unsigned. Otherwise fall back to the
+    # prior signed behaviour (covers mixed signedness, bit-packed
+    # inputs like `NTuple{3,Int8}` fed as a UInt64, and any layout we
+    # can't confidently classify). The circuit itself carries only
+    # widths; threading types through ReversibleCircuit would be a §2
+    # core change.
+    widths_align = !isempty(inputs) && !isempty(circuit.output_elem_widths) &&
+                   all(w == circuit.input_widths[1] for w in circuit.input_widths) &&
+                   all(w == circuit.input_widths[1] for w in circuit.output_elem_widths)
+    unsigned_out = widths_align && all(x isa Unsigned for x in inputs)
+    return _read_output(bits, circuit.output_wires, circuit.output_elem_widths, unsigned_out)
 end
 
 """
-Read the output value from the simulation bit vector. Returns Int8/16/32/64
-for single-element outputs, or a Tuple for multi-element (insertvalue) outputs.
-Note: return type is inherently unstable (depends on circuit's output_elem_widths).
+Read the output value from the simulation bit vector. Returns
+Int8/16/32/64 (or UInt… if `unsigned_out` is true) for single-element
+outputs, or a Tuple for multi-element (insertvalue) outputs. For tuple
+outputs, every element inherits `unsigned_out`; there's no per-element
+type record on the circuit today, so mixed-signedness returns need a
+manual `reinterpret` at the call site.
 """
-function _read_output(bits, output_wires, elem_widths)
+function _read_output(bits, output_wires, elem_widths, unsigned_out::Bool)
     if length(elem_widths) == 1
-        return _read_int(bits, output_wires, 1, elem_widths[1])
-    else
-        # Multi-element return → tuple
-        vals = Vector{Int64}(undef, length(elem_widths))
-        off = 0
-        for (k, ew) in enumerate(elem_widths)
-            vals[k] = _read_int(bits, output_wires, off + 1, ew)
-            off += ew
-        end
-        return Tuple(vals)
+        return _read_int(bits, output_wires, 1, elem_widths[1], unsigned_out)
     end
+    starts = Vector{Int}(undef, length(elem_widths))
+    s = 1
+    for k in eachindex(elem_widths)
+        starts[k] = s
+        s += elem_widths[k]
+    end
+    return ntuple(k -> _read_int(bits, output_wires, starts[k], elem_widths[k], unsigned_out),
+                  length(elem_widths))
 end
 
-function _read_int(bits, wires, start, width)
+function _read_int(bits, wires, start, width, unsigned::Bool)
     raw = UInt64(0)
     for i in 0:width-1
         raw |= UInt64(bits[wires[start + i]]) << i
     end
-    if width == 8;      reinterpret(Int8, UInt8(raw & 0xFF))
-    elseif width == 16; reinterpret(Int16, UInt16(raw & 0xFFFF))
-    elseif width == 32; reinterpret(Int32, UInt32(raw & 0xFFFFFFFF))
-    elseif width == 64; reinterpret(Int64, raw)
-    else                Int(raw & ((UInt64(1) << width) - 1))
+    if unsigned
+        if width == 8;      UInt8(raw & 0xFF)
+        elseif width == 16; UInt16(raw & 0xFFFF)
+        elseif width == 32; UInt32(raw & 0xFFFFFFFF)
+        elseif width == 64; raw
+        else                raw & ((UInt64(1) << width) - 1)
+        end
+    else
+        if width == 8;      reinterpret(Int8, UInt8(raw & 0xFF))
+        elseif width == 16; reinterpret(Int16, UInt16(raw & 0xFFFF))
+        elseif width == 32; reinterpret(Int32, UInt32(raw & 0xFFFFFFFF))
+        elseif width == 64; reinterpret(Int64, raw)
+        else                Int(raw & ((UInt64(1) << width) - 1))
+        end
     end
 end

@@ -11,7 +11,7 @@
 
         c = reversible_compile(quad, UInt8)
         for x in UInt8(0):UInt8(63)
-            @test reinterpret(UInt8, Int8(simulate(c, x))) == quad(x)
+            @test simulate(c, x) == quad(x)
         end
         @test verify_reversibility(c)
     end
@@ -25,7 +25,7 @@
 
         c = reversible_compile(clamped_add, UInt8, UInt8)
         for a in UInt8(0):UInt8(15), b in UInt8(0):UInt8(15)
-            @test reinterpret(UInt8, Int8(simulate(c, (a, b)))) == clamped_add(a, b)
+            @test simulate(c, (a, b)) == clamped_add(a, b)
         end
         @test verify_reversibility(c)
     end

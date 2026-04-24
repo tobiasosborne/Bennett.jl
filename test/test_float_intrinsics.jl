@@ -17,7 +17,7 @@
             (0.0, -1.0, -0.0),
         ]
             result_bits = simulate(circuit, (reinterpret(UInt64, x), reinterpret(UInt64, y)))
-            result = reinterpret(Float64, reinterpret(UInt64, Int64(result_bits)))
+            result = reinterpret(Float64, result_bits)
             @test result === expected
         end
     end
@@ -35,7 +35,7 @@
             (3.0, 3.0), (-3.0, -3.0), (0.0, 0.0),
         ]
             result_bits = simulate(circuit, reinterpret(UInt64, x))
-            result = reinterpret(Float64, reinterpret(UInt64, Int64(result_bits)))
+            result = reinterpret(Float64, result_bits)
             @test result === expected
         end
     end
@@ -53,7 +53,7 @@
             (3.0, 3.0), (-3.0, -3.0), (0.0, 0.0),
         ]
             result_bits = simulate(circuit, reinterpret(UInt64, x))
-            result = reinterpret(Float64, reinterpret(UInt64, Int64(result_bits)))
+            result = reinterpret(Float64, result_bits)
             @test result === expected
         end
     end
@@ -70,7 +70,7 @@
             (2.7, 2.0), (-2.7, -2.0), (0.5, 0.0), (-0.5, -0.0),
         ]
             result_bits = simulate(circuit, reinterpret(UInt64, x))
-            result = reinterpret(Float64, reinterpret(UInt64, Int64(result_bits)))
+            result = reinterpret(Float64, result_bits)
             @test result === expected
         end
     end

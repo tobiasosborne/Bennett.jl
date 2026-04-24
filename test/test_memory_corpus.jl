@@ -47,7 +47,7 @@ end
         c = reversible_compile(f, UInt8)
         @test verify_reversibility(c)
         for x in UInt8(0):UInt8(255)
-            @test simulate(c, x) == reinterpret(Int8, x)
+            @test simulate(c, x) == x
         end
     end
 

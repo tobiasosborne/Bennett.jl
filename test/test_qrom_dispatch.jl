@@ -27,8 +27,7 @@ using Bennett
         for x in UInt8(0):UInt8(255)
             expected = f(x)
             got = simulate(c, x)
-            # Output is interpreted as Int8 by simulator for 8-bit returns
-            @test got == reinterpret(Int8, expected)
+            @test got == expected
         end
     end
 
@@ -41,7 +40,7 @@ using Bennett
         @test verify_reversibility(c)
         @test gate_count(c).total < 500
         for x in UInt8(0):UInt8(255)
-            @test simulate(c, x) == reinterpret(Int8, f(x))
+            @test simulate(c, x) == f(x)
         end
     end
 
@@ -60,7 +59,7 @@ using Bennett
         @test verify_reversibility(c)
         @test gate_count(c).total < 1200
         for x in UInt8(0):UInt8(255)
-            @test simulate(c, x) == reinterpret(Int8, f(x))
+            @test simulate(c, x) == f(x)
         end
     end
 end

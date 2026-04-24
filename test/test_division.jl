@@ -9,13 +9,13 @@
         for a in UInt8(0):UInt8(255), b in [UInt8(1), UInt8(2), UInt8(3), UInt8(7),
                                              UInt8(15), UInt8(16), UInt8(127), UInt8(128), UInt8(255)]
             expected = div(a, b)
-            got = reinterpret(UInt8, Int8(simulate(c, (a, b))))
+            got = simulate(c, (a, b))
             @test got == expected
         end
         # Boundary cases
         for (a, b) in [(UInt8(255), UInt8(1)), (UInt8(255), UInt8(255)),
                         (UInt8(128), UInt8(127)), (UInt8(0), UInt8(1))]
-            @test reinterpret(UInt8, Int8(simulate(c, (a, b)))) == div(a, b)
+            @test simulate(c, (a, b)) == div(a, b)
         end
         @test verify_reversibility(c)
     end
@@ -28,7 +28,7 @@
         for a in UInt8(0):UInt8(255), b in [UInt8(1), UInt8(2), UInt8(3), UInt8(7),
                                              UInt8(15), UInt8(16), UInt8(127), UInt8(128), UInt8(255)]
             expected = rem(a, b)
-            got = reinterpret(UInt8, Int8(simulate(c, (a, b))))
+            got = simulate(c, (a, b))
             @test got == expected
         end
         @test verify_reversibility(c)

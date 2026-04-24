@@ -36,7 +36,7 @@ end
         c = reversible_compile(f, UInt8)
         @test verify_reversibility(c)
         for x in UInt8(0):UInt8(255)
-            @test simulate(c, x) == reinterpret(Int8, x)
+            @test simulate(c, x) == x
         end
     end
 
@@ -83,7 +83,7 @@ end
         @test verify_reversibility(c)
         @test gate_count(c).total < 300  # QROM not MUX
         for x in UInt8(0):UInt8(15)
-            @test simulate(c, x) == reinterpret(Int8, f(x))
+            @test simulate(c, x) == f(x)
         end
     end
 

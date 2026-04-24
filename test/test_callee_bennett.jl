@@ -29,7 +29,8 @@ using Bennett
         f(x) = x + 1.0
         c = reversible_compile(f, Float64; compact_calls=true)
         bits = reinterpret(UInt64, 2.0)
-        result = reinterpret(Float64, reinterpret(UInt64, Int64(simulate(c, bits))))
+        # Bennett-zc50 / U100: simulate preserves signedness; UInt64 in → UInt64 out.
+        result = reinterpret(Float64, simulate(c, bits))
         @test result == 3.0
         @test verify_reversibility(c)
     end

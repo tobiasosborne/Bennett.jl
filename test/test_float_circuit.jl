@@ -336,7 +336,9 @@ using Random
                 ab = reinterpret(UInt64, a)
                 bb = reinterpret(UInt64, b)
                 cb = reinterpret(UInt64, cc)
-                result = reinterpret(UInt64, Int64(simulate(c, (ab, bb, cb))))
+                # Bennett-zc50 / U100: simulate now preserves signedness;
+                # (UInt64, UInt64, UInt64) inputs yield UInt64 directly.
+                result = simulate(c, (ab, bb, cb))
                 expected = reinterpret(UInt64, Base.fma(a, b, cc))
                 if isnan(Base.fma(a, b, cc))
                     @test isnan(reinterpret(Float64, result))
