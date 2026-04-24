@@ -11,6 +11,25 @@ Phase 0 continues; U01–U26 closed previously. U28 closed today.**
 
 ### Closed this session
 
+- **Bennett-b1vp (U31) — `fptoui` was silently dispatched through
+  `soft_fptosi`, sign-reinterpreting any in-range value whose MSB is
+  set** (the canonical repro: `unsafe_trunc(UInt64, 1e19)` = 10^19,
+  not a nonsense negative-looking UInt64). Added
+  `src/softfloat/fptoui.jl` — `soft_fptoui(a::UInt64)::UInt64` matching
+  Julia's x86-64 native behaviour: for x<2^63 reuse `soft_fptosi`
+  (cvttsd2si path); for x ∈ [2^63, 2^64), subtract 2^63 exactly and OR
+  bit 63; NaN/±Inf/|x|≥2^64/x≤-2^63 saturate to 0x8000000000000000
+  (x86 indefinite). Registered as a callee in `src/Bennett.jl` and
+  wired through `src/ir_extract.jl:1807` so `LLVMFPToUI` dispatches
+  to `soft_fptoui` while `LLVMFPToSI` continues through `soft_fptosi`.
+  Test gate: `test/test_b1vp_fptoui.jl` (40 asserts: in-range positives
+  bit-exact vs native, 2^63 boundary, invalid-operand saturation,
+  in-range negatives, end-to-end `reversible_compile` with 12 probes
+  across the domain). Gotcha: `simulate` returns the i64 output as
+  `Int64` (IR width is 64, signedness isn't carried), so circuit
+  assertions compare bit patterns via `simulate(c, xb) % UInt64`.
+  Full `Pkg.test()` green.
+
 - **Bennett-epwy (U28) — `fold_constants=false` was the default in
   `lower()` despite the pass being strictly safe** (can only remove
   or simplify gates — never adds one). Flipped `src/lower.jl:335`

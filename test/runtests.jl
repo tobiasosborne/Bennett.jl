@@ -195,6 +195,9 @@ include("test_7stg_register_callee_locking.jl")
 # Bennett-epwy / U28 — fold_constants default flipped to true; strictly
 # safe pass, strictly cheaper circuit.
 include("test_epwy_fold_constants_default.jl")
+# Bennett-b1vp / U31 — soft_fptoui + LLVMFPToUI dispatch (was previously
+# silently routed through the signed soft_fptosi).
+include("test_b1vp_fptoui.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")

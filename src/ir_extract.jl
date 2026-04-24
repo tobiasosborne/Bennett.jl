@@ -1803,14 +1803,18 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         return IRBinOp(dest, :add, _operand(src, names), iconst(0), w)
     end
 
-    # fptosi/fptoui: float → int conversion via soft_fptosi (actual IEEE 754 decode)
+    # fptosi/fptoui: float → int conversion via soft_fptosi / soft_fptoui.
+    # Bennett-b1vp / U31: fptoui must NOT route through fptosi — the signed
+    # converter sign-reinterprets in-range values that require the high bit
+    # of an unsigned 64-bit integer (e.g. 1e19). Dispatch per opcode.
     if opc in (LLVM.API.LLVMFPToSI, LLVM.API.LLVMFPToUI)
         src = LLVM.operands(inst)[1]
         src_w = _iwidth(src)
         dst_w = _iwidth(inst)
-        callee = _lookup_callee("soft_fptosi")
+        callee_name = opc == LLVM.API.LLVMFPToUI ? "soft_fptoui" : "soft_fptosi"
+        callee = _lookup_callee(callee_name)
         if callee !== nothing && src_w == 64
-            # Route through soft_fptosi for Float64→Int64 conversion
+            # Route through the signed/unsigned softfloat callee for Float64 → iN.
             call_result = IRCall(dest, callee, [_operand(src, names)], [src_w], dst_w)
             if dst_w == src_w
                 return call_result
