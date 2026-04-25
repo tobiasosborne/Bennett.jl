@@ -1,6 +1,6 @@
 name = "Bennett"
 uuid = "d4e5f6a7-b8c9-4d0e-a1b2-c3d4e5f6a7b8"
-version = "0.4.0"
+version = "0.5.0"
 
 [deps]
 InteractiveUtils = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
@@ -8,9 +8,9 @@ LLVM = "929cbde3-209d-540e-8aea-75f648917ca0"
 PicoSAT = "ff2beb65-d7cd-5ff1-a187-74671133a339"
 
 [compat]
-LLVM = "9.4.6"
-PicoSAT = "0.4.1"
-julia = "1.6"
+LLVM = "9, 10"
+PicoSAT = "0.4"
+julia = "1.10"
 
 [extras]
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
