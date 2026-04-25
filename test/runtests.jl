@@ -324,6 +324,11 @@ include("test_5kio_sizehint_arithmetic.jl")
 # now matches the implementation (was advertising the carry-out
 # variant's 2n/5n/2n).
 include("test_op6a_cuccaro_gate_count.jl")
+# Bennett-b2fs / U148 — `_unpack_args` in tabulate.jl returns a Tuple
+# (stack-allocated, concretely-typed) instead of the previous
+# Vector{Any} (per-row heap allocation + boxed elements). Pins the
+# return type + end-to-end tabulate correctness.
+include("test_b2fs_tabulate_tuple_unpack.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).

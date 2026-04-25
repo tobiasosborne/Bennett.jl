@@ -154,17 +154,28 @@ function _tabulate_build_table(f, arg_types::Type{<:Tuple},
     return table
 end
 
-"""Split a packed index into per-arg values, LSB-first."""
+"""Split a packed index into per-arg values, LSB-first.
+
+Bennett-b2fs / U148: returns a `Tuple` (heterogeneously typed,
+stack-allocated) instead of the previous `Vector{Any}` (per-row
+heap allocation + boxed elements). `_tabulate_build_table` runs
+this once per table row and `2^total_in` rows can reach 16M+ on
+24-bit input spaces; the Vector{Any} form was 32+ bytes of
+garbage per call.
+"""
 function _unpack_args(raw::UInt64, input_widths::Vector{Int}, arg_T)
-    args = Any[]
-    rem = raw
-    for (k, w) in enumerate(input_widths)
+    n = length(input_widths)
+    return ntuple(n) do k
+        # Shift past the first (k-1) args to reach this arg's window.
+        prefix_w = 0
+        @inbounds for j in 1:(k - 1)
+            prefix_w += input_widths[j]
+        end
+        @inbounds w = input_widths[k]
         m = (UInt64(1) << w) - UInt64(1)
-        v = rem & m
-        rem >>= w
-        push!(args, _raw_bits_to_type(v, arg_T[k]))
+        v = (raw >> prefix_w) & m
+        @inbounds _raw_bits_to_type(v, arg_T[k])
     end
-    return args
 end
 
 """
