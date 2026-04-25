@@ -1050,8 +1050,18 @@ function _extract_const_globals(mod::LLVM.Module)
         init = try
             LLVM.initializer(g)
         catch e
+            # Bennett-uinn / U93: re-raise InterruptException (Ctrl-C).
             e isa InterruptException && rethrow()
-            nothing
+            # Bennett-8kno / U95: only swallow LLVM.jl's own
+            # "Unknown value kind" / "LLVMGlobalAlias" errors —
+            # exactly what the comment above predicts. OutOfMemoryError,
+            # StackOverflowError, MethodError, and other unexpected
+            # exceptions propagate out so a real bug isn't masked.
+            msg = sprint(showerror, e)
+            benign = e isa ErrorException && (
+                occursin("Unknown value kind", msg) ||
+                occursin("LLVMGlobalAlias", msg))
+            benign ? nothing : rethrow()
         end
         init === nothing && continue
         init isa LLVM.ConstantDataArray || continue

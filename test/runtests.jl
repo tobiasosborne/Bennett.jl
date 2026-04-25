@@ -276,6 +276,10 @@ include("test_pksz_controlled_contiguous_wires.jl")
 # bugs (param not in func, malformed defline) instead of silently
 # returning 0; only the legitimate "no deref attr" case returns 0.
 include("test_zyjn_deref_bytes_distinct_failures.jl")
+# Bennett-8kno / U95 — _extract_const_globals narrows the LLVM.initializer
+# catch to LLVM.jl's "Unknown value kind" / "LLVMGlobalAlias" errors only;
+# OOM and other unexpected exceptions propagate.
+include("test_8kno_extract_const_globals_narrowing.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).
