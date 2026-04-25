@@ -208,6 +208,11 @@ include("test_spa8_add_auto_ripple.jl")
 # Bennett-6azb / U58 — simulator verifies input-preservation
 # invariant; ReversibleCircuit asserts input/output/ancilla partition.
 include("test_6azb_input_preservation.jl")
+# Bennett-mlny / U63 — `depth` was exported + documented but never tested.
+# Pins the basic shapes (empty=0, sequential=N, parallel=1, mixed) +
+# regression-anchors the depth=19 number documented in the diagnostics
+# docstring for `x -> x + Int8(1)` on Int8.
+include("test_mlny_depth.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")
