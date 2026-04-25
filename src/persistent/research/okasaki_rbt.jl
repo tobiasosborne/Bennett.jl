@@ -273,6 +273,22 @@ this cannot be reached via the 3-key demo compiled by the harness.
 
     # ---- Step 3: Okasaki balance (depth-2 inserts only) ----
     #
+    # Bennett-d1ee / U141: post-insert, the tree must satisfy the
+    # red-black invariants (Okasaki 1999, "Red-Black Trees in a
+    # Functional Setting", JFP 9(4):471-477):
+    #   1. No red node has a red child.
+    #   2. Every root-to-leaf path has the same number of black nodes.
+    # Insertion can locally violate (1) when a new red leaf has a red
+    # parent — the four cases below (LL/LR/RL/RR) re-balance by rotating
+    # to a black-rooted three-node sub-tree (Okasaki §3 Fig. 1).  Two of
+    # the four cases preserve the path's black-height; the other two
+    # would but the recolour-on-recursion (line 312 below) handles the
+    # propagation upward. After Step 3, invariant (1) is locally
+    # restored at depth 2; (2) holds globally because the rotations are
+    # height-preserving by construction.  This implementation is
+    # depth-2-only (research-tier MVP); a production impl would recurse
+    # to root.
+    #
     # Balance fires when: ins_at_2 & !key_exists & parent_is_Red.
     # At this point GP=root (root_idx), P=nxt1, N=new_slot.
     # Parent's color before the insert = c1 (from nd1).

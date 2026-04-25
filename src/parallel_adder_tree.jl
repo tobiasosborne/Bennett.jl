@@ -27,6 +27,26 @@ fails when level d-3 has been zeroed by earlier steps). Uncomputing in
 reverse level order has the same total gate count and is correct by
 construction.
 
+Bennett-d1ee / U141 — **proof of correctness for the reverse-level
+schedule.** Each non-root adder at level d ∈ {1, …, D-1} is recorded
+as (gate_start, gate_end) in `records[d]`. Replaying gates[ge..gs] in
+reverse is the inverse of `lower_add_qcla!` IFF the inputs to that
+adder (left, right pads) still hold their forward-pass values at
+replay time. The forward pass writes them at level d via CNOT-copies
+from level d-1's outputs (lines 80-87 below); those level-d-1 outputs
+are themselves uncomputed at level d-1's replay step. Replaying in
+order **D-1, D-2, ..., 1** guarantees that for every adder at level
+d, its inputs (level d-1's outputs) are still live when its gates
+replay — they get cleaned only at d-1's later replay. Conversely,
+the paper's "uncompute level d-2 at level d" schedule would zero the
+level d-3 intermediates **before** level d's adder replay needs them,
+breaking the inverse contract.
+
+The total uncompute gate count equals the forward gate count for
+levels 1..D-1 (every adder's range is replayed once), so the overall
+circuit is exactly 2× the forward gate count of those levels plus
+the root level D's forward-only contribution.
+
 Implementation uses proposer A's "Strategy α" consensus
 (`docs/design/parallel_adder_tree_consensus.md`): black-box
 `lower_add_qcla!` on zero-padded operands, one adder per pair, odd

@@ -47,6 +47,16 @@
 #   Line 5: final merge of two 16-bit counts and mask to 6 bits.
 #           Max popcount of 32 bits = 32, which fits in 6 bits (0x3F).
 #
+# Bennett-d1ee / U141 — gate-cost annotation. When `soft_popcount32` is
+# compiled via `reversible_compile(soft_popcount32, UInt32)` it produces
+# a circuit whose Toffoli count is dominated by the four `+` operations
+# (lines 1, 2, 3, 4 of the algorithm: each is a 32-bit unsigned add via
+# the ripple-carry `lower_add!` since the operands are not dead-on-use).
+# At post-U27 `add=:auto→:ripple` defaults: ~2(W-1) Toffolis per add ×
+# 4 adds = ~248 Toffolis on UInt32, plus ~5×32 CNOTs for the masks/
+# shifts and ~32 for the final 0x3F mask. Exact baseline lives in
+# `test/test_persistent_hamt.jl` (under BENNETT_RESEARCH_TESTS=1).
+#
 # REVERSIBILITY NOTE: This function is NOT a bijection (32^2 → {0..32}).
 # It is used inside Bennett's forward pass as a pure combinational function;
 # its intermediate values are cleaned up by the uncompute pass. Bennett's

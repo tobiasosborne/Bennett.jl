@@ -9,12 +9,19 @@ Computes `Z = a + b` producing a `W+1`-bit result. Low `W` bits are
 exit. All internal ancillae return to zero — the primitive is
 self-contained and correct regardless of outer Bennett wrap.
 
-Cost formulas (W ≥ 4):
+Cost formulas (W ≥ 4) — Draper et al. 2004 §4.1, Theorem 1, with
+`w(W) = popcount(W)` (number of 1 bits in W):
 - Toffoli: `5W − 3·w(W) − 3·⌊log₂ W⌋ − 1`
 - CNOT:    `3W − 1`
 - Ancilla: `W − w(W) − ⌊log₂ W⌋`
 - Total depth: `⌊log₂ W⌋ + ⌊log₂(W/3)⌋ + 7`
 - Toffoli-depth: `⌊log₂ W⌋ + ⌊log₂(W/3)⌋ + 4`
+
+Bennett-d1ee / U141: these formulas are **regression-tested** at the
+canonical widths W ∈ {4, 8, 16, 32, 64} in `test/test_qcla.jl:163-180`
+(the table maps W → expected (Toffoli, CNOT, anc, tdepth, depth)).
+Any change to the carry-tree structure that alters one of these
+five quantities will fire that test.
 
 QCLA has MORE Toffolis than ripple-carry `lower_add!` at every width (ripple
 is 2(W-1) Toffolis). Its win is **depth**: QCLA is `O(log W)` while ripple

@@ -133,6 +133,15 @@ end
     # is_occupied: 1 if this slot already has an entry, 0 if new
     is_occupied = UInt64((bitmap & bit) != UInt32(0))
     is_new      = UInt64(1) - is_occupied   # 1 if new slot
+    # Bennett-d1ee / U141: load-bearing one-hot disjoint invariant.
+    # `is_occupied` and `is_new` are computed as Bool→UInt64 so each is
+    # 0 or 1, AND `is_new = 1 - is_occupied` makes them disjoint by
+    # construction. The branchless mux pattern below
+    # (`is_occupied * X + is_new * Y`) IS a true mux only because of
+    # this — break it (e.g. let both be 1 simultaneously) and the
+    # update would XOR-add both branches, corrupting the new key/value
+    # arrays. Asserting at compile time keeps the invariant visible.
+    @assert is_occupied + is_new == 1 "HAMT: is_occupied + is_new must be 1 (got $is_occupied + $is_new)"
 
     # New bitmap: set the bit (idempotent if already set)
     new_bitmap = UInt64(bitmap | bit)
