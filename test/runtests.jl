@@ -292,6 +292,10 @@ include("test_8kno_extract_const_globals_narrowing.jl")
 # recognised function-or-helper prefix; pebbling/pebbled_groups budget
 # wording unified to "insufficient pebbles — need at least N".
 include("test_f6qa_error_message_prefixes.jl")
+# Bennett-srsy / U103 — multi-language fixture toolchain guards: the
+# rust/c/p5b corpora hard-fail under BENNETT_CI=1 (vs silent skip
+# locally) when rustc / clang / llvm-as are missing.
+include("test_srsy_ci_toolchain_guard.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).

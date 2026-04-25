@@ -27,6 +27,15 @@ have_clang = !isempty(CLANG) && success(`bash -lc "$CLANG --version"`)
 @testset "T5 corpus — C via clang (T5-P2b)" begin
 
     if !have_clang
+        # Bennett-srsy / U103: BENNETT_CI=1 promotes the missing-clang
+        # skip to a hard failure so an incomplete CI image can't quietly
+        # bypass the C T5 corpus. Default (no env var) is silent skip so
+        # local contributors without clang aren't blocked.
+        if get(ENV, "BENNETT_CI", "0") == "1"
+            error("test_t5_corpus_c: clang not found on PATH but BENNETT_CI=1; " *
+                  "the multi-language T5 corpus requires the full toolchain in CI mode " *
+                  "(Bennett-srsy / U103)")
+        end
         @info "Skipping C T5 corpus: clang not found on PATH (login shell)"
         # Emit one @test so the testset isn't empty
         @test_skip "clang not available"

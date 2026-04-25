@@ -16,6 +16,15 @@ have_llvm_as = !isempty(LLVM_AS) && isfile(LLVM_AS)
 
 @testset "Bennett-T5-P5b extract_parsed_ir_from_bc" begin
     if !have_llvm_as
+        # Bennett-srsy / U103: hard-fail under BENNETT_CI=1 to catch
+        # a CI image that's missing llvm-as. Default is silent skip so
+        # the canonical local flow (where llvm-as may or may not be
+        # installed) is unaffected.
+        if get(ENV, "BENNETT_CI", "0") == "1"
+            error("test_p5b_bc_ingest: llvm-as not found on PATH but BENNETT_CI=1; " *
+                  "P5b bitcode ingest requires LLVM tools in CI mode " *
+                  "(Bennett-srsy / U103)")
+        end
         @info "Skipping P5b bitcode test: llvm-as not found"
         @test_skip "llvm-as not available"
     else

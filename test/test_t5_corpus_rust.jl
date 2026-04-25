@@ -28,6 +28,17 @@ have_rustc = !isempty(RUSTC_PATH) && isfile(RUSTC_PATH)
 @testset "T5 corpus — Rust via rustc (T5-P2c)" begin
 
     if !have_rustc
+        # Bennett-srsy / U103: when BENNETT_CI=1 the test treats a
+        # missing rustc as a HARD failure rather than a silent skip —
+        # otherwise a CI run with an incomplete toolchain image would
+        # quietly pass while skipping the entire Rust T5 corpus.
+        # Locally (default), keep the existing skip-with-@info so
+        # contributors without rustc aren't blocked.
+        if get(ENV, "BENNETT_CI", "0") == "1"
+            error("test_t5_corpus_rust: rustc not found on PATH but BENNETT_CI=1; " *
+                  "the multi-language T5 corpus requires the full toolchain in CI mode " *
+                  "(Bennett-srsy / U103)")
+        end
         @info "Skipping Rust T5 corpus: rustc not found on PATH (login shell)"
         # Emit one @test so the testset isn't empty
         @test_skip "rustc not available"
