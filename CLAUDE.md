@@ -12,7 +12,7 @@ Full PRDs: `Bennett-PRD.md` (v0.1), `BennettIR-PRD.md` (v0.2), `BennettIR-v03-PR
 
 These are NON-NEGOTIABLE. Every agent, every session, every commit.
 
-0. **MAINTAIN THE WORKLOG.** Every step, every session: update `WORKLOG.md` with gotchas, learnings, surprising decisions, LLVM IR quirks, test failures and their root causes, anything a future agent would wish it knew. This is the project's institutional memory. If you hit something non-obvious, write it down before moving on.
+0. **MAINTAIN THE WORKLOG.** Every step, every session: prepend a `## Session log — YYYY-MM-DD — ...` block to the **current top chunk** under `worklog/` (today: `worklog/037_*.md`; the highest-numbered file is always the most recent). When that file passes ~280 lines, start a new chunk with the next sequential `NNN_` prefix and prepend there. The root `WORKLOG.md` is now a thin **index** (sharded out of a 9,774-line monolith per Bennett-fyni / U70). Capture gotchas, learnings, surprising decisions, LLVM IR quirks, test failures and their root causes — anything a future agent would wish it knew, that's not derivable from the diff. This is the project's institutional memory. If you hit something non-obvious, write it down before moving on. Re-run `python3 scripts/shard_worklog.py` if structure drifts.
 
 1. **FAIL FAST, FAIL LOUD.** Assertions, not silent returns. Crashes, not corrupted state. `error()` with a clear message, not a quiet `nothing`. If a wire is unmapped, if an SSA name is missing, if an instruction is unsupported — crash immediately with context.
 
@@ -24,7 +24,7 @@ These are NON-NEGOTIABLE. Every agent, every session, every commit.
 
 5. **LLVM IR IS NOT STABLE.** LLVM IR output is not a stable API. Never assume specific IR formatting, instruction ordering, or naming conventions. The LLVM.jl C API walker (`ir_extract.jl`) is the source of truth — not regex parsing. When LLVM changes its output, `ir_extract.jl` must adapt. Always use `optimize=false` for predictable IR when testing.
 
-6. **GATE COUNTS ARE REGRESSION BASELINES.** Verified gate counts (documented in WORKLOG.md) are regression tests. If a change alters gate counts for a known function, that is a signal — investigate whether it's an improvement or a bug. Key baselines (post-U27 `add=:auto`→`:ripple` + U28 `fold_constants=true`): i8 `x+1` = 58 gates, i16 = 114, i32 = 226, i64 = 450; each doubling obeys `total(2W) == 2·total(W) - 2`. Toffoli counts: 12/28/60/124 (each doubling obeys `T(2W) == 2·T(W) + 4`). See `test/test_gate_count_regression.jl` for the pinned assertions.
+6. **GATE COUNTS ARE REGRESSION BASELINES.** Verified gate counts (documented in `worklog/` chunks and pinned in `test/test_gate_count_regression.jl`) are regression tests. If a change alters gate counts for a known function, that is a signal — investigate whether it's an improvement or a bug. Key baselines (post-U27 `add=:auto`→`:ripple` + U28 `fold_constants=true`): i8 `x+1` = 58 gates, i16 = 114, i32 = 226, i64 = 450; each doubling obeys `total(2W) == 2·total(W) - 2`. Toffoli counts: 12/28/60/124 (each doubling obeys `T(2W) == 2·T(W) + 4`). See `test/test_gate_count_regression.jl` for the pinned assertions.
 
 7. **BUGS ARE DEEP AND INTERLOCKED.** Never assume a bug is shallow. Phi resolution bugs, LLVM naming bugs, false-path sensitization — these are subtle and interconnected. Investigate root causes. A fix that passes one test but breaks the invariant elsewhere is not a fix.
 
@@ -83,7 +83,9 @@ Bennett.jl/                         # Project root. PRDs and CLAUDE.md live alon
   Manifest.toml
   CLAUDE.md                         # this file — non-negotiable project rules
   README.md                         # public-facing intro
-  WORKLOG.md                        # session-by-session institutional memory; update every session per §0
+  WORKLOG.md                        # thin index pointing at sharded chunks under worklog/ (per §0)
+  worklog/                          # 38 sharded session-log files, ~200-300 lines each, NNN_YYYY-MM-DD_<slug>.md
+                                    #   highest NNN = most recent; prepend new sessions to the top chunk
   BENCHMARKS.md                     # canonical gate-count + Toffoli-depth baselines (T5 Pareto front)
   Bennett-VISION-PRD.md             # long-term v1.0 roadmap (Enzyme analogy)
   Bennett-Memory-PRD.md             # reversible mutable memory plan
@@ -150,7 +152,7 @@ Bennett.jl/                         # Project root. PRDs and CLAUDE.md live alon
       persistent.jl                 # loader
       interface.jl                  # AbstractPersistentMap protocol
       harness.jl                    # correctness + benchmark harness (pmap_demo_oracle)
-      linear_scan.jl                # brute-force baseline (winner at all measured scales — see WORKLOG 2026-04-20)
+      linear_scan.jl                # brute-force baseline (winner at all measured scales — see worklog/026_2026-04-20_*.md)
       okasaki_rbt.jl                # Okasaki 1999 red-black tree
       hamt.jl                       # Bagwell HAMT
       cf_semi_persistent.jl         # Conchon-Filliâtre semi-persistent map
@@ -171,6 +173,7 @@ Bennett.jl/                         # Project root. PRDs and CLAUDE.md live alon
     pre-push                        # git hook: runs Pkg.test() before push (per §14, replaces GitHub CI)
     install-hooks.sh                # installs pre-push into .git/hooks/
     fetch_t5_springer.mjs           # fetches T5 multi-language test corpus from Springer
+    shard_worklog.py                # re-shards WORKLOG.md → worklog/*.md if structure drifts (Bennett-fyni / U70)
   build/                            # T5 corpus .ll/.bc fixtures (NOT a build-artifact directory)
   docs/
     prd/                            # versioned per-version PRDs (Bennett-PRD v0.1, BennettIR-PRD v0.2, ...)
