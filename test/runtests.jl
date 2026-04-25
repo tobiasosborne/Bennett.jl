@@ -296,6 +296,11 @@ include("test_f6qa_error_message_prefixes.jl")
 # rust/c/p5b corpora hard-fail under BENNETT_CI=1 (vs silent skip
 # locally) when rustc / clang / llvm-as are missing.
 include("test_srsy_ci_toolchain_guard.jl")
+# Bennett-8p0g / U147 — hand-built ParsedIR seam test that exercises
+# lower → bennett → simulate directly, bypassing LLVM extraction.
+# Covers IRBinOp (add, xor), IRICmp, IRCast (zext), IRRet on minimal
+# fixtures so lowering can be unit-tested independent of LLVM IR shape.
+include("test_8p0g_parsed_ir_seam.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).
