@@ -13,15 +13,21 @@
 using Test
 using Bennett
 
+# Bennett-uoem / U54 — Okasaki was relocated to src/persistent/research/ on
+# 2026-04-25 and is no longer auto-loaded by `using Bennett`.  Pull it in
+# explicitly so this gated suite can exercise it.  See
+# src/persistent/research/README.md for the rationale.
+include(joinpath(pkgdir(Bennett), "src", "persistent", "research", "okasaki_rbt.jl"))
+
 # Top-level demo function (same shape as _ls_demo in test_persistent_interface.jl).
 # Three sets + one get.  Must be top-level for clean LLVM IR extraction.
 function _ok_demo(k1::Int8, v1::Int8, k2::Int8, v2::Int8,
                   k3::Int8, v3::Int8, lookup::Int8)::Int8
-    s = Bennett.okasaki_pmap_new()
-    s = Bennett.okasaki_pmap_set(s, k1, v1)
-    s = Bennett.okasaki_pmap_set(s, k2, v2)
-    s = Bennett.okasaki_pmap_set(s, k3, v3)
-    return Bennett.okasaki_pmap_get(s, lookup)
+    s = okasaki_pmap_new()
+    s = okasaki_pmap_set(s, k1, v1)
+    s = okasaki_pmap_set(s, k2, v2)
+    s = okasaki_pmap_set(s, k3, v3)
+    return okasaki_pmap_get(s, lookup)
 end
 
 @testset "T5-P3b — Okasaki RBT persistent map" begin

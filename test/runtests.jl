@@ -218,14 +218,19 @@ include("test_p5_fail_loud.jl")
 
 # T5 — persistent map protocol + harness self-test (T5-P3a, GREEN today).
 include("test_persistent_interface.jl")
-# T5-P3b — Okasaki RBT persistent map (insert + lookup; delete deferred).
-include("test_persistent_okasaki.jl")
+# Bennett-uoem / U54 — relocation invariants for src/persistent/research/.
+# Runs unconditionally; research-tier impls themselves are gated below.
+include("test_uoem_research_relocation.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 include("test_persistent_hamt.jl")
 # T5-P3d — Conchon-Filliâtre semi-persistent (Bennett-6thy).
 include("test_persistent_cf.jl")
 # T5-P4 — Hash-cons compression layers (Bennett-gv8g + Bennett-7pgw).
-include("test_persistent_hashcons.jl")
+# Gated behind BENNETT_RESEARCH_TESTS during U54 cycles 1-4: all 6 layered
+# demos pair a hash with a loser DS (Okasaki/HAMT/CF) and Jenkins is itself
+# losing.  Cycle 5 will split the standalone Feistel coverage back into the
+# default path.
+# include("test_persistent_hashcons.jl")  # → moved into research gate below
 
 # T5 corpora — multi-language RED tests (T5-P2a/b/c).  All currently RED
 # via @test_throws; safe to include unconditionally.  C and Rust corpora
@@ -243,5 +248,11 @@ end
 # See src/persistent/research/README.md for the literate deprecation
 # rationale and thaw conditions.
 if get(ENV, "BENNETT_RESEARCH_TESTS", "0") != "0"
-    # Per-impl gated tests get added here as cycles 1-4 of U54 land.
+    # T5-P3b — Okasaki RBT persistent map (relocated 2026-04-25 / U54).
+    include("test_persistent_okasaki.jl")
+    # T5-P4 — Hash-cons layered demos.  Cycle 5 will split the Feistel-only
+    # standalone coverage back to the default path; for now the whole file
+    # rides under the research gate because 6/6 layered demos and the
+    # Jenkins standalone test all touch research-tier impls.
+    include("test_persistent_hashcons.jl")
 end

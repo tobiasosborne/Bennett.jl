@@ -12,6 +12,13 @@ using Test
 using Bennett
 using Random
 
+# Bennett-uoem / U54 — pull research-tier impls in explicitly as they
+# relocate out of `using Bennett`.  Each `include` line gets added when
+# the corresponding impl moves; cycle 5 will split the Feistel-only
+# standalone coverage back out into a winner-side file.  See
+# src/persistent/research/README.md for the rationale.
+include(joinpath(pkgdir(Bennett), "src", "persistent", "research", "okasaki_rbt.jl"))
+
 # Seed RNG for reproducibility — HAMT's low-5-bit bitmap aliasing can
 # cause rare flakes when two distinct Feistel/Jenkins outputs collide
 # at the slot level (HAMT's latest-write semantics then legitimately
@@ -36,11 +43,11 @@ function _ok_jenkins_demo(k1::Int8, v1::Int8, k2::Int8, v2::Int8,
     h2 = Bennett.soft_jenkins_int8(k2)
     h3 = Bennett.soft_jenkins_int8(k3)
     hl = Bennett.soft_jenkins_int8(lookup)
-    s = Bennett.okasaki_pmap_new()
-    s = Bennett.okasaki_pmap_set(s, h1, v1)
-    s = Bennett.okasaki_pmap_set(s, h2, v2)
-    s = Bennett.okasaki_pmap_set(s, h3, v3)
-    return Bennett.okasaki_pmap_get(s, hl)
+    s = okasaki_pmap_new()
+    s = okasaki_pmap_set(s, h1, v1)
+    s = okasaki_pmap_set(s, h2, v2)
+    s = okasaki_pmap_set(s, h3, v3)
+    return okasaki_pmap_get(s, hl)
 end
 
 # Okasaki + Feistel
@@ -50,11 +57,11 @@ function _ok_feistel_demo(k1::Int8, v1::Int8, k2::Int8, v2::Int8,
     h2 = Bennett.soft_feistel_int8(k2)
     h3 = Bennett.soft_feistel_int8(k3)
     hl = Bennett.soft_feistel_int8(lookup)
-    s = Bennett.okasaki_pmap_new()
-    s = Bennett.okasaki_pmap_set(s, h1, v1)
-    s = Bennett.okasaki_pmap_set(s, h2, v2)
-    s = Bennett.okasaki_pmap_set(s, h3, v3)
-    return Bennett.okasaki_pmap_get(s, hl)
+    s = okasaki_pmap_new()
+    s = okasaki_pmap_set(s, h1, v1)
+    s = okasaki_pmap_set(s, h2, v2)
+    s = okasaki_pmap_set(s, h3, v3)
+    return okasaki_pmap_get(s, hl)
 end
 
 # HAMT + Jenkins

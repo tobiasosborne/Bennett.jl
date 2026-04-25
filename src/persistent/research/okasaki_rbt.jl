@@ -1,5 +1,10 @@
 # ---- Okasaki 1999 Red-Black Tree — reversible persistent map (T5-P3b) ----
 #
+# RESEARCH-TIER: relocated from src/persistent/ on 2026-04-25 per
+# Bennett-uoem / U54.  Not loaded by `using Bennett`; not exported.
+# See src/persistent/research/README.md for the literate deprecation
+# rationale and thaw conditions.
+#
 # Reference: Okasaki 1999, JFP 9(4):471–477.
 #            Kahrs 2001, JFP 11(4):425–432 (delete — DEFERRED, see below).
 #

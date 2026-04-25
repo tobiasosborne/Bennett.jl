@@ -36,7 +36,8 @@ include("persistent/persistent.jl")
 export reversible_compile, simulate, extract_ir, parse_ir, extract_parsed_ir, register_callee!
 export extract_parsed_ir_from_ll, extract_parsed_ir_from_bc
 export PersistentMapImpl, AbstractPersistentMap, verify_pmap_correctness, pmap_demo_oracle, LINEAR_SCAN_IMPL
-export OKASAKI_IMPL, okasaki_pmap_new, okasaki_pmap_set, okasaki_pmap_get, OkasakiState
+# Bennett-uoem / U54: OKASAKI_IMPL + Okasaki API relocated to
+# src/persistent/research/okasaki_rbt.jl (2026-04-25).
 export cf_pmap_new, cf_pmap_set, cf_pmap_get, cf_reroot, CF_IMPL
 export soft_popcount32
 export HAMT_IMPL, hamt_pmap_new, hamt_pmap_set, hamt_pmap_get
