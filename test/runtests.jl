@@ -213,6 +213,12 @@ include("test_6azb_input_preservation.jl")
 # regression-anchors the depth=19 number documented in the diagnostics
 # docstring for `x -> x + Int8(1)` on Int8.
 include("test_mlny_depth.jl")
+# Bennett-6l2h / U67 + Bennett-xmdx / U66 — branching-callee coverage:
+# `lower_call!` compact=true and `controlled(circuit)` were both untested
+# on callees with internal branching.  Exhaustive Int8 sweep (abs +
+# piecewise) under compact_calls=true and under controlled wrapping with
+# ctrl=0/1.  Closes both beads as gap fills.
+include("test_6l2h_branching_callee.jl")
 # Bennett-T5-P5a/P5b — multi-language ingest (`.ll` / `.bc`).
 include("test_p5a_ll_ingest.jl")
 include("test_p5a_equivalence.jl")
