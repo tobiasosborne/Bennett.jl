@@ -1,5 +1,57 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-26 (evening) — g0jb + 5kio closes (asw2 flake fix + sizehint! arithmetic preallocation)
+
+**Shipped:** see `git log` `499d4b9..9ecf6f7` (4 commits). Two beads closed.
+
+| Bead | What |
+|---|---|
+| **Bennett-g0jb** P3 (BUG, NEW from chunk-042) | Bumped `n_tests=4` → `n_tests=20` in `test_asw2_verify_reversibility.jl:76` (T6 ControlledCircuit dirty-ancilla testset). The dirty-ancilla violation only fires when `verify_reversibility`'s randomly-chosen ctrl bit is 1; with 4 trials and `ctrl ~ Bernoulli(0.5)`, P(all four pick ctrl=0) = 6.25%. n_tests=20 brings P(flake) to ~10⁻⁶. Comment block records the rationale + the chunk-042 incident reference. Zero behavioural change. |
+| **Bennett-5kio** P3 / U109 | Added `sizehint!(gates, length(gates) + bound)` preallocations to the predictable-final-size push! loops in `src/adder.jl` (lower_add!, lower_add_cuccaro!, lower_sub!), `src/multiplier.jl` (lower_mul_wide!), and `src/qcla.jl` (lower_add_qcla!). Each upper bound is O(W) or O(W²) per the cost formulas. Avoids the O(log₂N) intermediate-vector reallocations Julia would otherwise trigger on multi-thousand-gate paths. Karatsuba left untouched (vestigial per Bennett-tbm6); ir_extract.jl + lower.jl deferred — their per-iteration gate counts are less predictable. New `test_5kio_sizehint_arithmetic.jl` (15 asserts) statically verifies the hints are present + pins canonical gate counts (i8/i16/i32/i64 = 58/114/226/450, i32 mul = 6860/2856 Toff). Pure perf hygiene — zero behavioural change. |
+
+**Why:** continuation of catalogue grind. g0jb was the obvious one-line fix for the flake I caught last session — defusing in-flight noise before another contributor hits it. 5kio was the substantive perf hygiene: every Int32+ compile pushes thousands of gates through tight inner loops, and Julia's default Vector growth pattern was forcing log₂N reallocations per pipeline pass. The cost formulas already documented in the QCLA / Cuccaro / ripple docstrings make the upper bounds easy.
+
+**Gotchas / Lessons:**
+
+- **The 1 grep hit on "errored" in the Pkg.test output was a false positive.** Looked alarming after the run; turned out to be the literal string "Skipped (extract errored): 1" in a benchmark info line. Tests passed (`Bennett | 72943 pass / 3 broken / 72946 total`). *Pattern*: when verifying Pkg.test results, prefer `tail -3` for the actual pass/fail summary line over `grep -c` for failure substrings — info lines can contain failure-shaped tokens without indicating a real failure.
+
+- **Test count grew from 72928 → 72943 (+15)** even though the asw2 T6 testset's n_tests grew 4 → 20. Each `verify_reversibility(cc; n_tests=N)` call internally runs N iterations but emits ONE `@test_throws` assertion, so the test count change is just the +15 from `test_5kio_sizehint_arithmetic.jl`. The asw2 bump's overhead is invisible at the count level (still 8 asserts in that testset).
+
+- **`sizehint!(gates, length(gates) + bound)` is the additive form.** Native `sizehint!(v, n)` ensures a TOTAL capacity of n, not n more. So if `gates` already holds 1000 gates from a prior `lower_add_qcla!` call (e.g. inside `parallel_adder_tree.jl`), `sizehint!(gates, 9*W)` would actually SHRINK the capacity. Used `length(gates) + bound` everywhere to grow relative to current size. Verified via the test that gate counts match the canonical baselines exactly.
+
+- **Cost formulas already lived in the docstrings** — qcla.jl §"Cost formulas" lists Toffoli/CNOT/ancilla/depth as exact functions of W. Adder.jl Cuccaro docstring lists 2n Toff + 5n CNOT + 2n NOT + 1 ancilla. The sizehint! upper bounds are conservative round-ups of these — 5W for ripple (actual 5W-2), 6W for Cuccaro (actual ~6W-4), 9W for QCLA (actual ~5W+3W = 8W-1). Future agents adding similar arithmetic primitives should both document the cost formula AND interpolate it into the sizehint!.
+
+- **Karatsuba's docstring contains the same kind of cost formula** (Θ(W^log₂3) Toffolis) but its "vestigial" status (k:s ratio still above 1 at every supported W per Bennett-sg0w / tbm6) made adding sizehint! low-priority. If tbm6 ever salvages Karatsuba, the obvious follow-up is the same pattern there.
+
+- **The static-inspection test pattern was the right shape AGAIN.** Five sessions running where a per-file-property invariant test (uinn, f6qa, srsy, wlf6, now 5kio) is the right regression mechanism. Cheap to write (~30 LOC each), no runtime cost beyond reading source files once, catches regressions that no other mechanism would.
+
+**Rejected alternatives:**
+
+- **`empty!(gates); sizehint!(gates, total)` at function entry** to drop pre-existing contents. Would have been wrong — these functions APPEND to an existing gate stream that contains the prior pipeline's gates. The call signature is `lower_*!(gates, ...)` precisely so the caller threads ONE gates Vector through every step.
+
+- **Adding sizehint! inside `_karatsuba_wide!`.** See "vestigial" point above. Filed conceptually as part of tbm6's salvage-or-remove decision; not worth a separate bead.
+
+- **A benchmark to MEASURE the perf delta.** sizehint! is well-understood Julia perf hygiene; there's no doubt it's a strict improvement on growth paths that would otherwise call `_growend!`. No benchmark would change the decision to apply it. The new test pins behavioural equivalence (gate counts) + presence of the hint, which is the meaningful regression surface.
+
+**Next agent starts here:**
+
+1. **Branch state at session-end**: `9ecf6f7` on main, pushed. Worklog top is **this** entry; chunk 043 is now ~150 lines (was ~80 pre-this-session).
+
+2. **Catalogue progress this session (2 closes)**: ~131 → ~129 ready remaining. Cumulative for the day's grind = 24 closes (6t8s, ej4n, 348q, tfo8, 2jny, kmuj, uzic, uinn, 069e, k7al, pksz, zyjn, 8kno, zy4u, d1ee, f6qa, 5ttt, srsy, hjbf, 8p0g, wlf6, 6u9q, g0jb, 5kio). Test count growth: +553 new assertions across 15 new test files. Total Pkg.test count is now 72943 / 72946 (3 intentional broken).
+
+3. **Quick wins still on the menu** (each ~30-90 min, no 3+1 needed):
+   - **Bennett-vpch** U45 — 190+ `error()` → typed exceptions (substantial; needs taxonomy first).
+   - **Bennett-59jj** U47 — type instability in hot paths (P2; some sub-tasks need 3+1, others don't).
+   - **Bennett-zpj7** U160 — pebbling/eager file rename.
+   - **Bennett-doh6** U158 — docs/make.jl absent. Pairs with the wlf6 jldoctest fences.
+   - **Bennett-qjet** P3 — zy4u-followup, empirical timing-based reorder.
+
+4. **3+1-protected real bugs still open** (unchanged): jepw, 25dm, 5qrn, zmw3, y986, 3of2, p94b. zmw3 bumped 12 sessions running.
+
+5. **The sizehint! pattern is now established for arithmetic kernels.** ir_extract.jl + lower.jl push! sites are the natural follow-ups once a measurement justifies them. The bound calculation requires per-LLVM-instruction gate-count estimates which are less stable than the closed-form arithmetic formulas, so probably wants a benchmark before commit.
+
+---
+
 ## Session log — 2026-04-26 (late afternoon) — wlf6 + 6u9q closes (jldoctest fences + quantum vision integration test)
 
 **Shipped:** see `git log` `4a87e03..b8db45d` (5 commits). Two beads closed, one new flake-followup bead filed.
