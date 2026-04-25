@@ -1150,96 +1150,14 @@ function lower_phi!(gates, wa, vw, inst::IRPhi, phi_block::Symbol,
                                             phi_block=phi_block, branch_info)
 end
 
-"""Check if `ancestor` is an ancestor of `block` in the CFG."""
-function has_ancestor(block::Symbol, ancestor::Symbol, preds,
-                      visited::Set{Symbol}=Set{Symbol}())
-    block == ancestor && return true
-    block in visited && return false
-    push!(visited, block)
-    for p in get(preds, block, Symbol[])
-        has_ancestor(p, ancestor, preds, visited) && return true
-    end
-    return false
-end
-
-"""Check if `block` is on the branch side rooted at `target_label`."""
-function on_branch_side(block::Symbol, target_label::Symbol,
-                        src_block::Symbol, preds)
-    block == target_label && return true
-    has_ancestor(block, target_label, preds) && return true
-    # branch source itself → matches the side whose target it reaches directly
-    # (handles case where branch source is a direct predecessor of the merge block)
-    block == src_block && return false  # ambiguous — resolved by exclusive matching
-    return false
-end
-
-"""Check if block `b` is on the side rooted at `target` of a branch from `src`."""
-function _is_on_side(b::Symbol, target::Symbol, src::Symbol,
-                     phi_block::Symbol, preds)
-    b == target && return true
-    has_ancestor(b, target, preds) && return true
-    if b == src
-        return phi_block != Symbol("") && phi_block == target
-    end
-    return false
-end
-
-"""Reduce N incoming (wires, block) pairs to one via nested MUXes.
-
-Recursively finds a branch that cleanly partitions the incoming values into
-true-side and false-side groups, resolves each group, and MUXes them.
-"""
-function resolve_phi_muxes!(gates, wa, incoming, preds, branch_info, block_order, W;
-                            phi_block::Symbol=Symbol(""))
-    length(incoming) == 1 && return incoming[1][1]
-
-    # Try each branch (topological order, outermost first) to find a clean partition
-    sorted = sort(collect(keys(branch_info)), by=b -> get(block_order, b, 0))
-
-    for src in sorted
-        (cond_wire, tlabel, flabel) = branch_info[src]
-
-        true_set  = Tuple{Vector{Int}, Symbol}[]
-        false_set = Tuple{Vector{Int}, Symbol}[]
-        ambig     = Tuple{Vector{Int}, Symbol}[]
-
-        for (w, b) in incoming
-            on_t = _is_on_side(b, tlabel, src, phi_block, preds)
-            on_f = _is_on_side(b, flabel, src, phi_block, preds)
-            if on_t && !on_f
-                push!(true_set, (w, b))
-            elseif on_f && !on_t
-                push!(false_set, (w, b))
-            else
-                push!(ambig, (w, b))
-            end
-        end
-
-        if !isempty(true_set) && !isempty(false_set)
-            if isempty(ambig)
-                # Clean partition — no diamond
-                tv = resolve_phi_muxes!(gates, wa, true_set, preds,
-                                        branch_info, block_order, W; phi_block)
-                fv = resolve_phi_muxes!(gates, wa, false_set, preds,
-                                        branch_info, block_order, W; phi_block)
-                return lower_mux!(gates, wa, cond_wire, tv, fv, W)
-            else
-                # Diamond merge: resolve ambiguous once, include in both branches
-                shared = resolve_phi_muxes!(gates, wa, ambig, preds,
-                                            branch_info, block_order, W; phi_block)
-                sb = ambig[1][2]
-                tv = resolve_phi_muxes!(gates, wa, vcat(true_set, [(shared, sb)]),
-                                        preds, branch_info, block_order, W; phi_block)
-                fv = resolve_phi_muxes!(gates, wa, vcat(false_set, [(shared, sb)]),
-                                        preds, branch_info, block_order, W; phi_block)
-                return lower_mux!(gates, wa, cond_wire, tv, fv, W)
-            end
-        end
-    end
-
-    blocks_left = [b for (_, b) in incoming]
-    error("Cannot resolve phi node: no branch cleanly partitions $(length(incoming)) incoming values from blocks: $blocks_left")
-end
+# Bennett-l9az / U69: legacy phi resolver deleted 2026-04-25.
+# `has_ancestor`, `on_branch_side`, `_is_on_side`, and the recursive
+# `resolve_phi_muxes!` (90 LOC, branch-side-partitioning approach) had
+# zero references outside their own definitions; the live dispatcher
+# `lower_phi!` (above) routes only to `resolve_phi_predicated!`.  Per
+# CLAUDE.md §47-61 (phi resolution is the project's #1 correctness
+# risk), having two phi resolvers in the same file invited future
+# contributors to extend the wrong path.  Git retains history.
 
 # ---- binary-op dispatch ----
 
