@@ -5,7 +5,6 @@ using Bennett
     @testset "pebbled_bennett produces correct results" begin
         f(x::Int8) = x * x + Int8(3) * x + Int8(1)
 
-        Bennett._reset_names!()
         parsed = Bennett.extract_parsed_ir(f, Tuple{Int8})
         lr = Bennett.lower(parsed)
 
@@ -33,7 +32,6 @@ using Bennett
     @testset "pebbled_bennett with minimum pebbles" begin
         f(x::Int8) = x + Int8(3)
 
-        Bennett._reset_names!()
         parsed = Bennett.extract_parsed_ir(f, Tuple{Int8})
         lr = Bennett.lower(parsed)
 
@@ -55,7 +53,6 @@ using Bennett
     @testset "pebbled_bennett error on insufficient pebbles" begin
         f(x::Int8) = x * x + Int8(3) * x + Int8(1)
 
-        Bennett._reset_names!()
         parsed = Bennett.extract_parsed_ir(f, Tuple{Int8})
         lr = Bennett.lower(parsed)
 

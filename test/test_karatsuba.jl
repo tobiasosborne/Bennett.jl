@@ -5,7 +5,6 @@
     # ================================================================
     @testset "karatsuba: Int8 exhaustive" begin
         f(x::Int8, y::Int8) = x * y
-        Bennett._reset_names!()
         parsed = Bennett.extract_parsed_ir(f, Tuple{Int8, Int8})
 
         # Lower with schoolbook (default)
@@ -13,7 +12,6 @@
         c_school = Bennett.bennett(lr_school)
 
         # Lower with Karatsuba
-        Bennett._reset_names!()
         parsed2 = Bennett.extract_parsed_ir(f, Tuple{Int8, Int8})
         lr_karat = Bennett.lower(parsed2; use_karatsuba=true)
         c_karat = Bennett.bennett(lr_karat)

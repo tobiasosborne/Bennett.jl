@@ -10,7 +10,6 @@
     # ================================================================
     @testset "gate groups: basic annotation" begin
         f(x::Int8) = x + Int8(3)
-        Bennett._reset_names!()
         parsed = Bennett.extract_parsed_ir(f, Tuple{Int8})
         lr = Bennett.lower(parsed; fold_constants=false)
 
@@ -39,7 +38,6 @@
     # ================================================================
     @testset "gate groups: polynomial structure" begin
         g(x::Int8) = x * x + Int8(3) * x + Int8(1)
-        Bennett._reset_names!()
         parsed = Bennett.extract_parsed_ir(g, Tuple{Int8})
         lr = Bennett.lower(parsed; fold_constants=false)
 
@@ -70,7 +68,6 @@
     # ================================================================
     @testset "value_eager_bennett: increment correctness" begin
         f(x::Int8) = x + Int8(3)
-        Bennett._reset_names!()
         lr = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}); fold_constants=false)
         c_eager = Bennett.value_eager_bennett(lr)
         c_full  = Bennett.bennett(lr)
@@ -85,7 +82,6 @@
     # ================================================================
     @testset "value_eager_bennett: polynomial correctness" begin
         g(x::Int8) = x * x + Int8(3) * x + Int8(1)
-        Bennett._reset_names!()
         lr = Bennett.lower(Bennett.extract_parsed_ir(g, Tuple{Int8}); fold_constants=false)
         c_eager = Bennett.value_eager_bennett(lr)
         c_full  = Bennett.bennett(lr)
@@ -100,7 +96,6 @@
     # ================================================================
     @testset "value_eager_bennett: two-arg correctness" begin
         h(x::Int8, y::Int8) = x + y
-        Bennett._reset_names!()
         lr = Bennett.lower(Bennett.extract_parsed_ir(h, Tuple{Int8, Int8}); fold_constants=false)
         c_eager = Bennett.value_eager_bennett(lr)
         c_full  = Bennett.bennett(lr)
@@ -115,7 +110,6 @@
     # ================================================================
     @testset "value_eager_bennett: peak liveness" begin
         g(x::Int8) = x * x + Int8(3) * x + Int8(1)
-        Bennett._reset_names!()
         lr = Bennett.lower(Bennett.extract_parsed_ir(g, Tuple{Int8}); fold_constants=false)
         c_full  = Bennett.bennett(lr)
         c_eager = Bennett.value_eager_bennett(lr)
@@ -145,7 +139,6 @@
             return (new_a, new_e)
         end
 
-        Bennett._reset_names!()
         parsed = Bennett.extract_parsed_ir(sha256_round,
                      Tuple{ntuple(_ -> UInt32, 10)...})
         lr = Bennett.lower(parsed; fold_constants=false)
@@ -185,7 +178,6 @@
     # ================================================================
     @testset "value_eager + Cuccaro in-place" begin
         f(x::Int8) = x + Int8(3)
-        Bennett._reset_names!()
         lr = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}); use_inplace=true, fold_constants=false)
         c_full  = Bennett.bennett(lr)
         c_eager = Bennett.value_eager_bennett(lr)
@@ -200,7 +192,6 @@
         @test p_eager <= p_full
 
         g(x::Int8) = x * x + Int8(3) * x + Int8(1)
-        Bennett._reset_names!()
         lr2 = Bennett.lower(Bennett.extract_parsed_ir(g, Tuple{Int8}); use_inplace=true, fold_constants=false)
         c_full2  = Bennett.bennett(lr2)
         c_eager2 = Bennett.value_eager_bennett(lr2)

@@ -40,7 +40,6 @@
 
     @testset "eager_bennett: increment correctness" begin
         f(x::Int8) = x + Int8(3)
-        Bennett._reset_names!()
         lr = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}))
         c_eager = eager_bennett(lr)
         c_full  = Bennett.bennett(lr)
@@ -52,7 +51,6 @@
 
     @testset "eager_bennett: polynomial correctness" begin
         g(x::Int8) = x * x + Int8(3) * x + Int8(1)
-        Bennett._reset_names!()
         lr = Bennett.lower(Bennett.extract_parsed_ir(g, Tuple{Int8}))
         c_eager = eager_bennett(lr)
         c_full  = Bennett.bennett(lr)
@@ -64,7 +62,6 @@
 
     @testset "eager_bennett: two-argument function" begin
         h(x::Int8, y::Int8) = x + y
-        Bennett._reset_names!()
         lr = Bennett.lower(Bennett.extract_parsed_ir(h, Tuple{Int8, Int8}))
         c_eager = eager_bennett(lr)
         c_full  = Bennett.bennett(lr)
@@ -76,7 +73,6 @@
 
     @testset "eager_bennett: peak liveness reduction" begin
         f(x::Int8) = x + Int8(3)
-        Bennett._reset_names!()
         lr = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}))
         c_full  = Bennett.bennett(lr)
         c_eager = eager_bennett(lr)
@@ -86,7 +82,6 @@
         @test p_eager <= p_full
 
         g(x::Int8) = x * x + Int8(3) * x + Int8(1)
-        Bennett._reset_names!()
         lr2 = Bennett.lower(Bennett.extract_parsed_ir(g, Tuple{Int8}))
         c_full2  = Bennett.bennett(lr2)
         c_eager2 = eager_bennett(lr2)
@@ -98,7 +93,6 @@
 
     @testset "eager_bennett: gate count baselines" begin
         f(x::Int8) = x + Int8(1)
-        Bennett._reset_names!()
         lr = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}))
         c_full  = Bennett.bennett(lr)
         c_eager = eager_bennett(lr)

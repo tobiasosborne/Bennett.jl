@@ -44,7 +44,6 @@
         # Pebbled Bennett must produce same results as full Bennett
         f(x::Int8) = x * x + Int8(3) * x + Int8(1)
 
-        Bennett._reset_names!()
         parsed = Bennett.extract_parsed_ir(f, Tuple{Int8})
         lr = Bennett.lower(parsed)
 

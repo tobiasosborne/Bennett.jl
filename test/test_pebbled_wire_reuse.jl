@@ -10,7 +10,6 @@
     # ================================================================
     @testset "pebbled_group_bennett: increment correctness" begin
         f(x::Int8) = x + Int8(3)
-        Bennett._reset_names!()
         lr = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}); fold_constants=false)
         c_full = Bennett.bennett(lr)
         s = max(Bennett.min_pebbles(length(lr.gate_groups)), 2)
@@ -26,7 +25,6 @@
     # ================================================================
     @testset "pebbled_group_bennett: polynomial correctness" begin
         g(x::Int8) = x * x + Int8(3) * x + Int8(1)
-        Bennett._reset_names!()
         lr = Bennett.lower(Bennett.extract_parsed_ir(g, Tuple{Int8}); fold_constants=false)
         c_full = Bennett.bennett(lr)
         s = Bennett.min_pebbles(length(lr.gate_groups))
@@ -57,7 +55,6 @@
             return (new_a, new_e)
         end
 
-        Bennett._reset_names!()
         parsed = Bennett.extract_parsed_ir(sha256_round,
                      Tuple{ntuple(_ -> UInt32, 10)...})
         lr = Bennett.lower(parsed; fold_constants=false)
@@ -103,7 +100,6 @@
 
         # Use use_inplace=false for checkpoint_bennett (Cuccaro in-place is
         # incompatible with per-group checkpointing — result wires from deps)
-        Bennett._reset_names!()
         parsed = Bennett.extract_parsed_ir(sha256_round,
                      Tuple{ntuple(_ -> UInt32, 10)...})
         lr = Bennett.lower(parsed; use_inplace=false, fold_constants=false)
@@ -130,7 +126,6 @@
     # ================================================================
     @testset "GateGroup wire range tracking" begin
         f(x::Int8) = x + Int8(3)
-        Bennett._reset_names!()
         lr = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}); fold_constants=false)
         for g in lr.gate_groups
             # Every group must have wire_start and wire_end
@@ -148,7 +143,6 @@
     # ================================================================
     @testset "checkpoint_bennett: increment correctness" begin
         f(x::Int8) = x + Int8(3)
-        Bennett._reset_names!()
         lr = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}); fold_constants=false)
         c_full = Bennett.bennett(lr)
         c_ckpt = Bennett.checkpoint_bennett(lr)
@@ -164,7 +158,6 @@
     # ================================================================
     @testset "checkpoint_bennett: polynomial correctness + wire reduction" begin
         g(x::Int8) = x * x + Int8(3) * x + Int8(1)
-        Bennett._reset_names!()
         lr = Bennett.lower(Bennett.extract_parsed_ir(g, Tuple{Int8}); fold_constants=false)
         c_full = Bennett.bennett(lr)
         c_ckpt = Bennett.checkpoint_bennett(lr)

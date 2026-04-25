@@ -5,9 +5,7 @@
     # ================================================================
     @testset "x+3: fewer gates with constant folding" begin
         f(x::Int8) = x + Int8(3)
-        Bennett._reset_names!()
         lr_std = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}))
-        Bennett._reset_names!()
         lr_fold = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8});
                                 fold_constants=true)
 
@@ -31,9 +29,7 @@
     # ================================================================
     @testset "polynomial: constant folding correctness" begin
         g(x::Int8) = x * x + Int8(3) * x + Int8(1)
-        Bennett._reset_names!()
         lr_std = Bennett.lower(Bennett.extract_parsed_ir(g, Tuple{Int8}))
-        Bennett._reset_names!()
         lr_fold = Bennett.lower(Bennett.extract_parsed_ir(g, Tuple{Int8});
                                 fold_constants=true)
 

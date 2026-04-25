@@ -148,7 +148,6 @@ end
 @testset "SHA-256 compression — 2-round smoke compile" begin
     # Smallest unit: verify Bennett compiles a 2-round compression and
     # the simulated output matches the metaprogrammed reference.
-    Bennett._reset_names!()
     circuit = reversible_compile(sha256_compress_2, ntuple(_ -> UInt32, 24)...)
     @test verify_reversibility(circuit)
     # Input: arbitrary but fixed
@@ -168,7 +167,6 @@ end
 end
 
 @testset "SHA-256 compression — 8-round scaling check" begin
-    Bennett._reset_names!()
     t0 = time()
     circuit = reversible_compile(sha256_compress_8, ntuple(_ -> UInt32, 24)...)
     t_compile = time() - t0
@@ -193,7 +191,6 @@ end
 @testset "SHA-256 compression — full 64-round (BC.3)" begin
     # Full SHA-256 compression function on a 512-bit block. Uses the
     # standard "abc" test vector.
-    Bennett._reset_names!()
     t0 = time()
     circuit = reversible_compile(sha256_compress_64, ntuple(_ -> UInt32, 24)...)
     t_compile = time() - t0
