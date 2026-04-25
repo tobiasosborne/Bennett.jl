@@ -16,14 +16,14 @@ function _remap_wire(w::Int, wmap::Dict{Int,Int}, input_wire_set::Set{Int})
     error("Unmapped wire $w in gate remapping — not in wmap and not a function input. Possible corruption from freed group wires.")
 end
 
-_remap_gate(g::NOTGate, wmap::Dict{Int,Int}, iws::Set{Int}) =
+_remap_gate_wmap(g::NOTGate, wmap::Dict{Int,Int}, iws::Set{Int}) =
     NOTGate(_remap_wire(g.target, wmap, iws))
 
-_remap_gate(g::CNOTGate, wmap::Dict{Int,Int}, iws::Set{Int}) =
+_remap_gate_wmap(g::CNOTGate, wmap::Dict{Int,Int}, iws::Set{Int}) =
     CNOTGate(_remap_wire(g.control, wmap, iws),
              _remap_wire(g.target, wmap, iws))
 
-_remap_gate(g::ToffoliGate, wmap::Dict{Int,Int}, iws::Set{Int}) =
+_remap_gate_wmap(g::ToffoliGate, wmap::Dict{Int,Int}, iws::Set{Int}) =
     ToffoliGate(_remap_wire(g.control1, wmap, iws),
                 _remap_wire(g.control2, wmap, iws),
                 _remap_wire(g.target, wmap, iws))
@@ -58,7 +58,7 @@ function _replay_forward!(result::Vector{ReversibleGate},
                 end
             end
         end
-        # Function inputs: identity mapping via get(wmap, w, w) in _remap_gate
+        # Function inputs: identity mapping via get(wmap, w, w) in _remap_gate_wmap
     end
 
     # (b) Allocate fresh wires for ALL wires this group owns.
@@ -98,7 +98,7 @@ function _replay_forward!(result::Vector{ReversibleGate},
 
     # Emit remapped gates
     for gi in group.gate_start:group.gate_end
-        push!(result, _remap_gate(gates[gi], wmap, input_wire_set))
+        push!(result, _remap_gate_wmap(gates[gi], wmap, input_wire_set))
     end
 
     # Record pebble
@@ -115,7 +115,7 @@ function _replay_reverse!(result::Vector{ReversibleGate},
 
     # Emit reverse gates using the SAME wire map from forward
     for gi in group.gate_end:-1:group.gate_start
-        push!(result, _remap_gate(gates[gi], pebble.wmap, input_wire_set))
+        push!(result, _remap_gate_wmap(gates[gi], pebble.wmap, input_wire_set))
     end
 
     # All target wires are now zero — free them

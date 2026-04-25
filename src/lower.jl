@@ -1774,7 +1774,7 @@ function lower_load!(ctx::LoweringCtx, inst::IRLoad)
             _lower_load_multi_origin!(ctx, inst, origins)
         end
     else
-        lower_load!(ctx.gates, ctx.wa, ctx.vw, inst)
+        _lower_load_legacy!(ctx.gates, ctx.wa, ctx.vw, inst)
     end
 end
 
@@ -1915,9 +1915,11 @@ function _lower_load_via_mux_8x8!(ctx::LoweringCtx, inst::IRLoad,
     return nothing
 end
 
-"""Load from pointer/GEP: CNOT-copy W bits from the wire array."""
-function lower_load!(gates::Vector{ReversibleGate}, wa::WireAllocator,
-                     vw::Dict{Symbol,Vector{Int}}, inst::IRLoad)
+"""Legacy direct load worker: CNOT-copy W bits from the wire array.
+Called only from `lower_load!(ctx, inst)` when no ptr_provenance entry exists
+(pointer parameters, NTuple input). Not a public dispatcher."""
+function _lower_load_legacy!(gates::Vector{ReversibleGate}, wa::WireAllocator,
+                             vw::Dict{Symbol,Vector{Int}}, inst::IRLoad)
     if !haskey(vw, inst.ptr.name)
         # Load from unknown pointer — skip (may be pgcstack safepoint load)
         return
@@ -2076,7 +2078,7 @@ function lower_call!(gates::Vector{ReversibleGate}, wa::WireAllocator,
 
         # Insert ALL callee gates (forward + copy + reverse) with wire offset
         for g in callee_circuit.gates
-            push!(gates, _remap_gate(g, wire_offset))
+            push!(gates, _remap_gate_offset(g, wire_offset))
         end
 
         # The callee's output wires (remapped) are the Bennett copy wires
@@ -2100,7 +2102,7 @@ function lower_call!(gates::Vector{ReversibleGate}, wa::WireAllocator,
 
         # Insert callee's forward gates with wire offset
         for g in callee_lr.gates
-            push!(gates, _remap_gate(g, wire_offset))
+            push!(gates, _remap_gate_offset(g, wire_offset))
         end
 
         # The callee's output wires (remapped) become the result
@@ -2109,13 +2111,13 @@ function lower_call!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     end
 end
 
-function _remap_gate(g::NOTGate, offset::Int)
+function _remap_gate_offset(g::NOTGate, offset::Int)
     NOTGate(g.target + offset)
 end
-function _remap_gate(g::CNOTGate, offset::Int)
+function _remap_gate_offset(g::CNOTGate, offset::Int)
     CNOTGate(g.control + offset, g.target + offset)
 end
-function _remap_gate(g::ToffoliGate, offset::Int)
+function _remap_gate_offset(g::ToffoliGate, offset::Int)
     ToffoliGate(g.control1 + offset, g.control2 + offset, g.target + offset)
 end
 
