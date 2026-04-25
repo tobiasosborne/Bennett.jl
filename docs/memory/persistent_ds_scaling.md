@@ -137,7 +137,7 @@ per-set lower bounds:
 | impl | per-set lower bound | argument |
 |---|---|---|
 | linear_scan | ~1,400 gates (measured constant) | "preserve N-1, write 1" compresses |
-| HAMT | popcount alone ≥ **2,782 gates** (soft_popcount32 standalone measurement) | Bagwell CTPop is strictly additional work |
+| HAMT | popcount alone ≥ **1,454 gates / 256 Toffoli** (soft_popcount32 standalone, measured 2026-04-25 post-U27/U28; earlier 2,782 measurement predates the new defaults) | Bagwell CTPop is strictly additional work |
 | Okasaki | 4-case balance dispatch × O(log N) levels | every insert risks triggering balance; all 4 cases computed speculatively |
 | CF | O(N) per set (measured) | variable-depth Diff write blocks compression |
 

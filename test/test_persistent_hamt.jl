@@ -82,9 +82,17 @@ end
         @test simulate(c, (UInt32(0xFFFFFFFF),)) == UInt32(32)
         @test simulate(c, (UInt32(0x55555555),)) == UInt32(16)
 
-        # Sanity bounds on gate count (measured 2026-04-17: 2782 total / 1004 Toffoli)
-        @test 500 < gc.total < 50_000
-        @test gc.Toffoli > 100
+        # Bennett-fa4g / U124 — pinned regression baseline.
+        # Measured 2026-04-25 post-U27/U28 (add=:ripple, fold_constants=true):
+        # 1,454 total gates / 258 NOT / 940 CNOT / 256 Toffoli, 897 ancillae,
+        # depth=137. Earlier (2026-04-17) reading of 2,782 / 1004 in
+        # docs/memory/persistent_ds_scaling.md predates those defaults.
+        # If this drifts, investigate whether it's an improvement or a
+        # regression in soft_popcount32 lowering.
+        @test gc.total   == 1_454
+        @test gc.NOT     == 258
+        @test gc.CNOT    == 940
+        @test gc.Toffoli == 256
     end
 
     # ---- Testset 3: Pure-Julia protocol contract ----
