@@ -147,27 +147,9 @@ end
         @test gc.total > 100
     end
 
-    @testset "P4b soft_feistel32 — standalone reversibility + bijection" begin
-        c = reversible_compile(soft_feistel32, UInt32)
-        @test c isa ReversibleCircuit
-        @test verify_reversibility(c; n_tests=3)
-        gc = gate_count(c)
-        @info "T5-P4b soft_feistel32 standalone gate count" total=gc.total Toffoli=gc.Toffoli
-        @test gc.total > 100
-
-        # Bijection property: every Int8 key maps to a distinct image.
-        # (Feistel is a bijection on UInt32 → UInt32; the low byte after
-        # zero-extending Int8 input may collide, but at least within the
-        # 256-key Int8 image we expect very few collisions in practice.)
-        images = Set{Int8}()
-        for k in -128:127
-            push!(images, soft_feistel_int8(Int8(k)))
-        end
-        # Not strictly bijective on Int8 (low-byte truncation can collide),
-        # but should hit far more than 1 image.  ~250 distinct out of 256
-        # is what to expect from a good hash.
-        @test length(images) > 200
-    end
+    # P4b soft_feistel32 standalone (winner-side) — extracted during U54
+    # cycle 5 (2026-04-25) to test/test_hashcons_feistel.jl on the default
+    # path.  Removed from this file because the rest of it is research-tier.
 
     # ─── Layered (DS × hashcons) demos ─────────────────────────────────────
     # Each demo: 3-set + 1-get, oracle match, reversible_compile,

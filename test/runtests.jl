@@ -226,12 +226,10 @@ include("test_uoem_research_relocation.jl")
 # T5-P3d — Conchon-Filliâtre semi-persistent (Bennett-6thy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 2.
 # include("test_persistent_cf.jl")  # → moved into research gate below
-# T5-P4 — Hash-cons compression layers (Bennett-gv8g + Bennett-7pgw).
-# Gated behind BENNETT_RESEARCH_TESTS during U54 cycles 1-4: all 6 layered
-# demos pair a hash with a loser DS (Okasaki/HAMT/CF) and Jenkins is itself
-# losing.  Cycle 5 will split the standalone Feistel coverage back into the
-# default path.
-# include("test_persistent_hashcons.jl")  # → moved into research gate below
+# T5-P4b — soft_feistel32 standalone (winner-side, extracted from
+# test_persistent_hashcons.jl during U54 cycle 5).  The remainder of
+# the hashcons coverage rides under BENNETT_RESEARCH_TESTS below.
+include("test_hashcons_feistel.jl")
 
 # T5 corpora — multi-language RED tests (T5-P2a/b/c).  All currently RED
 # via @test_throws; safe to include unconditionally.  C and Rust corpora
