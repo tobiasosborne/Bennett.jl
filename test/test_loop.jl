@@ -8,7 +8,7 @@
     end
 
     ir = extract_ir(s, Tuple{Int8})
-    parsed = parse_ir(ir)
+    parsed = extract_parsed_ir(s, Tuple{Int8})  # Bennett-cs2f / U42 — was parse_ir(ir)
     println("  s(x) blocks: ", length(parsed.blocks), " (LLVM unrolled)")
     println("  s(x) IR:\n", ir)
 

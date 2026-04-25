@@ -262,9 +262,6 @@ function _auto_name(counter::Ref{Int})
     Symbol("__v$(counter[])")
 end
 
-# No-op for backward compatibility (counter is now local to each compilation)
-function _reset_names!() end
-
 # ---- Bennett-cc0.6: standardized error reporting ----
 #
 # When an unsupported LLVM IR pattern fires an error, the message should

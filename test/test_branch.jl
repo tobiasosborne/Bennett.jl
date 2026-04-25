@@ -13,7 +13,7 @@
         end
 
         ir = extract_ir(q, Tuple{Int8})
-        parsed = parse_ir(ir)
+        parsed = extract_parsed_ir(q, Tuple{Int8})  # Bennett-cs2f / U42 — was parse_ir(ir)
         println("  q(x) blocks: ", length(parsed.blocks))
         println("  q(x) IR:\n", ir)
 

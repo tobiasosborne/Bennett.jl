@@ -2,7 +2,9 @@ module Bennett
 
 include("ir_types.jl")
 include("ir_extract.jl")
-include("ir_parser.jl")
+# Bennett-cs2f / U42: src/ir_parser.jl deleted 2026-04-25 — the regex
+# IR parser was dead legacy and violated CLAUDE.md §5 (LLVM IR is not
+# stable).  The C-API walker in ir_extract.jl is the source of truth.
 include("gates.jl")
 include("wire_allocator.jl")
 include("adder.jl")
@@ -33,7 +35,7 @@ include("parallel_adder_tree.jl")
 include("mul_qcla_tree.jl")
 include("persistent/persistent.jl")
 
-export reversible_compile, simulate, extract_ir, parse_ir, extract_parsed_ir, register_callee!
+export reversible_compile, simulate, extract_ir, extract_parsed_ir, register_callee!
 export extract_parsed_ir_from_ll, extract_parsed_ir_from_bc
 export PersistentMapImpl, AbstractPersistentMap, verify_pmap_correctness, pmap_demo_oracle, LINEAR_SCAN_IMPL
 # Bennett-uoem / U54: OKASAKI_IMPL + Okasaki API relocated to
