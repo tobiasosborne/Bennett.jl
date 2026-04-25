@@ -86,23 +86,29 @@ julia> c = reversible_compile(x -> x + Int8(1), Int8);
 
 julia> print_circuit(c)
 ReversibleCircuit:
-  Wires:    41
-  Input:    8 wires [8]
-  Output:   8 wires
-  Ancillae: 25
-  Gates:    58 (NOT=6, CNOT=40, Toffoli=12)
-  Depth:    19
+  Wires:     41
+  Input:     8 wires [8]
+  Output:    8 wires
+  Ancillae:  25
+  Gates:     58 (NOT=6, CNOT=40, Toffoli=12)
+  Depth:     19
+  Peak live: 17
 ```
+
+`Peak live` is the maximum number of simultaneously non-zero wires
+during simulation — the quantum-relevant width of the working
+statevector. See [`peak_live_wires`](@ref).
 """
 function print_circuit(io::IO, c::ReversibleCircuit)
     gc = gate_count(c)
     println(io, "ReversibleCircuit:")
-    println(io, "  Wires:    $(c.n_wires)")
-    println(io, "  Input:    $(length(c.input_wires)) wires $(c.input_widths)")
-    println(io, "  Output:   $(length(c.output_wires)) wires")
-    println(io, "  Ancillae: $(ancilla_count(c))")
-    println(io, "  Gates:    $(gc.total) (NOT=$(gc.NOT), CNOT=$(gc.CNOT), Toffoli=$(gc.Toffoli))")
-    println(io, "  Depth:    $(depth(c))")
+    println(io, "  Wires:     $(c.n_wires)")
+    println(io, "  Input:     $(length(c.input_wires)) wires $(c.input_widths)")
+    println(io, "  Output:    $(length(c.output_wires)) wires")
+    println(io, "  Ancillae:  $(ancilla_count(c))")
+    println(io, "  Gates:     $(gc.total) (NOT=$(gc.NOT), CNOT=$(gc.CNOT), Toffoli=$(gc.Toffoli))")
+    println(io, "  Depth:     $(depth(c))")
+    println(io, "  Peak live: $(peak_live_wires(c))")
 end
 print_circuit(c::ReversibleCircuit) = print_circuit(stdout, c)
 Base.show(io::IO, ::MIME"text/plain", c::ReversibleCircuit) = print_circuit(io, c)

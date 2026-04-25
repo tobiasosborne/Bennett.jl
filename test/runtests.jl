@@ -230,6 +230,8 @@ include("test_persistent_interface.jl")
 # Bennett-uoem / U54 — relocation invariants for src/persistent/research/.
 # Runs unconditionally; research-tier impls themselves are gated below.
 include("test_uoem_research_relocation.jl")
+# Bennett-ve3m / U165 — peak_live_wires line in print_circuit summary.
+include("test_ve3m_show_peak_live_wires.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).
