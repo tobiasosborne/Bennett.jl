@@ -73,7 +73,12 @@ using Bennett: ReversibleCircuit, ReversibleGate, NOTGate, CNOTGate, ToffoliGate
         gates = ReversibleGate[NOTGate(3), CNOTGate(1, 2)]
         inner = ReversibleCircuit(3, gates, [1], [2], [3], [1], [1])
         cc = controlled(inner)
-        @test_throws ErrorException verify_reversibility(cc; n_tests=4)
+        # Bennett-g0jb / U-: n_tests must be > 4 for the dirty-ancilla violation
+        # (NOTGate(3) flips wire 3 only when ctrl=1) to fire reliably. Random
+        # ctrl ~ Bernoulli(0.5); P(all n_tests trials pick ctrl=0) = 0.5^n_tests.
+        # n_tests=4 → 6.25% flake rate (caught in chunk-042 wlf6 Pkg.test).
+        # n_tests=20 → ~10⁻⁶, well below atomic-decay timescales.
+        @test_throws ErrorException verify_reversibility(cc; n_tests=20)
     end
 
     @testset "T7: ControlledCircuit of a real circuit stays green" begin
