@@ -269,6 +269,9 @@ include("test_069e_pebble_sentinels.jl")
 # (_IR_BINOP_OPS / _IR_ICMP_PREDS / _IR_CAST_OPS / _IR_OPERAND_KINDS),
 # require width >= 1, and check IRCall arity / IRPhi non-empty incoming.
 include("test_k7al_ir_constructor_asserts.jl")
+# Bennett-pksz / U98 — `controlled(c)` asserts every inner gate uses
+# wires in 1:c.n_wires before allocating ctrl_wire at n_wires+1.
+include("test_pksz_controlled_contiguous_wires.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).

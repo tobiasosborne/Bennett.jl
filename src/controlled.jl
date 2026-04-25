@@ -37,6 +37,19 @@ struct ControlledCircuit
     ctrl_wire::WireIndex
 end
 
+# Bennett-pksz / U98: contiguous-wire-allocation invariant.
+# `controlled()` chooses `ctrl_wire = circuit.n_wires + 1` (and
+# `anc_wire = + 2`) on the assumption that no inner gate already
+# references wires beyond `circuit.n_wires`. The
+# `ReversibleCircuit` constructor partitions input/output/ancilla
+# to cover exactly `1:n_wires`, but it does NOT cross-check that
+# the gate stream stays within that range — a malformed circuit
+# with `gates = [NOTGate(n_wires + 1)]` would silently collide
+# with our chosen `ctrl_wire`. Assert it here, fail loud.
+_gate_max_wire(g::NOTGate)     = g.target
+_gate_max_wire(g::CNOTGate)    = max(g.control, g.target)
+_gate_max_wire(g::ToffoliGate) = max(g.control1, g.control2, g.target)
+
 """
     controlled(circuit::ReversibleCircuit) -> ControlledCircuit
 
@@ -44,8 +57,24 @@ Wrap every gate with a control bit: NOT→CNOT, CNOT→Toffoli,
 Toffoli→decomposed controlled-Toffoli (3 Toffolis + 1 reusable ancilla).
 
 Result: `(ctrl, x, 0) → (ctrl, x, ctrl ? f(x) : 0)`.
+
+Assumes contiguous wire allocation: every gate in `circuit.gates`
+references wire indices in `1:circuit.n_wires`. Asserts this on
+entry — a malformed inner circuit collides with the new control /
+ancilla wires we allocate at `n_wires + 1` / `+ 2`.
 """
 function controlled(circuit::ReversibleCircuit)
+    # Bennett-pksz / U98: cross-check the contiguous-wire invariant
+    # before allocating ctrl_wire / anc_wire.
+    if !isempty(circuit.gates)
+        max_inner = maximum(_gate_max_wire, circuit.gates)
+        max_inner <= circuit.n_wires || error(
+            "controlled: inner circuit references wire $max_inner > " *
+            "n_wires=$(circuit.n_wires). The controlled-circuit construction " *
+            "allocates ctrl_wire at n_wires+1, which would collide. " *
+            "(Bennett-pksz / U98)")
+    end
+
     has_toff = any(g -> g isa ToffoliGate, circuit.gates)
     ctrl_wire = circuit.n_wires + 1
     anc_wire  = has_toff ? circuit.n_wires + 2 : 0
