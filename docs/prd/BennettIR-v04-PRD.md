@@ -1,5 +1,7 @@
 # BennettIR.jl v0.4 — Wider Integers, Explicit Loops, Arrays
 
+**STATUS: COMPLETED v0.4** — historical PRD; preserved as the v0.4 milestone reference.
+
 ## One-line summary
 
 Extend from Int8 to Int64, handle loops LLVM won't unroll, and support

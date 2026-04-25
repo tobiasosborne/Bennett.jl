@@ -1,5 +1,7 @@
 # BennettIR.jl v0.5 — Float64
 
+**STATUS: COMPLETED v0.5** — historical PRD; preserved as the v0.5 milestone reference.
+
 ## One-line summary
 
 Reversibly compile plain Julia functions on Float64 via LLVM IR. A Float64 is

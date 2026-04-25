@@ -1,5 +1,7 @@
 # BennettIR.jl v0.3 — Controlled Circuits + Control Flow
 
+**STATUS: COMPLETED v0.3** — historical PRD; preserved as the v0.3 milestone reference.
+
 ## One-line summary
 
 Add quantum control to reversible circuits (the `when` primitive), and handle

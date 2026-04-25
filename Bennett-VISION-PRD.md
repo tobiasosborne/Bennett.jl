@@ -170,11 +170,25 @@ Require new theory or significant architecture:
 
 ### Tier 4: Hard but NOT Out of Scope
 
-**NOTHING IS OUT OF SCOPE.** The stretch vision goal is 100% coverage of every
-LLVM IR opcode. Every instruction in the LLVM specification will have a
-reversible gate implementation, even if the approach requires novel theory.
+**Coverage target: every LLVM IR opcode that a *pure deterministic* function
+can reach gets a reversible gate implementation, even if the approach
+requires novel theory.** The narrow exception — opcodes that are *intrinsically*
+non-deterministic or environment-coupled — is to fail loud at compile time
+with a clear error message (CLAUDE.md §1), not to silently miscompile. So
+this Tier 4 mixes two cases, both of which are tracked here rather than
+hidden in §9 Non-Goals:
 
-These instructions require non-trivial design but ARE targets:
+- **Targets — get a real gate lowering.** Most rows below: invoke /
+  landingpad / catch* / cleanup* (deterministic-call modelling),
+  atomicrmw / cmpxchg (single-thread sequential semantics), fence
+  (no-op), indirectbr / ptrtoint / inttoptr / addrspacecast
+  (identity / cascade), and the vector-op family (unrolling).
+
+- **Clear-error refusals — fail loud, not silent.** `va_arg` and `callbr`
+  are listed for completeness but don't get gates: the count and target
+  are runtime-determined from the calling environment.  The error path
+  is the *implementation* — same status as Enzyme's
+  `@enzyme_custom_rule` boundary.
 
 | Instructions | Approach | Status |
 |-------------|----------|--------|
@@ -183,8 +197,8 @@ These instructions require non-trivial design but ARE targets:
 | atomicrmw | Decompose to read + compute + reversible write (EXCH-based) | Issue Bennett-6nq |
 | cmpxchg | Expand to icmp + conditional reversible store | Issue Bennett-dop |
 | fence | No-op for single-threaded circuits (skip) | Issue Bennett-bmq |
-| va_arg | Error with clear message (count is runtime-dependent) | Issue Bennett-909 |
-| callbr | Error with clear message (inline asm) | Issue Bennett-e84 |
+| va_arg | **Clear-error refusal** (count is runtime-dependent) | Issue Bennett-909 |
+| callbr | **Clear-error refusal** (inline asm) | Issue Bennett-e84 |
 | indirectbr | Expand to cascaded icmp + br | Issue Bennett-4eu |
 | ptrtoint, inttoptr | Identity (pointer IS wire index) | Issues filed |
 | addrspacecast | Identity (single address space) | Issue Bennett-ay7 |

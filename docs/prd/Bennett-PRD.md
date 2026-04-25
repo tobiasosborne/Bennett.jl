@@ -1,5 +1,7 @@
 # Bennett.jl — Reversible Compilation POC
 
+**STATUS: COMPLETED v0.1** — historical PRD; preserved as the v0.1 milestone reference.
+
 ## One-line summary
 
 Trace arbitrary Julia arithmetic into a DAG, apply Bennett's construction to produce a reversible circuit, verify correctness.

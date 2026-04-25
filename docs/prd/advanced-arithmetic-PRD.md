@@ -1,5 +1,7 @@
 # Advanced Arithmetic Strategies — PRD
 
+**STATUS: COMPLETED 2026-04-14** — historical PRD; QCLA + Sun-Borissov mul tree shipped per worklog/015. Preserved as the milestone reference.
+
 ## One-line summary
 
 Turn Bennett.jl into the benchmarking arena for reversible arithmetic: add

@@ -1,5 +1,7 @@
 # BennettIR.jl — LLVM-Level Reversible Compilation POC
 
+**STATUS: COMPLETED v0.2** — historical PRD; preserved as the v0.2 milestone reference.
+
 ## One-line summary
 
 Take a plain Julia function on plain integers, extract its LLVM IR, walk the IR instructions, emit a reversible circuit. No special types. No operator overloading.
