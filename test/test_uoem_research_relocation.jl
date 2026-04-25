@@ -38,4 +38,12 @@ const _PUBLIC_API = Set(names(Bennett))
         end
     end
 
+    @testset "Conchon-Filliâtre semi-persistent relocated to research/" begin
+        @test isfile(joinpath(_RES_DIR, "cf_semi_persistent.jl"))
+        @test !isfile(joinpath(_PROD_DIR, "cf_semi_persistent.jl"))
+        for sym in (:CF_IMPL, :cf_pmap_new, :cf_pmap_set, :cf_pmap_get, :cf_reroot)
+            @test sym ∉ _PUBLIC_API
+        end
+    end
+
 end

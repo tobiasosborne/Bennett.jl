@@ -15,15 +15,21 @@
 using Test
 using Bennett
 
+# Bennett-uoem / U54 — CF was relocated to src/persistent/research/ on
+# 2026-04-25 and is no longer auto-loaded by `using Bennett`.  Pull it in
+# explicitly so this gated suite can exercise it.  See
+# src/persistent/research/README.md for the rationale.
+include(joinpath(pkgdir(Bennett), "src", "persistent", "research", "cf_semi_persistent.jl"))
+
 # ── Top-level demo function (Bennett.jl needs top-level for LLVM extraction) ──
 
 function _cf_demo(k1::Int8, v1::Int8, k2::Int8, v2::Int8,
                   k3::Int8, v3::Int8, lookup::Int8)::Int8
-    s = Bennett.cf_pmap_new()
-    s = Bennett.cf_pmap_set(s, k1, v1)
-    s = Bennett.cf_pmap_set(s, k2, v2)
-    s = Bennett.cf_pmap_set(s, k3, v3)
-    return Bennett.cf_pmap_get(s, lookup)
+    s = cf_pmap_new()
+    s = cf_pmap_set(s, k1, v1)
+    s = cf_pmap_set(s, k2, v2)
+    s = cf_pmap_set(s, k3, v3)
+    return cf_pmap_get(s, lookup)
 end
 
 # ── Helper: reroot test (explicit uncompute correspondence) ───────────────────
@@ -31,13 +37,13 @@ end
 # Demo function that sets 2 values then peeks at the intermediate version via
 # reroot (undoing the second set) — verifies the Diff chain is correct.
 function _cf_reroot_demo(k1::Int8, v1::Int8, k2::Int8, v2::Int8)::Int8
-    s  = Bennett.cf_pmap_new()
-    s1 = Bennett.cf_pmap_set(s,  k1, v1)
-    s2 = Bennett.cf_pmap_set(s1, k2, v2)
+    s  = cf_pmap_new()
+    s1 = cf_pmap_set(s,  k1, v1)
+    s2 = cf_pmap_set(s1, k2, v2)
     # Undo the second set by rerooting once
-    s3 = Bennett.cf_reroot(s2)
+    s3 = cf_reroot(s2)
     # After reroot: s3 should look like s1 (only k1→v1 stored)
-    return Bennett.cf_pmap_get(s3, k1)
+    return cf_pmap_get(s3, k1)
 end
 
 @testset "T5-P3d — Conchon-Filliâtre semi-persistent map" begin

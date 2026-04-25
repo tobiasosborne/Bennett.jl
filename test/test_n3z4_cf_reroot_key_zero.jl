@@ -1,5 +1,9 @@
 using Test
-using Bennett: cf_pmap_new, cf_pmap_set, cf_pmap_get, cf_reroot
+using Bennett
+
+# Bennett-uoem / U54 — CF was relocated to src/persistent/research/ on
+# 2026-04-25; this regression test rides under BENNETT_RESEARCH_TESTS.
+include(joinpath(pkgdir(Bennett), "src", "persistent", "research", "cf_semi_persistent.jl"))
 
 # Bennett-n3z4 / U21 — `cf_reroot` used `r_key == UInt64(0)` as an
 # "empty slot was just allocated" sentinel. Int8(0) is a valid key in
