@@ -265,6 +265,10 @@ include("test_uinn_catch_narrowing.jl")
 # (_PEBBLE_INF / _PEBBLE_FINITE_BOUND) replacing typemax(Int)÷2 magic;
 # pins the no-overflow + init-sentinel-fails-gate invariants.
 include("test_069e_pebble_sentinels.jl")
+# Bennett-k7al / U99 — IR struct inner constructors validate op symbols
+# (_IR_BINOP_OPS / _IR_ICMP_PREDS / _IR_CAST_OPS / _IR_OPERAND_KINDS),
+# require width >= 1, and check IRCall arity / IRPhi non-empty incoming.
+include("test_k7al_ir_constructor_asserts.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).

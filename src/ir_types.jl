@@ -1,9 +1,27 @@
+# Bennett-k7al / U99: validation tables for the IR instruction structs.
+# Listed once here so a typo (`:slt` vs `:lt`, `:zxt` vs `:zext`) fails
+# at construction time with a clear error, not 500 lines later during
+# lowering when the elseif chain falls through.
+const _IR_OPERAND_KINDS = (:ssa, :const)
+const _IR_BINOP_OPS     = (:add, :sub, :mul, :and, :or, :xor,
+                           :shl, :lshr, :ashr,
+                           :udiv, :sdiv, :urem, :srem)
+const _IR_ICMP_PREDS    = (:eq, :ne,
+                           :ult, :ule, :ugt, :uge,
+                           :slt, :sle, :sgt, :sge)
+const _IR_CAST_OPS      = (:sext, :zext, :trunc)
+
 # --- Operand: SSA variable or integer constant ---
 
 struct IROperand
     kind::Symbol       # :ssa or :const
     name::Symbol       # SSA name (if :ssa)
     value::Int         # constant value (if :const)
+    function IROperand(kind::Symbol, name::Symbol, value::Int)
+        kind in _IR_OPERAND_KINDS ||
+            error("IROperand: kind=:$kind not in $_IR_OPERAND_KINDS")
+        new(kind, name, value)
+    end
 end
 
 ssa(name::Symbol)    = IROperand(:ssa, name, 0)
@@ -15,18 +33,33 @@ abstract type IRInst end
 
 struct IRBinOp <: IRInst
     dest::Symbol
-    op::Symbol         # :add, :sub, :mul, :and, :or, :xor, :shl, :lshr, :ashr
+    op::Symbol         # :add, :sub, :mul, :and, :or, :xor, :shl, :lshr, :ashr,
+                       # :udiv, :sdiv, :urem, :srem (see _IR_BINOP_OPS)
     op1::IROperand
     op2::IROperand
     width::Int
+    function IRBinOp(dest::Symbol, op::Symbol, op1::IROperand, op2::IROperand, width::Int)
+        op in _IR_BINOP_OPS ||
+            error("IRBinOp: op=:$op not in $_IR_BINOP_OPS (dest=$dest)")
+        width >= 1 ||
+            error("IRBinOp: width=$width must be >= 1 (dest=$dest, op=:$op)")
+        new(dest, op, op1, op2, width)
+    end
 end
 
 struct IRICmp <: IRInst
     dest::Symbol
-    predicate::Symbol  # :eq, :ne, :ult, :slt, :ugt, :sgt, :ule, :sle, :uge, :sge
+    predicate::Symbol  # see _IR_ICMP_PREDS
     op1::IROperand
     op2::IROperand
     width::Int         # width of operands (result is always i1)
+    function IRICmp(dest::Symbol, predicate::Symbol, op1::IROperand, op2::IROperand, width::Int)
+        predicate in _IR_ICMP_PREDS ||
+            error("IRICmp: predicate=:$predicate not in $_IR_ICMP_PREDS (dest=$dest)")
+        width >= 1 ||
+            error("IRICmp: width=$width must be >= 1 (dest=$dest, predicate=:$predicate)")
+        new(dest, predicate, op1, op2, width)
+    end
 end
 
 struct IRSelect <: IRInst
@@ -34,12 +67,25 @@ struct IRSelect <: IRInst
     cond::IROperand    # i1
     op1::IROperand     # true value
     op2::IROperand     # false value
-    width::Int         # width of result
+    width::Int         # width of result; 0 is the Bennett-cc0 M2b pointer
+                       # sentinel — pointer-typed selects don't materialise
+                       # as wires (routing lives in ptr_provenance).
+    function IRSelect(dest::Symbol, cond::IROperand, op1::IROperand, op2::IROperand, width::Int)
+        width >= 0 ||
+            error("IRSelect: width=$width must be >= 0 (dest=$dest); " *
+                  "use 0 only for pointer-typed selects")
+        new(dest, cond, op1, op2, width)
+    end
 end
 
 struct IRRet <: IRInst
     op::IROperand
     width::Int
+    function IRRet(op::IROperand, width::Int)
+        width >= 1 ||
+            error("IRRet: width=$width must be >= 1")
+        new(op, width)
+    end
 end
 
 struct IRInsertValue <: IRInst
@@ -55,10 +101,20 @@ end
 
 struct IRCast <: IRInst
     dest::Symbol
-    op::Symbol         # :sext, :zext, :trunc
+    op::Symbol         # see _IR_CAST_OPS
     operand::IROperand
     from_width::Int
     to_width::Int
+    function IRCast(dest::Symbol, op::Symbol, operand::IROperand,
+                    from_width::Int, to_width::Int)
+        op in _IR_CAST_OPS ||
+            error("IRCast: op=:$op not in $_IR_CAST_OPS (dest=$dest)")
+        from_width >= 1 ||
+            error("IRCast: from_width=$from_width must be >= 1 (dest=$dest, op=:$op)")
+        to_width >= 1 ||
+            error("IRCast: to_width=$to_width must be >= 1 (dest=$dest, op=:$op)")
+        new(dest, op, operand, from_width, to_width)
+    end
 end
 
 struct IRPtrOffset <: IRInst
@@ -78,6 +134,11 @@ struct IRLoad <: IRInst
     dest::Symbol
     ptr::IROperand      # pointer (or ptr+offset SSA name)
     width::Int          # load width in bits
+    function IRLoad(dest::Symbol, ptr::IROperand, width::Int)
+        width >= 1 ||
+            error("IRLoad: width=$width must be >= 1 (dest=$dest)")
+        new(dest, ptr, width)
+    end
 end
 
 # --- memory writes ---
@@ -88,6 +149,11 @@ struct IRStore <: IRInst
     ptr::IROperand      # destination pointer (SSA, resolved via vw)
     val::IROperand      # value to store (SSA or constant)
     width::Int          # stored value width in bits (i1-aware via narrow guard)
+    function IRStore(ptr::IROperand, val::IROperand, width::Int)
+        width >= 1 ||
+            error("IRStore: width=$width must be >= 1")
+        new(ptr, val, width)
+    end
 end
 
 # IRAlloca produces a pointer SSA value. `n_elems::IROperand` mirrors
@@ -98,6 +164,11 @@ struct IRAlloca <: IRInst
     dest::Symbol         # SSA name of produced pointer
     elem_width::Int      # bit width per element
     n_elems::IROperand   # :const for static, :ssa for dynamic
+    function IRAlloca(dest::Symbol, elem_width::Int, n_elems::IROperand)
+        elem_width >= 1 ||
+            error("IRAlloca: elem_width=$elem_width must be >= 1 (dest=$dest)")
+        new(dest, elem_width, n_elems)
+    end
 end
 
 struct IRExtractValue <: IRInst
@@ -114,6 +185,19 @@ struct IRCall <: IRInst
     args::Vector{IROperand}
     arg_widths::Vector{Int}
     ret_width::Int
+    function IRCall(dest::Symbol, callee::Function, args::Vector{IROperand},
+                    arg_widths::Vector{Int}, ret_width::Int)
+        length(args) == length(arg_widths) ||
+            error("IRCall: length(args)=$(length(args)) != length(arg_widths)=$(length(arg_widths)) " *
+                  "(dest=$dest, callee=$(nameof(callee)))")
+        ret_width >= 1 ||
+            error("IRCall: ret_width=$ret_width must be >= 1 (dest=$dest, callee=$(nameof(callee)))")
+        for (i, w) in enumerate(arg_widths)
+            w >= 1 ||
+                error("IRCall: arg_widths[$i]=$w must be >= 1 (dest=$dest, callee=$(nameof(callee)))")
+        end
+        new(dest, callee, args, arg_widths, ret_width)
+    end
 end
 
 struct IRBranch <: IRInst
@@ -131,8 +215,17 @@ end
 
 struct IRPhi <: IRInst
     dest::Symbol
-    width::Int
+    width::Int          # 0 is the Bennett-cc0 M2b pointer sentinel — same
+                        # convention as IRSelect.
     incoming::Vector{Tuple{IROperand, Symbol}}  # (value, from_block)
+    function IRPhi(dest::Symbol, width::Int, incoming::Vector{Tuple{IROperand, Symbol}})
+        width >= 0 ||
+            error("IRPhi: width=$width must be >= 0 (dest=$dest); " *
+                  "use 0 only for pointer-typed phis")
+        isempty(incoming) &&
+            error("IRPhi: incoming is empty (dest=$dest); a phi with no predecessors is malformed")
+        new(dest, width, incoming)
+    end
 end
 
 # Bennett-cc0 M2b — pointer provenance entry. Represents one possible origin
