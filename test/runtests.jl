@@ -306,6 +306,13 @@ include("test_8p0g_parsed_ir_seam.jl")
 # test that asserts the fences haven't reverted + smoke-checks that
 # every doctest's expected value still holds in the canonical baseline.
 include("test_wlf6_jldoctest_fences.jl")
+# Bennett-6u9q / U146 — end-to-end integration test for the stated
+# vision: `controlled ∘ reversible_compile` is a unitary on a 2^N
+# statevector. Compiles a tiny Bool→Bool function, controls it, applies
+# the resulting circuit to (a) basis states, (b) a random superposition
+# (norm preserved), and (c) the canonical |0⟩+|1⟩ superposition that
+# Sturm's `when(qubit) do f(x) end` would lower into.
+include("test_6u9q_quantum_vision_integration.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).
