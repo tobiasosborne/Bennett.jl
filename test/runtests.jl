@@ -288,6 +288,10 @@ include("test_zyjn_deref_bytes_distinct_failures.jl")
 # catch to LLVM.jl's "Unknown value kind" / "LLVMGlobalAlias" errors only;
 # OOM and other unexpected exceptions propagate.
 include("test_8kno_extract_const_globals_narrowing.jl")
+# Bennett-f6qa / U97 — every error("...") in lower.jl starts with a
+# recognised function-or-helper prefix; pebbling/pebbled_groups budget
+# wording unified to "insufficient pebbles — need at least N".
+include("test_f6qa_error_message_prefixes.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).

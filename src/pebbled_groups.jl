@@ -13,7 +13,7 @@ Reference: Knill 1995 Theorem 2.1, PRS15 Section III.B (ancilla heap).
 function _remap_wire(w::Int, wmap::Dict{Int,Int}, input_wire_set::Set{Int})
     haskey(wmap, w) && return wmap[w]
     w in input_wire_set && return w  # function inputs are identity-mapped
-    error("Unmapped wire $w in gate remapping — not in wmap and not a function input. Possible corruption from freed group wires.")
+    error("_remap_wire: unmapped wire $w in gate remapping — not in wmap and not a function input. Possible corruption from freed group wires.")
 end
 
 _remap_gate_wmap(g::NOTGate, wmap::Dict{Int,Int}, iws::Set{Int}) =
@@ -160,7 +160,7 @@ function _pebble_groups!(result::Vector{ReversibleGate},
         return
     end
 
-    s <= 1 && error("Insufficient pebbles: need $(min_pebbles(n)) for $n groups, have $s")
+    s <= 1 && error("pebbled_group_bennett: insufficient pebbles — need at least $(min_pebbles(n)) for $n groups, have $s")
 
     m = knill_split_point(n, s)
     mid = lo + m - 1

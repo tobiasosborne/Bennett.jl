@@ -203,7 +203,7 @@ function _pebble_with_copy!(result::Vector{ReversibleGate},
         return
     end
 
-    s <= 1 && error("Insufficient pebbles: need at least $(min_pebbles(n)) for $n gates, have $s")
+    s <= 1 && error("pebbled_bennett: insufficient pebbles — need at least $(min_pebbles(n)) for $n gates, have $s")
 
     m = knill_split_point(n, s)
     mid = lo + m - 1

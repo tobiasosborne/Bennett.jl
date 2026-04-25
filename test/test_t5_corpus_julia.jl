@@ -19,7 +19,7 @@ using Bennett
 #   TJ3      — "Unknown operand ref for: i1 icmp eq (ptr @…RNode…, ptr @…Nothing…)"
 #     Constant pointer comparisons in Union{T,Nothing} isnothing checks are not
 #     handled by ir_extract.jl.
-#   TJ4      — "GEP base thread_ptr not found in variable wires"
+#   TJ4      — "lower_var_gep!: GEP base thread_ptr not found in variable wires"
 #     The `thread_ptr` intrinsic (used by Julia's TLS / task-local allocator for
 #     Array{T}(undef, N)) is not a tracked variable wire; the GEP into it crashes.
 
@@ -157,8 +157,8 @@ end
     #   Julia runtime allocator emits `thread_ptr` GEPs that are outside the
     #   tracked wire set.
     #
-    # Current error (2026-04-20, post-cc0.3):
-    #   ErrorException: GEP base thread_ptr not found in variable wires
+    # Current error (2026-04-20, post-cc0.3; refreshed Bennett-f6qa / U97):
+    #   ErrorException: lower_var_gep!: GEP base thread_ptr not found in variable wires
     # ─────────────────────────────────────────────────────────────────────────
     @testset "TJ4: Array{Int8}(undef, 256) dynamic-idx store+load" begin
         f_tj4(x::Int8, i::Int8) = let a = Array{Int8}(undef, 256)
@@ -168,7 +168,7 @@ end
 
         # RED: cc0.5 is not yet fixed. A full TLS-allocator pre-walk requires
         # modeling Julia's Array/Memory struct layout, outside cc0.3 scope.
-        # Current error: "GEP base thread_ptr not found in variable wires"
+        # Current error: "lower_var_gep!: GEP base thread_ptr not found in variable wires"
         @test_throws ErrorException reversible_compile(f_tj4, Int8, Int8)
     end
 

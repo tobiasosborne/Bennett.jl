@@ -188,7 +188,7 @@ _lower_inst!(ctx::LoweringCtx, inst::IRCall, ::Symbol) =
     lower_call!(ctx.gates, ctx.wa, ctx.vw, inst; compact=ctx.compact_calls)
 
 _lower_inst!(::LoweringCtx, inst::IRInst, ::Symbol) =
-    error("Unhandled instruction type: $(typeof(inst)) — $(inst)")
+    error("_lower_inst!: unhandled IR instruction type: $(typeof(inst)) — $(inst)")
 
 # ---- operand resolution ----
 
@@ -196,7 +196,7 @@ function resolve!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                   var_wires::Dict{Symbol,Vector{Int}}, op::IROperand, width::Int;
                   constant_wires::Set{Int}=Set{Int}())
     if op.kind == :ssa
-        haskey(var_wires, op.name) || error("Undefined SSA variable: %$(op.name)")
+        haskey(var_wires, op.name) || error("resolve!: undefined SSA variable: %$(op.name)")
         return var_wires[op.name]
     else
         wires = allocate!(wa, width)
@@ -386,7 +386,7 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
 
     # If there are loops, we need max_loop_iterations
     if !isempty(back_edges) && max_loop_iterations <= 0
-        error("Loop detected in LLVM IR but max_loop_iterations not specified. " *
+        error("lower: loop detected in LLVM IR but max_loop_iterations not specified. " *
               "Pass max_loop_iterations=N to reversible_compile.")
     end
 
@@ -729,7 +729,7 @@ function topo_sort(blocks::Vector{IRBasicBlock};
         end
     end
     length(result) == length(blocks) ||
-        error("Cannot topologically sort blocks even after removing back-edges")
+        error("lower: cannot topologically sort blocks even after removing back-edges")
     return result
 end
 
@@ -838,8 +838,8 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
                 blk in pre_header_preds || push!(pre_header_preds, blk)
             end
         end
-        pre_op === nothing && error("Phi $(inst.dest) has no pre-header incoming")
-        latch_op === nothing && error("Phi $(inst.dest) has no latch incoming")
+        pre_op === nothing && error("lower_loop!: phi $(inst.dest) has no pre-header incoming")
+        latch_op === nothing && error("lower_loop!: phi $(inst.dest) has no latch incoming")
         push!(phi_info, (inst.dest, inst.width, pre_op[1], latch_op[1]))
     end
 
@@ -852,7 +852,7 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
 
     term = header.terminator
     (term isa IRBranch && term.cond !== nothing) ||
-        error("Loop header $hlabel must end with conditional branch, got: $(typeof(term))")
+        error("lower_loop!: loop header $hlabel must end with conditional branch, got: $(typeof(term))")
 
     exit_on_true = !(term.true_label == hlabel || term.true_label in latch_labels)
     exit_label = exit_on_true ? term.true_label : term.false_label
@@ -1007,7 +1007,7 @@ function _compute_block_pred!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                               branch_info::Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}},
                               block_pred::Dict{Symbol,Vector{Int}})
     pred_list = get(preds, label, Symbol[])
-    isempty(pred_list) && error("Block $label has no predecessors for predicate computation")
+    isempty(pred_list) && error("_compute_block_pred!: block $label has no predecessors for predicate computation")
 
     contributions = Vector{Int}[]
     for p in pred_list
@@ -1028,7 +1028,7 @@ function _compute_block_pred!(gates::Vector{ReversibleGate}, wa::WireAllocator,
         end
     end
 
-    isempty(contributions) && error("No predicate contributions for block $label")
+    isempty(contributions) && error("_compute_block_pred!: no predicate contributions for block $label")
 
     # OR all contributions together
     result = contributions[1]
@@ -1145,7 +1145,7 @@ function lower_phi!(gates, wa, vw, inst::IRPhi, phi_block::Symbol,
 
     incoming = [(resolve!(gates, wa, vw, val, inst.width), blk)
                 for (val, blk) in inst.incoming]
-    isempty(block_pred) && error("block_pred is empty during phi resolution for $(inst.dest) — path predicates must be computed before phi lowering")
+    isempty(block_pred) && error("lower_phi!: block_pred is empty during phi resolution for $(inst.dest) — path predicates must be computed before phi lowering")
     vw[inst.dest] = resolve_phi_predicated!(gates, wa, incoming, block_pred, inst.width;
                                             phi_block=phi_block, branch_info)
 end
@@ -1266,7 +1266,7 @@ function lower_binop!(gates, wa, vw, inst::IRBinOp;
         elseif inst.op == :xor; lower_xor!(gates, wa, a, b, W)
         elseif inst.op in (:udiv, :urem, :sdiv, :srem)
             lower_divrem!(gates, wa, vw, inst, a, b, W)
-        else error("Unknown binop: $(inst.op)")
+        else error("lower_binop!: unknown binop :$(inst.op) (supported: $_IR_BINOP_OPS)")
         end
     end
 
@@ -1394,7 +1394,7 @@ function lower_icmp!(gates, wa, vw, inst::IRICmp)
     elseif p == :sgt;      lower_slt!(gates, wa, b, a, W)
     elseif p == :sle;      lower_not1!(gates, wa, lower_slt!(gates, wa, b, a, W))
     elseif p == :sge;      lower_not1!(gates, wa, lower_slt!(gates, wa, a, b, W))
-    else error("Unknown icmp predicate: $p")
+    else error("lower_icmp!: unknown predicate :$p (supported: $_IR_ICMP_PREDS)")
     end
     vw[inst.dest] = result
 end
@@ -1525,7 +1525,7 @@ function lower_cast!(gates, wa, vw, inst::IRCast)
     elseif inst.op == :trunc
         for i in 1:T; push!(gates, CNOTGate(src[i], r[i])); end
     else
-        error("Unknown cast op: $(inst.op)")
+        error("lower_cast!: unknown cast op :$(inst.op) (supported: $_IR_CAST_OPS)")
     end
 
     vw[inst.dest] = r
@@ -1639,7 +1639,7 @@ function lower_ptr_offset!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                            alloca_info::Union{Nothing,Dict{Symbol,Tuple{Int,Int}}}=nothing)
     # The base operand should be a flat wire array (from ptr param)
     if !haskey(vw, inst.base.name)
-        error("GEP base $(inst.base.name) not found in variable wires")
+        error("lower_var_gep!: GEP base $(inst.base.name) not found in variable wires")
     end
     base_wires = vw[inst.base.name]
     # PtrOffset just records a view into the base array at byte offset
@@ -1696,7 +1696,7 @@ function lower_var_gep!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     if globals !== nothing && haskey(globals, inst.base.name)
         data, gw = globals[inst.base.name]
         gw == inst.elem_width ||
-            error("VarGEP elem_width=$(inst.elem_width) disagrees with global $(inst.base.name) elem_width=$gw")
+            error("lower_var_gep!: elem_width=$(inst.elem_width) disagrees with global $(inst.base.name) elem_width=$gw")
         vw[inst.dest] = _emit_qrom_from_gep!(gates, wa, vw, data, inst.index, inst.elem_width)
         return
     end
@@ -1722,11 +1722,11 @@ function lower_var_gep!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     end
 
     haskey(vw, inst.base.name) ||
-        error("VarGEP base $(inst.base.name) not found in variable wires")
+        error("lower_var_gep!: base $(inst.base.name) not found in variable wires")
     base_wires = vw[inst.base.name]
     W = inst.elem_width
     N = length(base_wires) ÷ W
-    N >= 1 || error("VarGEP: base has $(length(base_wires)) wires but elem is $W bits")
+    N >= 1 || error("lower_var_gep!: base has $(length(base_wires)) wires but elem is $W bits")
 
     # Resolve index — may be wider than needed (e.g., i64 for a 4-element array)
     idx_wires = resolve!(gates, wa, vw, inst.index, 0)
@@ -1917,7 +1917,7 @@ function _lower_load_legacy!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     src_wires = vw[inst.ptr.name]
     W = inst.width
     if length(src_wires) < W
-        error("Load of $W bits from $(inst.ptr.name) but only $(length(src_wires)) wires available")
+        error("_lower_load_legacy!: load of $W bits from $(inst.ptr.name) but only $(length(src_wires)) wires available")
     end
     result = allocate!(wa, W)
     for i in 1:W
