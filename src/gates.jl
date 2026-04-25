@@ -83,3 +83,14 @@ struct ReversibleCircuit
                    input_widths, output_elem_widths)
     end
 end
+
+# Bennett-2jny / U101: standard collection protocols, delegating to the
+# underlying gate vector. Lets callers write `for g in circuit`,
+# `length(circuit)`, `circuit[i]`, `eltype(typeof(circuit))` etc.
+Base.length(c::ReversibleCircuit)               = length(c.gates)
+Base.iterate(c::ReversibleCircuit)              = iterate(c.gates)
+Base.iterate(c::ReversibleCircuit, state)       = iterate(c.gates, state)
+Base.eltype(::Type{ReversibleCircuit})          = ReversibleGate
+Base.getindex(c::ReversibleCircuit, i::Integer) = c.gates[i]
+Base.firstindex(c::ReversibleCircuit)           = firstindex(c.gates)
+Base.lastindex(c::ReversibleCircuit)            = lastindex(c.gates)

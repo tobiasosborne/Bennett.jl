@@ -252,6 +252,9 @@ include("test_ej4n_callee_ir_cache.jl")
 # pins consistency between _MUX_EXCH_STRATEGY and the load/store dispatch
 # dicts so a future shape addition can't silently route to :unsupported.
 include("test_tfo8_alloca_strategy_tables.jl")
+# Bennett-2jny / U101 — ReversibleCircuit collection protocols
+# (length / iterate / eltype / getindex / first/lastindex).
+include("test_2jny_circuit_collection_api.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).
