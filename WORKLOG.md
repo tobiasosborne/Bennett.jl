@@ -1,9 +1,9 @@
 # Bennett.jl Work Log
 
 > **NEXT AGENT — start here:** the most recent sessions live at the top of
-> [`worklog/037_2026-04-25_preamble.md`](worklog/037_2026-04-25_preamble.md).
+> [`worklog/038_2026-04-25_uoem_persistent_ds_research_relocation.md`](worklog/038_2026-04-25_uoem_persistent_ds_research_relocation.md).
 > Older session logs are sharded into ~200-300 line chunks under `worklog/`,
-> file-numbered chronologically (000 = oldest, 037 = newest as of 2026-04-25).
+> file-numbered chronologically (000 = oldest, 038 = newest as of 2026-04-25).
 
 This file is now an **index** — historical content was sharded out of the
 monolithic 9,774-line `WORKLOG.md` per Bennett-fyni / U70. Concatenating the
@@ -14,7 +14,7 @@ tool.
 ## Adding new entries
 
 When you finish a session, **prepend** a `## Session log — YYYY-MM-DD — …`
-block to the current top chunk file (today: `worklog/037_*.md`). When that
+block to the current top chunk file (today: `worklog/038_*.md`). When that
 file passes ~280 lines, create a new chunk file with the next sequential
 `NNN_` prefix and start prepending there. The next agent should always be
 able to read the highest-numbered file first to find the latest state.
@@ -46,7 +46,8 @@ rejected paths, hand-off pointers). Avoid restating the diff:
 
 | File | Lines | First section |
 |---|---:|---|
-| [037_2026-04-25_preamble.md](worklog/037_2026-04-25_preamble.md) | 234 | Session log — 2026-04-25 — Bennett-jppi deferred, Bennett-p1h1 README Project-status refresh |
+| [038_2026-04-25_uoem_persistent_ds_research_relocation.md](worklog/038_2026-04-25_uoem_persistent_ds_research_relocation.md) | 130 | Session log — 2026-04-25 — Bennett-uoem / U54 persistent-DS research relocation (5 cycles, GREEN) |
+| [037_2026-04-25_preamble.md](worklog/037_2026-04-25_preamble.md) | 280 | Session log — 2026-04-25 — Bennett-jppi deferred, Bennett-p1h1 README Project-status refresh |
 | [036_2026-04-24_…_evening_session_close.md](worklog/036_2026-04-24_next_agent_start_here_evening_session_close.md) | 315 | NEXT AGENT — start here — 2026-04-24 (evening session close) |
 | [035_2026-04-24_session.md](worklog/035_2026-04-24_session.md) | 259 | Session — 2026-04-24 |
 | [034_2026-04-22_…_catalogue_beads_phase.md](worklog/034_2026-04-22_next_agent_previous_context_catalogue_beads_phase.md) | 579 | (continuation of 033 — single monolithic narrative; one of the few outliers > 300 lines that resists clean splitting) |
