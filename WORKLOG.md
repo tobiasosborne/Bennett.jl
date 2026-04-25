@@ -46,7 +46,7 @@ rejected paths, hand-off pointers). Avoid restating the diff:
 
 | File | Lines | First section |
 |---|---:|---|
-| [038_2026-04-25_uoem_persistent_ds_research_relocation.md](worklog/038_2026-04-25_uoem_persistent_ds_research_relocation.md) | 130 | Session log — 2026-04-25 — Bennett-uoem / U54 persistent-DS research relocation (5 cycles, GREEN) |
+| [038_2026-04-25_uoem_persistent_ds_research_relocation.md](worklog/038_2026-04-25_uoem_persistent_ds_research_relocation.md) | 269 | Session log — 2026-04-25 (afternoon) — catalogue grind, 13 P2 beads cleared |
 | [037_2026-04-25_preamble.md](worklog/037_2026-04-25_preamble.md) | 280 | Session log — 2026-04-25 — Bennett-jppi deferred, Bennett-p1h1 README Project-status refresh |
 | [036_2026-04-24_…_evening_session_close.md](worklog/036_2026-04-24_next_agent_start_here_evening_session_close.md) | 315 | NEXT AGENT — start here — 2026-04-24 (evening session close) |
 | [035_2026-04-24_session.md](worklog/035_2026-04-24_session.md) | 259 | Session — 2026-04-24 |

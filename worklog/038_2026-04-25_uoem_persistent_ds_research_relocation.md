@@ -1,5 +1,99 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-25 (afternoon) — catalogue grind, 13 P2 beads cleared
+
+**Shipped:** see git log around `8972540..b427c8c` (`bd: sync dolt cache (close U72/...)` through the most recent push). Thirteen catalogue P2s closed/deferred plus a CLAUDE.md §14 cleanup.
+
+| Bead | What |
+|---|---|
+| **U72** Bennett-5p1c | `gpucompiler/` confirmed third-party (JuliaGPU GPUCompiler.jl clone), gitignored with comment. |
+| **cc0** | Memory epic closed-as-superseded — T0/T1/T2/T3/T4 + T5-P1..P5 all shipped per worklog 020-024 + 027-032. T5-P6 continues as Bennett-z2dj. |
+| **U75** Bennett-ph5m | Formally `bd defer`d to 2026-10-25. Audit rationale: persistent-related Bennett exports went 30→7 via U54; remaining 7 are intentional public API. Submodule wrap unnecessary. |
+| **U74** Bennett-awon | BENCHMARKS.md MD5 headline 48k→43,520 Toffoli (1.58× ReVerC, was 1.75×). Re-measured via `julia --project benchmark/bc2_md5.jl`. Memory plan critical-path block extended to T4 + T5-P1..P5 + T5-P6 in_progress + T5-P7 future. Memory-PRD §6.1 status block added. |
+| **U73** Bennett-ihhk | STATUS headers on 6 versioned PRDs in docs/prd/. VISION-PRD §4 Tier 4 walked back from "100% coverage / NOTHING IS OUT OF SCOPE" overclaim — split into (a) targets-with-real-lowering vs (b) clear-error refusals (va_arg, callbr) per CLAUDE.md §1 fail-fast. |
+| **U71** Bennett-dmsm | `docs/design/` reorg: 30 frozen proposer/research files → `docs/design/archive/`. Top level now 14 *_consensus.md + INDEX.md + archive/. INDEX.md has stale-numbers warning header. |
+| **U64** Bennett-bq5m | Deferred to 2026-08-01 — flipping `optimize=true` default would re-baseline every pinned gate-count regression + force re-measurement of every BENCHMARKS entry. Multi-hour coordinated workstream, not a doc-snack. |
+| **U49** Bennett-uj6g | Re-close-as-superseded note. **`.github/workflows/test.yml` deleted** (59 lines) — the U49 close on 2026-04-24 had violated CLAUDE.md §14 (added afterwards on grounds of "failure-email noise is worse than zero signal"). Workflow had been spamming user. The intended quality gate is local: scripts/pre-push hook running Pkg.test() before push. |
+| **U63** Bennett-mlny | `test/test_mlny_depth.jl` added — 22 assertions: empty=0, sequential same-wire (n=1..5)=N, parallel disjoint (n=1..8)=1, mixed (NOT‖NOT then Toffoli)=2, CNOT chain (n=1..4)=N, regression-anchor `x+Int8(1)→19` from docstring example, depth ≤ length(c.gates) on i8/i16. |
+| **U67** Bennett-6l2h + **U66** Bennett-xmdx | One file, two beads — `test/test_6l2h_branching_callee.jl`. Exhaustive Int8 sweep on `_abs_i8` (sign-bit branch) and `_piecewise_i8` (branch + arithmetic) under (a) `compact_calls=true` and (b) `controlled()` wrapping with ctrl=0/1. 772/772 + 1026/1026 GREEN. The bead's claimed risk ("MUX × controlled may leak ancillae when ctrl=0") did NOT materialise. |
+| **U42** Bennett-cs2f | `src/ir_parser.jl` deleted (-168 LOC). 8 `parse_ir()` callsites in test_parse / test_branch / test_loop ported to `extract_parsed_ir()`. `_reset_names!()` empty stub at ir_extract.jl:266 also deleted. `parse_ir` export removed (56→55). CLAUDE.md §5 violation cleared. |
+| **U51** Bennett-qcse | 6 documented-public types now exported: NOTGate, CNOTGate, ToffoliGate, ReversibleGate, ParsedIR, LoweringResult. Soft-float and persistent-DS submodule-wrap suggestions deferred under U75. |
+| **U69** Bennett-l9az | `src/lower.jl` -90 LOC: `has_ancestor`, `on_branch_side`, `_is_on_side`, `resolve_phi_muxes!` deleted. Verified zero external references via repo-wide grep before deletion. Live phi dispatcher routes only to `resolve_phi_predicated!`. lower.jl now ~2,572 LOC (still U40 territory). |
+
+**Why:** continuation of 2026-04-25 morning's doc-work batch + the afternoon's U54 close. User: "keep working on code review catalog. just grind through the issues one by one and clear the catalogue." So that's what happened — straight grind through the P2 ready list, one bead at a time, RED-GREEN where applicable, push every 3-5 commits to amortize the 5-min Pkg.test pre-push hook.
+
+**Gotchas / Lessons:**
+
+- **`.github/workflows/test.yml` was a §14 violation.** The U49 close on 2026-04-24 had added it; CLAUDE.md §14 was added afterwards explicitly banning GitHub CI on the grounds that "the failure-email noise is worse than zero signal." The workflow had been spamming the user with failure emails. **Future agent**: never propose CI; never re-add `.github/workflows/`. Local gates only (scripts/pre-push hook runs Pkg.test).
+
+- **Catalogue claims sometimes lie.** Three caught today:
+  - **`Bennett-cc0`** had "cc0.1..cc0.7" sub-references in worklog/notes, but only `Bennett-cc0.5` is actually a separate bead (`bd search cc0`). The others are sub-tags inside the parent bead's narrative.
+  - **`Bennett-awon`** claimed MD5 headline at "~48k Toffoli (1.75× ReVerC)" — actual measurement today is 43,520 Toffoli (1.58×). The post-Cuccaro-self-reversing improvements brought it down.
+  - **`Bennett-uoem` U54 mooted-list** claimed `Bennett-e89s` (U120 linear_scan absent-key collision) and `Bennett-ivoa` (U121 harness gaps) were mooted by the relocation — but linear_scan and harness are WINNERS (kept on production path), so those bugs still apply. Notes on both corrected this morning.
+  - **General lesson**: cross-check every catalogue claim against current code/measurements before acting on it. Memory entry `feedback_doc_work_mode.md` already says this; reconfirmed twice today.
+
+- **Working-directory drift in the Bash tool bit me twice.** Bash sessions persist `pwd` between commands. After `cd docs/design && git mv ...` I forgot to `cd -` and a subsequent `git add docs/design/INDEX.md` resolved relative to the new pwd, missing the file. Worked around with explicit `cd /home/tobiasosborne/Projects/Bennett.jl && ...`. Future agent: prefer absolute paths in `git mv`/`git add` to avoid the trap, OR always cd back to repo root after any subdir cd.
+
+- **Function-body name resolution in Julia is at call time, not parse time.** When I removed loser persistent-map exports during U54, test files defined functions whose bodies referenced `Bennett.okasaki_pmap_*` — those compiled fine. The `UndefVarError` only surfaced when the *layered demo functions* were called. So `using Bennett` + `using/import` lines at the top of a test file fail at load time, but `Bennett.<unexported>` references inside function bodies are silent until exercised. Useful when staging a multi-cycle relocation, but don't trust load-time-green to mean migration-complete.
+
+- **Per-bead-per-commit + push every 3-5 commits.** The pre-push hook runs `Pkg.test()` (~5 min cold). One push per cycle = ~30 min of pure hook waits across this session. Batching to ~3-5 commits per push amortised that, while keeping the per-bead commit history clean for `git log` review. The `bd: sync dolt cache (close ...)` separator commits keep code commits and bd-state commits visually distinct in `git log`.
+
+- **`bd defer` vs prose-only deferral.** Earlier I deferred Bennett-ph5m by writing prose in `bd update --notes` but didn't change status. The bead kept showing in `bd ready`. Formal `bd defer <id> --until=<date>` is what removes it from the ready queue. Same for `bd close --reason="..."` — the reason string ends up in `bd show` and `git log` (via the close-out commit), so write it to be useful when re-read months later.
+
+- **Catalogue mooting is workflow-sensitive.** U54 originally listed 12 mooted sub-bugs assuming Option A (deletion). User chose Option B (relocation). Under Option B, bugs in research-tier code stay technically present but are no longer on the production path. The right action wasn't to close those 12; it was to add a one-line bd note flagging "research-tier-only since 2026-04-25" so a future agent knows the priority should drop, not that the bug is fixed. Done for 11 of 12 (sqtd is winner-side, not mooted).
+
+**Rejected alternatives:**
+
+- **Move root PRDs (Bennett-VISION-PRD.md, Bennett-Memory-PRD.md, Bennett-Memory-T5-PRD.md) to `docs/prd/`** as U73 suggested. Rejected: CLAUDE.md File Structure block (refreshed today via Bennett-vlab) deliberately distinguishes ACTIVE scope-specific PRDs at root vs VERSIONED-HISTORICAL PRDs in `docs/prd/`. Same content split, different categories.
+
+- **Flip `optimize=true` default in U64.** Rejected: 35 explicit `optimize=true` test sites + ~67k assertions in tests that don't pass `optimize=` at all. Flipping = re-baseline `test_gate_count_regression.jl` + every `BENCHMARKS.md` entry + audit downstream consumers. Multi-hour coordinated workstream. Deferred to 2026-08-01.
+
+- **Submodule-wrap remaining 7 persistent + 21 soft-float exports** (U75 / Bennett.Persistent + Bennett.SoftFloat). Rejected: original "25+ leak" concern is gone (post-U54 it's 7 + 21 = 28 names, all intentional public API). Submodule wrap forces every consumer prefix-bump for marginal cleanliness gain. Deferred under Bennett-ph5m.
+
+- **Refactor portion of U67** (factor compact/non-compact arms in `lower_call!` into `_splice_callee_gates!`). Rejected: kept the bead's commit scope-tight to test coverage; can refile if it matters.
+
+- **Aqua.jl / JET.jl gates** — not on this session's path; tracked under U210 (Bennett-gk1h, P4) and would require careful review against §14.
+
+**Next agent starts here:**
+
+1. **Branch state at session-end**: `b427c8c` on main, up to date with origin. Worklog top is this chunk (`worklog/038_*.md`, 175 lines pre-this-entry, prepend the next session's log here until the file passes ~280 lines then start `worklog/039_*.md`). All tests GREEN on the default path; research-tier path verified separately under `BENNETT_RESEARCH_TESTS=1`.
+
+2. **DO NOT re-add `.github/workflows/`** under any circumstance (CLAUDE.md §14, reinforced today). Local gates only: `scripts/pre-push` runs `Pkg.test()`. If a future bead/review proposes CI, treat as out-of-scope and substitute the local hook.
+
+3. **The catalogue ready list has shifted to deeper work.** ~30 P2s remain ready. The doc-snack tail is largely cleared today. Next-batch character:
+
+   - **Real bugs (1-3h each, root-cause investigations):**
+     - `Bennett-jepw` U05-followup — `lower_loop!` body blocks need per-block path predicates for diamond-in-body.
+     - `Bennett-ca0i` U02-followup — `value_eager_bennett` leaks on SHA-256-style in-place arithmetic.
+
+   - **God-file refactors (3+1 protocol per CLAUDE.md §2, multi-session each):**
+     - `Bennett-vdlg` U40 — `src/lower.jl` is 2,572 LOC / 93 top-level defs (was 2,662; -90 from U69 today).
+     - `Bennett-tzrs` U41 — `_convert_instruction` is a 649-line opcode god-function.
+     - `Bennett-ehoa` U43 — `LoweringCtx` has 3 `::Any` hot-path fields + 4 back-compat constructors.
+
+   - **Test-coverage gaps that may surface bugs:**
+     - `Bennett-25dm` U62 — T5 corpus (TJ1/TJ2/TJ4; TC1-3; TR1-3) still `@test_throws`. Real fixes needed in `ir_extract.jl`.
+     - `Bennett-9x75` U61 — soft-float fuzzing narrowly in [-100,100]; expand to subnormals/NaN/extreme exponents.
+     - `Bennett-0zsk` U46 — many `error()` sites in core have no `@test_throws` coverage.
+
+   - **Refactor-with-care:**
+     - `Bennett-v958` U68 — IROperand primitive-obsession tagged union.
+     - `Bennett-5qrn` U57 — trivial-identity peepholes (x+0, x*1, x|0). Bounded but can shift baselines.
+
+   - **Live in_progress (already on someone's plate):**
+     - `Bennett-z2dj` T5-P6 dispatcher — needs 3+1 protocol, U54 unblocked it.
+     - `Bennett-cc0.5` T5-P6.3 thread_ptr GEP — narrow ir_extract gap.
+
+4. **Velocity drop expected on next batch.** Today's pace was 13 P2s in ~3h on the doc-snack tail. The next batch is qualitatively different — expect 3-5× slower per bead because each requires real investigation (bugs) or 3+1 agent dispatch (refactors).
+
+5. **The 12 U54-mooted sub-beads need a walk-through.** I tagged 11 of them with "code now in research-tier per U54" notes (skipped sqtd because Feistel is winner-side; e89s/ivoa got correction notes because they're winner-side bugs the bead mistakenly listed). Future cleanup: read each, decide close-as-research-tier-only vs lower-priority vs keep-open. Worth a single 30-min triage block.
+
+6. **Catalogue clearance ~45%** of the original 173. The remaining ~95 P2/P3/P4 will not all close — some are deliberate non-actions (e.g. CI ones), some are vision-tier / paper-target (Bennett-ktt8 / Bennett-2uas / Bennett-6siy) that need actual benchmarks run first.
+
+7. **bd .beads permissions warning** appears on every bd command (`Warning: /home/tobiasosborne/Projects/Bennett.jl/.beads has permissions 0755 (recommended: 0700)`). Suggested fix per the warning: `chmod 700 /home/tobiasosborne/Projects/Bennett.jl/.beads`. I did not do this autonomously (touches user-owned filesystem permissions); the user can run it whenever the noise becomes annoying.
+
+---
+
 ## Session log — 2026-04-25 — Bennett-uoem / U54 persistent-DS research relocation (5 cycles, GREEN)
 
 **Shipped:** see git log around 4d65381..1d88dbd; six commits across 0–5 cycles
