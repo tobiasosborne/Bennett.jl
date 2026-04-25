@@ -1827,23 +1827,13 @@ function _lower_load_via_mux!(ctx::LoweringCtx, inst::IRLoad, origin::PtrOrigin)
 
     if strategy == :shadow
         return _lower_load_via_shadow!(ctx, inst, alloca_dest, info, idx_op)
-    elseif strategy == :mux_exch_2x8
-        return _lower_load_via_mux_2x8!(ctx, inst, alloca_dest, info, idx_op)
-    elseif strategy == :mux_exch_4x8
-        return _lower_load_via_mux_4x8!(ctx, inst, alloca_dest, info, idx_op)
-    elseif strategy == :mux_exch_8x8
-        return _lower_load_via_mux_8x8!(ctx, inst, alloca_dest, info, idx_op)
-    elseif strategy == :mux_exch_2x16
-        return _lower_load_via_mux_2x16!(ctx, inst, alloca_dest, info, idx_op)
-    elseif strategy == :mux_exch_4x16
-        return _lower_load_via_mux_4x16!(ctx, inst, alloca_dest, info, idx_op)
-    elseif strategy == :mux_exch_2x32
-        return _lower_load_via_mux_2x32!(ctx, inst, alloca_dest, info, idx_op)
     elseif strategy == :shadow_checkpoint
         return _lower_load_via_shadow_checkpoint!(ctx, inst, alloca_dest, info, idx_op)
-    else
-        error("_lower_load_via_mux!: unsupported (elem_width=$(info[1]), n_elems=$(info[2])) for dynamic idx")
     end
+    fn = get(_MUX_EXCH_LOAD_DISPATCH, strategy, nothing)
+    fn === nothing &&
+        error("_lower_load_via_mux!: unsupported (elem_width=$(info[1]), n_elems=$(info[2])) for dynamic idx")
+    return fn(ctx, inst, alloca_dest, info, idx_op)
 end
 
 # T3b.3 shadow-memory load for static idx: just CNOT-copy the target slot.
@@ -2204,27 +2194,15 @@ preferred for shapes with N·W ≤ 64 (cheaper per-op cost). T4 shadow-
 checkpoint is the universal fallback for N·W > 64.
 """
 function _pick_alloca_strategy(shape::Tuple{Int,Int}, idx::IROperand)
-    if idx.kind == :const
-        return :shadow
-    end
-    (elem_w, n) = shape
-    if elem_w == 8
-        n == 2 && return :mux_exch_2x8
-        n == 4 && return :mux_exch_4x8
-        n == 8 && return :mux_exch_8x8
-    elseif elem_w == 16
-        n == 2 && return :mux_exch_2x16
-        n == 4 && return :mux_exch_4x16
-    elseif elem_w == 32
-        n == 2 && return :mux_exch_2x32
-    end
+    idx.kind == :const && return :shadow
+    sym = get(_MUX_EXCH_STRATEGY, shape, nothing)
+    sym === nothing || return sym
     # Bennett-cc0 M3a — T4 shadow-checkpoint MVP. Triggers for ANY shape
     # where the packed bits exceed a single UInt64, which is the only
     # shape class no MUX EXCH callee covers. Strictly additive — shapes
     # already returning :shadow or :mux_exch_* above are unaffected.
-    if n * elem_w > 64
-        return :shadow_checkpoint
-    end
+    elem_w, n = shape
+    n * elem_w > 64 && return :shadow_checkpoint
     return :unsupported
 end
 
@@ -2294,22 +2272,13 @@ function _lower_store_single_origin!(ctx::LoweringCtx, inst::IRStore,
 
     if strategy == :shadow
         _lower_store_via_shadow!(ctx, inst, alloca_dest, info, idx_op, block_label)
-    elseif strategy == :mux_exch_2x8
-        _lower_store_via_mux_2x8!(ctx, inst, alloca_dest, idx_op; block_label=block_label)
-    elseif strategy == :mux_exch_4x8
-        _lower_store_via_mux_4x8!(ctx, inst, alloca_dest, idx_op; block_label=block_label)
-    elseif strategy == :mux_exch_8x8
-        _lower_store_via_mux_8x8!(ctx, inst, alloca_dest, idx_op; block_label=block_label)
-    elseif strategy == :mux_exch_2x16
-        _lower_store_via_mux_2x16!(ctx, inst, alloca_dest, idx_op; block_label=block_label)
-    elseif strategy == :mux_exch_4x16
-        _lower_store_via_mux_4x16!(ctx, inst, alloca_dest, idx_op; block_label=block_label)
-    elseif strategy == :mux_exch_2x32
-        _lower_store_via_mux_2x32!(ctx, inst, alloca_dest, idx_op; block_label=block_label)
     elseif strategy == :shadow_checkpoint
         _lower_store_via_shadow_checkpoint!(ctx, inst, alloca_dest, info, idx_op, block_label)
     else
-        error("lower_store!: unsupported (elem_width=$(info[1]), n_elems=$(info[2])) for dynamic idx")
+        fn = get(_MUX_EXCH_STORE_DISPATCH, strategy, nothing)
+        fn === nothing &&
+            error("lower_store!: unsupported (elem_width=$(info[1]), n_elems=$(info[2])) for dynamic idx")
+        fn(ctx, inst, alloca_dest, idx_op; block_label=block_label)
     end
     return nothing
 end
@@ -2726,6 +2695,46 @@ for (N, W) in [(2, 8), (2, 16), (4, 16), (2, 32)]
         end
     end
 end
+
+# ---- Bennett-tfo8 / U113: alloca-MUX strategy tables ---------------------
+#
+# Single source of truth for the (elem_w, n_elems) → :mux_exch_NxW shape
+# set and the strategy → load/store dispatch.  Before tfo8 the shape set
+# was duplicated as if/elseif chains in `_pick_alloca_strategy`,
+# `_lower_load_via_mux!`, and `_lower_store_single_origin!` — adding a
+# new shape required edits in all three or it would silently route to
+# `:unsupported`.
+#
+# The hand-written (4,8)/(8,8) load/store helpers and the @eval-generated
+# (2,8)/(2,16)/(4,16)/(2,32) helpers are unified at the dispatch level
+# here; the underlying duplication of their bodies is tracked separately
+# by Bennett-lm3x / U56.
+const _MUX_EXCH_STRATEGY = Dict{Tuple{Int,Int}, Symbol}(
+    (8,  2) => :mux_exch_2x8,
+    (8,  4) => :mux_exch_4x8,
+    (8,  8) => :mux_exch_8x8,
+    (16, 2) => :mux_exch_2x16,
+    (16, 4) => :mux_exch_4x16,
+    (32, 2) => :mux_exch_2x32,
+)
+
+const _MUX_EXCH_LOAD_DISPATCH = Dict{Symbol, Function}(
+    :mux_exch_2x8  => _lower_load_via_mux_2x8!,
+    :mux_exch_4x8  => _lower_load_via_mux_4x8!,
+    :mux_exch_8x8  => _lower_load_via_mux_8x8!,
+    :mux_exch_2x16 => _lower_load_via_mux_2x16!,
+    :mux_exch_4x16 => _lower_load_via_mux_4x16!,
+    :mux_exch_2x32 => _lower_load_via_mux_2x32!,
+)
+
+const _MUX_EXCH_STORE_DISPATCH = Dict{Symbol, Function}(
+    :mux_exch_2x8  => _lower_store_via_mux_2x8!,
+    :mux_exch_4x8  => _lower_store_via_mux_4x8!,
+    :mux_exch_8x8  => _lower_store_via_mux_8x8!,
+    :mux_exch_2x16 => _lower_store_via_mux_2x16!,
+    :mux_exch_4x16 => _lower_store_via_mux_4x16!,
+    :mux_exch_2x32 => _lower_store_via_mux_2x32!,
+)
 
 # ---- helpers for T1b.3 store/load dispatch ----
 

@@ -248,6 +248,10 @@ include("test_0zsk_core_error_paths.jl")
 # Bennett-ej4n / U48 — module-scoped ParsedIR cache so a circuit with N
 # references to the same callee pays the ~21ms extract_parsed_ir cost once.
 include("test_ej4n_callee_ir_cache.jl")
+# Bennett-tfo8 / U113 — single-source-of-truth alloca-MUX strategy tables;
+# pins consistency between _MUX_EXCH_STRATEGY and the load/store dispatch
+# dicts so a future shape addition can't silently route to :unsupported.
+include("test_tfo8_alloca_strategy_tables.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).
