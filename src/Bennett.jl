@@ -49,6 +49,14 @@ export PersistentMapImpl, AbstractPersistentMap, verify_pmap_correctness, pmap_d
 export soft_feistel32, soft_feistel_int8
 export soft_fadd, soft_fsub, soft_fmul, soft_fma, soft_fdiv, soft_fsqrt, soft_fneg, soft_fcmp_olt, soft_fcmp_oeq, soft_fcmp_ole, soft_fcmp_une, soft_fptosi, soft_fptoui, soft_sitofp, soft_fpext, soft_fptrunc, soft_exp, soft_exp2, soft_exp_fast, soft_exp2_fast, soft_exp_julia, soft_exp2_julia
 export ReversibleCircuit, ControlledCircuit, controlled
+# Bennett-qcse / U51: gate primitives documented public in docs/src/api.md
+# (lines 188/192/196/211) — exporting so the documented constructors and
+# type-pattern-matches resolve without `Bennett.` prefix.
+export NOTGate, CNOTGate, ToffoliGate, ReversibleGate
+# Bennett-qcse / U51: ParsedIR is the return type of `extract_parsed_ir`
+# (REPL-visible), LoweringResult the return type of `lower` and input to
+# `bennett` (referenced in docs/src/api.md:139, 211).  Exporting both.
+export ParsedIR, LoweringResult
 export gate_count, ancilla_count, constant_wire_count, depth, t_count, t_depth, toffoli_depth, peak_live_wires, print_circuit, verify_reversibility
 export pebbled_bennett, eager_bennett, value_eager_bennett, pebbled_group_bennett, checkpoint_bennett
 
