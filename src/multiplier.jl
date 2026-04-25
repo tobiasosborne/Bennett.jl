@@ -48,13 +48,29 @@ cross-sum operands into fresh ancillae. The wire cost grows as the number
 of recursion leaves times the widened-operand storage at each level, which
 solves to Θ(W^log₂5).
 
-In practice for the Bennett pipeline (where total ancillae directly drive
-circuit size and pebbling complexity):
-  * W ≤ 32: schoolbook is smaller AND faster — use `lower_mul!`.
-  * W = 64: Karatsuba's gate count wins (~4× fewer Toffolis), but wire
-    count is ~2.3× worse — evaluate per use-case.
-  * W ≥ 128: Karatsuba gates dominate the savings curve; pick it unless
-    wire budget is critical.
+In practice for the Bennett pipeline today (Bennett-sg0w measurement,
+2026-04-25, post-U27 ripple-add defaults):
+
+| W   | schoolbook Toff | karatsuba Toff | k:s ratio        |
+|-----|----------------:|---------------:|------------------|
+|   8 |             144 |            502 | 3.49 (school wins) |
+|  16 |             664 |           2000 | 3.01 (school wins) |
+|  32 |            2856 |           6960 | 2.44 (school wins) |
+|  64 |           11848 |          22658 | 1.91 (school wins) |
+| 128 | Int128 sret not yet supported by `ir_extract` | — | n/a |
+
+The k:s ratio is decreasing monotonically with W (consistent with
+O(W^log₂3) vs O(W²) asymptotics) but has not crossed 1 at any width
+Bennett.jl currently supports.  Karatsuba is therefore **vestigial**
+in the present pipeline — the asymptotic crossover is somewhere past
+W=128, beyond what `ir_extract` lowers.
+
+Earlier docstrings claimed Karatsuba wins at W=64 (~4× fewer Toffolis)
+and W ≥ 128 dominates; both claims were either pre-U27 measurements
+that no longer hold or never measured.  Tracked for resolution under
+Bennett-sg0w (raise crossover threshold so `_pick_mul_strategy` never
+selects Karatsuba below the actual win width, OR tighten the impl,
+OR remove it).
 
 This function is exported but **not dispatched automatically**. Callers
 select schoolbook vs Karatsuba based on their optimization target (gate
