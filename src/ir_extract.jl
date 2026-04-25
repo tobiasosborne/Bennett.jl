@@ -375,18 +375,41 @@ const _LLVM_OPCODE_NAMES = Dict(
 _llvm_opcode_name(opc) = get(_LLVM_OPCODE_NAMES, opc, string(opc))
 
 # Build the canonical error message for an instruction-scoped failure.
+# Each LLVM.* introspection call is wrapped: if the C-API errors on a
+# freed/invalid value during error formatting we still want to produce a
+# message rather than crash with a different exception. Bennett-uinn / U93:
+# narrow each catch to re-raise InterruptException so Ctrl-C still works.
 function _ir_error_msg(inst::LLVM.Instruction, reason::AbstractString)::String
     opc_name = try
         _llvm_opcode_name(LLVM.opcode(inst))
-    catch
+    catch e
+        e isa InterruptException && rethrow()
         "unknown-opcode"
     end
-    bb = try LLVM.parent(inst) catch; nothing end
-    fname = bb === nothing ? "<unknown-fn>" :
-            try LLVM.name(LLVM.parent(bb)) catch; "<unknown-fn>" end
-    bname = bb === nothing ? "<unknown-block>" :
-            try LLVM.name(bb) catch; "<unknown-block>" end
-    inst_str = try string(inst) catch; "<unprintable-instruction>" end
+    bb = try
+        LLVM.parent(inst)
+    catch e
+        e isa InterruptException && rethrow()
+        nothing
+    end
+    fname = bb === nothing ? "<unknown-fn>" : try
+        LLVM.name(LLVM.parent(bb))
+    catch e
+        e isa InterruptException && rethrow()
+        "<unknown-fn>"
+    end
+    bname = bb === nothing ? "<unknown-block>" : try
+        LLVM.name(bb)
+    catch e
+        e isa InterruptException && rethrow()
+        "<unknown-block>"
+    end
+    inst_str = try
+        string(inst)
+    catch e
+        e isa InterruptException && rethrow()
+        "<unprintable-instruction>"
+    end
     return "ir_extract.jl: $opc_name in @$fname:%$bname: $inst_str — $reason"
 end
 
@@ -534,7 +557,12 @@ function _collect_sret_writes(func::LLVM.Function, sret_info, names::Dict{_LLVMR
                 ops = LLVM.operands(inst)
                 n_ops = length(ops)
                 if n_ops >= 1
-                    cname = try LLVM.name(ops[n_ops]) catch; "" end
+                    cname = try
+                        LLVM.name(ops[n_ops])
+                    catch e
+                        e isa InterruptException && rethrow()
+                        ""
+                    end
                     if startswith(cname, "llvm.memcpy")
                         if n_ops >= 2 && ops[1].ref === sret_ref
                             _ir_error(inst,
@@ -959,6 +987,7 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function)
             ir_inst = try
                 _convert_instruction(inst, names, counter, lanes)
             catch e
+                e isa InterruptException && rethrow()
                 msg = sprint(showerror, e)
                 bennett_authored = startswith(msg, "ErrorException(") ?
                     false : occursin("ir_extract.jl:", msg) ||
@@ -1020,7 +1049,8 @@ function _extract_const_globals(mod::LLVM.Module)
         LLVM.isconstant(g) || continue
         init = try
             LLVM.initializer(g)
-        catch
+        catch e
+            e isa InterruptException && rethrow()
             nothing
         end
         init === nothing && continue
@@ -1336,7 +1366,12 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         ops = LLVM.operands(inst)
         n_ops = length(ops)
         if n_ops >= 1
-            cname = try LLVM.name(ops[n_ops]) catch; "" end
+            cname = try
+                LLVM.name(ops[n_ops])
+            catch e
+                e isa InterruptException && rethrow()
+                ""
+            end
             if startswith(cname, "llvm.umax")
                 cmp_dest = _auto_name(counter)
                 w = _iwidth(ops[1])
@@ -2050,7 +2085,8 @@ function _safe_operands(inst::LLVM.Instruction)::Vector{Union{LLVM.Value, Nothin
         resolved = _resolve_aliasee(ref)
         out[i + 1] = resolved === nothing ? nothing : try
             LLVM.Value(resolved)
-        catch
+        catch e
+            e isa InterruptException && rethrow()
             nothing
         end
     end
@@ -2144,7 +2180,8 @@ function _ptr_identity(ref::_LLVMRef)::Union{Tuple{Symbol, UInt64}, Tuple{Symbol
                 inner == C_NULL && return nothing
                 inner_val = try
                     LLVM.Value(inner)
-                catch
+                catch e
+                    e isa InterruptException && rethrow()
                     return nothing
                 end
                 inner_val isa LLVM.ConstantInt || return nothing
@@ -2224,7 +2261,8 @@ end
 function _safe_is_vector_type(val)::Bool
     try
         return LLVM.value_type(val) isa LLVM.VectorType
-    catch
+    catch e
+        e isa InterruptException && rethrow()
         return false
     end
 end
@@ -2236,7 +2274,8 @@ end
 function _any_vector_operand(inst::LLVM.Instruction)::Bool
     try
         return any(_safe_is_vector_type(o) for o in LLVM.operands(inst))
-    catch
+    catch e
+        e isa InterruptException && rethrow()
         # Iteration failed partway through. Scan by raw index via the C API,
         # skipping operands that LLVM.jl cannot materialise.
         n = Int(LLVM.API.LLVMGetNumOperands(inst.ref))
@@ -2246,7 +2285,8 @@ function _any_vector_operand(inst::LLVM.Instruction)::Bool
                 if _safe_is_vector_type(LLVM.Value(ref))
                     return true
                 end
-            catch
+            catch e2
+                e2 isa InterruptException && rethrow()
                 continue
             end
         end
@@ -2590,6 +2630,7 @@ function _get_deref_bytes(func::LLVM.Function, param::LLVM.Argument)
             end
         end
     catch e
+        e isa InterruptException && rethrow()
         e isa MethodError || rethrow()
     end
     # Fallback: walk the param slot list on the `define` line and read
