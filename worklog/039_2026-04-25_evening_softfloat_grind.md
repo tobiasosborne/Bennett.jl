@@ -1,5 +1,55 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-25 (post-night) — 6t8s + ej4n closes (mechanical rename + callee ParsedIR cache)
+
+**Shipped:** see `git log` `ea06bfc..0c8be43` (4 commits). Two beads closed.
+
+| Bead | What |
+|---|---|
+| **Bennett-6t8s** P3 / U164 | Renamed three local helpers in `src/lower.jl` + `src/pebbled_groups.jl` that shared names with different semantics: `_remap_gate(g, offset::Int)` → `_remap_gate_offset` (3 methods + 2 callers, lower.jl); `_remap_gate(g, wmap, iws)` → `_remap_gate_wmap` (3 methods + 2 callers, pebbled_groups.jl); `lower_load!(gates, wa, vw, inst)` → `_lower_load_legacy!` (1 caller, the public `lower_load!(ctx, inst)` dispatcher is unchanged). Pure rename, multi-dispatch already handled the disambiguation; the issue was reader-side. |
+| **Bennett-ej4n** P2 / U48 | **Callee ParsedIR cache.** `lower_call!` now routes through `_extract_parsed_ir_cached(f, arg_types)` — a module-scoped `Dict{Tuple{Function,Type},ParsedIR}` + ReentrantLock in `src/ir_extract.jl`. A circuit with N references to the same callee paid the ~21ms LLVM C-API walk N times before; now it pays it once. Measured 1.20× speedup on a synthetic 5-fadd parent fn (cold 96ms → warm 80ms median). New test file `test_ej4n_callee_ir_cache.jl` (20 asserts) pins identity-on-hit, distinct-key isolation, no-grow-on-recompile, multi-ref collapse, simulation correctness, and the `_clear_parsed_ir_cache!()` escape hatch. |
+
+**Why:** continued the catalogue-grind cadence per worklog 039 (night) hand-off §3-§4. 6t8s was the cheapest "code-review hygiene" left in the ready list. ej4n was the worklog hand-off's top "quick win" — real perf, contained scope, no 3+1 needed because the change is a wrapper-and-routing edit, not a semantic change to lower/extract.
+
+**Gotchas / Lessons:**
+
+- **`reversible_compile(f, ...)` for a registered callee does NOT hit the cache.** The top-level entry calls `extract_parsed_ir` directly; only the inner `lower_call!` workload routes through `_extract_parsed_ir_cached`. The first version of the ej4n test asserted the cache was populated after `reversible_compile(soft_fadd, UInt64, UInt64)` — failed (n=0) because soft_fadd's body has no calls to OTHER registered callees that would invoke `lower_call!`. Fixed by wrapping in a parent fn `(a,b) -> soft_fadd(soft_fadd(a,b), a)`. Future agents: if you want to exercise the cache, the function under compile must be a *consumer* of registered callees, not a registered callee itself.
+
+- **Cache scope was a real design choice.** The bead suggested either `LoweringCtx` or module-scoped. Picked module-scoped because (a) it amortises across multiple `reversible_compile` calls — the precompile workload from Bennett-w0fc benefits on every subsequent compile; (b) it avoids adding a 15th field + 5th constructor variant to `LoweringCtx` (which would have worsened Bennett-ehoa / U43); (c) Bennett's registered callees are stable functions in this package, so the Revise-staleness risk is low and `_clear_parsed_ir_cache!()` is exposed as the escape hatch. Per-`LoweringCtx` would have been simpler if ehoa weren't already a known issue.
+
+- **Speedup is modest on synthetic micro-benchmarks but should scale.** 1.20× on 5 fadd refs ≈ 16ms saved over 4 hits ≈ 4ms/hit, less than the bead's 21ms claim. Most of the 96ms cold time is `lower()` + `bennett()` work that's NOT cached. For circuits with many DISTINCT callees (SHA-256, persistent-map ops, soft-float-heavy workloads), the cache wins more because each distinct callee gets the 21ms savings on every reference past the first.
+
+- **Test-only timing measurements need ≥3-iteration warmup + median.** First attempt showed *cold faster than warm* (0.107s vs 0.296s), entirely due to JIT specialization on the first call after package load. With 3 warmup iterations + 5-trial median the real ratio (1.20×) emerged.
+
+- **`Pkg.test` ran in background while research/edits happened in parallel.** Both beads followed the same pattern: research → edit → red-green test alone (`julia --project -e 'using Test, Bennett, Random; include("test/foo.jl")'`) → kick off full Pkg.test in background → commit + close + push when notified green. ~5min Pkg.test cold runs amortised cleanly.
+
+**Rejected alternatives:**
+
+- **Caching `lower(callee_parsed; max_loop_iterations=64)` too** (the LoweringResult). Would maximise savings beyond just `extract_parsed_ir`. Rejected because `lower()` has many keyword args (`add`, `mul`, `target`, `use_inplace`, `fold_constants`, ...) all defaulted at the `lower_call!` site — caching would lock in those defaults and invalidate silently if a future change altered them. Per the bead's literal spec ("Dict{...,ParsedIR}"), kept it conservative. Real follow-up if measurements demand more.
+
+- **Field-on-LoweringCtx cache.** See "Cache scope" lesson above. Module-scoped wins on amortisation + ehoa-avoidance.
+
+- **Pre-populating at `register_callee!` time** (also suggested in the bead). Rejected for now: registering 44 callees at module load time would materialise 44 `extract_parsed_ir` calls upfront, bloating precompile time without proportional wins (most callees aren't referenced in any given compile). The lazy-on-first-use cache is strictly better — pay only for what you use. Could revisit if a benchmark proves otherwise.
+
+- **Renaming `lower_load!(ctx, inst)` itself in 6t8s.** Tempting for symmetry (`_lower_load_dispatch!`?) but the public dispatcher is the natural API target and renaming it would churn 4 call sites in lower.jl + the eventual export story. Kept the public name, made the internal worker explicit.
+
+**Next agent starts here:**
+
+1. **Branch state at session-end**: `0c8be43` on main, pushed. Worklog top is **this** entry; chunk 039 is now ~250 lines — close to the 280 threshold. Next agent should consider starting `worklog/040_*.md` for the next session.
+
+2. **Catalogue progress**: 6t8s + ej4n closed (~152 ready remaining). Worklog 039 (night) §4 quick-wins list is now down by one (ej4n done; vpch / 59jj / lm3x / w0fc still on it — but w0fc was actually done in 039 night — minor lie in the previous hand-off).
+
+3. **Quick wins still on the menu**:
+   - **Bennett-vpch** U45 error monoculture — 190+ `error(msg)` → typed exceptions. Mechanical, pairs with the just-shipped `0zsk` `@test_throws` coverage. Substantial but still chore-scope.
+   - **Bennett-59jj** U47 type instability in hot paths — boxed returns, abstract vectors. Same playbook as `by8j` (hunt `::Any` / abstract-element vectors).
+   - **Bennett-lm3x** U56 MUX load/store dedup — gated on U51 export stability per the bead.
+
+4. **3+1-protected real bugs still open** (unchanged from 039 night): jepw, 25dm, 5qrn.
+
+5. **Pkg.test green** (verified end-of-bead each time, 2 separate runs). Each ~5min cold; backgrounded with `run_in_background=true` while next bead's edits happened.
+
+---
+
 ## Session log — 2026-04-25 (night) — 5 closes (sg0w jppi w0fc 0zsk by8j) + 1 filed (tbm6); 0.5.0 release prep + 21× TTFX win
 
 **Shipped:** see `git log` `9c31d72..ea06bfc` (10 commits). Five beads closed, one new P3 filed. The big-ticket items are the 0.5.0 release prep (Project.toml bump + back-filled CHANGELOG.md) and a 21× cold-TTFX speedup from a PrecompileTools workload.
