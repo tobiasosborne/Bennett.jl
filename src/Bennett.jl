@@ -115,9 +115,25 @@ end
 
 """
     reversible_compile(f, arg_types::Type{<:Tuple}) -> ReversibleCircuit
+    reversible_compile(f, types::Type...; kw...) -> ReversibleCircuit
 
 Compile a plain Julia function into a reversible circuit via LLVM IR.
 Uses LLVM.jl to walk the IR as typed objects (no regex parsing).
+
+# Example
+
+```jldoctest; setup = :(using Bennett)
+julia> c = reversible_compile(x -> x + Int8(1), Int8);
+
+julia> simulate(c, Int8(5))
+6
+
+julia> gate_count(c)
+(total = 58, NOT = 6, CNOT = 40, Toffoli = 12)
+
+julia> verify_reversibility(c)
+true
+```
 """
 const _TUPLE_OVERLOAD_KWARGS = (:optimize, :max_loop_iterations,
                                :compact_calls, :bit_width, :add, :mul,

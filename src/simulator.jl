@@ -48,7 +48,7 @@ After running every gate forward, asserts Bennett's invariants:
 A violation raises `ErrorException` naming the offending wire index.
 
 # Example
-```julia
+```jldoctest; setup = :(using Bennett)
 julia> c = reversible_compile(x -> x + Int8(1), Int8);
 
 julia> simulate(c, Int8(5))

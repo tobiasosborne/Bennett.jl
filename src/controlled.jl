@@ -20,7 +20,7 @@ delegates to the inner circuit's probe.
 - `ctrl_wire::WireIndex` — index of the dedicated control wire
 
 # Example
-```julia
+```jldoctest; setup = :(using Bennett)
 julia> c = reversible_compile(x -> x + Int8(1), Int8);
 
 julia> cc = controlled(c);
@@ -137,7 +137,7 @@ guard, ancilla-zero assertion, and input-preservation assertion (now
 including `ctrl_wire`) all apply.
 
 # Example
-```julia
+```jldoctest; setup = :(using Bennett)
 julia> c = reversible_compile(x -> x + Int8(1), Int8);
 
 julia> cc = controlled(c);

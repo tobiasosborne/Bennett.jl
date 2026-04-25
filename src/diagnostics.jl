@@ -11,7 +11,7 @@ to the lowering / Bennett pipeline. T-count for fault-tolerant synthesis
 is `7 * Toffoli` via `t_count`.
 
 # Example
-```julia
+```jldoctest; setup = :(using Bennett)
 julia> c = reversible_compile(x -> x + Int8(1), Int8);
 
 julia> gate_count(c)
@@ -50,7 +50,7 @@ Toffoli-only depth that determines T-depth in fault-tolerant synthesis,
 use `toffoli_depth`; for the Clifford+T conversion, see `t_depth`.
 
 # Example
-```julia
+```jldoctest; setup = :(using Bennett)
 julia> c = reversible_compile(x -> x + Int8(1), Int8);
 
 julia> depth(c)
@@ -81,7 +81,7 @@ sizes, gate counts by type, and depth. Used as the
 so any REPL display of a circuit routes through this.
 
 # Example
-```julia
+```jldoctest; setup = :(using Bennett)
 julia> c = reversible_compile(x -> x + Int8(1), Int8);
 
 julia> print_circuit(c)
@@ -92,7 +92,7 @@ ReversibleCircuit:
   Ancillae:  25
   Gates:     58 (NOT=6, CNOT=40, Toffoli=12)
   Depth:     19
-  Peak live: 17
+  Peak live: 4
 ```
 
 `Peak live` is the maximum number of simultaneously non-zero wires

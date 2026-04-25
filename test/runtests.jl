@@ -301,6 +301,11 @@ include("test_srsy_ci_toolchain_guard.jl")
 # Covers IRBinOp (add, xor), IRICmp, IRCast (zext), IRRet on minimal
 # fixtures so lowering can be unit-tested independent of LLVM IR shape.
 include("test_8p0g_parsed_ir_seam.jl")
+# Bennett-wlf6 / U145 — public API docstrings carry ```jldoctest fences
+# (executable doctests once Documenter.jl is wired). Static-inspection
+# test that asserts the fences haven't reverted + smoke-checks that
+# every doctest's expected value still holds in the canonical baseline.
+include("test_wlf6_jldoctest_fences.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).
