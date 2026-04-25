@@ -1,6 +1,14 @@
 using Test
 using Bennett
 
+# Bennett-zy4u / U104: outer @testset wrapping. Gives a single
+# `Test Summary: Bennett | Pass Total Time` aggregate at the end of
+# Pkg.test instead of N flat per-include summaries, and ensures every
+# `include`d test file's own @testsets nest under one named root.
+# (Body is unindented to keep blame / merge churn minimal — Julia
+# parses `begin ... end` blocks regardless of interior indentation.)
+@testset "Bennett" begin
+
 include("test_parse.jl")
 include("test_increment.jl")
 include("test_polynomial.jl")
@@ -324,3 +332,5 @@ if get(ENV, "BENNETT_RESEARCH_TESTS", "0") != "0"
     # Jenkins standalone test all touch research-tier impls.
     include("test_persistent_hashcons.jl")
 end
+
+end  # @testset "Bennett"  (Bennett-zy4u / U104)
