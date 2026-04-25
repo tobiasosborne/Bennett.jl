@@ -136,15 +136,6 @@ julia --project
 ]test
 ```
 
-## Session Completion
-
-When ending a work session:
-
-1. **Update WORKLOG.md** with session learnings, gotchas, gate counts, bugs found
-2. **Run the full test suite** — all tests must pass
-3. **Commit and push** — work is not complete until pushed
-
-
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
 ## Beads Issue Tracker
 

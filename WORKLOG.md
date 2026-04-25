@@ -1,5 +1,42 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-25 — Bennett-1jmu CLAUDE.md Session-Completion dedup
+
+Doc-work bead #2 of the day. The catalogue (#02 F20, #15 F13) and bead U152
+flagged that CLAUDE.md had two `## Session Completion` headings (lines 139
+and 168), which a reader could read as two competing checklists.
+
+**Ground truth before deleting:** read both sections in full. The first was a
+hand-written 3-bullet list (update WORKLOG / run tests / commit and push)
+sitting between Build & Test and the BEADS INTEGRATION block. The second is
+a 7-step checklist auto-injected by `bd` inside `<!-- BEGIN BEADS INTEGRATION
+v:1 ... -->` markers.
+
+Spirit-wise the two don't disagree (both say "must push"), but a reader has
+to choose between them as authoritative — that's the "contradict" the bead
+calls out. Each of the first list's three bullets is already covered:
+- "Update WORKLOG.md" → CLAUDE.md §0 (NON-NEGOTIABLE principle).
+- "Run the full test suite" → bd block step 2 ("Run quality gates").
+- "Commit and push" → bd block step 4 ("PUSH TO REMOTE") with the precise
+  git pull --rebase / bd dolt push / git push sequence.
+
+**Fix:** deleted the first section (CLAUDE.md lines 139-145 plus its trailing
+blanks). The bd-managed second section is now the single authoritative
+session-completion checklist. The Build & Test section now flows directly
+into the BEADS INTEGRATION block — natural seam between "how to develop" and
+"how to ship."
+
+**Why not edit the bd block:** `<!-- BEGIN/END BEADS INTEGRATION -->` markers
+indicate `bd` itself manages those lines (likely via `bd prime` or similar).
+Manual edits inside the markers risk being clobbered on the next sync. If the
+bd-managed checklist ever needs project-specific additions (e.g. an explicit
+WORKLOG bullet alongside §0), those would belong in a separate
+project-managed section outside the markers, not as a wedge inside them.
+
+No code touched. No tests run (docs-only). Edits verified by single-match
+grep: `grep -n '^## Session Completion' CLAUDE.md` returns exactly one line
+(159, inside the bd block) where it returned two before.
+
 ## Session log — 2026-04-25 — Bennett-ji9n filename drift cleared (warm-up / orientation)
 
 Warm-up snack: closed Bennett-ji9n + Bennett-9n95 (duplicate of just-shipped
