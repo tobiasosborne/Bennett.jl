@@ -6,6 +6,23 @@ a space bound, and provides a framework for applying pebbling strategies
 to the dependency DAG to generate optimized Bennett constructions.
 """
 
+# Bennett-069e / U143: named sentinels for the Knill DP table.
+# `_PEBBLE_INF` initialises every cell to "no finite cost yet"; the
+# inner loop tests `cost < _PEBBLE_FINITE_BOUND` to gate off any
+# triple-sum involving a still-uncomputed cell.  Picked so:
+#
+#   3 · _PEBBLE_FINITE_BOUND < typemax(Int)   (no Int overflow on a+b+c)
+#   _PEBBLE_INF >= _PEBBLE_FINITE_BOUND       (the gate distinguishes
+#                                              the sentinel from any
+#                                              realistically-bounded
+#                                              real chain cost)
+#
+# Using `Union{Int, Nothing}` would be cleaner Julia but adds a tag-bit
+# per DP cell; the table can be hot in practical (n, s) regimes so the
+# named-Int sentinel wins on speed.
+const _PEBBLE_INF           = typemax(Int) ÷ 2
+const _PEBBLE_FINITE_BOUND  = typemax(Int) ÷ 4
+
 """
     knill_pebble_cost(n::Int, s::Int) -> Int
 
@@ -21,7 +38,7 @@ continue with remaining n-m nodes (one fewer pebble).
 """
 function knill_pebble_cost(n::Int, s::Int)
     # Dynamic programming table
-    F = fill(typemax(Int) ÷ 2, n, s)
+    F = fill(_PEBBLE_INF, n, s)
 
     # Base cases
     for ss in 1:s
@@ -30,11 +47,13 @@ function knill_pebble_cost(n::Int, s::Int)
 
     for nn in 2:n
         for ss in 2:s
-            best = typemax(Int) ÷ 2
+            best = _PEBBLE_INF
             for m in 1:(nn - 1)
                 a, b, c = F[m, ss], F[m, ss - 1], F[nn - m, ss - 1]
-                # Overflow-safe addition
-                if a < typemax(Int) ÷ 4 && b < typemax(Int) ÷ 4 && c < typemax(Int) ÷ 4
+                # Overflow-safe addition: each term well below typemax/3.
+                if a < _PEBBLE_FINITE_BOUND &&
+                   b < _PEBBLE_FINITE_BOUND &&
+                   c < _PEBBLE_FINITE_BOUND
                     cost = a + b + c
                     if cost < best
                         best = cost
@@ -70,12 +89,14 @@ function knill_split_point(n::Int, s::Int)
     n <= 1 && return 0
     s <= 1 && return 0
 
-    F = fill(typemax(Int) ÷ 4, n, s)
+    F = fill(_PEBBLE_INF, n, s)
     for ss in 1:s; F[1, ss] = 1; end
     for nn in 2:n, ss in 2:s
         for m in 1:(nn-1)
             a, b, c = F[m, ss], F[m, ss-1], F[nn-m, ss-1]
-            if a < typemax(Int) ÷ 4 && b < typemax(Int) ÷ 4 && c < typemax(Int) ÷ 4
+            if a < _PEBBLE_FINITE_BOUND &&
+               b < _PEBBLE_FINITE_BOUND &&
+               c < _PEBBLE_FINITE_BOUND
                 cost = a + b + c
                 F[nn, ss] = min(F[nn, ss], cost)
             end
@@ -84,10 +105,12 @@ function knill_split_point(n::Int, s::Int)
 
     # Find the best m for (n, s)
     best_m = 1
-    best_cost = typemax(Int) ÷ 2
+    best_cost = _PEBBLE_INF
     for m in 1:(n-1)
         a, b, c = F[m, s], F[m, s-1], F[n-m, s-1]
-        if a < typemax(Int) ÷ 4 && b < typemax(Int) ÷ 4 && c < typemax(Int) ÷ 4
+        if a < _PEBBLE_FINITE_BOUND &&
+           b < _PEBBLE_FINITE_BOUND &&
+           c < _PEBBLE_FINITE_BOUND
             cost = a + b + c
             if cost < best_cost
                 best_cost = cost

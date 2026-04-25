@@ -261,6 +261,10 @@ include("test_kmuj_callee_groups.jl")
 # Bennett-uinn / U93 — every defensive try/catch in src/ir_extract.jl
 # narrows on InterruptException so Ctrl-C during compilation propagates.
 include("test_uinn_catch_narrowing.jl")
+# Bennett-069e / U143 — named DP sentinels in pebbling.jl
+# (_PEBBLE_INF / _PEBBLE_FINITE_BOUND) replacing typemax(Int)÷2 magic;
+# pins the no-overflow + init-sentinel-fails-gate invariants.
+include("test_069e_pebble_sentinels.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).
