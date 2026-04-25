@@ -2599,7 +2599,8 @@ end
 
 # ---- helpers ----
 
-"""Get the dereferenceable byte count from a pointer parameter, or 0 if unknown.
+"""Get the dereferenceable byte count from a pointer parameter, or 0 if no
+`dereferenceable(N)` attribute is present on the parameter's slot.
 
 Bennett-8b2f / U17: the IR-string fallback previously did
 `match(r"dereferenceable\\((\\d+)\\)", defline)` — function-wide,
@@ -2610,15 +2611,30 @@ call returned the same first-found value → phantom input-wire widths
 for non-matching params. Fix: anchor the fallback regex to the specific
 `%paramname`, matching `dereferenceable\\((\\d+)\\)[^,)]*%NAME\\b` which
 walks within a single param slot (bounded by `,` / `)`).
+
+Bennett-zyjn / U94: previously returned 0 for THREE distinct outcomes
+— (a) param not in func, (b) defline malformed, (c) param has no
+`dereferenceable(N)` attribute — collapsing two caller-side / format-
+mismatch BUGS into the same silent value as the legitimate "no attr"
+case. Now (a) and (b) `error()` with attribution; only (c) returns 0.
 """
 function _get_deref_bytes(func::LLVM.Function, param::LLVM.Argument)
+    # Bennett-zyjn / U94: this function used to return 0 for THREE
+    # distinct outcomes — (a) param not in func, (b) defline missing
+    # `(...)` parameter list, (c) param found but has no
+    # `dereferenceable(N)` attribute on its slot. Bugs (a) and (b) now
+    # error() with attribution; only (c) — the legitimate "no attr"
+    # case — returns 0. Caller's `deref > 0` check is unchanged.
+
     # Find the parameter index (1-based)
     idx = 0
     for p in LLVM.parameters(func)
         idx += 1
         p.ref == param.ref && @goto found_param
     end
-    return 0
+    error("_get_deref_bytes: parameter $(LLVM.name(param)) is not in " *
+          "func=@$(LLVM.name(func)) parameter list (caller-side miswiring; " *
+          "Bennett-zyjn / U94)")
     @label found_param
     # Check parameter attributes for dereferenceable(N)
     try
@@ -2641,10 +2657,15 @@ function _get_deref_bytes(func::LLVM.Function, param::LLVM.Argument)
     ir_str = string(func)
     defline = split(ir_str, "\n")[1]
     pname = LLVM.name(param)
-    # Extract the (...) parameter list.
+    # Extract the (...) parameter list. A missing or out-of-order pair is
+    # an LLVM.jl format mismatch — fail loud rather than silently returning 0.
     lp = findfirst('(', defline)
     rp = findlast(')', defline)
-    (lp === nothing || rp === nothing || lp >= rp) && return 0
+    (lp === nothing || rp === nothing || lp >= rp) && error(
+        "_get_deref_bytes: malformed `define` line for func=@$(LLVM.name(func)); " *
+        "could not locate the parameter list `(...)`. " *
+        "LLVM.jl `string(func)` may have changed format. (Bennett-zyjn / U94)\n  " *
+        "defline: $defline")
     param_list = defline[lp+1:rp-1]
     # Split on top-level commas. Paren nesting within a slot (e.g.
     # `sret([2 x i64])`, `dereferenceable(16)`) must not split the slot.

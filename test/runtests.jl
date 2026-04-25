@@ -272,6 +272,10 @@ include("test_k7al_ir_constructor_asserts.jl")
 # Bennett-pksz / U98 — `controlled(c)` asserts every inner gate uses
 # wires in 1:c.n_wires before allocating ctrl_wire at n_wires+1.
 include("test_pksz_controlled_contiguous_wires.jl")
+# Bennett-zyjn / U94 — _get_deref_bytes errors loudly on caller-side
+# bugs (param not in func, malformed defline) instead of silently
+# returning 0; only the legitimate "no deref attr" case returns 0.
+include("test_zyjn_deref_bytes_distinct_failures.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).
