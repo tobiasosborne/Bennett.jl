@@ -142,8 +142,8 @@ dispatcher `_pick_alloca_strategy`. Each row is the gate cost of a single op.
 | Benchmark | Bennett.jl | ReVerC 2017 | Ratio |
 |-----------|------------|-------------|-------|
 | 32-bit adder (Cuccaro-path) | 124 Toffoli | 32 Toffoli | 3.9× (methodology gap; see BC.1) |
-| MD5 round step (F/G/H/I + 4 adds) | ~752 Toffoli | N/A | — |
-| MD5 full (64 steps) | ~48k Toffoli (extrap.) | 27.5k Toffoli (eager) | 1.75× |
+| MD5 round step (F/G/H/I + 4 adds) | 680 Toffoli (mean of step F / step G) | N/A | — |
+| MD5 full (64 steps) | 43,520 Toffoli (extrap. from measured per-step × 64) | 27,520 Toffoli (eager) | 1.58× |
 
 | Benchmark | Bennett.jl | Published baseline | Ratio |
 |-----------|------------|--------------------|-------|
@@ -160,7 +160,29 @@ dispatcher `_pick_alloca_strategy`. Each row is the gate cost of a single op.
 - ✓ T2a — MemorySSA investigation + ingest + integration tests
 - ✓ T3a — Feistel reversible hash + Okasaki comparison
 - ✓ T3b — Shadow memory (design + primitives) + universal dispatcher
+- ✓ T4 — Shadow-checkpoint MVP (Bucket A/B-spillover, M3a) — worklog/024
+- ✓ T5-P1..P5 — persistent-DS heap fallback (protocol + harness +
+  linear_scan winner + Feistel hash-cons + multi-language ingest .ll/.bc).
+  Per Bennett-uoem / U54 (2026-04-25): four candidate impls (Okasaki,
+  HAMT, CF, Jenkins) preserved at `src/persistent/research/` after the
+  2026-04-20 sweep showed `linear_scan` is at the per-`set` floor
+  (~1,400 gates, constant in `max_n`).
+- ◐ T5-P6 — `_pick_alloca_strategy :persistent_tree` arm (Bennett-z2dj,
+  in_progress; CORE CHANGE per CLAUDE.md §2 → 3+1 protocol).
+- ○ T5-P7 — head-to-head Pareto front + paper outline
+  (Bennett-ktt8 / Bennett-2uas).
 
 **Bennett.jl is the first reversible compiler to support arbitrary LLVM
-`store`/`alloca` end-to-end, with four specialized lowering strategies
-automatically dispatched per allocation site.**
+`store`/`alloca` end-to-end, with five specialized lowering strategies
+(Shadow / MUX EXCH / QROM / Feistel hash / persistent-DS) automatically
+dispatched per allocation site, and multi-language ingest from any LLVM
+frontend via `.ll` / `.bc` files.**
+
+### Memory-PRD §6.1 status (MD5 ≤ 27,520 Toffoli target)
+
+Current: 43,520 Toffoli (extrap. from measured per-step × 64), 1.58×
+ReVerC.  Target unmet — pending the T5 dispatcher work above plus
+post-`optimize=true` maturity.  Tracked as a paper-target item under
+Bennett-ktt8 (T5-P7a head-to-head Pareto) rather than the original
+T4-shadow-checkpoint plan, which shipped at the design level but does
+not by itself close the gap.
