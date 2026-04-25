@@ -79,7 +79,11 @@ Fully branchless.
         _sf_handle_subnormal(wr, result_exp, result_sign)
 
     # ── Round + pack ──
-    (normal_result, _overflow_result, exp_overflow, exp_overflow_after_round) =
+    # Bennett-ardf / U138: 2nd tuple position (overflow_result) is dead —
+    # the overflow flags fire `inf_result` directly via the select chain
+    # below, so the round-and-pack overflow value is unused. Discard
+    # explicitly with `_` rather than the prior named-but-unused binding.
+    (normal_result, _, exp_overflow, exp_overflow_after_round) =
         _sf_round_and_pack(wr, result_exp, result_sign)
 
     # ── Select chain ──

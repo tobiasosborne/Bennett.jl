@@ -329,6 +329,10 @@ include("test_op6a_cuccaro_gate_count.jl")
 # Vector{Any} (per-row heap allocation + boxed elements). Pins the
 # return type + end-to-end tabulate correctness.
 include("test_b2fs_tabulate_tuple_unpack.jl")
+# Bennett-ardf / U138 — soft_floor / soft_ceil / soft_trunc bit-exact
+# NaN propagation against Base.floor/ceil/trunc; soft_fdiv's dead
+# `_overflow_result` binding replaced with `_`.
+include("test_ardf_floor_ceil_nan.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).
