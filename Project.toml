@@ -6,10 +6,12 @@ version = "0.5.0"
 InteractiveUtils = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
 LLVM = "929cbde3-209d-540e-8aea-75f648917ca0"
 PicoSAT = "ff2beb65-d7cd-5ff1-a187-74671133a339"
+PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
 
 [compat]
 LLVM = "9, 10"
 PicoSAT = "0.4"
+PrecompileTools = "1"
 julia = "1.10"
 
 [extras]
