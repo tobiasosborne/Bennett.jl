@@ -1,5 +1,70 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-25 (night) — 5 closes (sg0w jppi w0fc 0zsk by8j) + 1 filed (tbm6); 0.5.0 release prep + 21× TTFX win
+
+**Shipped:** see `git log` `9c31d72..ea06bfc` (10 commits). Five beads closed, one new P3 filed. The big-ticket items are the 0.5.0 release prep (Project.toml bump + back-filled CHANGELOG.md) and a 21× cold-TTFX speedup from a PrecompileTools workload.
+
+| Bead | What |
+|---|---|
+| **Bennett-sg0w** P2 (just-filed-and-closed) | Karatsuba `<` schoolbook assertion in `test_karatsuba.jl:30` was false at every supported width. Measured table: W=8 ratio 3.49, W=16 3.01, W=32 2.44, W=64 1.91 (decreasing → asymptotic crossover past W=128, beyond Bennett.jl's `ir_extract` ceiling). Dropped the assertion, kept correctness sweep + verify_reversibility, replaced multiplier.jl docstring's false "W=64 wins ~4×" claim with the measured table. **Filed `Bennett-tbm6` P3 follow-up** for the deeper question (salvage / lift W=128 ceiling first / remove / deprecation-warn). |
+| **Bennett-jppi** P2 / U50 | **0.5.0 release prep.** Project.toml: `version 0.4.0 → 0.5.0`; `julia 1.6 → 1.10`; `LLVM "9.4.6" exact → "9, 10"`; `PicoSAT 0.4.1 → "0.4"`. Created `CHANGELOG.md` (Keep a Changelog format) with back-filled v0.1–v0.4 internal-milestone summaries (sourced from PRDs in `docs/prd/`) and a full 0.5.0 entry covering soft-float push, persistent-DS workstream, multi-language ingest, strategy variants, diagnostics, and the major fixes. **`Manifest.toml` was already untracked** (`.gitignore` listed it). User explicitly authorised all five sub-decisions. |
+| **Bennett-w0fc** P2 / U52 | **PrecompileTools workload — 21× cold TTFX speedup**, 20.72s → 0.99s. First `reversible_compile(x → x + Int8(1), Int8)` call: 19.82s → 0.15s (132×). Float64 path also benefits: ~3s → 0.19s. Cost: precompile time ~4s → ~33s (one-time per env). Workload covers 4 entries (i8 add, i32 mul, i64 add, Float64 add) chosen so each exercises a distinct lowering specialisation. PrecompileTools added with compat `"1"`. |
+| **Bennett-0zsk** P2 / U46 | `test_0zsk_core_error_paths.jl`: 12 testsets / 15 assertions pinning load-bearing user-facing errors in `lower.jl` + `ir_extract.jl` (add/mul strategy dispatch, max_loop_iterations, Int128/Float32 unsupported, Float64 arity bounds, .ll/.bc file-not-found, entry_function not in module, malformed IR, heterogeneous Tuple sret). Uses `@test_throws "substring"` form (Julia 1.8+, OK under our new 1.10 floor) so message edits surface as clear localisation. Total project @test_throws coverage in these two files: ~9 → ~24. |
+| **Bennett-by8j** P2 / U44 | `MemSSAInfo` struct + zero-arg constructor relocated from `src/memssa.jl` → `src/ir_types.jl` (above ParsedIR), unblocking concretisation. `ParsedIR.memssa::Any` → `Union{Nothing, MemSSAInfo}`. `isconcretetype(ParsedIR) == true`. Parsing methods + regex constants stay in `memssa.jl`. |
+
+**Why:** continuation of "grind through and clear the catalogue". This stretch was specifically chosen for variety + low risk: a doc-honesty fix (sg0w), release infra (jppi), perf (w0fc), test coverage (0zsk), type stability (by8j) — none required the 3+1 protocol, none changed gate-count baselines, every commit was Pkg.test-verified.
+
+**Gotchas / Lessons:**
+
+- **Catalogue claims continue to lie.** `sg0w`'s premise was the broken Toffoli<schoolbook test. Investigating found *also* that `multiplier.jl`'s docstring claimed "W=64 wins ~4× fewer Toffolis" and "W ≥ 128 dominates" — both untrue per measurement. Two separate doc/test claims wrong on one bead. `feedback_doc_work_mode.md` (memory) was right yet again: re-measure before acting on a number.
+
+- **PrecompileTools is a free 21× speedup if you actually pay the precompile cost.** No code logic change, no API change — just an `@compile_workload` block at the bottom of `src/Bennett.jl` running the canonical entry points. Expense: precompile time grows from ~4s to ~33s. Acceptable because precompile happens once per env / package upgrade, while TTFX happens every fresh REPL session.
+
+- **`Pkg.add` defaults the new dep's compat to the EXACT current version.** `Pkg.add("PrecompileTools")` wrote `PrecompileTools = "1.3.3"` into `[compat]`. Loosened to `"1"` manually since PrecompileTools is a stable low-churn package. Future-agent: always look at the new `[compat]` line after `Pkg.add` and decide whether to broaden.
+
+- **`@test_throws "substring"` is cleaner than message-introspection.** Julia 1.8+ accepts a string as the second argument; it tests both type AND message-substring match. Better than `try/catch` + manual `occursin` checks. Discovered while writing `0zsk`'s test file. The 1.10 floor we set in `jppi` makes this universally available now.
+
+- **Type-defining-vs-method-extending split is the canonical fix for "::Any due to circular include" patterns.** `by8j` showed the playbook: the type definition + its zero-arg constructor migrate up; the methods (parse_*, regex constants) stay where they are. Future agents tackling similar `::Any` fields (cf. `Bennett-ehoa` U43 which has 3 `::Any` hot-path fields in `LoweringCtx`) should apply the same pattern.
+
+- **Background `git push` works even without the pre-push hook installed.** User explicitly does NOT want the hook (Bennett-sng9 closed wontfix; memory note `feedback_no_pre_push_hook.md` saved 2026-04-25). The agent must run `julia --project -e 'using Pkg; Pkg.test()'` manually before claiming "Pkg.test green". Pattern this session: kick off Pkg.test in background → schedule a 270s wakeup OR wait for the bash-completion notification → check exit code AND tail the output for "Bennett tests passed" → only THEN commit + push. All five beads this stretch verified that way.
+
+**Rejected alternatives:**
+
+- **Bennett-ca0i SHA-256 deep investigation.** The bead's RED evidence was stale; U27 had silently fixed the leak weeks ago. Closed-as-already-fixed without further work. **Procedure for future agents**: read the cited test file's CURRENT state before chasing the bead's investigation arrows. If the test is green and a comment explains why, the bead is likely already closeable.
+
+- **Salvage Karatsuba in `sg0w` itself.** Multi-session investigation; would have required tightening the recursion + lifting the Int128 sret ceiling first. Filed as `Bennett-tbm6` P3.
+
+- **Restoring `_reset_names!()` no-op stub** as a workaround for the 8 dangling test-file calls discovered during ca0i. Rejected: U42's underlying judgement was correct (stub had been a no-op since the per-compilation counter landed). Removed the dead callers in `c7d1144` instead.
+
+- **Installing `.git/hooks/pre-push`** to run Pkg.test on every push. User has explicitly rejected this for speed reasons (Pkg.test ~5min, pushes often time-pressured). Closed `Bennett-sng9` WONTFIX with memory note. Future agents: never propose this again.
+
+- **Replacing `if isnan(expected)` fallbacks in 10 existing `test_softf*.jl` files** (would consolidate post-r84x with `m63k`'s strict-bits sweep). Rejected for risk per worklog 039 (evening). Cleanup bead-worthy but out of scope this stretch.
+
+**Next agent starts here:**
+
+1. **Branch state at session-end**: `ea06bfc` on `main`, pushed (no hook ran — user-rejected, see `feedback_no_pre_push_hook.md`). Worklog top is **this** entry; chunk 039 is now ~190 lines. Keep prepending here until ~280, then start `worklog/040_*.md`.
+
+2. **The catalogue is at 154 ready / 158 in_progress-or-open as of this session-end.** Main changes since worklog 038 close: 17 closes (12 evening + 5 night), 4 defers, 3 new beads (sng9 closed wontfix; sg0w closed; tbm6 still open).
+
+3. **Real production-path bugs requiring CLAUDE.md §2 3+1 protocol** (multi-session each):
+   - **Bennett-jepw** U05-followup `lower_loop!` body-blocks per-block path predicates for diamond-in-body.
+   - **Bennett-25dm** U62 T5 corpus `@test_throws` → real fixes in `ir_extract.jl`.
+   - **Bennett-5qrn** U57 trivial-identity peepholes (`x+0`, `x*1`, `x|0`); bounded but still touches `lower.jl`.
+
+4. **Quick wins remaining** (each ~30–90 min, no 3+1 needed):
+   - **Bennett-vpch** U45 error monoculture — 190+ `error(msg)` all throw `ErrorException`. Replace with `ArgumentError`/`DomainError`/etc. Pairs with `0zsk` just shipped — would make those type-only assertions semantically meaningful. Substantial but mechanical.
+   - **Bennett-ej4n** U48 callee IR re-extracted per call (no cache). Performance win.
+   - **Bennett-59jj** U47 type instability in hot paths — boxed returns, abstract vectors. Same playbook as `by8j` (hunt `::Any` / abstract-element vector types).
+   - **Bennett-lm3x** U56 MUX load/store dedup (`@eval`-generated vs hand-written).
+
+5. **Bennett-tbm6** (P3, NEW) — Karatsuba salvage / remove decision. Multi-session investigation. The trend (k:s ratio 3.49 → 1.91 W=8→64) suggests the asymptotic regime is past the Int128 ceiling. Either lift `ir_extract` to support Int128 sret first, or remove Karatsuba entirely.
+
+6. **Verified via `julia --project -e 'using Pkg; Pkg.test()'`** at the end of every bead this session (5 separate runs). All green. Each took ~5 min cold; backgrounded with `run_in_background=true` while next bead's research happened in parallel. Future agents: this is the workflow to follow given the absence of the pre-push hook.
+
+7. **bd .beads permissions warning** still appears on every bd command — user has not run `chmod 700 /home/tobiasosborne/Projects/Bennett.jl/.beads` autonomously (touches user-owned filesystem perms). Cosmetic only.
+
+---
+
 ## Session log — 2026-04-25 (late evening) — Bennett-ca0i investigation surfaces 2 latent regressions (P1 + P2)
 
 **Shipped:** commits `c7d1144` (8-file dead-call cleanup) and `94a14b2` (bd state). Bennett-ca0i closed; Bennett-sng9 (P1) and Bennett-sg0w (P2) filed. No production code change.
