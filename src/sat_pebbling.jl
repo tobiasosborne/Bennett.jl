@@ -1,12 +1,18 @@
 """
-SAT-based reversible pebbling (Meuli et al. 2019).
+SAT-based reversible pebbling.
 
-Encodes the reversible pebbling game as a SAT problem:
+Reference: Giulia Meuli, Mathias Soeken, Martin Roetteler, Nikhil Bhatia,
+Thomas Häner, "Reversible Pebbling Game for Quantum Memory Management",
+2019 Design, Automation & Test in Europe Conference & Exhibition (DATE),
+pp. 288–291, 2019.  DOI: 10.23919/DATE.2019.8715092.
+
+Encodes the reversible pebbling game (Bennett 1989; see `pebbling.jl`)
+as a SAT problem:
 - Variables: p[v,i] = node v is pebbled at step i
 - Initial: all unpebbled
 - Final: outputs pebbled, intermediates unpebbled
 - Move: pebble/unpebble v only if all predecessors pebbled at both i and i+1
-- Cardinality: at most P pebbles per step
+- Cardinality: at most P pebbles per step (Sinz 2005, see `_add_at_most_k!`).
 
 Uses PicoSAT as the SAT solver.
 """
@@ -128,6 +134,14 @@ end
 
 """
 Sequential counter encoding for at-most-K constraint.
+
+Reference: Carsten Sinz, "Towards an Optimal CNF Encoding of Boolean
+Cardinality Constraints", in Principles and Practice of Constraint
+Programming — CP 2005, LNCS 3709, Springer, pp. 827–831, 2005.
+DOI: 10.1007/11564751_73.  The auxiliary variables `s[i,j]` encode
+"at least j of vars[1:i] are true"; clauses propagate the count and
+forbid the (K+1)-th true literal.
+
 Uses O(N*K) auxiliary variables and O(N*K) clauses.
 """
 function _add_at_most_k!(clauses, vars, K, base_var_count)
