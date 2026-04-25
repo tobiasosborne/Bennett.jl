@@ -280,6 +280,39 @@ All papers downloaded to `docs/literature/` with claims verified against text.
 
 **Future focus** (per `Bennett-VISION-PRD.md`): Sturm.jl integration for quantum control (`when(qubit) do f(x) end`); Julia EscapeAnalysis integration (T0.3 / `Bennett-glh`); `@linear` macro for in-place-linear functions (T2b); structural refactors of `lower.jl` and `ir_extract.jl` (catalogue items U40/U41/U43/U55/U69).
 
+## Contributing
+
+Bennett.jl uses [`bd` (beads)](https://github.com/ksdgg/beads) for issue tracking — open issues live in the project's Dolt repo, not in GitHub Issues.
+
+**Start here:**
+
+1. **Read** `CLAUDE.md` for the non-negotiable development protocols (fail-loud assertions, red-green TDD, exhaustive verification, the 3+1 protocol for core-pipeline changes, etc.). These apply to human and agent contributors equally.
+2. **Read** the relevant PRD for the area you'll touch — `Bennett-PRD.md` (v0.1 entry-point) through `BennettIR-v05-PRD.md` (Float64 / soft-float). The PRD defines scope, success criteria, and test cases for each version.
+3. **Skim** the most recent worklog chunk under `worklog/` (the highest-numbered file is the latest session). The end-of-entry "Next agent starts here" sections are usually a punch list of ready work.
+
+**Find a starter issue:**
+
+```bash
+bd ready                  # all issues ready to work, no blockers
+bd ready -n 50            # show more
+bd show Bennett-<id>      # full description + linked sites
+bd update Bennett-<id> --claim   # mark in-progress
+```
+
+Good first beads are typically tagged P3 with type `task` and clear "Sites:" pointers in the description (e.g. `src/X.jl:NN-MM`). Recent doc-snack examples that landed in a single session each: Bennett-uzic (citations), Bennett-d1ee (WHY comments), Bennett-5ttt (status banners), Bennett-2jny (Base collection protocols on `ReversibleCircuit`).
+
+**Run the tests** — Bennett.jl runs all quality gates locally; the project deliberately has no GitHub Actions CI (CLAUDE.md §14):
+
+```bash
+julia --project -e 'using Pkg; Pkg.test()'   # full suite (~5 min cold)
+julia --project test/test_increment.jl       # single file
+BENNETT_CI=1 julia --project -e 'using Pkg; Pkg.test()'  # promote toolchain skips to errors
+```
+
+**Workflow** for completing a bead: `bd update <id> --claim` → write a red-green test under `test/` → make the edit → `Pkg.test()` green → `bd close <id> --reason="..."` → commit with the bead-id in the subject line → `bd dolt push && git push`. Pattern recap with examples lives in any recent worklog entry.
+
+For larger or core-pipeline changes (anything in `src/lower.jl`, `src/ir_extract.jl`, `src/bennett_transform.jl`, `src/gates.jl`, `src/ir_types.jl`, or the phi-resolution algorithm), please follow the **3+1 protocol** in CLAUDE.md §2 — two independent proposers, one implementer, one reviewer.
+
 ## License
 
 [AGPL-3.0](LICENSE)
