@@ -9,3 +9,8 @@ build/
 *:Zone.Identifier
 scripts/.browser-profile/
 scripts/sources/
+
+# Bennett-5p1c / U72 — third-party reference checkouts (e.g. JuliaGPU
+# GPUCompiler.jl); cloned ad-hoc during M1-M3 / T5 work for inspection
+# of LLVM frontends.  Not part of Bennett.jl's source.
+gpucompiler/
