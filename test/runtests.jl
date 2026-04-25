@@ -255,6 +255,9 @@ include("test_tfo8_alloca_strategy_tables.jl")
 # Bennett-2jny / U101 — ReversibleCircuit collection protocols
 # (length / iterate / eltype / getindex / first/lastindex).
 include("test_2jny_circuit_collection_api.jl")
+# Bennett-kmuj / U106 — register_callee! registry grouped into per-domain
+# tuples; pins disjointness + every grouped callee really gets registered.
+include("test_kmuj_callee_groups.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).
