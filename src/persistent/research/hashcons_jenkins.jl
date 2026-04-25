@@ -6,7 +6,8 @@
 # rationale and thaw conditions.
 #
 # Reference: Mogensen 2018 NGC 36:203 Fig. 5 p. 217–218. Pure-Julia branchless
-# port of the 24-instruction Jenkins reversible mix function.
+# port of the Jenkins reversible mix function — 20 operations total
+# (2 init XORs + 18 mix; see the verbatim listing below).
 #
 # Original RIL pseudocode (verbatim, from mogensen_hashcons_brief.md §2e):
 #
@@ -57,7 +58,8 @@ const _JENKINS_GOLDEN = UInt32(0x9E3779B9)
 
 Mogensen 2018 Fig 5 Jenkins-96 reversible mix function as a pure-Julia
 branchless function.  Returns the third state register (`hashC`) after
-24 mix operations.  Compiles via Bennett.jl to a reversible circuit.
+20 operations total: 2 initialiser XORs followed by 18 mix steps.
+Compiles via Bennett.jl to a reversible circuit.
 """
 @inline function soft_jenkins96(consA::UInt32, consD::UInt32)::UInt32
     hashA = _JENKINS_GOLDEN ⊻ consA
