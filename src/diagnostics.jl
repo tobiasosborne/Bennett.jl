@@ -1,3 +1,23 @@
+"""
+    gate_count(c::ReversibleCircuit) -> NamedTuple
+
+Count the gates in `c` by type. Returns the NamedTuple
+`(total::Int, NOT::Int, CNOT::Int, Toffoli::Int)`, where `total ==
+length(c.gates)` and the per-type counts sum to `total`.
+
+Primary regression baseline per CLAUDE.md §6 — `total` and `Toffoli` are
+pinned per width in `test/test_gate_count_regression.jl` for every change
+to the lowering / Bennett pipeline. T-count for fault-tolerant synthesis
+is `7 * Toffoli` via `t_count`.
+
+# Example
+```julia
+julia> c = reversible_compile(x -> x + Int8(1), Int8);
+
+julia> gate_count(c)
+(total = 58, NOT = 6, CNOT = 40, Toffoli = 12)
+```
+"""
 function gate_count(c::ReversibleCircuit)
     n  = count(g -> g isa NOTGate, c.gates)
     cn = count(g -> g isa CNOTGate, c.gates)
@@ -5,12 +25,41 @@ function gate_count(c::ReversibleCircuit)
     return (total=length(c.gates), NOT=n, CNOT=cn, Toffoli=tf)
 end
 
+"""
+    ancilla_count(c::ReversibleCircuit) -> Int
+
+Number of ancilla wires in `c`. Equivalent to `length(c.ancilla_wires)`.
+Ancillae are intermediate scratch wires that must return to zero after the
+forward pass — Bennett's correctness invariant, asserted at every
+`simulate` call and verified at random across `verify_reversibility`.
+"""
 ancilla_count(c::ReversibleCircuit) = length(c.ancilla_wires)
 
 gate_wires(g::NOTGate)     = (g.target,)
 gate_wires(g::CNOTGate)    = (g.control, g.target)
 gate_wires(g::ToffoliGate) = (g.control1, g.control2, g.target)
 
+"""
+    depth(c::ReversibleCircuit) -> Int
+
+Longest data-dependence chain through the circuit, counting all gate types
+(NOT, CNOT, Toffoli). Each gate advances every wire it touches to one
+layer past the deepest input layer; the result is the maximum layer index
+reached after applying every gate in `c.gates` in order. For the
+Toffoli-only depth that determines T-depth in fault-tolerant synthesis,
+use `toffoli_depth`; for the Clifford+T conversion, see `t_depth`.
+
+# Example
+```julia
+julia> c = reversible_compile(x -> x + Int8(1), Int8);
+
+julia> depth(c)
+19
+
+julia> toffoli_depth(c)
+12
+```
+"""
 function depth(c::ReversibleCircuit)
     wd = zeros(Int, c.n_wires)
     md = 0
@@ -23,6 +72,28 @@ function depth(c::ReversibleCircuit)
     return md
 end
 
+"""
+    print_circuit([io::IO,] c::ReversibleCircuit)
+
+Pretty-print a one-screen summary of `c`: wire count, input/output/ancilla
+sizes, gate counts by type, and depth. Used as the
+`Base.show(::IO, ::MIME"text/plain", ::ReversibleCircuit)` implementation,
+so any REPL display of a circuit routes through this.
+
+# Example
+```julia
+julia> c = reversible_compile(x -> x + Int8(1), Int8);
+
+julia> print_circuit(c)
+ReversibleCircuit:
+  Wires:    41
+  Input:    8 wires [8]
+  Output:   8 wires
+  Ancillae: 25
+  Gates:    58 (NOT=6, CNOT=40, Toffoli=12)
+  Depth:    19
+```
+"""
 function print_circuit(io::IO, c::ReversibleCircuit)
     gc = gate_count(c)
     println(io, "ReversibleCircuit:")

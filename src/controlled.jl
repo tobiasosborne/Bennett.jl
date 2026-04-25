@@ -1,5 +1,37 @@
 # ---- Controlled reversible circuits ----
 
+"""
+    ControlledCircuit
+
+A reversible circuit lifted to take an explicit control bit. Built by
+`controlled(c::ReversibleCircuit)`, which promotes every gate
+(NOT → CNOT, CNOT → Toffoli, Toffoli → 3 Toffolis + 1 reusable ancilla).
+The control wire is `ctrl_wire`, classified internally as the inner
+circuit's first input wire (Bennett-6azb / U58 — required so the inner
+`ReversibleCircuit`'s wire-partition invariant covers every wire).
+
+Behavioural invariant: `(ctrl, x, 0) → (ctrl, x, ctrl ? f(x) : 0)`.
+Evaluate with `simulate(cc, ctrl::Bool, input)`; check the contract on
+random `(ctrl, input)` pairs with `verify_reversibility(cc)`, which
+delegates to the inner circuit's probe.
+
+# Fields
+- `circuit::ReversibleCircuit` — inner circuit with promoted gates
+- `ctrl_wire::WireIndex` — index of the dedicated control wire
+
+# Example
+```julia
+julia> c = reversible_compile(x -> x + Int8(1), Int8);
+
+julia> cc = controlled(c);
+
+julia> simulate(cc, true,  Int8(5))
+6
+
+julia> simulate(cc, false, Int8(5))
+0
+```
+"""
 struct ControlledCircuit
     circuit::ReversibleCircuit
     ctrl_wire::WireIndex
@@ -63,6 +95,31 @@ end
 
 # ---- simulate for ControlledCircuit ----
 
+"""
+    simulate(cc::ControlledCircuit, ctrl::Bool, input::Integer) -> Integer
+    simulate(cc::ControlledCircuit, ctrl::Bool, inputs::Tuple{Vararg{Integer}}) -> Integer | Tuple
+
+Simulate a controlled circuit. Returns `f(input)` when `ctrl == true`,
+otherwise the all-zero output value of the appropriate type/shape (since
+the controlled gates fire only when `ctrl == 1`). Internally prepends
+`Int(ctrl)` to the inputs tuple and delegates to
+`simulate(cc.circuit, …)`, so the same arity check, per-input bit-width
+guard, ancilla-zero assertion, and input-preservation assertion (now
+including `ctrl_wire`) all apply.
+
+# Example
+```julia
+julia> c = reversible_compile(x -> x + Int8(1), Int8);
+
+julia> cc = controlled(c);
+
+julia> simulate(cc, true,  Int8(5))
+6
+
+julia> simulate(cc, false, Int8(5))
+0
+```
+"""
 function simulate(cc::ControlledCircuit, ctrl::Bool, input::Integer)
     # Bennett-6azb / U58: the inner `ReversibleCircuit` now carries
     # ctrl as its first input. User-facing f still takes its own

@@ -1,5 +1,41 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-25 — Bennett-12bf docstrings on 6 exported API names
+
+Doc-work bead #3. Bead U157 claimed "9 missing docstrings" listing 7 names:
+`simulate, gate_count, ancilla_count, depth, print_circuit,
+verify_reversibility, ControlledCircuit`. Per "ground truth before coding,"
+re-read every site:
+
+| Name | Bead claim | Actual state | Action |
+|---|---|---|---|
+| `simulate` | missing | missing (4 methods, 0 docs) | added (`simulator.jl` + `controlled.jl`) |
+| `gate_count` | missing | missing | added (`diagnostics.jl`) |
+| `ancilla_count` | missing | missing (one-liner) | added |
+| `depth` | missing | missing | added |
+| `print_circuit` | missing | missing (2 methods) | added |
+| `verify_reversibility` | missing | **already documented** at `diagnostics.jl:145` (thorough — invariants, return value, history) | none — bead miscounted |
+| `ControlledCircuit` | missing | missing (struct) | added |
+
+So actual scope was 6, not 9 — bead U157 over-counted by adding
+`verify_reversibility` (which was the *gold-standard* docstring I used as the
+template for the others) and a phantom 2 names. Closed bead reflects this.
+
+**Style template:** matched `verify_reversibility`'s structure exactly:
+signature line with `-> ReturnType`, prose paragraph, contract bullets where
+applicable, optional `# Example` with REPL-format Julia block, bead-ID
+cross-references (`Bennett-XXXX / U##`) for the WHY behind non-obvious
+behaviour. Examples use REAL output measured live before writing — `gate_count`
+on `x -> x + Int8(1)` actually returns `(total = 58, NOT = 6, CNOT = 40,
+Toffoli = 12)`; `ancilla_count` actually returns 25; `depth` actually returns
+19; `simulate(c, Int8(-1))` actually returns 0 (8-bit wrap); etc. Per the
+doc-work memory: never write a docstring example without running the code.
+
+Verified docstrings attach to the right `Bennett.<name>` binding via `@doc`
+introspection — no precompile errors, all 6 names resolve. Full `Pkg.test`
+running in parallel at write time (also captures the canonical timing for
+Bennett-c016 next).
+
 ## Session log — 2026-04-25 — Bennett-1jmu CLAUDE.md Session-Completion dedup
 
 Doc-work bead #2 of the day. The catalogue (#02 F20, #15 F13) and bead U152

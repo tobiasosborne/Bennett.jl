@@ -25,6 +25,49 @@ via `(v >> i) & 1` would otherwise mis-ingest over-wide inputs.
     return nothing
 end
 
+"""
+    simulate(c::ReversibleCircuit, input::Integer) -> Integer
+    simulate(c::ReversibleCircuit, inputs::Tuple{Vararg{Integer}}) -> Integer | Tuple
+
+Bit-vector simulation of `c` on the given input(s). Returns the output as
+`IntN` (signed, default) or `UIntN` when input types are all `Unsigned`
+and width-aligned with the output (Bennett-zc50 / U100 heuristic). For
+multi-element outputs — e.g. tuple returns lowered via `insertvalue` —
+returns a `Tuple` shaped like the source function's return type.
+
+The single-`Integer` form requires `length(c.input_widths) == 1` and is
+sugar for the tuple form. Inputs are validated for arity (Bennett-6fg9 /
+U19) and per-input bit-width fit — values outside both signed and
+unsigned ranges of the declared width raise `ArgumentError` rather than
+silently wrapping via `(v >> i) & 1`.
+
+After running every gate forward, asserts Bennett's invariants:
+  (1) every wire in `c.ancilla_wires` is zero (ancilla-clean), and
+  (2) every wire in `c.input_wires` holds its initial value
+      (input-preservation, Bennett-6azb / U58).
+A violation raises `ErrorException` naming the offending wire index.
+
+# Example
+```julia
+julia> c = reversible_compile(x -> x + Int8(1), Int8);
+
+julia> simulate(c, Int8(5))
+6
+
+julia> simulate(c, Int8(-1))   # 8-bit overflow wraps mod 2^8
+0
+
+julia> c2 = reversible_compile((x, y) -> x + y, Int8, Int8);
+
+julia> simulate(c2, (Int8(3), Int8(4)))
+7
+
+julia> c3 = reversible_compile(x -> (x, Int8(2) * x), Int8);
+
+julia> simulate(c3, Int8(7))
+(7, 14)
+```
+"""
 function simulate(circuit::ReversibleCircuit, input::Integer)
     length(circuit.input_widths) == 1 || error("simulate(circuit, input) requires single-input circuit, got $(length(circuit.input_widths)) inputs")
     return _simulate(circuit, (input,))
