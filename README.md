@@ -214,7 +214,7 @@ cd Bennett.jl
 julia --project=. -e 'using Pkg; Pkg.test()'
 ```
 
-The test suite runs ~10,000 assertions across ~60 test files in about 90 seconds.
+The test suite runs ~67,000 assertions across 143 test files (~200 testsets) in about 5 minutes (291s wall-clock on a typical dev machine, not counting cold Julia precompile of `LLVM.jl`/`Pkg`). Time is spread broadly — no single testset exceeds ~5s. Set `BENNETT_T5_TESTS=0` to skip the multi-language corpus subset (Julia / C via `clang` / Rust via `rustc`); the `clang` and `rustc` corpora self-skip when their compilers are absent.
 
 ## Architecture
 

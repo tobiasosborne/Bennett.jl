@@ -1,5 +1,36 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-25 — Bennett-c016 README test-suite-time refresh
+
+Doc-work bead #4. README:217 claimed `~10,000 assertions across ~60 test
+files in about 90 seconds`. Per ground-truth-first: ran a cold
+`/usr/bin/time -p julia --project -e 'using Pkg; Pkg.test()'` to measure
+the truth.
+
+Measured (this machine, 2026-04-25, all green):
+- **291.48s wall-clock** (USER 300.6s, SYS 5.9s)
+- **201 testsets, 67,457 total assertions** (67,373 pass + 84 known
+  `@test_broken` — diamond-in-loop body, BC ingest sans `llvm-as`,
+  C corpus sans `clang`, mixed-width placeholder)
+- **143 test/*.jl files** in `test/`
+
+Every claim in the old sentence was wrong: assertions stale by 6.7×, file
+count by 2.4×, time by ~3.2× (90s claimed vs 291s measured). Updated to
+real numbers + the documented `BENNETT_T5_TESTS=0` escape hatch (per
+`runtests.jl:233`).
+
+Bead suggested mentioning "main runtime drivers (soft-float exhaustive,
+persistent-DS harness)" — but extracting per-testset times from the log
+shows time is broadly distributed: the slowest single testset is the
+T5-P4 hash-cons block at 5.1s, with `cc0.7 vectorised IR` (5.0s),
+`mul_qcla_tree W=8 exhaustive` (3.4s), `spa8 ripple add` (2.6s) close
+behind. Nothing dominates — most testsets are sub-second. Wrote the
+honest framing instead of the catalogue's assumed framing.
+
+Cold `Pkg.test` time has high variability — Julia precompile state
+matters a lot. The phrasing "about 5 minutes" + concrete 291s data point
+gives readers a planning number without overselling stability.
+
 ## Session log — 2026-04-25 — Bennett-12bf docstrings on 6 exported API names
 
 Doc-work bead #3. Bead U157 claimed "9 missing docstrings" listing 7 names:
