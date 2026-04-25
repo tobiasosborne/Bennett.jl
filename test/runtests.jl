@@ -235,6 +235,10 @@ include("test_ve3m_show_peak_live_wires.jl")
 # Bennett-ivoa / U121 + Bennett-e89s / U120 — harness persistence/key=0
 # invariants and absent-vs-stored-zero collision contract pin.
 include("test_ivoa_harness_invariants.jl")
+# Bennett-m63k / U60 — strict-bits NaN coverage replacing isnan()-only
+# checks (post-U08).  Caught a real bug in soft_fsub's NaN-RHS sign
+# propagation; fix shipped in src/softfloat/fsub.jl in the same commit.
+include("test_m63k_softfloat_strict_bits.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).
