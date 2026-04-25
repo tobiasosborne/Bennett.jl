@@ -91,6 +91,9 @@ _gate_target(g::NOTGate) = g.target
 _gate_target(g::CNOTGate) = g.target
 _gate_target(g::ToffoliGate) = g.target
 
-_gate_controls(g::NOTGate) = Int[]
-_gate_controls(g::CNOTGate) = [g.control]
-_gate_controls(g::ToffoliGate) = [g.control1, g.control2]
+# Bennett-348q / U108: return tuples (isbits, stack-allocated) instead of
+# fresh Vector{Int} per call. Both call sites (dep_dag.jl:44, eager.jl:41)
+# only iterate, so the API change is transparent.
+_gate_controls(g::NOTGate) = ()
+_gate_controls(g::CNOTGate) = (g.control,)
+_gate_controls(g::ToffoliGate) = (g.control1, g.control2)
