@@ -1,5 +1,44 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-25 — Bennett-ji9n filename drift cleared (warm-up / orientation)
+
+Warm-up snack: closed Bennett-ji9n + Bennett-9n95 (duplicate of just-shipped
+Bennett-sljv); narrowed Bennett-vlab via notes to its sole remaining piece
+(CLAUDE.md File Structure block refresh — lists 17 files, actual ~57).
+
+**bennett.jl → bennett_transform.jl filename swap, 9 live-doc sites:**
+
+| File | Lines |
+|---|---|
+| CLAUDE.md | 19 (rule 2 core-pipeline list), 93 (file structure block) |
+| docs/src/architecture.md | 78 (Stage 3 heading), 126 (file map) |
+| Bennett-VISION-PRD.md | 104 (architecture diagram) |
+| Bennett-Memory-T5-PRD.md | 262, 465 |
+| docs/literature/memory/SURVEY.md | 54, 56 |
+
+ji9n's bead description scoped only to CLAUDE.md ×2; expanded to cover the
+identical drift Bennett-vlab flagged (architecture.md ×2, VISION-PRD ×1) plus
+4 more refs surfaced by repo-wide grep. Reviews/, docs/design/proposer*, and
+versioned per-version PRDs (`docs/prd/Bennett-PRD.md`, `BennettIR-PRD.md`,
+`advanced-arithmetic-PRD.md`) intentionally untouched as historical snapshots
+that record what was planned at that point in time.
+
+ASCII-diagram alignment in VISION-PRD line 104: `(bennett.jl)` (12 chars) →
+`bennett_transform.jl` (20 chars, parens dropped) keeps the box-inner width
+identical to the adjacent `Bennett Construction` row. No box redraws needed.
+
+**Gotcha re-confirmed:** Dolt remote on this checkout silently reverts to
+`git+https://` — `bd update --claim` failed with the
+`could not read Username for 'https://github.com'` symptom the 2026-04-24
+worklog entry warned about. Fix per the documented recipe (manual `dolt remote
+remove origin` + `add origin git+ssh://...`) cleared it. This has now bitten
+in two consecutive sessions with no investigation underneath — needs a bead.
+
+**No code touched. No tests run** (docs-only, pre-push hook would have run
+`Pkg.test()` regardless). Edits verified by negative grep: zero `bennett\.jl`
+matches in the 5 target files; remaining 26 matches in the repo are all in
+historical snapshot directories.
+
 ## NEXT AGENT — start here — 2026-04-24 (evening session close)
 
 **Two more catalogue items shipped; all of Section A (U01–U31) + two of

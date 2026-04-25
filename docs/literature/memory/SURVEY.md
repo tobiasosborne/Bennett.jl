@@ -51,9 +51,9 @@ If arrays of unbounded size must be supported (e.g. Julia `Vector{T}` growing at
 
 | Paper | Year | Key result |
 |---|---|---|
-| Bennett, "Logical reversibility of computation", IBM JRD 17:525 | 1973 | **Founding.** Compute-copy-uncompute ("Bennett trick"). Implemented as `bennett.jl` in our compiler. |
+| Bennett, "Logical reversibility of computation", IBM JRD 17:525 | 1973 | **Founding.** Compute-copy-uncompute ("Bennett trick"). Implemented as `bennett_transform.jl` in our compiler. |
 | Bennett, "Time/Space Trade-Offs for Reversible Computation", SICOMP 18:766 | 1989 | **Pebble game.** T time, S space ordinary Turing machine → time O(T^(1+ε)), space O(S log T) reversible. Fundamental bound. |
-| Knill, "An analysis of Bennett's pebble game", math/9508218 | 1995 | Tightens the above. For 1D chain of n operations, k pebbles gives time Θ(n^log_2(2k/(k-1)) / k^ε). Implemented in `bennett.jl` pebbling functions. |
+| Knill, "An analysis of Bennett's pebble game", math/9508218 | 1995 | Tightens the above. For 1D chain of n operations, k pebbles gives time Θ(n^log_2(2k/(k-1)) / k^ε). Implemented in `bennett_transform.jl` pebbling functions. |
 | Yokoyama & Glück, "A reversible programming language and its invertible self-interpreter", PEPM'07 | 2007 | **Janus language** — reversible imperative language with mutable assignments `x += f()` reversible iff f doesn't read x. R-Turing complete. No dynamic allocation. |
 | Axelsen & Glück, "Reversible representation and manipulation of constructor terms in the heap", RC 2013, LNCS 7948 | 2013 | **AG13 heap.** EXCH + linear references. Allocation is deterministic, deallocation is its inverse. Requires linearity: a pointer cannot be copied. Our prototype gets 51-59kG per operation. |
 | Mogensen, "Garbage Collection for Reversible Functional Languages", RC 2015 → NGC 36:203, 2018 | 2018 | **Maximal sharing via hash-consing.** If new node ≡ existing node, reuse pointer — avoids duplicating subtrees. Reduces heap pressure, not necessarily gate count; asymptotically aligned with DSST 1989. |

@@ -259,7 +259,7 @@ For context, expected order-of-magnitude per-op costs (from the briefs):
 `Diff` chain *is* Bennett's history tape, and `reroot` *is* the uncompute
 pass. This is a structural correspondence at the algorithmic level, not just
 the asymptotic level. C-F may significantly outperform the cost predictions
-above by exploiting this correspondence directly in `bennett.jl` rather than
+above by exploiting this correspondence directly in `bennett_transform.jl` rather than
 treating C-F as just-another-primitive.
 
 ---
@@ -462,4 +462,4 @@ Before merging this PRD to main:
 - [ ] **User sign-off on PRD** — pending.
 - [ ] Reviewed against `docs/literature/memory/SURVEY.md` end-to-end — pending.
 - [ ] Reviewed against `docs/literature/memory/COMPLEMENTARY_SURVEY.md` end-to-end — pending.
-- [ ] Re-checked C-F brief §5 correspondence claim against actual `bennett.jl` semantics — pending (assigned to T5-P3d).
+- [ ] Re-checked C-F brief §5 correspondence claim against actual `bennett_transform.jl` semantics — pending (assigned to T5-P3d).

@@ -75,7 +75,7 @@ it tracks `_AdderRecord` per invocation, copies the root into a fresh 2W
 register, then replays every adder's gate range in reverse to zero
 intermediate levels.
 
-### Stage 3: Bennett Construction (`bennett.jl`)
+### Stage 3: Bennett Construction (`bennett_transform.jl`)
 
 `bennett(lr)` applies Bennett's 1973 construction:
 
@@ -123,7 +123,7 @@ src/
   mul_qcla_tree.jl      Sun-Borissov 2026 polylogarithmic-depth multiplier
   divider.jl            Restoring division (soft_udiv, soft_urem)
   lower.jl              IR -> gates (phi resolution, loops, all instruction handlers)
-  bennett.jl            Bennett construction (forward + copy + reverse)
+  bennett_transform.jl  Bennett construction (forward + copy + reverse)
   simulator.jl          Bit-vector simulation
   diagnostics.jl        gate_count, depth, t_count, verify_reversibility, etc.
   controlled.jl         ControlledCircuit wrapper (NOT->CNOT->Toffoli promotion)

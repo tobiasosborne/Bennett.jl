@@ -16,7 +16,7 @@ These are NON-NEGOTIABLE. Every agent, every session, every commit.
 
 1. **FAIL FAST, FAIL LOUD.** Assertions, not silent returns. Crashes, not corrupted state. `error()` with a clear message, not a quiet `nothing`. If a wire is unmapped, if an SSA name is missing, if an instruction is unsupported — crash immediately with context.
 
-2. **CORE CHANGES REQUIRE 3+1 AGENTS.** Any change to the core pipeline (`ir_extract.jl`, `lower.jl`, `bennett.jl`), gate types (`gates.jl`, `ir_types.jl`), or the phi resolution algorithm requires: 2 proposer subagents (independent designs), 1 implementer. The orchestrating agent is the reviewer (+1). Proposers must not see each other's output. The implementer picks the better design (or synthesises). The orchestrator reviews for correctness, ancilla hygiene, and test coverage before accepting.
+2. **CORE CHANGES REQUIRE 3+1 AGENTS.** Any change to the core pipeline (`ir_extract.jl`, `lower.jl`, `bennett_transform.jl`), gate types (`gates.jl`, `ir_types.jl`), or the phi resolution algorithm requires: 2 proposer subagents (independent designs), 1 implementer. The orchestrating agent is the reviewer (+1). Proposers must not see each other's output. The implementer picks the better design (or synthesises). The orchestrator reviews for correctness, ancilla hygiene, and test coverage before accepting.
 
 3. **RED-GREEN TDD.** Write the test first. Watch it fail (red). Write the minimum code to make it pass (green). Then refactor. This is the primary development workflow — adopted from v0.4 onward because it works. Tests live in `test/`. Every change needs tests. Use `@testset` and `@test`. For Int8 functions, test all 256 inputs. For wider types, test representative inputs plus edge cases.
 
@@ -90,7 +90,7 @@ Bennett.jl/
     adder.jl              # ripple-carry adder and subtraction
     multiplier.jl         # shift-and-add multiplier
     lower.jl              # LLVM IR -> reversible gates (phi resolution, MUX, loops)
-    bennett.jl            # Bennett construction: forward + copy + uncompute
+    bennett_transform.jl  # Bennett construction: forward + copy + uncompute
     simulator.jl          # bit-vector simulator
     diagnostics.jl        # gate_count, ancilla_count, depth, verify_reversibility
     controlled.jl         # ControlledCircuit wrapper (NOT->CNOT, CNOT->Toffoli, Toffoli->decomp)

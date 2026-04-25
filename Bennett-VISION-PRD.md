@@ -101,7 +101,7 @@ gates backwards).
                               ▼
                     ┌─────────────────────┐
                     │  Bennett Construction │
-                    │  (bennett.jl)         │
+                    │  bennett_transform.jl │
                     │                       │
                     │  forward + copy + rev │
                     │  ancilla verification │
