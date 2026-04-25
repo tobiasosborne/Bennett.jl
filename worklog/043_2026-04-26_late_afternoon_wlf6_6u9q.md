@@ -1,5 +1,58 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-26 (late evening) — kcxv + op6a + b2fs closes (3 in one slot — duplicate close, docstring fix, tabulate Vector{Any} → Tuple)
+
+**Shipped:** see `git log` `d18e0af..542bdcd` (4 commits). Three beads closed.
+
+| Bead | What |
+|---|---|
+| **Bennett-kcxv** P3 / U86 | Closed as already-fixed-by **Bennett-cs2f / U42** (chunk 039 night, commit `142bcf1`). `_reset_names!()` was deleted from `src/ir_extract.jl` 2026-04-25; the 8 dead test-file callers were cleaned up subsequently in `c7d1144`. Verified via grep: zero hits today. |
+| **Bennett-op6a** P3 / U140 (BUG) | Corrected `lower_add_cuccaro!` docstring in `src/adder.jl`. Old text advertised "2n Toffoli, 5n CNOT, 2n NOT" (the original Cuccaro 2004 paper's carry-out variant) but the implementation is the mod-2^W carry-suppressed variant: `2W − 2 Toffoli, 4W − 2 CNOT, 0 NOT, total 6W − 4`. Measured across W ∈ {2, 3, 4, 8, 16, 32, 64}: every formula holds exactly. New `test_op6a_cuccaro_gate_count.jl` (30 asserts) pins the formulas. |
+| **Bennett-b2fs** P3 / U148 | Replaced `Any[]` in `src/tabulate.jl _unpack_args` with `ntuple(n) do k ... end`. Old form was a per-row heap allocation + boxed elements; downstream `f(args...)` splat was type-unstable. New form returns a `Tuple` (stack-allocated, concretely-typed once Julia specialises). Hot-path called once per row of a 2^N-entry lookup table — for 24-bit input spaces that's 16M rows. End-to-end: tabulate i8 xor 1 (2556 gates) + tabulate (i8, i8) + (655356 gates) both verify. New `test_b2fs_tabulate_tuple_unpack.jl` (22 asserts) pins the Tuple return + heterogeneous (Int8, UInt16) per-element typing + end-to-end correctness + static `Any[]` regression guard. |
+
+**Why:** continuation of catalogue grind. kcxv was a 30-second triage close (already fixed). op6a was a doc-correctness fix with a regression-test anchor. b2fs was the substantive perf fix — Vector{Any} on a 16M-row hot path is exactly the kind of Julia-idiom violation that compounds at scale.
+
+**Gotchas / Lessons:**
+
+- **Triple-close in one "slot" works when one is dispatch-only.** kcxv was a "verify already-fixed → close-as-duplicate" 30-second triage. Then op6a + b2fs filled the easy + serious slots. Triage should be the first move on every bead pickup: `grep -rn <symbol>` to confirm the current state matches the bead's RED evidence. Saves time vs starting an investigation that's mooted.
+
+- **Docstring gate-count drift is a real failure mode.** op6a's docstring claimed `2n/5n/2n` but the implementation emits `2W-2/4W-2/0`. Pre-fix, no test asserted either; the formula was just narrative. Fix pattern: any docstring claiming a specific gate count for a specific algorithm should pair with a regression-anchor test pinning the actual measurements at canonical widths. Worth applying the same to other adder/multiplier docstrings whose cost formulas are stated but not pinned.
+
+- **`ntuple(n)` with a runtime n is `Tuple{Vararg{Any}}` BUT downstream specialisation often handles it correctly.** Julia's compiler specialises `f(args...)` on the concrete tuple type at the call site, so even a "vararg" return type often gets the right code path. Verified by the b2fs end-to-end correctness tests — the i8 + (i8,i8) tabulate baselines hold to gate count exactly. For a true compile-time-fixed-N use case `ntuple(f, Val(n))` is a stronger guarantee but requires N to be known at compile time.
+
+- **Static-inspection regression guard for `Any[]` was a one-line test.** `@test !occursin("Any[]", read(path, String))`. Catches the most common reintroduction pattern. The earlier regression I had (`Vector{Any}` matching the new docstring's literal phrase) was a useful reminder to scan only for code-construction patterns, not phrase mentions.
+
+- **Bennett.jl's test count crossed 73k this session.** 72995/72998 (3 intentional broken). Started the day at ~72400 ish; +595 over the day's 25-bead grind. Most growth is from per-bead invariant tests rather than feature tests — the static-inspection pattern is paying off.
+
+**Rejected alternatives:**
+
+- **Replace `tabulate.jl`'s entire architecture per the second half of the b2fs bead** ("fold tabulate.jl into a PRD or delete it"). Out of scope for the perf fix; the structural decision is for a future PRD review session, not a hot-path bead.
+
+- **Use `MArray`/`SVector` for `_unpack_args`'s return.** StaticArrays adds a heavyweight dep for a stack-allocated container; native `Tuple` does the same job with no new deps. Rejected on that basis.
+
+- **Keep the carry-out variant of Cuccaro and add a NOT-emission step** to match the original docstring's claim of "2n NOT". Tempting because it matches the paper, but the current mod-2^W form is what `lower_add!` and friends consume — a carry-out wire would need extra plumbing and would likely break callers expecting the b array overwrite. Doc-fix-to-match-implementation is the right call; the impl is correct.
+
+**Next agent starts here:**
+
+1. **Branch state at session-end**: `542bdcd` on main, pushed. Worklog top is **this** entry; chunk 043 is now ~210 lines. Approaching the 280 cap — next session may want to start `worklog/044_*.md`.
+
+2. **Catalogue progress this session (3 closes)**: ~129 → ~126 ready remaining. Cumulative for the day's grind = 27 closes. Test count growth: +605 new assertions across 17 new test files. Pkg.test count: 72995/72998 (3 broken).
+
+3. **Quick wins still on the menu** (each ~30-90 min, no 3+1 needed):
+   - **Bennett-vpch** U45 — 190+ `error()` → typed exceptions (substantial; needs taxonomy).
+   - **Bennett-zpj7** U160 — pebbling/eager file rename.
+   - **Bennett-doh6** U158 — docs/make.jl absent.
+   - **Bennett-qjet** P3 — empirical timing reorder.
+   - **Bennett-9c4o** U89 — lower.jl forward-refs 6 modules included after it (structural).
+   - **Bennett-mggz** U92 — ParsedIR._instructions_cache compat hack.
+   - **Bennett-ardf** U138 — soft_fdiv dead binding + soft_floor/soft_ceil NaN coverage.
+
+4. **3+1-protected real bugs still open** (unchanged): jepw, 25dm, 5qrn, zmw3, y986, 3of2, p94b. zmw3 bumped 13 sessions running.
+
+5. **The triage-first pattern (kcxv this session) is reusable.** Many catalogue beads were filed against a pre-fix snapshot; a quick `grep` against current src/ often resolves them in 30 seconds. Procedure: for any bead whose Sites: list a specific symbol or line range, grep for that symbol BEFORE starting investigation. If gone, close-as-fixed-by with the resolving-bead reference.
+
+---
+
 ## Session log — 2026-04-26 (evening) — g0jb + 5kio closes (asw2 flake fix + sizehint! arithmetic preallocation)
 
 **Shipped:** see `git log` `499d4b9..9ecf6f7` (4 commits). Two beads closed.
