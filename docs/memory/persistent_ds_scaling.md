@@ -5,6 +5,17 @@
 *Data*: [`benchmark/sweep_persistent_results.jsonl`](../../benchmark/sweep_persistent_results.jsonl),
 [`benchmark/sweep_persistent_summary.md`](../../benchmark/sweep_persistent_summary.md)
 
+**Status (Bennett-5ttt / U156):** **SHIPPED + ARCHIVED.** The
+winner this doc identifies — `linear_scan` — is live as
+`src/persistent/linear_scan.jl` and the only persistent-map impl
+loaded by `using Bennett` (exported `LINEAR_SCAN_IMPL`). The losing
+candidates (HAMT, Okasaki RBT, Conchon-Filliâtre) were relocated to
+`src/persistent/research/` per Bennett-uoem / U54 (commit
+`3fe0c1e..61864ac` 2026-04-24/25); they remain compileable and
+testable under `BENNETT_RESEARCH_TESTS=1` but are not on any user
+path. See `src/persistent/research/README.md` for the literate
+deprecation rationale and thaw conditions.
+
 ## The question
 
 Phase 3 of the T5 epic reported "Conchon-Filliâtre (CF) semi-persistent is

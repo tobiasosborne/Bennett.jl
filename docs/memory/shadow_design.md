@@ -1,7 +1,16 @@
 # Shadow memory protocol design — T3b.1 (Bennett-oy9e)
 
 **Date:** 2026-04-12
-**Status:** Design complete. Reference implementation in T3b.2 (Bennett-2ayo).
+**Status (Bennett-5ttt / U156):** **SHIPPED** — primitives live as
+`src/shadow_memory.jl` (T3b.2 / Bennett-2ayo, commit `e16cf22`
+2026-04-12). The unconditional-store design described here is the
+live codepath; the path-predicate-guarded variant added later
+(Bennett-cc0 M2c, commit `88a5ef1`) routes through the same
+primitives via an extra control wire. Both are wired into
+`lower_store!`'s `:shadow` and `:shadow_checkpoint` strategy
+branches in `src/lower.jl`. No alternative on the design table.
+
+**Original status:** Design complete. Reference implementation in T3b.2 (Bennett-2ayo).
 
 ## Problem statement
 

@@ -1,7 +1,15 @@
 # MemorySSA investigation — T2a.1 (Bennett-law3)
 
 **Date:** 2026-04-12
-**Status:** Investigation complete. **Go** with printer-pass-output parsing.
+**Status (Bennett-5ttt / U156):** **SHIPPED** — recommendation
+implemented as `src/memssa.jl` (parser) + `MemSSAInfo` struct in
+`src/ir_types.jl` (Bennett-by8j / U44, commit `5411d1a` 2026-04-25
+concretised the field type). The printer-pass-output parsing approach
+this doc proposes is the live codepath gated by
+`extract_parsed_ir(...; use_memory_ssa=true)`. No alternative remains
+on the design table.
+
+**Original status:** Investigation complete. **Go** with printer-pass-output parsing.
 
 ## Summary
 
