@@ -242,6 +242,9 @@ include("test_m63k_softfloat_strict_bits.jl")
 # Bennett-9x75 / U61 — raw-bits fuzz across the full UInt64 input space
 # for fadd/fsub/fmul/fdiv/fma/fsqrt (5000 each, ~30k strict-bit asserts).
 include("test_9x75_softfloat_raw_bits_sweep.jl")
+# Bennett-0zsk / U46 — pin the load-bearing error() paths in lower.jl
+# and ir_extract.jl with @test_throws (12 testsets / 15 asserts).
+include("test_0zsk_core_error_paths.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).
