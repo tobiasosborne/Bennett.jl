@@ -162,6 +162,46 @@ struct IRBasicBlock
     terminator::IRInst             # IRBranch or IRRet
 end
 
+# --- MemorySSA type bundle (Bennett-by8j / U44) ---
+#
+# Defined here in ir_types.jl, ahead of ParsedIR, so the
+# `memssa::Union{Nothing, MemSSAInfo}` field below is concretely
+# typed.  Previously the field was `::Any` because src/memssa.jl was
+# included AFTER ir_types.jl and the textual struct definition lived
+# there; that forced ParsedIR to be type-unstable on every memssa
+# read.  Parsing methods (`parse_memssa_annotations`) stay in
+# `src/memssa.jl`; only the type definition + zero-arg constructor
+# move here.
+"""
+    MemSSAInfo
+
+Parsed `print<memoryssa>` annotations.  Indexed by 1-based line number
+of the annotated instruction within `annotated_ir` so downstream
+consumers can correlate to LLVM.jl's instruction walk (same instruction
+ordering, same module).
+
+Fields:
+- `def_at_line` — line → MemoryDef id
+- `def_clobber` — Def id → clobbered Def id (or `:live_on_entry` sentinel)
+- `use_at_line` — line → Def id this use reads from
+- `phis` — Phi id → `[(incoming_block, incoming_id), …]`
+- `annotated_ir` — raw annotated text (kept for debugging)
+
+IDs (`Int`) match LLVM's numbering; `:live_on_entry` is the sentinel
+for memory state at function entry.
+"""
+struct MemSSAInfo
+    def_at_line::Dict{Int, Int}
+    def_clobber::Dict{Int, Union{Int, Symbol}}
+    use_at_line::Dict{Int, Int}
+    phis::Dict{Int, Vector{Tuple{Symbol, Int}}}
+    annotated_ir::String
+end
+
+MemSSAInfo() = MemSSAInfo(Dict{Int,Int}(), Dict{Int,Union{Int,Symbol}}(),
+                           Dict{Int,Int}(), Dict{Int,Vector{Tuple{Symbol,Int}}}(),
+                           "")
+
 # --- Parsed IR bundle ---
 
 struct ParsedIR
@@ -175,9 +215,10 @@ struct ParsedIR
     # lower_var_gep! to dispatch to QROM when the GEP base is a global constant.
     globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}}
     # T2a.2 memssa: parsed MemorySSA annotations (nothing unless
-    # extract_parsed_ir was called with use_memory_ssa=true). Forward-declared
-    # as Any to avoid circular type dependency with src/memssa.jl.
-    memssa::Any
+    # extract_parsed_ir was called with use_memory_ssa=true).  Bennett-by8j
+    # / U44: typed concretely as Union{Nothing, MemSSAInfo} after
+    # MemSSAInfo's definition was moved here above ParsedIR.
+    memssa::Union{Nothing, MemSSAInfo}
     _instructions_cache::Vector{IRInst}  # cached flattened instructions for backward compat
 end
 

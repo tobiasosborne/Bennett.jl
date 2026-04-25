@@ -15,31 +15,10 @@
 # instruction within the printed text, so downstream consumers can correlate
 # to LLVM.jl's instruction walk (same instruction ordering, same module).
 
-"""
-    MemSSAInfo
-
-Parsed MemorySSA graph:
-
-- `def_at_line` — line → Def id (line is 1-based within annotated IR)
-- `def_clobber` — Def id → clobbered id (Int) or `:live_on_entry`
-- `use_at_line` — line → Def id this use reads from
-- `phis` — Phi id → `[(incoming_block, incoming_id), …]`
-- `annotated_ir` — raw annotated text (kept for debugging)
-
-IDs (`Int`) match LLVM's numbering; `:live_on_entry` is the sentinel for memory
-state at function entry.
-"""
-struct MemSSAInfo
-    def_at_line::Dict{Int, Int}
-    def_clobber::Dict{Int, Union{Int, Symbol}}
-    use_at_line::Dict{Int, Int}
-    phis::Dict{Int, Vector{Tuple{Symbol, Int}}}
-    annotated_ir::String
-end
-
-MemSSAInfo() = MemSSAInfo(Dict{Int,Int}(), Dict{Int,Union{Int,Symbol}}(),
-                           Dict{Int,Int}(), Dict{Int,Vector{Tuple{Symbol,Int}}}(),
-                           "")
+# Bennett-by8j / U44: `MemSSAInfo` struct + zero-arg constructor moved
+# to src/ir_types.jl so `ParsedIR.memssa` can be typed concretely as
+# `Union{Nothing, MemSSAInfo}` rather than `::Any`.  Parsing methods
+# stay here.
 
 const _RE_MEM_DEF = r"^\s*;\s*(\d+)\s*=\s*MemoryDef\(\s*(\d+|liveOnEntry)\s*\)"
 const _RE_MEM_USE = r"^\s*;\s*MemoryUse\(\s*(\d+|liveOnEntry)\s*\)"
