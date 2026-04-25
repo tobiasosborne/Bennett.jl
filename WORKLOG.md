@@ -1,9 +1,9 @@
 # Bennett.jl Work Log
 
 > **NEXT AGENT — start here:** the most recent sessions live at the top of
-> [`worklog/038_2026-04-25_uoem_persistent_ds_research_relocation.md`](worklog/038_2026-04-25_uoem_persistent_ds_research_relocation.md).
+> [`worklog/039_2026-04-25_evening_softfloat_grind.md`](worklog/039_2026-04-25_evening_softfloat_grind.md).
 > Older session logs are sharded into ~200-300 line chunks under `worklog/`,
-> file-numbered chronologically (000 = oldest, 038 = newest as of 2026-04-25).
+> file-numbered chronologically (000 = oldest, 039 = newest as of 2026-04-25).
 
 This file is now an **index** — historical content was sharded out of the
 monolithic 9,774-line `WORKLOG.md` per Bennett-fyni / U70. Concatenating the
@@ -46,6 +46,7 @@ rejected paths, hand-off pointers). Avoid restating the diff:
 
 | File | Lines | First section |
 |---|---:|---|
+| [039_2026-04-25_evening_softfloat_grind.md](worklog/039_2026-04-25_evening_softfloat_grind.md) | 73 | Session log — 2026-04-25 (evening) — catalogue grind continued, 12 closes + 4 defers, soft_fsub NaN bug fixed |
 | [038_2026-04-25_uoem_persistent_ds_research_relocation.md](worklog/038_2026-04-25_uoem_persistent_ds_research_relocation.md) | 269 | Session log — 2026-04-25 (afternoon) — catalogue grind, 13 P2 beads cleared |
 | [037_2026-04-25_preamble.md](worklog/037_2026-04-25_preamble.md) | 280 | Session log — 2026-04-25 — Bennett-jppi deferred, Bennett-p1h1 README Project-status refresh |
 | [036_2026-04-24_…_evening_session_close.md](worklog/036_2026-04-24_next_agent_start_here_evening_session_close.md) | 315 | NEXT AGENT — start here — 2026-04-24 (evening session close) |
