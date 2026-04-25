@@ -46,4 +46,12 @@ const _PUBLIC_API = Set(names(Bennett))
         end
     end
 
+    @testset "Jenkins-96 reversible hash relocated to research/" begin
+        @test isfile(joinpath(_RES_DIR, "hashcons_jenkins.jl"))
+        @test !isfile(joinpath(_PROD_DIR, "hashcons_jenkins.jl"))
+        for sym in (:soft_jenkins96, :soft_jenkins_int8)
+            @test sym ∉ _PUBLIC_API
+        end
+    end
+
 end

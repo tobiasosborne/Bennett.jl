@@ -1,5 +1,10 @@
 # ---- Mogensen Jenkins-96 reversible hash (T5-P4a, Bennett-gv8g) ----
 #
+# RESEARCH-TIER: relocated from src/persistent/ on 2026-04-25 per
+# Bennett-uoem / U54.  Not loaded by `using Bennett`; not exported.
+# See src/persistent/research/README.md for the literate deprecation
+# rationale and thaw conditions.
+#
 # Reference: Mogensen 2018 NGC 36:203 Fig. 5 p. 217–218. Pure-Julia branchless
 # port of the 24-instruction Jenkins reversible mix function.
 #

@@ -42,7 +42,8 @@ export PersistentMapImpl, AbstractPersistentMap, verify_pmap_correctness, pmap_d
 # src/persistent/research/cf_semi_persistent.jl (2026-04-25).
 export soft_popcount32
 export HAMT_IMPL, hamt_pmap_new, hamt_pmap_set, hamt_pmap_get
-export soft_jenkins96, soft_jenkins_int8
+# Bennett-uoem / U54: soft_jenkins96 + soft_jenkins_int8 relocated to
+# src/persistent/research/hashcons_jenkins.jl (2026-04-25).
 export soft_feistel32, soft_feistel_int8
 export soft_fadd, soft_fsub, soft_fmul, soft_fma, soft_fdiv, soft_fsqrt, soft_fneg, soft_fcmp_olt, soft_fcmp_oeq, soft_fcmp_ole, soft_fcmp_une, soft_fptosi, soft_fptoui, soft_sitofp, soft_fpext, soft_fptrunc, soft_exp, soft_exp2, soft_exp_fast, soft_exp2_fast, soft_exp_julia, soft_exp2_julia
 export ReversibleCircuit, ControlledCircuit, controlled

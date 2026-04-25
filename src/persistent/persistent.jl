@@ -11,10 +11,10 @@ include("linear_scan.jl")
 include("harness.jl")
 include("popcount.jl")
 include("hamt.jl")
-include("hashcons_jenkins.jl")
 include("hashcons_feistel.jl")
 
 # Bennett-uoem / U54 — relocated to research/ (preserved, not loaded by
 # default; opt-in via include of src/persistent/research/<file>.jl):
 #   - okasaki_rbt.jl         (2026-04-25)
 #   - cf_semi_persistent.jl  (2026-04-25)
+#   - hashcons_jenkins.jl    (2026-04-25)

@@ -19,6 +19,7 @@ using Random
 # src/persistent/research/README.md for the rationale.
 include(joinpath(pkgdir(Bennett), "src", "persistent", "research", "okasaki_rbt.jl"))
 include(joinpath(pkgdir(Bennett), "src", "persistent", "research", "cf_semi_persistent.jl"))
+include(joinpath(pkgdir(Bennett), "src", "persistent", "research", "hashcons_jenkins.jl"))
 
 # Seed RNG for reproducibility — HAMT's low-5-bit bitmap aliasing can
 # cause rare flakes when two distinct Feistel/Jenkins outputs collide
@@ -40,10 +41,10 @@ Random.seed!(20260417)
 # Okasaki + Jenkins
 function _ok_jenkins_demo(k1::Int8, v1::Int8, k2::Int8, v2::Int8,
                           k3::Int8, v3::Int8, lookup::Int8)::Int8
-    h1 = Bennett.soft_jenkins_int8(k1)
-    h2 = Bennett.soft_jenkins_int8(k2)
-    h3 = Bennett.soft_jenkins_int8(k3)
-    hl = Bennett.soft_jenkins_int8(lookup)
+    h1 = soft_jenkins_int8(k1)
+    h2 = soft_jenkins_int8(k2)
+    h3 = soft_jenkins_int8(k3)
+    hl = soft_jenkins_int8(lookup)
     s = okasaki_pmap_new()
     s = okasaki_pmap_set(s, h1, v1)
     s = okasaki_pmap_set(s, h2, v2)
@@ -68,10 +69,10 @@ end
 # HAMT + Jenkins
 function _hamt_jenkins_demo(k1::Int8, v1::Int8, k2::Int8, v2::Int8,
                             k3::Int8, v3::Int8, lookup::Int8)::Int8
-    h1 = Bennett.soft_jenkins_int8(k1)
-    h2 = Bennett.soft_jenkins_int8(k2)
-    h3 = Bennett.soft_jenkins_int8(k3)
-    hl = Bennett.soft_jenkins_int8(lookup)
+    h1 = soft_jenkins_int8(k1)
+    h2 = soft_jenkins_int8(k2)
+    h3 = soft_jenkins_int8(k3)
+    hl = soft_jenkins_int8(lookup)
     s = Bennett.hamt_pmap_new()
     s = Bennett.hamt_pmap_set(s, h1, v1)
     s = Bennett.hamt_pmap_set(s, h2, v2)
@@ -96,10 +97,10 @@ end
 # CF + Jenkins
 function _cf_jenkins_demo(k1::Int8, v1::Int8, k2::Int8, v2::Int8,
                           k3::Int8, v3::Int8, lookup::Int8)::Int8
-    h1 = Bennett.soft_jenkins_int8(k1)
-    h2 = Bennett.soft_jenkins_int8(k2)
-    h3 = Bennett.soft_jenkins_int8(k3)
-    hl = Bennett.soft_jenkins_int8(lookup)
+    h1 = soft_jenkins_int8(k1)
+    h2 = soft_jenkins_int8(k2)
+    h3 = soft_jenkins_int8(k3)
+    hl = soft_jenkins_int8(lookup)
     s = cf_pmap_new()
     s = cf_pmap_set(s, h1, v1)
     s = cf_pmap_set(s, h2, v2)
