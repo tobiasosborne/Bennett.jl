@@ -235,6 +235,44 @@ function register_callee!(f::Function)
     return nothing
 end
 
+# Bennett-ej4n / U48: cache extracted ParsedIR keyed on (callee, arg_types).
+# `extract_parsed_ir` does a ~21ms LLVM C-API walk per invocation; a circuit
+# with N references to the same callee paid that N times via `lower_call!`.
+# Module-scoped because registered callees are stable functions in this
+# package — the cache is small (one entry per distinct (callee, arg_types)
+# pair) and never grows after warm-up. Avoids worsening the LoweringCtx
+# back-compat-constructor sprawl tracked in Bennett-ehoa / U43.
+const _parsed_ir_cache = Dict{Tuple{Function, Type}, ParsedIR}()
+const _parsed_ir_cache_lock = ReentrantLock()
+
+"""
+    _extract_parsed_ir_cached(f, arg_types) -> ParsedIR
+
+Memoised wrapper over `extract_parsed_ir(f, arg_types)`. On a cache hit
+returns the previously-extracted `ParsedIR` by identity; on a miss
+extracts, stores, and returns. `ParsedIR` is immutable and the lowering
+pipeline only reads from it, so sharing across compiles is safe.
+"""
+function _extract_parsed_ir_cached(f::Function, arg_types::Type{<:Tuple})::ParsedIR
+    key = (f, arg_types)
+    lock(_parsed_ir_cache_lock) do
+        haskey(_parsed_ir_cache, key) && return _parsed_ir_cache[key]
+        pir = extract_parsed_ir(f, arg_types)
+        _parsed_ir_cache[key] = pir
+        return pir
+    end
+end
+
+"""Empty the `_parsed_ir_cache`. For tests, and as a manual escape hatch
+if a callee gets redefined (e.g. under Revise) — registered callees in
+this package are otherwise stable across the process lifetime."""
+function _clear_parsed_ir_cache!()
+    lock(_parsed_ir_cache_lock) do
+        empty!(_parsed_ir_cache)
+    end
+    return nothing
+end
+
 function _lookup_callee(llvm_name::String)
     lock(_known_callees_lock) do
         # First: try exact match (for hardcoded lookups like "soft_fcmp_ole")

@@ -2054,7 +2054,7 @@ function lower_call!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     # methods() not hardcoded UInt64 — unblocks aggregate callees.
     arg_types = _callee_arg_types(inst)
     _assert_arg_widths_match(inst, arg_types)
-    callee_parsed = extract_parsed_ir(inst.callee, arg_types)
+    callee_parsed = _extract_parsed_ir_cached(inst.callee, arg_types)
     callee_lr = lower(callee_parsed; max_loop_iterations=64)
 
     if compact
