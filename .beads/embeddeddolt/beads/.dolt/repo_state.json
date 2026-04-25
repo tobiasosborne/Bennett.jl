@@ -3,7 +3,7 @@
   "remotes": {
     "origin": {
       "name": "origin",
-      "url": "git+https://github.com/tobiasosborne/Bennett.jl.git",
+      "url": "git+ssh://git@github.com/tobiasosborne/Bennett.jl.git",
       "fetch_specs": [
         "refs/heads/*:refs/remotes/origin/*"
       ],
@@ -13,7 +13,7 @@
   "backups": {
     "backup_export": {
       "name": "backup_export",
-      "url": "file:///home/tobias/Projects/Bennett.jl/.beads/backup",
+      "url": "file:///home/tobiasosborne/Projects/Bennett.jl/.beads/backup",
       "fetch_specs": [
         "refs/heads/*:refs/remotes/backup_export/*"
       ],
