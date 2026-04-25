@@ -24,10 +24,18 @@ From Cuccaro et al. 2004 (arXiv:quant-ph/0410184), Figure 5.
 Uses MAJ (majority) gates rippling up and UMA (unmajority-and-add)
 gates rippling back down. Result s_i overwrites b_i in place.
 
-Gate counts: 2n Toffoli, 5n CNOT, 2n negations. Depth: 2n+O(1).
-Only 1 ancilla qubit (X) vs n-1 in traditional ripple-carry.
+Gate counts (this implementation, mod 2^W output — no carry-out
+emitted; Bennett-op6a / U140 measurement, 2026-04-26):
+  Toffoli: 2W − 2
+  CNOT:    4W − 2
+  NOT:     0
+  Total:   6W − 4
+  Depth:   2W + O(1)
+Only 1 ancilla qubit (X) vs W-1 in traditional ripple-carry.
+The "2n NOT" advertised in the original paper appears in the
+carry-out variant; this mod-2^W form omits both.
 
-Input: a[1:W], b[1:W] (a unchanged, b overwritten with a+b mod 2^W)
+Input: a[1:W], b[1:W] (a unchanged, b overwritten with a+b mod 2^W).
 """
 function lower_add_cuccaro!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                             a::Vector{Int}, b::Vector{Int}, W::Int)

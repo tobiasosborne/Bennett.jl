@@ -319,6 +319,11 @@ include("test_6u9q_quantum_vision_integration.jl")
 # of the hints + the canonical gate-count baselines (no behavioural
 # drift).
 include("test_5kio_sizehint_arithmetic.jl")
+# Bennett-op6a / U140 — pin the actual lower_add_cuccaro! gate counts
+# (Toffoli=2W−2, CNOT=4W−2, NOT=0) at W∈{2,3,4,8,16,32,64}; the docstring
+# now matches the implementation (was advertising the carry-out
+# variant's 2n/5n/2n).
+include("test_op6a_cuccaro_gate_count.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).
