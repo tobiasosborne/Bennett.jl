@@ -1,5 +1,53 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-25 — Bennett-vlab CLAUDE.md File Structure refresh
+
+Doc-work bead #5 — closes the last remaining piece of Bennett-vlab (other
+sub-scopes had already shipped: §6 baselines via Bennett-sljv, filename
+drift via Bennett-ji9n).
+
+**Pre-state:** CLAUDE.md File Structure block listed 17 src files (with
+softfloat showing only 2 files), 17 test files, omitted the
+`persistent/` subtree entirely, and didn't mention `scripts/`,
+`benchmark/`, `docs/`, `reviews/`, `build/`, `BENCHMARKS.md`, the three
+PRDs at the root, or `WORKLOG.md`. The actual repo has 30 included src
+files + 17 softfloat + 10 persistent + 143 test files. So the existing
+block was massively under-coverage — drift of 14 src files, 15 softfloat,
+10 persistent, 126 test, and 6+ top-level artifacts.
+
+**Ground-truth pass before drafting:** ran `ls src/*.jl | wc -l` etc. to
+count for real; verified zero src/ orphans (every `ls`-ed file is
+include()d by Bennett.jl, modulo Bennett.jl itself). For each src file I
+hadn't already personally read, extracted the top-of-file docstring or
+comment to get an authoritative one-liner; trusted nothing from the
+earlier explore-agent summary or my own context. Spot-checked file roles
+where the `"""` opening wasn't self-explanatory.
+
+**New block:** ~95 lines (was ~40). Every src/*.jl gets a one-line
+description grouped under `# ---- <Subsystem> ----` headings (IR
+extraction, Lowering, Gates & Bennett, Simulation & metrics, Adders &
+multipliers, Bennett strategy variants, Memory, Crypto/hash). softfloat/
+and persistent/ get full file listings. test/ shows the conventions
+instead of literal listings (143 files would dominate the section);
+includes the `BENNETT_T5_TESTS=0` escape hatch + per-testset stats
+(67k assertions, ~5 min cold). Top-level dirs and root files all listed.
+
+Bead-ID cross-references added inline to flag known issues at the source:
+`ir_extract.jl` (~2.7k LOC) → Bennett-tzrs / U41; `lower.jl` (~2.9k LOC)
+→ Bennett-vdlg / U40; ReversibleCircuit partition invariant →
+Bennett-6azb / U58; bennett() self-reversing short-circuit →
+Bennett-egu6 / U03; simulator signedness inference → Bennett-zc50 /
+U100; missing docs/make.jl → Bennett-doh6 / U158. These pointers let an
+agent reading the File Structure jump straight to the bead for any file
+whose state isn't fully stable.
+
+Token-cost note: this block is loaded into every agent's context. The
+~50-line growth (~2.5kB) is the cost of going from 17→58 listed src
+files; trimming further would mean dropping the per-file roles, which
+is the whole value of the block.
+
+Bennett-vlab now has zero remaining scope — closes.
+
 ## Session log — 2026-04-25 — Bennett-c016 README test-suite-time refresh
 
 Doc-work bead #4. README:217 claimed `~10,000 assertions across ~60 test

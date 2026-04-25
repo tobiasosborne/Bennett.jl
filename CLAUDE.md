@@ -78,45 +78,107 @@ f(x::Int8)     ──►  extract_parsed_ir()  ──►  lower()  ──►  be
 ## File Structure
 
 ```
-Bennett.jl/
-  Project.toml
-  src/
-    Bennett.jl            # module definition, exports, reversible_compile entry point
-    ir_types.jl           # IR representation: IRBinOp, IRICmp, IRSelect, IRPhi, etc.
-    ir_extract.jl         # LLVM IR extraction via LLVM.jl C API (two-pass name table)
-    ir_parser.jl          # legacy regex parser (backward compat)
-    gates.jl              # NOTGate, CNOTGate, ToffoliGate, ReversibleCircuit
-    wire_allocator.jl     # sequential wire allocation
-    adder.jl              # ripple-carry adder and subtraction
-    multiplier.jl         # shift-and-add multiplier
-    lower.jl              # LLVM IR -> reversible gates (phi resolution, MUX, loops)
-    bennett_transform.jl  # Bennett construction: forward + copy + uncompute
-    simulator.jl          # bit-vector simulator
-    diagnostics.jl        # gate_count, ancilla_count, depth, verify_reversibility
-    controlled.jl         # ControlledCircuit wrapper (NOT->CNOT, CNOT->Toffoli, Toffoli->decomp)
-    softfloat/
-      softfloat.jl        # module definition
-      fadd.jl             # IEEE 754 soft-float addition
-      fneg.jl             # IEEE 754 soft-float negation
-  test/
-    runtests.jl
-    test_increment.jl     # f(x) = x + 3, all 256 inputs
-    test_polynomial.jl    # f(x) = x^2 + 3x + 1, all 256 inputs
-    test_bitwise.jl       # &, |, ^, ~
-    test_compare.jl       # icmp + select
-    test_two_args.jl      # multi-argument functions
-    test_controlled.jl    # controlled circuits
-    test_branch.jl        # if/else via br + phi
-    test_loop.jl          # LLVM-unrolled loops
-    test_combined.jl      # controlled + branching
-    test_int16.jl         # Int16 arithmetic
-    test_int32.jl         # Int32 arithmetic
-    test_int64.jl         # Int64 arithmetic
-    test_mixed_width.jl   # sext/zext/trunc
-    test_loop_explicit.jl # bounded loop unrolling
-    test_tuple.jl         # tuple return via insertvalue
-    test_softfloat.jl     # soft-float library (1,037 tests)
-    test_float_circuit.jl # soft-float circuit compilation
+Bennett.jl/                         # Project root. PRDs and CLAUDE.md live alongside Project.toml.
+  Project.toml                      # deps: LLVM.jl; extras: InteractiveUtils, Test, Random, Pkg, PicoSAT
+  Manifest.toml
+  CLAUDE.md                         # this file — non-negotiable project rules
+  README.md                         # public-facing intro
+  WORKLOG.md                        # session-by-session institutional memory; update every session per §0
+  BENCHMARKS.md                     # canonical gate-count + Toffoli-depth baselines (T5 Pareto front)
+  Bennett-VISION-PRD.md             # long-term v1.0 roadmap (Enzyme analogy)
+  Bennett-Memory-PRD.md             # reversible mutable memory plan
+  Bennett-Memory-T5-PRD.md          # T5 persistent-DS workstream
+
+  src/                              # 30 included src/*.jl + softfloat/ (17) + persistent/ (10)
+    Bennett.jl                      # module: 3 reversible_compile overloads (Tuple / ParsedIR / Float64), SoftFloat dispatch, callee registry
+
+    # ---- IR extraction & representation ----
+    ir_types.jl                     # IR struct hierarchy: IRBinOp, IRICmp, IRSelect, IRPhi, IRCall, IRStore, IRAlloca, IRSwitch, ...
+    ir_extract.jl                   # LLVM.jl C-API walk → ParsedIR; callee registry; sret + vector + switch + intrinsic handling (~2.7k LOC; 3+1 split pending — Bennett-tzrs / U41)
+    ir_parser.jl                    # legacy regex parser (backward compat; mostly used by test_parse.jl)
+
+    # ---- Lowering: ParsedIR → gates ----
+    lower.jl                        # per-opcode dispatch, loop unrolling, PHI-MUX resolution, load/store/alloca, strategy dispatchers (~2.9k LOC; 3+1 split pending — Bennett-vdlg / U40)
+    wire_allocator.jl               # bump-allocator + free-list for ancilla wire slots
+
+    # ---- Gate primitives & Bennett construction ----
+    gates.jl                        # NOTGate, CNOTGate, ToffoliGate; ReversibleCircuit (with wire-partition-validation invariant — Bennett-6azb / U58)
+    bennett_transform.jl            # bennett(lr): forward + CNOT-copy + reverse; self-reversing short-circuit (Bennett-egu6 / U03)
+    controlled.jl                   # ControlledCircuit: lifts a circuit to take an explicit control bit
+
+    # ---- Simulation & metrics ----
+    simulator.jl                    # bit-vector simulate; ancilla-zero + input-preservation assertions; signedness inference (Bennett-zc50 / U100)
+    diagnostics.jl                  # gate_count, ancilla_count, depth, t_count, t_depth, toffoli_depth, peak_live_wires, verify_reversibility, print_circuit
+
+    # ---- Adders & multipliers ----
+    adder.jl                        # ripple-carry full adder + Cuccaro in-place
+    qcla.jl                         # Draper-Kutin-Rains-Svore 2004 quantum carry-lookahead adder
+    multiplier.jl                   # shift-and-add + Karatsuba multiplier
+    mul_qcla_tree.jl                # Sun-Borissov 2026 polylogarithmic-depth multiplier (self-reversing; arXiv:2604.09847)
+    partial_products.jl             # emit_partial_products! / emit_conditional_copy! (Sun-Borissov §II.C building blocks)
+    parallel_adder_tree.jl          # binary tree of QCLA adders; self-cleaning via _AdderRecord replay
+    divider.jl                      # soft_udiv / soft_urem (registered as callees)
+
+    # ---- Bennett strategy variants ----
+    pebbling.jl                     # Knill 1995 (Theorem 2.1) — pebbled_bennett
+    pebbled_groups.jl               # group-level pebbling with wire reuse + checkpoint_bennett
+    eager.jl                        # PRS15 EAGER cleanup (gate-level)
+    value_eager.jl                  # PRS15 Algorithm 2 value-level EAGER
+    sat_pebbling.jl                 # Meuli et al. 2019 SAT-based optimal pebbling (PicoSAT)
+    dep_dag.jl                      # gate dependency graph extraction
+
+    # ---- Memory: reversible store/load primitives ----
+    softmem.jl                      # soft_mux_*: reversible MUX-store/load on packed UInt64 arrays (registered callees)
+    shadow_memory.jl                # universal reversible store/load via CNOT-copy pattern
+    fast_copy.jl                    # Sun-Borissov 2026 Algorithm 1: reversible n-fold broadcast
+    qrom.jl                         # Babbush-Gidney 2018 QROM via binary decision tree of Toffolis
+    tabulate.jl                     # classical eval of f on all 2^W inputs → emit as QROM lookup
+    memssa.jl                       # parse LLVM MemorySSA annotations for store/load alias resolution
+
+    # ---- Crypto / hash ----
+    feistel.jl                      # reversible Feistel network for bijective hashing
+
+    softfloat/                      # 17 files: IEEE 754 binary64 in pure integer arithmetic (bit-exact vs Julia native)
+      softfloat.jl                  # loader
+      softfloat_common.jl           # shared branchless helpers (CLZ, round-to-nearest-even, ...)
+      fadd.jl, fsub.jl, fmul.jl, fma.jl, fdiv.jl, fsqrt.jl, fneg.jl, fcmp.jl
+      fpconv.jl, fptosi.jl, fptoui.jl, sitofp.jl, fround.jl
+      fexp.jl                       # branchless integer exp / exp2
+      fexp_julia.jl                 # Julia-idiom exp / exp2 variants
+
+    persistent/                     # 10 files: persistent-map data structures (T5 workstream)
+      persistent.jl                 # loader
+      interface.jl                  # AbstractPersistentMap protocol
+      harness.jl                    # correctness + benchmark harness (pmap_demo_oracle)
+      linear_scan.jl                # brute-force baseline (winner at all measured scales — see WORKLOG 2026-04-20)
+      okasaki_rbt.jl                # Okasaki 1999 red-black tree
+      hamt.jl                       # Bagwell HAMT
+      cf_semi_persistent.jl         # Conchon-Filliâtre semi-persistent map
+      hashcons_jenkins.jl           # Mogensen Jenkins-96 reversible hash
+      hashcons_feistel.jl           # Feistel-based hash for hash-consing
+      popcount.jl                   # pure-integer popcount (HAMT helper)
+
+  test/                             # 143 test/*.jl files / ~67k assertions / ~200 testsets / ~5 min cold Pkg.test
+    runtests.jl                     # canonical registration order
+                                    # Conventions:
+                                    #   test_<beadid>_*.jl    per-bead regression file (~50 files)
+                                    #   test_<topic>.jl       pipeline / feature / metrics tests
+                                    # Set BENNETT_T5_TESTS=0 to skip the multi-language corpus subset
+                                    # (Julia / C via clang / Rust via rustc; clang+rustc self-skip if absent)
+
+  benchmark/                        # bc{1..6}_*.jl + sweep + run_benchmarks scripts; outputs feed BENCHMARKS.md
+  scripts/
+    pre-push                        # git hook: runs Pkg.test() before push (per §14, replaces GitHub CI)
+    install-hooks.sh                # installs pre-push into .git/hooks/
+    fetch_t5_springer.mjs           # fetches T5 multi-language test corpus from Springer
+  build/                            # T5 corpus .ll/.bc fixtures (NOT a build-artifact directory)
+  docs/
+    prd/                            # versioned per-version PRDs (Bennett-PRD v0.1, BennettIR-PRD v0.2, ...)
+    src/                            # Documenter-shaped source (no docs/make.jl yet — Bennett-doh6 / U158)
+    design/                         # 3+1 proposer outputs + consensus docs (historical snapshots — do not mutate)
+    literature/                     # SURVEY.md + paper PDFs (memory tier, multiplication, arithmetic)
+    memory/                         # T1/T2/T3 design docs for the memory plan
+  reviews/                          # frozen audit snapshots (e.g. 2026-04-21/19-agent review → UNIFIED_CATALOGUE.md)
 ```
 
 ## Build & Test
