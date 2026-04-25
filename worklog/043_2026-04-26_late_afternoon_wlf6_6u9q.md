@@ -1,5 +1,70 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-26 (night) — ardf close + 9c4o investigation in flight
+
+**Shipped:** see `git log` `b52351f..2cd5c06` (2 commits). One bead closed, one bead's investigation pre-staged for next session.
+
+| Bead | What |
+|---|---|
+| **Bennett-ardf** P3 / U138 (BUG) | Two threads in one bead: (1) replaced unused `_overflow_result` binding in `src/softfloat/fdiv.jl:82` with `_` (explicit discard) — the 2nd return position from `_sf_round_and_pack` was dead because the overflow flags fire `inf_result` directly via the select chain at lines 87–95; (2) added strict-bit-level NaN regression tests for `soft_floor` / `soft_ceil` / `soft_trunc` in new `test_ardf_floor_ceil_nan.jl`. 73 asserts cover 8 NaN bit patterns (canonical qNaN ±, qNaN-with-payload, sNaN that gets quieted, arbitrary payloads). Each fn round-trips bit-exactly through `Base.floor`/`ceil`/`trunc`. Existing `test_soft_fround.jl` only had `if isnan(expected); @test isnan(result)` round-trip checks — never asserted bit-exact NaN preservation. |
+
+**In flight (claimed but not landed) — Bennett-9c4o / U89:** lower.jl forward-refs symbols from modules included AFTER it in `src/Bennett.jl`. Investigation done; the actual code-call dependencies are:
+
+- `divider.jl`: provides `soft_udiv` / `soft_urem` (lower_binop! at line 1578 references these via the callee dispatcher).
+- `softmem.jl`: provides `soft_mux_load_*` / `soft_mux_store_*` / `soft_mux_store_guarded_*` (lower_load!/store! M2b paths).
+- `qrom.jl`: provides `_emit_qrom_from_gep!` (lower_var_gep! at line 1700 calls into it).
+- `shadow_memory.jl`: provides `emit_shadow_load!` / `emit_shadow_store!` / `emit_shadow_store_guarded!` (lower_store! shadow paths).
+- `mul_qcla_tree.jl`: provides `lower_mul_qcla_tree!` (lower_binop! mul-strategy dispatcher at line 1260).
+
+None of these forward-ref'd modules call BACK into lower.jl at code level (some have docstring mentions only). Reorder plan: move `lower.jl` from include position 13 to AFTER divider/softmem/qrom/shadow_memory/mul_qcla_tree (and their support files like fast_copy/partial_products/parallel_adder_tree). This is safe because:
+
+- adder/qcla/multiplier are called by lower.jl's strategy dispatchers and stay BEFORE lower.jl (current position).
+- `tabulate.jl` constructs `LoweringResult` so MUST come after lower.jl (currently at line 28; stays AFTER).
+- `bennett_transform.jl`, `simulator.jl`, etc. consume LoweringResult and stay after.
+
+Bennett-9c4o is left **claimed** so the next agent can pick up from this analysis. The actual edit is a one-block include-list reorder in `src/Bennett.jl`. Risk: subtle Revise / precompile interactions with the new order — Pkg.test should catch any. Recommend the next session run Pkg.test BEFORE and AFTER the reorder to confirm nothing depends on the OLD order.
+
+**Why:** continuation of catalogue grind. ardf was a clean two-part fix (dead-code + missing test). 9c4o investigation took the session's runway; punting the implementation to a fresh session is the right call rather than hurrying it.
+
+**Gotchas / Lessons:**
+
+- **Bead-cited line numbers go stale fast.** ardf cited "src/softfloat/fdiv.jl:82-87" — line 82 was correct (the `_overflow_result` site) but the actual code occupied lines 81-83 not 82-87. 9c4o cited "src/lower.jl:1140, 1458, 1935, 1941, 2260" — none of those line numbers had relevant content; the actual forward-refs were at 1260, 1578, 1700, 1854, 1875, etc. *Pattern*: when triaging a bead with line-numbers, grep for the symbol-of-interest, NOT the line numbers. Line numbers are write-once-read-stale.
+
+- **Julia's late-binding lets forward-refs work but breaks single-file loadability.** Globals are resolved at function-call time, not parse time. So lower.jl's `soft_udiv` reference at line 1578 works as long as `soft_udiv` is defined by the time `lower_divrem!` is CALLED. The cost: lower.jl can't be standalone-loaded for testing or REPL inspection without first loading the entire dependency stack. The 9c4o fix restores that property by putting all referenced modules BEFORE lower.jl.
+
+- **Comments containing function names trigger string-search false positives.** First grep for `lower_var_gep` in qrom.jl found a hit, but the hit was a docstring mention ("Dispatch helper invoked by `lower_var_gep!` ..."). No actual call site. *Pattern*: when checking dependencies, always look at the matching LINE — docstring mentions don't create code-level dependencies.
+
+- **Strict-bits NaN test for soft_floor/ceil revealed they were correct all along.** Wrote the regression test, ran it, all 73 asserts passed first try. The bead's claim was "untested" not "wrong" — and the existing implementation chains through soft_trunc → soft_fadd which already has strict-bits NaN coverage from Bennett-r84x. Pure coverage gap fill.
+
+- **Bead-level scope can usefully split into "easy" and "more serious" within ONE bead.** ardf had two distinct concerns (dead binding fix + missing tests). Both shipped in one bead-close + one commit. Some beads have a similar shape; reading the description carefully reveals separable threads.
+
+**Rejected alternatives:**
+
+- **Doing the 9c4o include-reorder this session.** Would have squeezed it into the available runway but required an extra full Pkg.test cycle (~5 min) plus careful verification. Better to land the analysis and let the next session execute cleanly.
+
+- **Adding a reordering test for 9c4o.** The actual invariant the include order encodes is "every symbol referenced by `lower.jl` must be defined by the end of `Bennett.jl`'s `include(\"lower.jl\")` call". This is hard to assert without running the module load — Pkg.test does that organically. No new test needed for the reorder.
+
+- **Replacing the dead `_overflow_result` with a runtime assertion** that `_overflow_result == inf_result` whenever the overflow flag fires. Tempting (would catch a future inconsistency in `_sf_round_and_pack`'s contract) but adds branchy code to a hot path. The select chain already handles the overflow cleanly via `inf_result`; a redundant check would buy nothing meaningful.
+
+**Next agent starts here:**
+
+1. **Branch state at session-end**: `2cd5c06` on main, pushed. Worklog top is **this** entry; chunk 043 is now ~270 lines. Approaching the 280 cap; chunk 044 likely starts next session.
+
+2. **Catalogue progress this session (1 close, 1 in-flight)**: ~126 → ~125 ready remaining (ardf closed; 9c4o still claimed). Cumulative for the day's grind = 28 closes (6t8s through ardf). Test count growth: +678 across 18 new test files. Pkg.test count: 73068/73071 (3 broken).
+
+3. **Next agent: pick up Bennett-9c4o** by executing the include reorder per the analysis above. Concretely: cut `include("lower.jl")` from `src/Bennett.jl:13` and re-paste it after `include("mul_qcla_tree.jl")` (currently line 35). Run Pkg.test. If green, ship. If something breaks, the most likely culprit is a missing `softfloat/softfloat.jl` ordering — softfloat may need to be loaded BEFORE softmem (which uses `soft_fadd`), and softmem must be before lower.
+
+4. **Quick wins still on the menu** (each ~30-90 min, no 3+1 needed):
+   - **Bennett-vpch** U45 — 190+ `error()` → typed exceptions.
+   - **Bennett-zpj7** U160 — pebbling/eager file rename.
+   - **Bennett-doh6** U158 — docs/make.jl absent.
+   - **Bennett-qjet** P3 — empirical timing reorder.
+   - **Bennett-mggz** U92 — ParsedIR._instructions_cache compat hack.
+
+5. **3+1-protected real bugs still open** (unchanged): jepw, 25dm, 5qrn, zmw3, y986, 3of2, p94b. zmw3 bumped 14 sessions running.
+
+---
+
 ## Session log — 2026-04-26 (late evening) — kcxv + op6a + b2fs closes (3 in one slot — duplicate close, docstring fix, tabulate Vector{Any} → Tuple)
 
 **Shipped:** see `git log` `d18e0af..542bdcd` (4 commits). Three beads closed.
