@@ -232,6 +232,9 @@ include("test_persistent_interface.jl")
 include("test_uoem_research_relocation.jl")
 # Bennett-ve3m / U165 — peak_live_wires line in print_circuit summary.
 include("test_ve3m_show_peak_live_wires.jl")
+# Bennett-ivoa / U121 + Bennett-e89s / U120 — harness persistence/key=0
+# invariants and absent-vs-stored-zero collision contract pin.
+include("test_ivoa_harness_invariants.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).

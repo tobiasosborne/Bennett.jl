@@ -33,9 +33,14 @@ function verify_pmap_correctness(impl::PersistentMapImpl;
     K, V = impl.K, impl.V
 
     # Default test sequence: a few inserts + an overwrite + lookups.
+    # Bennett-ivoa / U121: k=0 is included as a STORED key (not just
+    # probed as absent below) so impls that special-case key=0 as a
+    # slot-unused sentinel — a known anti-pattern — surface here.
     if test_pairs === nothing
-        # Pick keys/values inside K/V range, capped at max_n
-        ks = collect(K, K(1):K(min(impl.max_n, typemax(K))))
+        # Pick keys 0..max_n-1 (so K(0) is always among the stored keys),
+        # values from V(11) onward.  Capped to typemax(K) on narrow K.
+        last_k = K(min(impl.max_n - 1, typemax(K)))
+        ks = collect(K, K(0):last_k)
         vs = collect(V, V(11):V(11+length(ks)-1))
         test_pairs = collect(zip(ks, vs))
     end
@@ -91,6 +96,53 @@ end
 # CLAUDE.md §5.  Each per-impl test file defines its OWN top-level demo
 # function (3 sets + 1 get) using its impl's protocol functions.  See
 # test/test_persistent_interface.jl `_ls_demo` for the template.
+
+"""
+    verify_pmap_persistence_invariant(impl::PersistentMapImpl) -> Bool
+
+Verify the persistent contract: `pmap_set` returns a NEW state and the
+old snapshot remains unchanged.  Bug class this catches: an impl that
+mutates underlying storage (Ref, Vector, Dict) silently breaks
+persistence even though `pmap_set` and `pmap_get` look correct in
+isolation.
+
+Sequence: insert (k, v_old), snapshot the state, overwrite (k, v_new),
+then assert `pmap_get(state_old, k) == v_old`.  Throws on violation,
+returns `true` on success.
+
+Filed as Bennett-ivoa / U121 — the original harness exercised the
+return value of `pmap_set` (correct) but never checked the input value
+(silently buggy in a mutating impl).
+"""
+function verify_pmap_persistence_invariant(impl::PersistentMapImpl)
+    K, V = impl.K, impl.V
+    k = K(1)
+    v_old = V(11)
+    v_new = V(99)
+
+    s0 = impl.pmap_new()
+    s1 = impl.pmap_set(s0, k, v_old)
+    s2 = impl.pmap_set(s1, k, v_new)
+
+    got_old = impl.pmap_get(s1, k)
+    got_old == v_old ||
+        error("verify_pmap_persistence_invariant($(impl.name)): old snapshot ",
+              "mutated by subsequent pmap_set — got $got_old, expected $v_old. ",
+              "Impl is not persistent.")
+
+    got_new = impl.pmap_get(s2, k)
+    got_new == v_new ||
+        error("verify_pmap_persistence_invariant($(impl.name)): new snapshot ",
+              "lookup wrong — got $got_new, expected $v_new.")
+
+    got_empty = impl.pmap_get(s0, k)
+    got_empty == zero(V) ||
+        error("verify_pmap_persistence_invariant($(impl.name)): empty snapshot ",
+              "lookup leaked — got $got_empty, expected $(zero(V)). ",
+              "Impl is mutating pmap_new()'s state.")
+
+    return true
+end
 
 """
     pmap_demo_oracle(K, V, k1, v1, k2, v2, k3, v3, lookup) -> V

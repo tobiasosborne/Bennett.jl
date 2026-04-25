@@ -23,6 +23,15 @@
 #     pmap_get(pmap_set(s, k, v2), k)    == v2     # latest write wins
 #     pmap_get(pmap_set(s, k1, v), k2)   == pmap_get(s, k2)   for k1 ≠ k2
 #
+# **By-design collision (Bennett-e89s / U120):** the protocol's value-only
+# return type means "key absent" and "key present with stored value zero(V)"
+# are INDISTINGUISHABLE — both yield `zero(V)`.  This is intentional: the
+# branchless protocol cannot return Option/Maybe without inflating every
+# consumer's gate count and breaking the no-data-dependent-branch
+# invariant.  Callers that need to distinguish absent from stored-zero
+# must reserve either a key sentinel (e.g. K=typemin meaning "no entry")
+# or a value sentinel — both are caller-side concerns.
+#
 # After max_n distinct keys have been inserted, behaviour is impl-defined:
 #   * Okasaki may rebalance into deeper tree
 #   * HAMT may demote a BitmapIndexedNode → ArrayNode

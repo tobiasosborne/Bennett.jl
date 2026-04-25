@@ -72,6 +72,11 @@ end
 Scan slots 0..max_n-1.  Return the value of the LATEST slot whose key
 matches `k`, or zero(Int8) if no slot matches.  Branchless: every slot
 is examined; result is folded via `ifelse(match, slot_v, acc)`.
+
+By-design collision (Bennett-e89s / U120): a stored value of `Int8(0)`
+returns `Int8(0)`, the same value as an absent-key lookup.  Callers
+that need to distinguish absent-from-stored-zero must use a key or
+value sentinel — see `interface.jl` protocol contract.
 """
 @inline function linear_scan_pmap_get(s::LinearScanState, k::Int8)::Int8
     k_u = UInt64(reinterpret(UInt8, k))
