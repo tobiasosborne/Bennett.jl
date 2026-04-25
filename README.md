@@ -270,9 +270,15 @@ All papers downloaded to `docs/literature/` with claims verified against text.
 
 ## Project status
 
-Memory plan critical path **complete**: four memory strategies (MUX EXCH, QROM, Feistel, Shadow) plus universal dispatcher, plus MemorySSA ingest, plus comprehensive benchmarks. See `WORKLOG.md` session log for per-task detail.
+**Memory plan critical path complete** (2026-04 mid): four memory strategies (MUX EXCH, QROM, Feistel, Shadow) plus universal dispatcher, MemorySSA ingest, and full SHA-256 (BC.3) shipped. See `WORKLOG.md` and `BENCHMARKS.md` for per-task detail.
 
-Next focus areas (per `Bennett-VISION-PRD.md`): Sturm.jl integration for quantum control (`when(qubit) do f(x) end`), full SHA-256 benchmark (BC.3), Julia EscapeAnalysis integration (T0.3), `@linear` macro for in-place-linear functions (T2b).
+**Active workstreams:**
+
+- **T5 — persistent hash-consed heap** (universal-fallback memory tier). Phases P3 (three persistent-map impls: Okasaki RBT, Bagwell HAMT, Conchon-Filliâtre semi-persistent), P4 (hash-cons compression: Mogensen Jenkins-96 + Feistel-perfect-hash), and P5 (multi-language LLVM IR ingest via `.ll` + `.bc`) all shipped. **P6 dispatcher is the current frontier** (`Bennett-z2dj`, in-progress) — gated on a delete-vs-archive ruling for losing-strategy impls (`Bennett-uoem` / U54).
+- **Advanced-arithmetic primitives** — Draper-Kutin-Rains-Svore 2004 QCLA adder (`src/qcla.jl`) and Sun-Borissov 2026 polylogarithmic-depth multiplier (`src/mul_qcla_tree.jl` + `partial_products.jl` + `parallel_adder_tree.jl` + `fast_copy.jl`) all shipped.
+- **Catalogue grinding** — A 19-agent code review on 2026-04-21 produced a unified catalogue of 173 issues (`reviews/2026-04-21/UNIFIED_CATALOGUE.md`). ~40 closed; the rest range from snack-sized doc fixes to multi-session 3+1 refactors.
+
+**Future focus** (per `Bennett-VISION-PRD.md`): Sturm.jl integration for quantum control (`when(qubit) do f(x) end`); Julia EscapeAnalysis integration (T0.3 / `Bennett-glh`); `@linear` macro for in-place-linear functions (T2b); structural refactors of `lower.jl` and `ir_extract.jl` (catalogue items U40/U41/U43/U55/U69).
 
 ## License
 

@@ -1,5 +1,46 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-25 — Bennett-jppi deferred, Bennett-p1h1 README Project-status refresh
+
+**Bennett-jppi (U50) deferred via notes** — Project.toml version/compat
+"drift" turns out to mix four release-decision sub-scopes (version bump,
+Julia floor bump from 1.6 → 1.10, LLVM pin loosen, CHANGELOG.md
+back-fill) plus one shared-state op (`git rm --cached Manifest.toml`).
+None is mechanical doc work; each needs user judgment / a 0.5.0 release
+sprint. Recorded the reasoning in bd notes; bead remains open as a
+release-readiness item, not a doc-snack.
+
+**Bennett-p1h1 (U153) — README Project-status section refresh.** Old
+section claimed Memory plan was the active critical path with
+SHA-256/T0.3/T2b/Sturm as "next focus" — but BC.3 (full SHA-256) had
+already shipped 2026-04-13 and the Memory plan completed shortly after,
+so the "active" framing was about 2 weeks behind reality.
+
+Per ground-truth-first: cross-checked each phase claim against WORKLOG
+entries before writing:
+- T5-P3a-d (Bennett-isab, mcgk, a7zy, 6thy) shipped 2026-04-17
+- T5-P4a-b (Bennett-gv8g, 7pgw) shipped 2026-04-17
+- T5-P5a-b (Bennett-lmkb, f2p9) shipped 2026-04-21
+- T5-P6 dispatcher (Bennett-z2dj) IN_PROGRESS, gated on Bennett-uoem/U54
+- Advanced-arithmetic (qcla.jl, mul_qcla_tree.jl + 3 building-block files)
+  shipped per 2026-04-14 advanced-arithmetic entry
+- Catalogue: 19-agent code review on 2026-04-21 → 173 issues; ~40 closed
+  (WORKLOG's 35 baseline + 5 from this doc-work session: ji9n, 1jmu,
+  12bf, c016, vlab)
+
+New section retains "Memory plan complete + BC.3 shipped" as the
+historical anchor (still true and informative), then surfaces three
+active workstreams (T5, advanced-arithmetic, catalogue) and revises
+Future focus to mention only live beads (T0.3/Bennett-glh, structural
+refactor U40/U41/U43/U55/U69) plus the long-term Sturm.jl integration
+goal.
+
+Six doc beads shipped this session: ji9n, 1jmu, 12bf, c016, vlab, p1h1.
+One deferred (jppi). Pkg.test green twice today. CLAUDE.md no longer
+internally contradicts; CLAUDE.md File Structure block reflects reality;
+README test-suite-time + Project-status both refreshed; six exported API
+names now have real docstrings.
+
 ## Session log — 2026-04-25 — Bennett-vlab CLAUDE.md File Structure refresh
 
 Doc-work bead #5 — closes the last remaining piece of Bennett-vlab (other
