@@ -239,6 +239,9 @@ include("test_ivoa_harness_invariants.jl")
 # checks (post-U08).  Caught a real bug in soft_fsub's NaN-RHS sign
 # propagation; fix shipped in src/softfloat/fsub.jl in the same commit.
 include("test_m63k_softfloat_strict_bits.jl")
+# Bennett-9x75 / U61 — raw-bits fuzz across the full UInt64 input space
+# for fadd/fsub/fmul/fdiv/fma/fsqrt (5000 each, ~30k strict-bit asserts).
+include("test_9x75_softfloat_raw_bits_sweep.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).
