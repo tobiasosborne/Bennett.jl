@@ -54,4 +54,16 @@ const _PUBLIC_API = Set(names(Bennett))
         end
     end
 
+    @testset "Bagwell HAMT + popcount helper relocated to research/" begin
+        # popcount.jl is a HAMT-only helper — moves with HAMT.
+        @test isfile(joinpath(_RES_DIR, "hamt.jl"))
+        @test isfile(joinpath(_RES_DIR, "popcount.jl"))
+        @test !isfile(joinpath(_PROD_DIR, "hamt.jl"))
+        @test !isfile(joinpath(_PROD_DIR, "popcount.jl"))
+        for sym in (:HAMT_IMPL, :hamt_pmap_new, :hamt_pmap_set, :hamt_pmap_get,
+                    :soft_popcount32)
+            @test sym ∉ _PUBLIC_API
+        end
+    end
+
 end

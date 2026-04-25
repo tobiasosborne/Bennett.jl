@@ -172,10 +172,9 @@ include("test_g27k_cc03_catch_narrow.jl")
 # Bennett-6fg9 / U19 — simulate arity + per-input bit-width guard (was:
 # silent drop of extra tuple elements, silent wrap of over-wide values).
 include("test_6fg9_simulate_arity.jl")
-# Bennett-hmn0 / U20 — HAMT 9th-distinct-hash-slot overflow guard (was:
-# silent key loss + bitmap desync). Correctness cost ~26% gates; HAMT
-# is on the U79 EoL shortlist.
-include("test_hmn0_hamt_overflow.jl")
+# Bennett-hmn0 / U20 — HAMT 9th-distinct-hash-slot overflow guard.
+# Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT relocated).
+# include("test_hmn0_hamt_overflow.jl")  # → moved into research gate below
 # Bennett-n3z4 / U21 — cf_reroot was-allocated flag fix.  Gated behind
 # BENNETT_RESEARCH_TESTS as of U54 cycle 2 (CF relocated to research/).
 # include("test_n3z4_cf_reroot_key_zero.jl")  # → moved into research gate below
@@ -221,7 +220,9 @@ include("test_persistent_interface.jl")
 # Runs unconditionally; research-tier impls themselves are gated below.
 include("test_uoem_research_relocation.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
-include("test_persistent_hamt.jl")
+# Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
+# relocated to research/).
+# include("test_persistent_hamt.jl")  # → moved into research gate below
 # T5-P3d — Conchon-Filliâtre semi-persistent (Bennett-6thy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 2.
 # include("test_persistent_cf.jl")  # → moved into research gate below
@@ -254,6 +255,10 @@ if get(ENV, "BENNETT_RESEARCH_TESTS", "0") != "0"
     include("test_persistent_cf.jl")
     # Bennett-n3z4 / U21 — CF reroot key=0 regression (rides with CF).
     include("test_n3z4_cf_reroot_key_zero.jl")
+    # T5-P3c — Bagwell HAMT + popcount (relocated 2026-04-25 / U54).
+    include("test_persistent_hamt.jl")
+    # Bennett-hmn0 / U20 — HAMT 9th-distinct-hash overflow regression.
+    include("test_hmn0_hamt_overflow.jl")
     # T5-P4 — Hash-cons layered demos.  Cycle 5 will split the Feistel-only
     # standalone coverage back to the default path; for now the whole file
     # rides under the research gate because 6/6 layered demos and the

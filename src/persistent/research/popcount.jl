@@ -1,5 +1,11 @@
 # ---- Bagwell CTPop — reversible-friendly branchless popcount (T5-P3c) ----
 #
+# RESEARCH-TIER: relocated from src/persistent/ on 2026-04-25 per
+# Bennett-uoem / U54.  Not loaded by `using Bennett`; not exported.
+# Sole live consumer was hamt.jl (also relocated).  See
+# src/persistent/research/README.md for the literate deprecation
+# rationale and thaw conditions.
+#
 # Translates Bagwell 2001 Fig. 2 p. 3 verbatim into pure Julia.
 # Original C:
 #

@@ -40,8 +40,8 @@ export PersistentMapImpl, AbstractPersistentMap, verify_pmap_correctness, pmap_d
 # src/persistent/research/okasaki_rbt.jl (2026-04-25).
 # Bennett-uoem / U54: CF_IMPL + cf_pmap_*/cf_reroot relocated to
 # src/persistent/research/cf_semi_persistent.jl (2026-04-25).
-export soft_popcount32
-export HAMT_IMPL, hamt_pmap_new, hamt_pmap_set, hamt_pmap_get
+# Bennett-uoem / U54: HAMT_IMPL + hamt_pmap_*/soft_popcount32 relocated to
+# src/persistent/research/{hamt,popcount}.jl (2026-04-25).
 # Bennett-uoem / U54: soft_jenkins96 + soft_jenkins_int8 relocated to
 # src/persistent/research/hashcons_jenkins.jl (2026-04-25).
 export soft_feistel32, soft_feistel_int8

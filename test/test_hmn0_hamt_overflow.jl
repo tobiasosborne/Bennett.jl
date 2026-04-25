@@ -1,6 +1,10 @@
 using Test
 using Bennett
-using Bennett: hamt_pmap_new, hamt_pmap_set, hamt_pmap_get
+
+# Bennett-uoem / U54 — HAMT was relocated to src/persistent/research/ on
+# 2026-04-25; this regression test rides under BENNETT_RESEARCH_TESTS.
+include(joinpath(pkgdir(Bennett), "src", "persistent", "research", "popcount.jl"))
+include(joinpath(pkgdir(Bennett), "src", "persistent", "research", "hamt.jl"))
 
 # Bennett-hmn0 / U20 — `hamt_pmap_set` silently lost the 9th
 # distinct-hash key. With 8 hash slots filled (bitmap popcount == 8),

@@ -18,15 +18,22 @@
 using Test
 using Bennett
 
+# Bennett-uoem / U54 — HAMT + popcount were relocated to
+# src/persistent/research/ on 2026-04-25 and are no longer auto-loaded by
+# `using Bennett`.  Pull them in explicitly (popcount first — hamt depends
+# on `soft_popcount32`).  See src/persistent/research/README.md.
+include(joinpath(pkgdir(Bennett), "src", "persistent", "research", "popcount.jl"))
+include(joinpath(pkgdir(Bennett), "src", "persistent", "research", "hamt.jl"))
+
 # Top-level demo function — LLVM IR extraction requires top-level (not closure)
 # definitions per CLAUDE.md §5.
 function _hamt_demo(k1::Int8, v1::Int8, k2::Int8, v2::Int8,
                     k3::Int8, v3::Int8, lookup::Int8)::Int8
-    s = Bennett.hamt_pmap_new()
-    s = Bennett.hamt_pmap_set(s, k1, v1)
-    s = Bennett.hamt_pmap_set(s, k2, v2)
-    s = Bennett.hamt_pmap_set(s, k3, v3)
-    return Bennett.hamt_pmap_get(s, lookup)
+    s = hamt_pmap_new()
+    s = hamt_pmap_set(s, k1, v1)
+    s = hamt_pmap_set(s, k2, v2)
+    s = hamt_pmap_set(s, k3, v3)
+    return hamt_pmap_get(s, lookup)
 end
 
 @testset "T5-P3c — HAMT + reversible popcount" begin

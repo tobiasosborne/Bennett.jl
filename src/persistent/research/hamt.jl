@@ -1,5 +1,11 @@
 # ---- Bagwell HAMT persistent map — reversible popcount variant (T5-P3c) ----
 #
+# RESEARCH-TIER: relocated from src/persistent/ on 2026-04-25 per
+# Bennett-uoem / U54.  Not loaded by `using Bennett`; not exported.
+# This file depends on `soft_popcount32` from popcount.jl — load that
+# first when using ad-hoc.  See src/persistent/research/README.md for
+# the literate deprecation rationale and thaw conditions.
+#
 # Implements a single-level Bagwell Hash Array Mapped Trie (HAMT) as a pure
 # Julia branchless function suitable for `reversible_compile`.
 #

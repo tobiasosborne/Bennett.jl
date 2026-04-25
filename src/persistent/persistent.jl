@@ -9,8 +9,6 @@
 include("interface.jl")
 include("linear_scan.jl")
 include("harness.jl")
-include("popcount.jl")
-include("hamt.jl")
 include("hashcons_feistel.jl")
 
 # Bennett-uoem / U54 — relocated to research/ (preserved, not loaded by
@@ -18,3 +16,4 @@ include("hashcons_feistel.jl")
 #   - okasaki_rbt.jl         (2026-04-25)
 #   - cf_semi_persistent.jl  (2026-04-25)
 #   - hashcons_jenkins.jl    (2026-04-25)
+#   - hamt.jl + popcount.jl  (2026-04-25; popcount is HAMT-only)
