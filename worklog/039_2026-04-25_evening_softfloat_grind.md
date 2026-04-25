@@ -1,5 +1,47 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-25 (late evening) — Bennett-ca0i investigation surfaces 2 latent regressions (P1 + P2)
+
+**Shipped:** commits `c7d1144` (8-file dead-call cleanup) and `94a14b2` (bd state). Bennett-ca0i closed; Bennett-sng9 (P1) and Bennett-sg0w (P2) filed. No production code change.
+
+**Why:** picked up Bennett-ca0i (U02-followup, value_eager SHA-256 leak) per worklog 039 §4 hand-off. The bead's RED evidence pointed at `test_value_eager.jl:158` SHA-256 round failing `verify_reversibility`. Investigation found the bug **already fixed** by U27 (Bennett-spa8, `add=:auto`→`:ripple`) — the test had been upgraded from `@test_broken` to `@test` weeks ago and a comment at line 167-174 explicitly notes ca0i was resolved as a side-effect. 1558/1558 assertions in test_value_eager.jl green today.
+
+**Two latent regressions surfaced during the investigation:**
+
+1. **Bennett-sng9 (P1, NEW) — `.git/hooks/pre-push` is not installed.** This is the hook that runs `Pkg.test()` on every `git push` per CLAUDE.md §14 (the local replacement for the rejected GitHub CI). It's missing in this checkout. Result: every push since at least U42's commit `142bcf1` (2026-04-25 14:49) — which includes all of today's bead-grind pushes — succeeded WITHOUT running the test suite. The "Pkg.test green" claims in worklog 038 evening + 039 evening hand-offs are unverified. Fix: user runs `scripts/install-hooks.sh` once.
+
+2. **Bennett-sg0w (P2, NEW) — Karatsuba is 3.5× slower than schoolbook on Int8.** `test_karatsuba.jl:30` asserts `gc_karat.Toffoli < gc_school.Toffoli`; current measurement is **502 vs 144** Toffoli. Pre-existing failure that the missing pre-push hook had been masking. Probable cause: U27's ripple-carry default flip inflated Karatsuba's per-recursion adders without changing schoolbook's. Fix candidates in the bead.
+
+**Cleanup as a side-effect:** U42 (Bennett-cs2f, commit `142bcf1`) deleted the no-op `_reset_names!()` stub from `src/ir_extract.jl` with the close note "Verified zero external references via repo-wide grep before deletion." The grep missed 8 test files that still call `Bennett._reset_names!()`: `test_eager_bennett`, `test_karatsuba`, `test_constant_fold`, `test_value_eager`, `test_pebbling`, `test_pebbled_wire_reuse`, `test_pebbled_space`, `test_sha256_full`. All 8 cleaned up in `c7d1144` — the calls were vestigial (stub had been a no-op since the per-compilation counter landed). Verified 7/8 files green standalone post-cleanup; `test_karatsuba.jl` 442/443 (the 1 failure is the pre-existing sg0w gate-count regression, not my change).
+
+**Gotchas / Lessons:**
+
+- **A "successful push" doesn't mean Pkg.test passed.** Without `.git/hooks/pre-push` installed, `git push` just talks to the remote; nothing runs locally first. CLAUDE.md §14 says quality checks run locally via the hook + `Pkg.test` per commit (rule 8) — but that only works if the hook is actually present. **Future agents must verify `.git/hooks/pre-push` exists** before claiming "Pkg.test green via pre-push hook"; if it's missing, run `scripts/install-hooks.sh` or run `julia --project -e 'using Pkg; Pkg.test()'` manually.
+
+- **Bead "RED evidence" goes stale.** ca0i was filed 2026-04-22 against a then-RED `@test_broken`. Three days later (U27, today's morning, etc.), unrelated work had silently fixed the bug, the test was upgraded to `@test`, and a comment was added documenting the resolution — but the bead was never closed. Verifying the bead's RED evidence still applies *before* investigating saved the time of an actual root-cause hunt. **Procedure**: read the cited test file's current state first, then decide whether the investigation is still warranted.
+
+- **The "8 dead-call regression" is a small but instructive example of incomplete-grep-during-deletion.** U42 ran a `grep` and saw zero hits (probably `grep _reset_names src/` rather than `grep -rn _reset_names .`) — and that one-character omission left 8 callers stranded. Combined with the missing pre-push hook, the regression went unnoticed for half a day. **Procedure for future deletion-of-symbol PRs**: always grep `-rn` from the repo root, not just `src/`, AND include `test/` + `benchmark/` + `docs/` + `scripts/`.
+
+**Rejected alternatives:**
+
+- **Restore `_reset_names!()` as a no-op stub** in src/ir_extract.jl. Rejected: U42's underlying judgement was correct — the stub had been a no-op since the per-compilation counter landed. The right fix is removing the dead callers, not preserving the dead stub for backward compatibility with code that doesn't need it.
+
+- **Run `scripts/install-hooks.sh` autonomously.** Rejected: installing a git hook is a user-environment change; per CLAUDE.md "Executing actions with care", confirm first. Filed Bennett-sng9 P1 instead so the user can install it next session.
+
+- **Investigate the SHA-256 leak even though tests pass.** Rejected: that would be chasing a phantom — the bead's RED evidence is gone, the comment at test_value_eager.jl:167-174 documents *why* it's gone, and 1558/1558 assertions agree. Investigation hours spent here are zero-value vs the catalogue's 159 remaining ready beads.
+
+**Next agent starts here:**
+
+1. **CRITICAL: install the pre-push hook before doing anything else.** `bash scripts/install-hooks.sh` (or whatever the script calls itself). Then verify `.git/hooks/pre-push` exists. Until that's done, any "Pkg.test green" claim is unverified — fall back to running `julia --project -e 'using Pkg; Pkg.test()'` manually for any non-trivial change.
+
+2. **Bennett-sng9 P1** — see above. Also worth: add a sanity check at the top of `test/runtests.jl` that warns if the hook isn't installed (one-line `isfile(".git/hooks/pre-push") || @warn ...`), and document the symptom in CLAUDE.md §14.
+
+3. **Bennett-sg0w P2** — Karatsuba Int8 regression. Likely cause is U27's ripple-carry default flip inflating Karatsuba's internal adders. Quickest fix is bumping the Karatsuba crossover threshold to Int16 (or Int32) and asserting only that Karatsuba *eventually* beats schoolbook on wider widths.
+
+4. **Branch state at session-end**: `94a14b2` on main, pushed (no hook ran — see #1).  Worklog top is **this** entry; chunk now ~95 lines.
+
+---
+
 ## Session log — 2026-04-25 (evening) — catalogue grind continued, 12 closes + 4 defers, soft_fsub NaN bug fixed
 
 **Shipped:** see git log around `0ca9218..b2c0516`. Twelve beads closed (ve3m, fa4g, ivoa, e89s, tzga, sqtd, hmn0, n3z4, wout, m63k, fnxg, 9x75) plus four research-tier defers to 2026-10-25 (uxn2, jvpm, okvg, d1io). One real soft-float bit-exactness bug discovered + fixed inline.
