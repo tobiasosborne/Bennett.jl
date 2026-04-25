@@ -3,6 +3,8 @@ function lower_add!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                     a::Vector{Int}, b::Vector{Int}, W::Int)
     result = allocate!(wa, W)
     carry  = allocate!(wa, W)
+    # Bennett-5kio / U109: 3 CNOTs per i + 2 Toffolis for i<W = 5W - 2 gates.
+    sizehint!(gates, length(gates) + 5 * W)
     for i in 1:W
         push!(gates, CNOTGate(a[i], result[i]))
         push!(gates, CNOTGate(b[i], result[i]))
@@ -33,6 +35,9 @@ function lower_add_cuccaro!(gates::Vector{ReversibleGate}, wa::WireAllocator,
 
     # Allocate single ancilla X (initial carry c_0 = 0)
     X = allocate!(wa, 1)
+    # Bennett-5kio / U109: phase-1 MAJ ripple = 3 + 3(W-2) gates; high-bit
+    # CNOT pair = 2; phase-3 UMA ripple = 3(W-2) + 3 gates. Total ≈ 6W - 4.
+    sizehint!(gates, length(gates) + 6 * W)
 
     # MAJ gate: CNOT(c,b); CNOT(c,a); Toffoli(a,b,c)
     # Transforms (c_i, b_i, a_i) → (c_i ⊕ a_i, b_i ⊕ a_i, c_{i+1})
@@ -83,6 +88,9 @@ end
 function lower_sub!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                     a::Vector{Int}, b::Vector{Int}, W::Int)
     not_b = allocate!(wa, W)
+    # Bennett-5kio / U109: 2W gates for ~b; carry_in = 1 NOTGate; then
+    # adder body 5W - 2 gates ⇒ ~7W total.
+    sizehint!(gates, length(gates) + 7 * W + 1)
     for i in 1:W
         push!(gates, CNOTGate(b[i], not_b[i]))
         push!(gates, NOTGate(not_b[i]))

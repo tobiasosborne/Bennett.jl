@@ -313,6 +313,12 @@ include("test_wlf6_jldoctest_fences.jl")
 # (norm preserved), and (c) the canonical |0⟩+|1⟩ superposition that
 # Sturm's `when(qubit) do f(x) end` would lower into.
 include("test_6u9q_quantum_vision_integration.jl")
+# Bennett-5kio / U109 — sizehint! before push! loops in adder.jl,
+# multiplier.jl, qcla.jl avoids O(log₂N) intermediate-vector
+# reallocations on multi-thousand-gate paths. Pin the static presence
+# of the hints + the canonical gate-count baselines (no behavioural
+# drift).
+include("test_5kio_sizehint_arithmetic.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).

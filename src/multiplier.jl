@@ -13,6 +13,11 @@ When result_width == 2W: full product without truncation.
 function lower_mul_wide!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                          a::Vector{Int}, b::Vector{Int}, W::Int, result_width::Int)
     accum = allocate!(wa, result_width)
+    # Bennett-5kio / U109: each outer iter pushes ≤W Toffolis (partial-prod
+    # AND-tree) + lower_add! (~5*result_width gates). Total upper bound:
+    # W*(W + 5*result_width). Avoids O(log²) reallocations as the gate
+    # vector grows from ~0 to multi-thousand on Int32+ multiplies.
+    sizehint!(gates, length(gates) + W * (W + 5 * result_width))
     for i in 1:W
         shift = i - 1
         pp = allocate!(wa, result_width)
