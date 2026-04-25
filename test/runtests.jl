@@ -235,3 +235,13 @@ if get(ENV, "BENNETT_T5_TESTS", "1") != "0"
     include("test_t5_corpus_c.jl")
     include("test_t5_corpus_rust.jl")
 end
+
+# Bennett-uoem / U54 — preserved-but-deprecated persistent-map impls
+# (CF, Okasaki, HAMT+popcount, Jenkins) live under src/persistent/research/
+# and are not loaded by `using Bennett`.  Their tests are opt-in via
+# BENNETT_RESEARCH_TESTS=1 (default off — research code, not on hot path).
+# See src/persistent/research/README.md for the literate deprecation
+# rationale and thaw conditions.
+if get(ENV, "BENNETT_RESEARCH_TESTS", "0") != "0"
+    # Per-impl gated tests get added here as cycles 1-4 of U54 land.
+end
