@@ -1776,7 +1776,33 @@ function lower_divrem!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     vw[inst.dest] = result
 end
 
-"""Conditionally negate a value in-place: if cond=1, val = -val (two's complement)."""
+"""
+Conditionally negate a value in-place: if cond=1, val = -val (two's complement).
+
+# Wire budget — Bennett-3of2 / U112 (investigated, left as-is)
+
+This function allocates W+1 carry wires per call (`carry` + W `next_carry`)
+and never `free!`'s them. The wires ARE returned to zero by Bennett's outer
+reverse pass at simulate time (gates are self-inverse so the reverse
+naturally uncomputes carries) — they just stay allocated, contributing
+~3·(W+1) wires per `lower_divrem!` (3 calls per signed div, ~195 wires at
+W=64).
+
+A Cuccaro-based rewrite that uses `free!` to return cond_padded wires to
+the allocator was investigated and found to break correctness — the freed
+wires get reused by `lower_call!`'s soft_udiv inlining, and Bennett's
+outer reverse pass operates on the gate sequence assuming wire state at
+points in the timeline that no longer match (verify_reversibility passes
+because ancilla-zero + input-preservation hold; but the result wires hold
+the negation of the expected output). See Bennett-vt0a for the foundational
+"Bennett-aware free!" redesign needed to make wire-budget reductions safe
+at this layer.
+
+Per measurement, this leak accounts for <0.1% of `sdiv` total wire count
+(279,416 wires for Int8 sdiv; this leak contributes ~195). The dominant
+source is `soft_udiv` inlining via `lower_call!` (Bennett-3of2 close
+note: deferred for that reason).
+"""
 function _cond_negate_inplace!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                                val::Vector{Int}, cond::Vector{Int}, W::Int)
     # Two's complement negate = flip all bits + add 1
