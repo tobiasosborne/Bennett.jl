@@ -364,6 +364,10 @@ include("test_jepw_diamond_in_body.jl")
 # Bennett-59jj / U47 (cut) — typed `simulate(c, ::Type{T}, inputs)::T`
 # overload eliminates the 9-arm Union return type for hot loops.
 include("test_59jj_typed_simulate.jl")
+# Bennett-p94b / U110 — defensive asserts in `_compute_block_pred!`
+# (distinct predecessors + width-1 block_pred) and `_edge_predicate!`
+# (width-1 block_pred). Catches the false-path-sensitisation precondition.
+include("test_p94b_predicate_asserts.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).

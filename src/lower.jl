@@ -1092,9 +1092,24 @@ function _compute_block_pred!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     pred_list = get(preds, label, Symbol[])
     isempty(pred_list) && error("_compute_block_pred!: block $label has no predecessors for predicate computation")
 
+    # Bennett-p94b / U110: predecessor list must be distinct labels. A
+    # duplicate would OR-fold the same predicate twice, breaking the
+    # "exactly one fires" guarantee that resolve_phi_predicated! relies on
+    # (CLAUDE.md "Phi Resolution and Control Flow — CORRECTNESS RISK").
+    length(unique(pred_list)) == length(pred_list) ||
+        error("_compute_block_pred!: block $label has duplicate predecessors " *
+              "$(pred_list); each predecessor must appear at most once " *
+              "(Bennett-p94b)")
+
     contributions = Vector{Int}[]
     for p in pred_list
         haskey(block_pred, p) || continue  # skip if predecessor has no predicate (loop)
+        # Bennett-p94b / U110: every block_pred entry is a SINGLE-bit wire.
+        # A multi-bit value would have only bit 0 consumed by the AND/OR
+        # contribution chain — silent corruption.
+        length(block_pred[p]) == 1 ||
+            error("_compute_block_pred!: block_pred[$p] has " *
+                  "$(length(block_pred[p])) wires; expected 1 (Bennett-p94b)")
         if haskey(branch_info, p)
             (cw, tlabel, flabel) = branch_info[p]
             if tlabel == label
@@ -1144,6 +1159,12 @@ function _edge_predicate!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                           branch_info::Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}})
     haskey(block_pred, src_block) ||
         error("_edge_predicate!: no predicate for block $src_block in phi resolution")
+    # Bennett-p94b / U110: width-1 invariant. Every block_pred entry is a
+    # SINGLE-bit wire — `_and_wire!` / `_not_wire!` both index `[1]`, so
+    # a wider value would silently use only bit 0.
+    length(block_pred[src_block]) == 1 ||
+        error("_edge_predicate!: block_pred[$src_block] has " *
+              "$(length(block_pred[src_block])) wires; expected 1 (Bennett-p94b)")
     if haskey(branch_info, src_block)
         (cw, tlabel, flabel) = branch_info[src_block]
         if tlabel == phi_block
