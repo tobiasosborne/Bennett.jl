@@ -1,5 +1,54 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-26 (late night) — 9c4o close (lower.jl deps load before lower.jl)
+
+**Shipped:** see `git log` `1eb0316..3097c89` (2 commits). One bead closed — the in-flight pickup from chunk 043's previous entry.
+
+| Bead | What |
+|---|---|
+| **Bennett-9c4o** P3 / U89 | Executed the include reorder analysed in chunk 043's prior entry. `src/Bennett.jl` now loads the 9 modules that `lower.jl` forward-references BEFORE `lower.jl`: `divider`, `softfloat/softfloat`, `softmem`, `qrom`, `shadow_memory`, `fast_copy`, `partial_products`, `parallel_adder_tree`, `mul_qcla_tree`. `tabulate.jl` (constructs `LoweringResult`) and the `*_bennett` strategy variants stay AFTER `lower.jl`. `memssa.jl` + `feistel.jl` are independent of the moved set and kept in their original relative position after the consumers. Pkg.test 73068/73071 in 3m45.7s — bit-identical to the pre-reorder baseline (3m40.1s). 13 insertions / 9 deletions in one file. |
+
+**Why:** continuation of catalogue grind. 9c4o was the cleanest pickup on the board — claim+analysis frozen in chunk 043 from the prior session, no investigation runway burned this session, just execute + verify + commit.
+
+**Gotchas / Lessons:**
+
+- **softfloat is a TRANSITIVE dep, not direct.** `lower.jl` does NOT call `soft_fadd` directly. But `softmem` uses it, and `softmem` IS forward-ref'd by `lower.jl`. Chunk 043's analysis listed only the direct deps; the transitive softfloat slipped in via the "if move breaks, look at softfloat ordering" hint. Pattern: when reordering includes, every direct dep needs its OWN deps loaded too — Pkg.test catches transitive omissions, but a quick dep-DAG sketch catches them up-front.
+
+- **9c4o's bead description undercounted by 3.** Bead said "6 modules" — actual count is 9 (divider, softfloat, softmem, qrom, shadow_memory, fast_copy, partial_products, parallel_adder_tree, mul_qcla_tree). Counts are easy to misread when a bead says "6 modules" and chunk-043 lists "5 forward-ref'd modules" plus "support files" — the support files (`fast_copy`, `partial_products`, `parallel_adder_tree`) fold into the count even though they're transitive.
+
+- **Pkg.test wall-clock variance is ~5%.** 3m40.1s baseline → 3m45.7s post-reorder. Both well within the noise band; the 5.6s extra is not signal. Pattern: don't read into Pkg.test wall-clock changes under ~30s on this hardware — TTFX precompile dominates.
+
+- **Three sessions for ~10 min of actual editing.** 9c4o was filed 2026-04-22, claimed-with-analysis 2026-04-26 night, executed 2026-04-26 late-night. The "claim → verify → test → commit → close → push" overhead is multiples larger than the edit itself. Worth keeping such beads on the menu for sessions that have ample runway but limited fresh-investigation appetite.
+
+- **Pre-existing `# Bennett-cs2f / U42` deletion comment** at lines 5-7 of `src/Bennett.jl` is the canonical precedent for in-line structural-decision comments. New `# Bennett-9c4o / U89` comment at lines 13-16 follows the same pattern: terse, bead-referenced, explains the WHY.
+
+**Rejected alternatives:**
+
+- **Refactor forward-refs into abstract interfaces loaded first.** One of 9c4o's two suggested fixes. Bigger change with unclear value — Pkg.test already passes either way; the property "lower.jl can be standalone-loaded after its deps" is restored by the cheap fix. An interface-based abstraction would be an architectural shift not justified by the bead.
+
+- **Static-inspection regression test that include order matches the dep DAG.** Tempting (5kio/wlf6/uinn pattern) but the dep DAG is implicit — scattered forward-refs across `lower.jl`'s 2.9k LOC. Pkg.test catches the only invariant that matters: "module loads cleanly." A more elaborate test would over-specify.
+
+- **Splitting the reorder into multiple commits** (one per moved module). The change is one logical unit; one commit is right.
+
+**Next agent starts here:**
+
+1. **Branch state at session-end**: `<final commit>` on main, pushed. Worklog top is **this** entry; chunk 043 is now ~280 lines — chunk **044** should start next session. Filename suggestion: `worklog/044_2026-04-27_<slug>.md`.
+
+2. **Catalogue progress this session (1 close)**: ~125 → ~124 ready remaining. Cumulative for the day's grind = 29 closes (6t8s through 9c4o). Pkg.test count: 73068/73071 (unchanged — pure structural reorder).
+
+3. **Quick wins still on the menu** (each ~30-90 min, no 3+1 needed):
+   - **Bennett-vpch** U45 — 190+ `error()` → typed exceptions (substantial; needs taxonomy first).
+   - **Bennett-zpj7** U160 — pebbling/eager file rename.
+   - **Bennett-doh6** U158 — `docs/make.jl` absent. Pairs with the wlf6 jldoctest fences (would unlock executable doctests). NB: bead text mentions a "CI job"; ignore that part per CLAUDE.md §14, just add a local `make.jl`.
+   - **Bennett-qjet** P3 — empirical timing reorder.
+   - **Bennett-mggz** U92 — ParsedIR._instructions_cache compat hack.
+
+4. **3+1-protected real bugs still open**: jepw, 25dm, 5qrn, **zmw3** (bumped 15 sessions running), y986, 3of2, p94b.
+
+5. **Dep-reorder pattern is reusable.** If `ir_extract.jl` or other 2k+ LOC files end up with the same forward-ref shape, the recipe is the same: grep for cross-file symbol calls, draft the new order respecting transitive deps, run Pkg.test before + after. The 9c4o fix is the canonical playbook.
+
+---
+
 ## Session log — 2026-04-26 (night) — ardf close + 9c4o investigation in flight
 
 **Shipped:** see `git log` `b52351f..2cd5c06` (2 commits). One bead closed, one bead's investigation pre-staged for next session.
