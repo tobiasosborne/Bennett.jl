@@ -1,9 +1,25 @@
 # Bennett.jl Work Log
 
-> **NEXT AGENT — start here:** the most recent sessions live at the top of
-> [`worklog/044_2026-04-26_late_night_doh6.md`](worklog/044_2026-04-26_late_night_doh6.md).
+> # 🚨 NEXT AGENT — STRICT MANDATE 🚨
+>
+> **Read [`worklog/045_2026-04-27_day_summary_bugs_only_directive.md`](worklog/045_2026-04-27_day_summary_bugs_only_directive.md) FIRST.**
+>
+> **You are to work on `[bug]`-tagged beads ONLY.** No refactors. No renames.
+> No docstring polish. No naming-convention fixes. No "follow-up" filings as
+> a substitute for fixing a real bug.
+>
+> 24 open bugs. The full prioritised list is in chunk 045. Pick one. Fix it.
+> Repeat. No procrastinating. No "not enough runway" excuses. No complaining
+> about scope.
+>
+> If a bug touches `lower.jl` / `ir_extract.jl` / `bennett_transform.jl` /
+> `gates.jl` / `ir_types.jl` / phi resolution → 3+1 protocol per CLAUDE.md §2.
+> Otherwise → direct grind. Always pair `verify_reversibility` with an
+> output-vs-Julia-oracle assertion (`verify_reversibility` does NOT check
+> semantic correctness — see today's 3of2 close).
+>
 > Older session logs are sharded into ~200-300 line chunks under `worklog/`,
-> file-numbered chronologically (000 = oldest, 044 = newest as of 2026-04-26).
+> file-numbered chronologically (000 = oldest, 045 = newest as of 2026-04-27).
 
 This file is now an **index** — historical content was sharded out of the
 monolithic 9,774-line `WORKLOG.md` per Bennett-fyni / U70. Concatenating the
@@ -46,6 +62,7 @@ rejected paths, hand-off pointers). Avoid restating the diff:
 
 | File | Lines | First section |
 |---|---:|---|
+| [045_2026-04-27_day_summary_bugs_only_directive.md](worklog/045_2026-04-27_day_summary_bugs_only_directive.md) | 122 | Session log — 2026-04-27 — DAY SUMMARY for 2026-04-26/27 grind + STRICT NEXT-AGENT DIRECTIVE (BUGS ONLY) |
 | [044_2026-04-26_late_night_doh6.md](worklog/044_2026-04-26_late_night_doh6.md) | 282 | Session log — 2026-04-27 (early morning) — Bennett-3of2 / U112 close (wire-leak investigated, doc-only) + Bennett-vt0a filed |
 | [043_2026-04-26_late_afternoon_wlf6_6u9q.md](worklog/043_2026-04-26_late_afternoon_wlf6_6u9q.md) | 274 | Session log — 2026-04-26 (late night) — 9c4o close (lower.jl deps load before lower.jl) |
 | [042_2026-04-26_midday_d1ee_f6qa.md](worklog/042_2026-04-26_midday_d1ee_f6qa.md) | 270 | Session log — 2026-04-26 (afternoon) — hjbf + 8p0g closes (Contributing section + ParsedIR seam test) |
