@@ -324,6 +324,12 @@ include("test_5qrn_identity_peepholes.jl")
 # inputs rejected (MVP). Unblocks Sturm `when(q) do f(x) end` (review
 # F49/F50 — composition was UNCOVERED).
 include("test_qcso_compose.jl")
+# Bennett-zmw3 / U111 — robustness bounds: resolve!() mask at W=64 no
+# longer relies on Julia shift saturation; constant-shift path now
+# rejects k < 0 and k > W with a clear error; variable-shift mod-W
+# semantics documented (Julia frontend OK; raw LLVM input gets mod-W
+# instead of poison).
+include("test_zmw3_shift_bounds.jl")
 # Bennett-6u9q / U146 — end-to-end integration test for the stated
 # vision: `controlled ∘ reversible_compile` is a unitary on a 2^N
 # statevector. Compiles a tiny Bool→Bool function, controls it, applies

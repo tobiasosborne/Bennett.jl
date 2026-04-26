@@ -199,10 +199,21 @@ function resolve!(gates::Vector{ReversibleGate}, wa::WireAllocator,
         haskey(var_wires, op.name) || error("resolve!: undefined SSA variable: %$(op.name)")
         return var_wires[op.name]
     else
+        # Bennett-zmw3 / U111: width must be in [1, 64]. Wider widths
+        # need a different storage strategy (multi-UInt64 limbs); the IR
+        # parser already rejects them but pin the contract here.
+        1 <= width <= 64 || error(
+            "resolve!: width=$width out of supported range [1, 64] " *
+            "(Bennett-zmw3 / U111)")
         wires = allocate!(wa, width)
-        val = op.value & ((1 << width) - 1)
+        # Bennett-zmw3 / U111: previously `op.value & ((1 << width) - 1)`,
+        # which at width=64 gave the right answer ONLY because Julia's
+        # shift saturation makes `1 << 64 == 0` so `0 - 1 == -1` (all-ones).
+        # Replace with the explicit mask helper to remove the
+        # shift-saturation reliance — bit-exact at every supported width.
+        val = unsigned(op.value) & _wmask(width)
         for i in 1:width
-            if (val >> (i - 1)) & 1 == 1
+            if (val >> (i - 1)) & UInt64(1) == UInt64(1)
                 push!(gates, NOTGate(wires[i]))
             end
         end
@@ -1423,26 +1434,58 @@ end
 
 # ---- shifts (constant amount only) ----
 
+# Bennett-zmw3 / U111: constant-shift bounds for `lower_shl!` / `lower_lshr!`
+# / `lower_ashr!`. LLVM defines `shl/lshr/ashr` with `k >= W` as poison, but
+# Julia's `<<`/`>>` wrappers always emit a guarded select so frontends never
+# emit a bare shift with `k >= W`. We accept `k == W` (returns zero for
+# shl/lshr; sign-extension for ashr) and `0 <= k < W` (the normal range).
+# Negative `k` would silently iterate over invalid wire indices; reject loud.
+@inline _check_const_shift(k::Int, W::Int) = (0 <= k <= W) || error(
+    "lower_shl!/lshr!/ashr!: constant shift k=$k out of [0, W] for W=$W " *
+    "(Bennett-zmw3 / U111)")
+
 function lower_shl!(g, wa, a, k, W)
+    _check_const_shift(k, W)
     r = allocate!(wa, W)
+    # k == W: empty loop → returns the freshly-allocated all-zero vector.
+    # That matches Julia's `<< W` (saturates to zero).
     for i in (k + 1):W; push!(g, CNOTGate(a[i - k], r[i])); end
     return r
 end
 
 function lower_lshr!(g, wa, a, k, W)
+    _check_const_shift(k, W)
     r = allocate!(wa, W)
+    # k == W: empty loop → all-zero result (matches Julia `>>> W`).
     for i in 1:(W - k); push!(g, CNOTGate(a[i + k], r[i])); end
     return r
 end
 
 function lower_ashr!(g, wa, a, k, W)
+    _check_const_shift(k, W)
     r = allocate!(wa, W)
+    # k == W: first loop empty, second loop fills every bit with the sign
+    # bit a[W] (sign-extension to all-ones for negative inputs, all-zero for
+    # non-negative). Matches Julia `>> W` for arithmetic shift.
     for i in 1:(W - k); push!(g, CNOTGate(a[i + k], r[i])); end
     for i in (W - k + 1):W; push!(g, CNOTGate(a[W], r[i])); end
     return r
 end
 
 # ---- variable-amount shifts (barrel shifter) ----
+#
+# Bennett-zmw3 / U111: variable-shift semantics. The `_shift_stages` helper
+# bounds the number of MUX stages at `min(b_len, ceil(log2(W)))`, so the
+# barrel shifter only consumes bits 0..ceil(log2(W))-1 of the shift amount.
+# Effectively the shift amount is taken mod (next power of two ≥ W). For
+# W = 8 this gives shift mod 8 (matches x86/ARM hardware shift semantics).
+#
+# Julia's `<<` / `>>` wrappers add a guarded select that zeroes the result
+# when the shift amount is ≥ width — that select is part of the IR our
+# compiler sees (Julia's lowering adds it), so Julia frontends always get
+# Julia-saturate semantics. RAW LLVM input (e.g. from a future C/Rust
+# frontend without that wrapper) gets the mod-W semantics described above
+# instead of poison or zero. Future bead may add a `saturate=true` kwarg.
 
 _shift_stages(W, b_len) = min(b_len, W <= 1 ? 0 : ceil(Int, log2(W)))
 
