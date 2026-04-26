@@ -311,6 +311,13 @@ include("test_wlf6_jldoctest_fences.jl")
 # the actual doctest execution lives in `julia --project=docs docs/make.jl`
 # per CLAUDE.md §14 (no GitHub CI).
 include("test_doh6_docs_makejl.jl")
+# Bennett-5qrn / U57 — trivial-identity peepholes (x+0, x*1, x|0, x⊕0,
+# x-0, x*0, x&0, x&allones, x|allones, x⊕allones and commutative duals).
+# Catches at the lower_binop! dispatcher BEFORE resolve! materialises the
+# constant operand into ancilla wires. Reduces x*Int8(1) from 692 → 26
+# gates (26.6× reduction at fold_constants=false). Pinned formulas:
+# copy-out 3W+2, zero-result W+2.
+include("test_5qrn_identity_peepholes.jl")
 # Bennett-6u9q / U146 — end-to-end integration test for the stated
 # vision: `controlled ∘ reversible_compile` is a unitary on a 2^N
 # statevector. Compiles a tiny Bool→Bool function, controls it, applies

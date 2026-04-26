@@ -11,9 +11,15 @@ using Bennett
 # FAIL when the default is `false` and PASS when it's `true`.
 @testset "U28 / Bennett-epwy: fold_constants default is true" begin
 
-    @testset "lower() default == fold_constants=true on x*1 (optimize=false)" begin
-        f(x::Int8) = x * Int8(1)
-        parsed = Bennett.extract_parsed_ir(f, Tuple{Int8}; optimize=false)
+    @testset "lower() default == fold_constants=true on x*3 (optimize=false)" begin
+        # Originally pinned `x * Int8(1)`, but Bennett-5qrn / U57 added a
+        # trivial-identity peephole at the dispatcher that catches x*1
+        # before fold even runs (both lr_on and lr_off collapse to the
+        # 8-CNOT copy-out, eliminating the fold delta). x*3 still has
+        # partial-product Toffolis with constant operand bits that fold
+        # collapses, preserving the U28 "fold meaningfully helps" assertion
+        # this test was originally written for. Measured ratio: 3.24×.
+        f(x::Int8) = x * Int8(3)
         # Re-extract per call — the IR object is not stateless across
         # `lower`'s side-effectful wire allocator.
         lr_default = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}; optimize=false))
@@ -23,9 +29,10 @@ using Bennett
                                    fold_constants=false)
         @test length(lr_default.gates) == length(lr_on.gates)
         @test length(lr_default.gates) < length(lr_off.gates)
-        # Regression guard: the U28 catalogue claim was x*1 → ~4× reduction.
-        # Pin "at least 3× smaller" so normal peephole churn doesn't silently
-        # demote this below the documented level.
+        # Regression guard: the U28 catalogue claim was x*1 → ~4× reduction
+        # (now superseded by the 5qrn peephole). For x*3 the post-peephole
+        # ratio is ~3.24×; pin "at least 3× smaller" so normal churn doesn't
+        # silently demote this below the documented level.
         @test length(lr_off.gates) >= 3 * length(lr_on.gates)
     end
 

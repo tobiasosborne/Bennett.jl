@@ -1213,11 +1213,132 @@ function _pick_mul_strategy(user_choice::Symbol, W::Int, use_karatsuba::Bool;
     (use_karatsuba && W > 4) ? :karatsuba : :shift_add
 end
 
+# ==== Bennett-5qrn / U57: trivial-identity peepholes ====
+#
+# Detect `x + 0`, `x * 1`, `x | 0`, `x & 0`, `x & all-ones`, `x | all-ones`,
+# `x ⊕ 0`, `x ⊕ all-ones`, `x - 0`, `x * 0` (and the symmetric forms for
+# commutative ops) at the dispatcher BEFORE `resolve!` materialises a
+# constant-zero/one operand into ancilla wires. Without the peephole the
+# identity `x * Int8(1)` lowers to 692 gates (full schoolbook multiply with
+# fold_constants=false); with it the multiply collapses to W CNOTs (one
+# per output bit). Per the U57 review, this saves 20-40% on the persistent-
+# DS sweep where `optimize=false` is mandatory and LLVM's own constant
+# folding never fires.
+#
+# Detection is purely syntactic on `IROperand` — we never inspect runtime
+# wire state — so the peephole cannot misfire on data-dependent operands
+# inside `lower_mul_wide!` / Karatsuba / etc. (those leaf-level adders are
+# called directly with wire vectors, never through `lower_binop!`).
+#
+# Soft-float safety: `soft_fadd(0.0, x)` is NOT a no-op in IEEE 754, but
+# this peephole only fires on integer binops INSIDE the soft-float bodies
+# (e.g. mantissa + Int64(0)), where the identity is true bitwise. The
+# soft_fadd call itself goes through `lower_call!`, not here.
+
+@inline _wmask(W::Int)::UInt64 =
+    W >= 64 ? typemax(UInt64) : (UInt64(1) << W) - UInt64(1)
+
+@inline function _const_value_mod(op::IROperand, W::Int)
+    op.kind === :const || return nothing
+    return (reinterpret(UInt64, Int64(op.value))) & _wmask(W)
+end
+
+function _emit_copy_out!(gates::Vector{ReversibleGate}, wa::WireAllocator,
+                          src::Vector{Int}, W::Int)
+    r = allocate!(wa, W)
+    sizehint!(gates, length(gates) + W)
+    for i in 1:W
+        push!(gates, CNOTGate(src[i], r[i]))
+    end
+    return r
+end
+
+function _identity_emit_for_const(gates::Vector{ReversibleGate}, wa::WireAllocator,
+                                    vw::Dict{Symbol,Vector{Int}}, op::Symbol,
+                                    ssa_op::IROperand, k::UInt64, W::Int)
+    mask = _wmask(W)
+
+    # Zero-out cases — never read the SSA operand.
+    if (op === :mul && k == 0) || (op === :and && k == 0)
+        return allocate!(wa, W)
+    end
+
+    # `x | all-ones` — all-ones result, never read x.
+    if op === :or && k == mask
+        r = allocate!(wa, W)
+        sizehint!(gates, length(gates) + W)
+        for i in 1:W
+            push!(gates, NOTGate(r[i]))
+        end
+        return r
+    end
+
+    # Remaining cases need x. Bail if the other operand isn't an SSA name
+    # (both-const case is rare and falls through to the heavy path / fold).
+    ssa_op.kind === :ssa || return nothing
+
+    if (op === :add  && k == 0) ||
+       (op === :sub  && k == 0) ||
+       (op === :or   && k == 0) ||
+       (op === :xor  && k == 0) ||
+       (op === :mul  && k == 1) ||
+       (op === :and  && k == mask)
+        a = resolve!(gates, wa, vw, ssa_op, W)
+        return _emit_copy_out!(gates, wa, a, W)
+    end
+
+    if op === :xor && k == mask
+        a = resolve!(gates, wa, vw, ssa_op, W)
+        r = _emit_copy_out!(gates, wa, a, W)
+        sizehint!(gates, length(gates) + W)
+        for i in 1:W
+            push!(gates, NOTGate(r[i]))
+        end
+        return r
+    end
+
+    return nothing
+end
+
+function _try_identity_peephole!(gates::Vector{ReversibleGate}, wa::WireAllocator,
+                                   vw::Dict{Symbol,Vector{Int}}, inst::IRBinOp)
+    op = inst.op
+    op in (:add, :sub, :mul, :and, :or, :xor) || return nothing
+    W = inst.width
+    cv1 = _const_value_mod(inst.op1, W)
+    cv2 = _const_value_mod(inst.op2, W)
+
+    # Skip both-const — `_fold_constants` handles it post-hoc, and this avoids
+    # any commutative-swap accounting when neither operand needs an SSA read.
+    cv1 !== nothing && cv2 !== nothing && return nothing
+
+    commutes = op in (:add, :mul, :and, :or, :xor)
+    ssa_op, k = if commutes && cv1 !== nothing
+        inst.op2, cv1
+    elseif cv2 !== nothing
+        inst.op1, cv2
+    else
+        return nothing
+    end
+
+    return _identity_emit_for_const(gates, wa, vw, op, ssa_op, k, W)
+end
+
 function lower_binop!(gates, wa, vw, inst::IRBinOp;
                       ssa_liveness::Dict{Symbol,Int}=Dict{Symbol,Int}(),
                       inst_idx::Int=0,
                       use_karatsuba::Bool=false,
                       add::Symbol=:auto, mul::Symbol=:auto)
+    # Bennett-5qrn / U57: trivial-identity peephole. Short-circuits before
+    # `resolve!` so neither the constant operand nor the heavy adder/multiplier
+    # allocates ancilla wires. See helper docs above.
+    let res = _try_identity_peephole!(gates, wa, vw, inst)
+        if res !== nothing
+            vw[inst.dest] = res
+            return
+        end
+    end
+
     a = resolve!(gates, wa, vw, inst.op1, inst.width)
     W = inst.width
 
