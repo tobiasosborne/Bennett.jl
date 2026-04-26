@@ -368,6 +368,9 @@ include("test_59jj_typed_simulate.jl")
 # (distinct predecessors + width-1 block_pred) and `_edge_predicate!`
 # (width-1 block_pred). Catches the false-path-sensitisation precondition.
 include("test_p94b_predicate_asserts.jl")
+# Bennett-fq8n / U84 — lower_phi! validates that every incoming SSA
+# wire-vector has length == phi.width. resolve! doesn't enforce this.
+include("test_fq8n_phi_mixed_widths.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).

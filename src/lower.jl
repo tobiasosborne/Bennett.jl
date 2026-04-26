@@ -1249,6 +1249,16 @@ function lower_phi!(gates, wa, vw, inst::IRPhi, phi_block::Symbol,
 
     incoming = [(resolve!(gates, wa, vw, val, inst.width), blk)
                 for (val, blk) in inst.incoming]
+    # Bennett-fq8n / U84: validate every incoming wire-vector has the
+    # phi's declared width. resolve! does not check SSA widths against
+    # its `width` argument, so a mismatched vw[name] silently propagates
+    # here and breaks downstream MUX-chain construction.
+    for (k, (wires, blk)) in enumerate(incoming)
+        length(wires) == inst.width ||
+            error("lower_phi!: incoming #$k from block $blk has " *
+                  "width=$(length(wires)) but phi %$(inst.dest) " *
+                  "declares width=$(inst.width) (Bennett-fq8n)")
+    end
     isempty(block_pred) && error("lower_phi!: block_pred is empty during phi resolution for $(inst.dest) — path predicates must be computed before phi lowering")
     vw[inst.dest] = resolve_phi_predicated!(gates, wa, incoming, block_pred, inst.width;
                                             phi_block=phi_block, branch_info)
