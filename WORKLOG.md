@@ -46,7 +46,7 @@ rejected paths, hand-off pointers). Avoid restating the diff:
 
 | File | Lines | First section |
 |---|---:|---|
-| [044_2026-04-26_late_night_doh6.md](worklog/044_2026-04-26_late_night_doh6.md) | 187 | Session log — 2026-04-26 (late night, fourth slot) — Bennett-qcso / U59 close (compose API — 3+1 protocol) + 2 follow-ups filed |
+| [044_2026-04-26_late_night_doh6.md](worklog/044_2026-04-26_late_night_doh6.md) | 235 | Session log — 2026-04-26 (late night, fifth slot) — Bennett-zmw3 / U111 close (shift bounds + resolve! mask robustness) |
 | [043_2026-04-26_late_afternoon_wlf6_6u9q.md](worklog/043_2026-04-26_late_afternoon_wlf6_6u9q.md) | 274 | Session log — 2026-04-26 (late night) — 9c4o close (lower.jl deps load before lower.jl) |
 | [042_2026-04-26_midday_d1ee_f6qa.md](worklog/042_2026-04-26_midday_d1ee_f6qa.md) | 270 | Session log — 2026-04-26 (afternoon) — hjbf + 8p0g closes (Contributing section + ParsedIR seam test) |
 | [041_2026-04-26_morning_069e_k7al.md](worklog/041_2026-04-26_morning_069e_k7al.md) | 270 | Session log — 2026-04-26 (late-morning) — 8kno + zy4u closes (LLVM.initializer narrowing + outer @testset) |
