@@ -32,7 +32,7 @@
 
 **Next agent starts here:**
 
-1. **Branch state at session-end**: `<final commit>` on main, pushed. Worklog top is **this** entry; chunk 043 is now ~280 lines — chunk **044** should start next session. Filename suggestion: `worklog/044_2026-04-27_<slug>.md`.
+1. **Branch state at session-end**: `b21deec` on main, pushed. Worklog top is **this** entry; chunk 043 is now 274 lines — chunk **044** should start next session. Filename suggestion: `worklog/044_2026-04-27_<slug>.md`.
 
 2. **Catalogue progress this session (1 close)**: ~125 → ~124 ready remaining. Cumulative for the day's grind = 29 closes (6t8s through 9c4o). Pkg.test count: 73068/73071 (unchanged — pure structural reorder).
 
