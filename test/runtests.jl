@@ -375,6 +375,10 @@ include("test_fq8n_phi_mixed_widths.jl")
 # stores of non-integer types or stores whose target pointer isn't a
 # registered SSA name. Errors loudly per CLAUDE.md §1.
 include("test_lgzx_store_fail_loud.jl")
+# Bennett-ibz5 / U96 — `resolve!` trip-wires the OPAQUE_PTR_SENTINEL
+# by name so the value=0 placeholder for unresolvable pointers does
+# not silently materialise as the integer 0.
+include("test_ibz5_opaque_ptr_sentinel.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).

@@ -199,6 +199,22 @@ function resolve!(gates::Vector{ReversibleGate}, wa::WireAllocator,
         haskey(var_wires, op.name) || error("resolve!: undefined SSA variable: %$(op.name)")
         return var_wires[op.name]
     else
+        # Bennett-ibz5 / U96: the OPAQUE_PTR_SENTINEL (`IROperand(:const,
+        # :__opaque_ptr__, 0)`) is the placeholder `_operand_safe` returns
+        # when a pointer value can't be wrapped (unresolvable GlobalAlias
+        # chain, ConstantExpr with un-peelable sub-operands). Its value
+        # field is 0, so it would otherwise pass through this path and
+        # silently materialise as a zero-valued integer constant —
+        # treating an opaque pointer as the literal numeric 0. Trip-wire
+        # by name (the canonical empty-name `:const` extractor produces
+        # uses Symbol("")).
+        op.name === :__opaque_ptr__ && error(
+            "resolve!: opaque pointer sentinel reached lowering — the " *
+            "extractor produced an OPAQUE_PTR_SENTINEL operand for an " *
+            "unresolvable pointer value (likely a GlobalAlias chain " *
+            "that didn't resolve, or a ConstantExpr with sub-operands " *
+            "the extractor couldn't wrap). Compilation cannot proceed " *
+            "without a concrete pointer (Bennett-ibz5 / U96).")
         # Bennett-zmw3 / U111: width must be in [1, 64]. Wider widths
         # need a different storage strategy (multi-UInt64 limbs); the IR
         # parser already rejects them but pin the contract here.
