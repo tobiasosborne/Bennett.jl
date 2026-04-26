@@ -1,0 +1,7 @@
+[deps]
+Bennett = "d4e5f6a7-b8c9-4d0e-a1b2-c3d4e5f6a7b8"
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+
+[compat]
+Documenter = "1"
+julia = "1.10"

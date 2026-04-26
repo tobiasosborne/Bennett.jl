@@ -306,6 +306,11 @@ include("test_8p0g_parsed_ir_seam.jl")
 # test that asserts the fences haven't reverted + smoke-checks that
 # every doctest's expected value still holds in the canonical baseline.
 include("test_wlf6_jldoctest_fences.jl")
+# Bennett-doh6 / U158 — docs/make.jl scaffold present + executable
+# doctest wiring for the wlf6 jldoctest fences. Static-inspection only;
+# the actual doctest execution lives in `julia --project=docs docs/make.jl`
+# per CLAUDE.md §14 (no GitHub CI).
+include("test_doh6_docs_makejl.jl")
 # Bennett-6u9q / U146 — end-to-end integration test for the stated
 # vision: `controlled ∘ reversible_compile` is a unitary on a 2^N
 # statevector. Compiles a tiny Bool→Bool function, controls it, applies
