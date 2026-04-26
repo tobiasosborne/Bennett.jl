@@ -1110,6 +1110,25 @@ Bennett-u21m / U11 fixes:
       no longer collapse into a single wrong incoming.
 """
 function _expand_switches(blocks::Vector{IRBasicBlock})
+    # Bennett-t3j0 / U83: defensive collision guard. The synthetic block
+    # labels emitted below (`_sw_<orig>_<i>` and `_sw_cmp_<orig>_<i>`) and
+    # the `:__unreachable__` sentinel produced by `LLVMUnreachable` are
+    # reserved namespaces. If an input block already uses one — which
+    # would happen on accidental re-run of `_expand_switches` on its own
+    # output, or on a future caller passing crafted blocks — silent
+    # shadowing would corrupt phi rewiring and topological order.
+    for b in blocks
+        s = String(b.label)
+        startswith(s, "_sw_") &&
+            error("_expand_switches: input block label :$(b.label) collides " *
+                  "with the reserved synthetic-block prefix `_sw_*`. " *
+                  "Likely a re-run on already-expanded blocks (Bennett-t3j0 / U83).")
+        b.label === :__unreachable__ &&
+            error("_expand_switches: input block named :__unreachable__ " *
+                  "collides with the reserved unreachable-target sentinel " *
+                  "(Bennett-t3j0 / U83).")
+    end
+
     result = IRBasicBlock[]
     orig_switches = Set{Symbol}()
     # (orig_switch_label, target_label) → ordered list of unique synthetic

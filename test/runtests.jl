@@ -379,6 +379,10 @@ include("test_lgzx_store_fail_loud.jl")
 # by name so the value=0 placeholder for unresolvable pointers does
 # not silently materialise as the integer 0.
 include("test_ibz5_opaque_ptr_sentinel.jl")
+# Bennett-t3j0 / U83 — `_expand_switches` rejects input blocks whose
+# labels collide with the reserved synthetic-block prefix `_sw_*` or
+# the `:__unreachable__` unreachable-target sentinel.
+include("test_t3j0_switch_label_collision.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).
