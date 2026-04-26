@@ -190,6 +190,13 @@ struct IRCall <: IRInst
         length(args) == length(arg_widths) ||
             error("IRCall: length(args)=$(length(args)) != length(arg_widths)=$(length(arg_widths)) " *
                   "(dest=$dest, callee=$(nameof(callee)))")
+        # Bennett-2yky / U130 investigation: a tighter upper bound (e.g.
+        # `<= 64` per Bennett-zmw3 / U111) was tested and reverted —
+        # NTuple aggregate returns (e.g. NTuple{9,UInt64} ⇒ 576 bits)
+        # are legitimately wider than 64. The Bennett-zmw3 contract
+        # applies to the SCALAR `:const` path inside `resolve!`, not to
+        # IRCall arg widths derived from `_iwidth` / aggregate
+        # `_type_width`. Lower bounds + length match suffice here.
         ret_width >= 1 ||
             error("IRCall: ret_width=$ret_width must be >= 1 (dest=$dest, callee=$(nameof(callee)))")
         for (i, w) in enumerate(arg_widths)
