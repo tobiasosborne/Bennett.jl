@@ -1,5 +1,33 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-27 — Bennett-jepw / U05-followup close (diamond-in-body phi resolution)
+
+**Shipped:** see git log around `f68b353`; per-iteration LOCAL `block_pred` / `branch_info` / `preds` dicts inside `lower_loop!` so an IRPhi at a body-block merge resolves via `_edge_predicate!`. Top-level pass skips `loop_body_labels` to preempt redundant body-block re-dispatch.
+
+**Why:** The U05 MVP (Bennett-httg) explicitly deferred per-block predicate computation for diamond-CFG inside loop bodies (chicken-and-egg: `_compute_block_pred!` wanted `branch_info[hlabel]` populated before body blocks were lowered, but the old flow only computed exit-cond at step (c) AFTER body blocks). jepw was the largest open compiler bug per the 2026-04-27 directive.
+
+**Gotchas / Lessons:**
+
+1. **Body blocks are double-processed in the pre-jepw flow.** They appear in the function-level topo order (their forward edges aren't back-edges) AND inside `lower_loop!`. The existing T1/T2/T4 tests pass because the redundant top-level emission writes to dead wires (no consumer reads them — the IRRet at the exit block already saw the MUX-frozen phi). For jepw to land, this redundant pass had to be removed (option (ii) — `loop_body_labels` skip set), or it would crash on the merge block's IRPhi against a stale `block_pred`. T1 K=3 dropped 824→552 gates as a side-effect of the skip — correctness unchanged, T2 monotonicity still holds. T1/T2/T4 in `test_httg_loop_multiblock.jl` and Collatz in `test_loop_explicit.jl` all green; gate-count regression baselines (`test_gate_count_regression.jl`, 39/39) byte-identical.
+
+2. **`_compute_block_pred!` silently skips predecessors with no `block_pred[p]`** (line 1025 `# skip if predecessor has no predicate (loop)`). Per-iteration LOCAL dicts work because each body block's predecessors (header or earlier body blocks in topo order) ARE in `iter_block_pred` by the time `_compute_block_pred!` is called for it.
+
+3. **Reusing `raw_cond_wire` for both `branch_info[hlabel]` AND `exit_cond_wire`** (with polarity NOT applied via `lower_not1!` if `!exit_on_true`) avoids duplicate `resolve!(term.cond)` calls. Saves one icmp re-evaluation per iteration.
+
+4. **`!isempty(body_block_order)` gating preserves Collatz / soft_fdiv byte-identical.** Header-only loops fall through to the original `resolve!(term.cond)` at step (c). The `iter_*` dicts are only constructed when there's actual diamond work to do.
+
+5. **`@test_broken` flips on a real fix**: T3 in `test_httg_loop_multiblock.jl` was `@test_broken try ... catch false end`. Once the fix made the body return `true`, `@test_broken` itself errored. Replaced with a regular `@test all(...)` smoke check; full coverage moved to the new `test_jepw_diamond_in_body.jl` (3 diamond shapes × exhaustive Julia-oracle sweep × `verify_reversibility`, 168 assertions).
+
+**Rejected alternatives:**
+
+- **Approach (b) inline AND-chains** via `_and_wire!` would have duplicated `_compute_block_pred!` logic and risked drift with the function-level pass.
+- **Approach (c) defer with hard error** would have failed the test contract — diamond-in-body needed to actually compile.
+- **Mutating the function-level `block_pred` with body-block entries** (proposer B's first sketch, replaced) was incoherent: each iteration produces fresh wires for the same SSA labels, so the function-level dict could only see the last iteration's view — useless to any consumer.
+
+**Next agent starts here:** Continue the bugs-only grind. Remaining P2 bugs: `25dm` (blocked on z2dj IN-PROGRESS — drive z2dj forward to unblock), `59jj` (type instability in hot paths — multi-cut, 3+1 for storage layout), `ponm` (bd infra — `wisp_dependencies` table missing). P3 bugs: `p94b`, `fq8n`, `lgzx`, `ibz5`, `t3j0`, `2yky`, `y986`, `salb`, `y56a`, `yys3`, `gboa`, `tpg0`, `ys0d`, `xiqt`, `d77b`, etc. Always pair `verify_reversibility` with output-vs-Julia-oracle assertions.
+
+---
+
 ## Session log — 2026-04-27 — DAY SUMMARY for 2026-04-26/27 grind + STRICT NEXT-AGENT DIRECTIVE (BUGS ONLY)
 
 ### 🚨 NEXT AGENT — READ THIS FIRST 🚨
