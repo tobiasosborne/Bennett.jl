@@ -371,6 +371,10 @@ include("test_p94b_predicate_asserts.jl")
 # Bennett-fq8n / U84 — lower_phi! validates that every incoming SSA
 # wire-vector has length == phi.width. resolve! doesn't enforce this.
 include("test_fq8n_phi_mixed_widths.jl")
+# Bennett-lgzx / U114 — `_convert_instruction` no longer silently drops
+# stores of non-integer types or stores whose target pointer isn't a
+# registered SSA name. Errors loudly per CLAUDE.md §1.
+include("test_lgzx_store_fail_loud.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).

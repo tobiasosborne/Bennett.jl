@@ -1993,7 +1993,6 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
     end
 
     # store: `store ty val, ptr p` -> IRStore (no dest — void in LLVM).
-    # Skip when the stored value isn't an integer type (matches IRLoad policy).
     if opc == LLVM.API.LLVMStore
         # Bennett-4mmt / U14: reject atomic / volatile stores — same
         # reasoning as the load guard above.
@@ -2006,8 +2005,20 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         val = ops[1]
         ptr = ops[2]
         vt = LLVM.value_type(val)
-        vt isa LLVM.IntegerType || return nothing
-        haskey(names, ptr.ref) || return nothing
+        # Bennett-lgzx / U114: was `vt isa LLVM.IntegerType || return nothing`
+        # — silent drop violated CLAUDE.md §1. Error loud with the
+        # actual stored-value type so the user can debug.
+        vt isa LLVM.IntegerType || _ir_error(inst,
+            "store of non-integer type $(vt) not supported " *
+            "(Bennett-lgzx / U114). SoftFloat dispatch should reroute " *
+            "Float64 stores to integer wrappers before extraction.")
+        # Bennett-lgzx / U114: was `haskey(names, ptr.ref) || return nothing`
+        # — silent drop. Error loud naming the pointer so the user can
+        # trace the missing SSA registration.
+        haskey(names, ptr.ref) || _ir_error(inst,
+            "store target pointer is not a registered SSA name " *
+            "(value=$(ptr)) — likely an unsupported pointer source " *
+            "such as a global, ConstantExpr, or alias (Bennett-lgzx / U114).")
         return IRStore(ssa(names[ptr.ref]),
                        _operand(val, names),
                        LLVM.width(vt))
