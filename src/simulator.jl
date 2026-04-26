@@ -77,6 +77,45 @@ function simulate(circuit::ReversibleCircuit, inputs::Tuple{Vararg{Integer}})
     return _simulate(circuit, inputs)
 end
 
+"""
+    simulate(circuit::ReversibleCircuit, ::Type{T}, input::Integer) where T<:Integer -> T
+    simulate(circuit::ReversibleCircuit, ::Type{T}, inputs::Tuple) where T<:Integer -> T
+
+Type-stable scalar variant. The caller specifies the expected return
+type `T` (e.g. `Int8`, `UInt32`). Uses bit-pattern reinterpret (`raw % T`)
+so a wider `T` is sign-extended from a signed source and zero-extended
+from an unsigned source — same semantics as Julia's standard
+`Integer % Type` idiom.
+
+Use this overload from hot loops to avoid the 9-arm
+`Union{Int8,…,UInt64,Tuple}` return type of the untyped overload, which
+would otherwise force runtime union-dispatch on each comparison.
+
+For multi-element circuit outputs (insertvalue tuples), use the untyped
+overload and dispatch on the returned `Tuple`.
+
+(Bennett-59jj / U47 cut: typed-overload return-type elimination.)
+"""
+function simulate(circuit::ReversibleCircuit, ::Type{T}, input::Integer) where T<:Integer
+    length(circuit.input_widths) == 1 || throw(ArgumentError(
+        "simulate(circuit, T, input) requires single-input circuit, got " *
+        "$(length(circuit.input_widths)) inputs"))
+    return simulate(circuit, T, (input,))
+end
+
+function simulate(circuit::ReversibleCircuit, ::Type{T},
+                  inputs::Tuple{Vararg{Integer}}) where T<:Integer
+    length(circuit.output_elem_widths) == 1 || throw(ArgumentError(
+        "simulate(circuit, T<:Integer, inputs): circuit has " *
+        "$(length(circuit.output_elem_widths))-element output; use the " *
+        "untyped overload and dispatch on the returned Tuple"))
+    8 * sizeof(T) >= circuit.output_elem_widths[1] || throw(ArgumentError(
+        "simulate: T=$T (sizeof $(sizeof(T)) bytes) cannot hold " *
+        "$(circuit.output_elem_widths[1])-bit output"))
+    raw = _simulate(circuit, inputs)::Integer
+    return raw % T
+end
+
 function _simulate(circuit::ReversibleCircuit, inputs::Tuple)
     # Bennett-6fg9 / U19: guard arity and per-input bit-width at entry.
     # Pre-fix, a too-long tuple silently dropped the extras, a too-short

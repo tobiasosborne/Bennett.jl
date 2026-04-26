@@ -357,6 +357,13 @@ include("test_b2fs_tabulate_tuple_unpack.jl")
 # NaN propagation against Base.floor/ceil/trunc; soft_fdiv's dead
 # `_overflow_result` binding replaced with `_`.
 include("test_ardf_floor_ceil_nan.jl")
+# Bennett-jepw / U05-followup — diamond-in-body phi resolution
+# (per-iteration LOCAL block_pred / branch_info / preds dicts inside
+# lower_loop! + top-level loop_body_labels skip).
+include("test_jepw_diamond_in_body.jl")
+# Bennett-59jj / U47 (cut) — typed `simulate(c, ::Type{T}, inputs)::T`
+# overload eliminates the 9-arm Union return type for hot loops.
+include("test_59jj_typed_simulate.jl")
 # T5-P3c — Bagwell HAMT + reversible popcount (Bennett-a7zy).
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT + popcount
 # relocated to research/).
