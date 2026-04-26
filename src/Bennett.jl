@@ -28,6 +28,7 @@ include("bennett_transform.jl")
 include("simulator.jl")
 include("diagnostics.jl")
 include("controlled.jl")
+include("compose.jl")
 include("dep_dag.jl")
 include("pebbling.jl")
 include("eager.jl")
@@ -52,7 +53,7 @@ export PersistentMapImpl, AbstractPersistentMap, verify_pmap_correctness, verify
 # src/persistent/research/hashcons_jenkins.jl (2026-04-25).
 export soft_feistel32, soft_feistel_int8
 export soft_fadd, soft_fsub, soft_fmul, soft_fma, soft_fdiv, soft_fsqrt, soft_fneg, soft_fcmp_olt, soft_fcmp_oeq, soft_fcmp_ole, soft_fcmp_une, soft_fptosi, soft_fptoui, soft_sitofp, soft_fpext, soft_fptrunc, soft_exp, soft_exp2, soft_exp_fast, soft_exp2_fast, soft_exp_julia, soft_exp2_julia
-export ReversibleCircuit, ControlledCircuit, controlled
+export ReversibleCircuit, ControlledCircuit, controlled, compose
 # Bennett-qcse / U51: gate primitives documented public in docs/src/api.md
 # (lines 188/192/196/211) — exporting so the documented constructors and
 # type-pattern-matches resolve without `Bennett.` prefix.

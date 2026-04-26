@@ -318,6 +318,12 @@ include("test_doh6_docs_makejl.jl")
 # gates (26.6× reduction at fold_constants=false). Pinned formulas:
 # copy-out 3W+2, zero-result W+2.
 include("test_5qrn_identity_peepholes.jl")
+# Bennett-qcso / U59 — compose(c1, c2) pipeline composition. Implements
+# c1.gates ++ renumbered(c2.gates) ++ reverse(c1.gates) with c2's input
+# wires positionally aliased onto c1's output wires. Self-reversing
+# inputs rejected (MVP). Unblocks Sturm `when(q) do f(x) end` (review
+# F49/F50 — composition was UNCOVERED).
+include("test_qcso_compose.jl")
 # Bennett-6u9q / U146 — end-to-end integration test for the stated
 # vision: `controlled ∘ reversible_compile` is a unitary on a 2^N
 # statevector. Compiles a tiny Bool→Bool function, controls it, applies
