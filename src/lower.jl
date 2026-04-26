@@ -404,6 +404,25 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
     # Build loop info for each header
     loop_headers = Set(dst for (_, dst) in back_edges)
 
+    # Bennett-jepw / U05-followup: a body block of an unrolled loop is fully
+    # lowered inside lower_loop! (the diamond-in-body fix uses iteration-local
+    # block_pred / branch_info dicts). Re-dispatching it at the top level
+    # would emit duplicate gates AND trigger phi resolution against block_pred
+    # that no longer holds the body-block entries (they live only in the
+    # iteration-local dicts). Collect every loop's body region up front and
+    # skip those labels in the function-level walk below.
+    loop_body_labels = Set{Symbol}()
+    for hl in loop_headers
+        h = block_map[hl]
+        hterm = h.terminator
+        (hterm isa IRBranch && hterm.cond !== nothing) || continue
+        ll = Set(s for (s, d) in back_edges if d == hl)
+        eot = !(hterm.true_label == hl || hterm.true_label in ll)
+        elabel = eot ? hterm.true_label : hterm.false_label
+        body = _collect_loop_body_blocks(h, block_map, elabel, ll, loop_headers, back_edges)
+        union!(loop_body_labels, body)
+    end
+
     # track branch conditions and predecessors (for phi / multi-ret resolution)
     branch_info = Dict{Symbol, Tuple{Vector{Int}, Symbol, Symbol}}()
     preds = Dict{Symbol, Vector{Symbol}}()
@@ -416,6 +435,10 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
     ret_values = Tuple{Vector{Int}, Symbol}[]
 
     for label in order
+        # Bennett-jepw: body blocks belong to a loop and were fully lowered
+        # by lower_loop! when its header was visited earlier in `order`.
+        label in loop_body_labels && continue
+
         block = block_map[label]
 
         # Compute block predicate from predecessors
@@ -874,24 +897,13 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
                                                  latch_labels, loop_headers, back_edges)
     @debug "lower_loop! body_block_order" hlabel body_block_order
 
-    # Build a LoweringCtx for per-iteration instruction dispatch.
-    # Bennett-httg / U05: the old `lower_loop!` called `lower_binop!(gates,
-    # wa, vw, inst)` with empty default kwargs — no `ssa_liveness`, no
-    # `inst_idx`. With those empty, the Cuccaro in-place picker almost
-    # never fires (no operand looks "dead"). If we thread the caller's
-    # populated `ssa_liveness` into loop-body dispatch, Cuccaro sees
-    # phi-destination operands as dead (liveness doesn't model cross-
-    # iteration phi re-reads) and writes in-place, silently corrupting the
-    # accumulator every iteration (e.g. soft_fdiv's 56-iter restoring
-    # division yields 2.0 for 6/2). Force `:ripple` inside the loop body to
-    # avoid the trap. Gate counts match the pre-fix baseline because old
-    # dispatch effectively resolved to ripple too. Tied to Bennett-spa8
-    # (U27 :auto-dispatcher general fix); local override until that lands.
-    loop_ctx = LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
-                           block_pred, Dict{Symbol,Int}(), Ref(0),
-                           use_karatsuba, compact_calls,
-                           alloca_info, ptr_provenance, Ref(0),
-                           globals, :ripple, mul, entry_label)
+    # Bennett-jepw: the function-level pass (src/lower.jl ~437) populates
+    # block_pred[hlabel] before calling lower_loop!. We rely on this for
+    # body-block predicate computation below. Verify the contract.
+    haskey(block_pred, hlabel) ||
+        error("lower_loop!: block_pred[$hlabel] must be populated by the " *
+              "function-level pass before lower_loop! is called " *
+              "(Bennett-jepw contract)")
 
     # Seed header phis from pre-header values (iter 1).
     for (dest, width, pre_val, _) in phi_info
@@ -921,37 +933,97 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
             end
         end
 
-        # (b) Lower every body block in topological order via canonical dispatch.
-        # NOTE: MVP scope (Bennett-httg / U05) handles linear (single-block)
-        # body regions. Per-block predicate computation for diamond-in-body
-        # patterns is deferred — full `_compute_block_pred!` wants
-        # `branch_info[hlabel]` populated with the header's exit condition,
-        # which isn't available until step (c). For linear bodies the phi
-        # resolver only needs the header phi's MUX wires (already in vw),
-        # so we skip per-body predicates here. Follow-up bead covers the
-        # diamond-in-body case.
-        for blabel in body_block_order
-            bblock = block_map[blabel]
-            for inst in bblock.instructions
-                inst_counter[] += 1
-                _lower_inst!(loop_ctx, inst, blabel)
+        # Bennett-jepw: body-block predicate state is per-iteration LOCAL.
+        # We do NOT mutate the function-level block_pred / branch_info /
+        # preds dicts with body-block entries — each unroll iteration
+        # produces fresh wires for the same SSA labels, and the function-
+        # level pass would only see the last iteration's view.
+        # `raw_cond_wire` is `nothing` when there are no body blocks
+        # (Collatz / soft_fdiv etc. — header-only loops); in that case we
+        # fall through to (c) byte-identically with the pre-jepw path.
+        raw_cond_wire = nothing
+        if !isempty(body_block_order)
+            # (a2) Resolve the header's exit condition ONCE. We reuse this
+            # wire below in (c) (with polarity if needed) so we don't emit
+            # duplicate icmp gates.
+            raw_cond_wire = resolve!(gates, wa, vw, term.cond, 1)
+
+            iter_block_pred = Dict{Symbol,Vector{Int}}()
+            iter_block_pred[hlabel] = block_pred[hlabel]
+            iter_branch_info = Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}()
+            iter_branch_info[hlabel] = (raw_cond_wire, term.true_label, term.false_label)
+            iter_preds = Dict{Symbol,Vector{Symbol}}()
+            # Seed: header → body successors (skip the exit and self-loops).
+            for s in branch_targets(term)
+                (s == exit_label || s == hlabel) && continue
+                push!(get!(iter_preds, s, Symbol[]), hlabel)
             end
-            # Capture the block's branch for downstream phi resolution inside
-            # the loop body (e.g. diamond merges).
-            bterm = bblock.terminator
-            if bterm isa IRBranch && bterm.cond !== nothing
-                cw = resolve!(gates, wa, vw, bterm.cond, 1)
-                branch_info[blabel] = (cw, bterm.true_label, bterm.false_label)
-                push!(get!(preds, bterm.true_label, Symbol[]), blabel)
-                bterm.false_label !== nothing &&
-                    push!(get!(preds, bterm.false_label, Symbol[]), blabel)
-            elseif bterm isa IRBranch
-                push!(get!(preds, bterm.true_label, Symbol[]), blabel)
+
+            # (b) Lower body blocks in topo order. For each, compute its
+            # path predicate from in-region predecessors BEFORE dispatching
+            # its instructions, so any IRPhi in the body can resolve via
+            # `_edge_predicate!`. Bennett-httg / U05: the old `lower_loop!`
+            # called `lower_binop!(gates, wa, vw, inst)` with empty default
+            # kwargs — no `ssa_liveness`, no `inst_idx`. With those empty,
+            # the Cuccaro in-place picker almost never fires (no operand
+            # looks "dead"). If we thread the caller's populated
+            # `ssa_liveness` into loop-body dispatch, Cuccaro sees phi-
+            # destination operands as dead (liveness doesn't model cross-
+            # iteration phi re-reads) and writes in-place, silently
+            # corrupting the accumulator every iteration. Force `:ripple`
+            # inside the loop body to avoid the trap. Tied to Bennett-spa8
+            # (U27 :auto-dispatcher general fix); local override here.
+            for blabel in body_block_order
+                bblock = block_map[blabel]
+
+                # Compute this body block's path predicate from already-
+                # walked in-region predecessors. _compute_block_pred!
+                # silently skips predecessors absent from iter_block_pred,
+                # which doesn't apply here because iter_preds[blabel] only
+                # contains predecessors we have already lowered (header or
+                # earlier body blocks in topological order).
+                if !isempty(get(iter_preds, blabel, Symbol[]))
+                    iter_block_pred[blabel] =
+                        _compute_block_pred!(gates, wa, blabel, iter_preds,
+                                             iter_branch_info, iter_block_pred)
+                end
+
+                iter_ctx = LoweringCtx(gates, wa, vw, iter_preds, iter_branch_info,
+                                       block_order, iter_block_pred,
+                                       Dict{Symbol,Int}(), Ref(0),
+                                       use_karatsuba, compact_calls,
+                                       alloca_info, ptr_provenance, Ref(0),
+                                       globals, :ripple, mul, entry_label)
+
+                for inst in bblock.instructions
+                    inst_counter[] += 1
+                    _lower_inst!(iter_ctx, inst, blabel)
+                end
+
+                # Capture this body block's branch into the iteration-local
+                # branch_info / preds for downstream body blocks.
+                bterm = bblock.terminator
+                if bterm isa IRBranch && bterm.cond !== nothing
+                    cw = resolve!(gates, wa, vw, bterm.cond, 1)
+                    iter_branch_info[blabel] = (cw, bterm.true_label, bterm.false_label)
+                    bterm.true_label == hlabel ||
+                        push!(get!(iter_preds, bterm.true_label, Symbol[]), blabel)
+                    if bterm.false_label !== nothing && bterm.false_label != hlabel
+                        push!(get!(iter_preds, bterm.false_label, Symbol[]), blabel)
+                    end
+                elseif bterm isa IRBranch
+                    bterm.true_label == hlabel ||
+                        push!(get!(iter_preds, bterm.true_label, Symbol[]), blabel)
+                end
             end
         end
 
-        # (c) Compute exit condition from header's conditional branch.
-        exit_cond_wire = resolve!(gates, wa, vw, term.cond, 1)
+        # (c) Exit condition. If body_block_order was empty (Collatz
+        # / soft_fdiv / header-only loops), raw_cond_wire is nothing —
+        # fall back to the original resolve! call to keep those baselines
+        # byte-identical. Otherwise reuse the wire computed in (a2).
+        exit_cond_wire = raw_cond_wire === nothing ?
+            resolve!(gates, wa, vw, term.cond, 1) : raw_cond_wire
         if !exit_on_true
             exit_cond_wire = lower_not1!(gates, wa, exit_cond_wire)
         end

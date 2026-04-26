@@ -72,18 +72,16 @@ end
     end
 
     @testset "T3: diamond inside body (phi resolution within body block)" begin
-        # Deferred scope — the MVP handles linear body regions only.
-        # Diamond-in-body needs per-block predicate computation which in
-        # turn needs the header's exit-branch condition available to body
-        # blocks. Filed as follow-up bead. Stays @test_broken until fixed.
-        @test_broken try
-            c = reversible_compile(_u05_branching_body, Int8, Int8;
-                                   max_loop_iterations=5, optimize=false)
-            all(simulate(c, (x, n)) == _u05_branching_body(x, n)
-                for x in Int8(-2):Int8(2) for n in Int8(0):Int8(5))
-        catch
-            false
-        end
+        # Bennett-jepw / U05-followup landed: per-iteration LOCAL block_pred
+        # / branch_info dicts inside lower_loop! enable phi resolution at
+        # diamond-in-body merge blocks. Full coverage (output vs Julia
+        # oracle, verify_reversibility, multiple diamond shapes) lives in
+        # test/test_jepw_diamond_in_body.jl; this single-test smoke check
+        # protects the original repro.
+        c = reversible_compile(_u05_branching_body, Int8, Int8;
+                               max_loop_iterations=5, optimize=false)
+        @test all(simulate(c, (x, n)) == _u05_branching_body(x, n)
+                  for x in Int8(-2):Int8(2) for n in Int8(0):Int8(5))
     end
 
     @testset "T4: Collatz (existing header-only body) still green — no regression" begin
