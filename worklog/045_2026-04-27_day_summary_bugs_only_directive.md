@@ -1,5 +1,92 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-27 — bugs-only grind: 8 closes (jepw + 59jj + p94b + fq8n + lgzx + ibz5 + t3j0 + 2yky)
+
+**Shipped:** see git log around `f68b353..0330595` (10 code commits + bd-cache syncs).
+
+| # | Bead | P | Type | Tests | Mode | What |
+|---|---|---|---|---:|---|---|
+| 1 | jepw | P2 | BUG | 168 | 3+1 | Diamond-in-body phi resolution. Per-iteration LOCAL `block_pred` / `branch_info` / `iter_preds` dicts inside `lower_loop!` + top-level `loop_body_labels` skip set. Unbroke `test_httg_loop_multiblock.jl` T3. |
+| 2 | 59jj | P2 | BUG (partial) | 44 | direct | Typed `simulate(c, ::Type{T}, inputs)::T` overload. Filed Bennett-q04a (split `_convert_instruction` Union return) + Bennett-jc0y (gates storage layout) for the remaining valid cuts; documented `_gate_controls` + `tabulate.jl Vector{Any}` as STALE (already fixed prior). |
+| 3 | p94b | P3 | BUG | 19 | direct | Predicate-machinery defensive asserts: distinct-predecessor check in `_compute_block_pred!`; width-1 invariant in both `_compute_block_pred!` and `_edge_predicate!`. |
+| 4 | fq8n | P3 | BUG | 12 | direct | `lower_phi!` validates that every incoming SSA wire-vector has length == `inst.width`. (`resolve!` doesn't enforce widths for SSA operands.) |
+| 5 | lgzx | P3 | BUG | 4 | direct | `_convert_instruction` store handler: replaced two silent `nothing` returns (non-integer value type, un-registered pointer) with `_ir_error` calls tagged `Bennett-lgzx`. Benign-intrinsic silent drops at line 1726 preserved. |
+| 6 | ibz5 | P3 | BUG | 7 | direct | `resolve!` trip-wires the `OPAQUE_PTR_SENTINEL` by `op.name === :__opaque_ptr__` so the value=0 placeholder for unresolvable pointers does not silently materialise as integer 0. (`_operand_safe` is currently dead code; trip-wire is defensive against future wiring.) Companion icmp-folding half is already handled at `src/ir_extract.jl:2265`. |
+| 7 | t3j0 | P3 | BUG | 12 | direct | `_expand_switches` rejects input blocks named with the reserved `_sw_*` prefix or equal to `:__unreachable__`. Catches accidental re-runs and crafted-input collisions. |
+| 8 | 2yky | P3 | doc-only | 0 | direct | Investigated → **claims stale**: IRCall constructor already validates length + lower-bound; `lower_divrem!` does route through `_assert_arg_widths_match` via `lower_call!`. Tighter upper bound (`<=64`) prototyped and reverted because NTuple aggregate returns (e.g. 576-bit) are legitimately wider than 64. Decision recorded as comment in `src/ir_types.jl`. |
+
+**Filed (follow-ups, post-jepw close):**
+- Bennett-q04a (P3, 3+1) — split `_convert_instruction` 17-arm Union return into `_single` + `_expand!`.
+- Bennett-jc0y (P3, 3+1) — `ReversibleCircuit.gates` storage layout (abstract `Vector{ReversibleGate}` → tagged-union or struct-of-arrays).
+
+**Test count:** 80,985 → **81,252** (+267, including 1 broken→pass for httg T3).
+
+**Why this distribution:** the directive in this same chunk mandated BUGS ONLY in suggested pickup order. P2 candidates: `25dm` (blocked on z2dj IN-PROGRESS), `59jj` (P2, partial — multi-cut), `ponm` (bd infra, not a Bennett.jl bug — `wisp_dependencies` table missing in the dolt store; verified live with `bd dep add` still failing). Then I worked the P3 list in directive order until stopping point.
+
+**Gotchas / Lessons:**
+
+1. **Diamond-in-body required reasoning about double-processed body blocks.** Body blocks of a loop appear in the function-level `topo_sort` AND inside `lower_loop!`'s K iterations — pre-jepw the top-level re-emission was harmless dead-gate emission (no consumer reads them). For diamond-in-body it would crash on the merge-block IRPhi against stale block_pred. Fix needed BOTH per-iteration LOCAL predicate dicts AND a top-level `loop_body_labels` skip set; one without the other doesn't work.
+
+2. **Bead claims go stale at the line-number level AND the architectural level.** Multiple beads cited specific line numbers that no longer matched (t3j0 cited 1014/1209-1210; ibz5 cited 1760/1915-1957; fq8n cited 1137 — all stale). Two beads' core claims were largely or fully superseded (59jj's `_gate_controls` + Vector{Any}; 2yky's `_assert_arg_widths_match` route). Always live-measure before designing the fix.
+
+3. **"Investigated, doc-only" is the correct disposition for stale beads.** Pattern: 2yky, similar to 3of2 / vt0a yesterday. Better than leaving the bead open OR shipping a fix that doesn't address a real problem. The doc-only commit + comment-in-source records the "tested-and-rejected" decision so future maintainers don't re-walk.
+
+4. **"Defensive direct-grind vs. algorithmic 3+1" calibration:** assertion-only changes don't need 3+1 (p94b, fq8n, lgzx, ibz5, t3j0). Anything algorithmic in `lower.jl` / `ir_extract.jl` does (jepw used 3+1; y986 will need it; q04a + jc0y will need it). Still need to be honest about which mode you're in — the comment block in `src/ir_types.jl` for 2yky is an example of "defensive but with side-effects" → reverted to pure doc-only.
+
+5. **Aggregate widths > 64 are legitimate in IRCall.** NTuple{9,UInt64} sret returns 576-bit `ret_width`. The `[1, 64]` width contract from Bennett-zmw3 / U111 applies ONLY to the SCALAR `:const` path inside `resolve!`. Do not propagate that bound elsewhere without measuring.
+
+6. **WSL OOM scare during the grind — investigated and verified NOT a project regression.** Measured peaks: `using Bennett` 1.87 GB (cold precompile), single test 1.83 GB, full Pkg.test() 1.06 GB. WSL has 60+ GB. The earlier crash (exit 137) was external pressure: rapid back-to-back `julia --project` invocations + browser/IDE workloads sharing WSL's pool. Bennett.jl's full suite is well-behaved.
+
+**Rejected alternatives:**
+
+- **2yky upper-bound check (`arg_widths[i] <= 64`)** — broke `test_atf4_lower_call_nontrivial_args.jl` T2 (NTuple{9,UInt64} ret_width=576). Reverted; comment in `src/ir_types.jl` records the decision.
+- **lgzx test using `define void @...`** — float store inside void-returning function failed extraction earlier (VoidType width query) before reaching the new error path. Switched test fixtures to `define i32` to bypass the upstream error and exercise my code.
+- **Skipping body blocks at top-level via `_lower_inst!` no-op (option iii from the jepw 3+1 design)** — too fragile; `loop_body_labels` skip set (option ii) was clearer.
+
+**Next agent — start here:**
+
+1. **Continue bugs-only.** Per `bd ready -n 200 | grep '\[bug\]'`, **13 open `[bug]` beads** remain (down from 24 at session start; 8 closed + 2 follow-ups filed + 3 deltas elsewhere). Suggested next pickups in priority order:
+   - **Bennett-y986** (P3) — `lower_loop!` header-body 4-type cascade still drops non-arith IR types (IRCall, IRStore, IRLoad). **Heads-up**: I deliberately preserved this cascade during jepw because dispatching through `_lower_inst!` would alter Collatz / soft_fdiv gate-count baselines. Will need 3+1 protocol per CLAUDE.md §2 AND careful baseline analysis. Don't direct-grind it.
+   - **Bennett-salb** (P3) — `typemin ÷ -1` silent wrap, `x ÷ 0` impl-defined garbage. Defensive — direct grind.
+   - **Bennett-y56a** (P3) — triple-redundant integer division paths (lower_binop / soft_udiv / unregistered callee). Likely investigation + dedup.
+   - **Bennett-gboa** (P3) — zero-ancilla in-place ops dirty-bit hygiene. Likely doc-only.
+   - **Bennett-d77b** (P3) — only 4 of 14 LLVM fcmp predicates implemented. Feature-shaped; check if it's actually a bug or a documented scope cut.
+   - softfloat tier (`tpg0`, `xiqt`, `ys0d`) — bit-exactness fixes against `Base.<func>`. Per CLAUDE.md §13, every transcendental needs a `subnormal-output range` testset; mirror the `soft_exp` pattern at `test/test_softfexp.jl:135`.
+   - **Bennett-yys3** (P3) — 200+ LOC manual 128-bit arithmetic to avoid `__udivti3` / `__umodti3`. Investigation-shaped.
+
+2. **P2 status:**
+   - `25dm` still blocked on `z2dj` IN-PROGRESS. Drive z2dj forward (T5-P6 dispatcher arm, 3+1 per CLAUDE.md §2, full plan in `docs/design/p6_consensus.md`) to unblock.
+   - `ponm` is a beads-tool schema migration, NOT a Bennett.jl code bug. `bd dep add` still fails with "table not found: wisp_dependencies". Out of session scope.
+
+3. **Bug vs cosmetic ratio (snapshot 2026-04-27 mid-session):**
+   - Total beads: 446 / closed 313 / open 119 / in-progress 2 (`z2dj` task, `cc0.5` P2 bug — both pre-existing) / blocked 0.
+   - 13 open + 1 in-progress = **14 [bug] beads unfinished** out of 121 (119 open + 2 in-progress) — **~11.5% bugs, ~88.5% non-bugs** (refactors, docs, polish, structural, features). Roughly aligned with the prior chunk's "15% serious / 85% cosmetic" estimate. The bug fraction is small enough that the bugs-only directive remains the right focus until the genuine-defect tail is exhausted.
+   - Of the 14 bugs: **3 P2** (`25dm` blocked on z2dj; `ponm` is bd-tool infra not Bennett.jl; `cc0.5` IN_PROGRESS — Julia TLS allocator GEP base, T5-P6.3) and **11 P3**.
+
+4. **Follow-ups filed during this session needing 3+1:** Bennett-q04a, Bennett-jc0y. Both are P3 — pickup after the simpler defensive bugs above are exhausted, since each will take a full 3+1 cycle.
+
+5. **Memory note for the directive:** WSL OOM during this grind was external. Bennett.jl's full suite peaks at ~1 GB; do not investigate the project unless a future test file genuinely exceeds 4 GB RSS under measurement.
+
+### Branch state at session-end
+
+`main @ 0330595`, pushed and up to date with `origin/main`. Working tree clean modulo `prompts` (untracked, pre-existing — not created by this session).
+
+### Bd-tracked snapshot (2026-04-27 mid-session)
+
+```
+bd stats:
+  Total Issues:   446
+  Open:           119
+  In Progress:    2     (Bennett-cc0.5 P2 bug — Julia TLS allocator
+                         GEP base, T5-P6.3; Bennett-z2dj P2 task —
+                         T5-P6 dispatcher; both pre-existing)
+  Closed:         313
+  Blocked:        0
+  Ready to Work:  119
+```
+
+---
+
 ## Session log — 2026-04-27 — Bennett-jepw / U05-followup close (diamond-in-body phi resolution)
 
 **Shipped:** see git log around `f68b353`; per-iteration LOCAL `block_pred` / `branch_info` / `preds` dicts inside `lower_loop!` so an IRPhi at a body-block merge resolves via `_edge_predicate!`. Top-level pass skips `loop_body_labels` to preempt redundant body-block re-dispatch.
