@@ -134,11 +134,17 @@ Multiple Bennett construction strategies for space-time tradeoffs:
 | Cuccaro in-place adder | 1,545 | 25% |
 | `value_eager_bennett` (PRS15 EAGER) | further reduction | — |
 
-**Self-reversing primitives**: set `lr.self_reversing = true` on a
-`LoweringResult` whose gate sequence already ends with clean ancillae
-(e.g. the Sun-Borissov multiplier). `bennett()` then skips the copy-out
-+ reverse pass — roughly halving the gate count for pure-primitive
-functions.
+**Self-reversing primitives** *(downstream library authors — Sturm.jl, future quantum backends — read this)*: a `LoweringResult` whose gate sequence already ends with clean ancillae AND whose result lives on the primary output wires (e.g. QROM lookup, Sun-Borissov multiplier) is *pre-reversed*. Passing it through `bennett()` with `self_reversing=false` would emit the forward + copy-out + reverse wrap anyway — typically doubling the gate count and adding `n_out` ancillae. To opt into the fast path:
+
+1. Construct the `LoweringResult` with `self_reversing=true` (the **8-arg** constructor — the 6-arg and 7-arg convenience forms default to `false`):
+   ```julia
+   lr = LoweringResult(gates, n_wires, input_wires, output_wires,
+                       input_widths, output_elem_widths,
+                       GateGroup[], true)   # ← self_reversing=true
+   ```
+2. Call either `bennett(lr)` (checks the flag and short-circuits) or `bennett_direct(lr)` (asserts `self_reversing=true` — pins the contract at the call site instead of in a constructor argument).
+
+Both run the U03 probe battery (`_validate_self_reversing!`, Bennett-egu6) so a forged claim — dirty ancillae or input mutation — is rejected with a precise error naming the offending wire. Canonical example: `lower_tabulate` (`src/tabulate.jl:208-212`). Downstream impact: switching from the default-wrapped path to the self-reversing fast path cuts peak qubits from 28 → ~22 on Sturm.jl's N=15 Shor mulmod (Bennett-cvnb / Sturm.jl-ao1).
 
 ### Arithmetic strategy dispatchers
 

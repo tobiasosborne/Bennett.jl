@@ -1,5 +1,39 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-27 (post-bugs grind, ergonomics tier) — Bennett-cvnb close (bennett_direct + self_reversing discoverability)
+
+**Shipped:** see git log around the next commit; new `bennett_direct(lr)` convenience entry point at src/bennett_transform.jl + `bennett()` docstring expansion + README "Pre-reversed primitives" callout rewrite + test/test_cvnb_bennett_direct.jl (18 assertions / 4 testsets) registered in runtests.jl.
+
+**Why:** Bennett-cvnb / Sturm.jl-ao1 — Sturm.jl downstream users (Session 74 worklog) couldn't find the existing `self_reversing=true` fast path from the README. Result: their `qrom_lookup_xor!` constructed `LoweringResult` via the (then) 7-arg constructor that defaulted `self_reversing=false`, getting the full Bennett wrap (4× Toffoli, +6 ancillae) instead of the forward-only short-circuit. Discoverability bug: the mechanism existed; the API/docs didn't surface it.
+
+**Mode:** direct grind, ergonomics-only (no behavior change to existing callers). The new `bennett_direct` is a thin assertion + delegation; CLAUDE.md §2 3+1 trip-wire is for behavior-changing pipeline edits.
+
+**Net change:**
+- `src/bennett_transform.jl`: bennett() docstring gains a "Pre-reversed primitives" section with the 8-arg constructor pattern + tabulate.jl citation. New `bennett_direct(lr)` function asserts `lr.self_reversing == true` (raises ArgumentError with a precise message naming the 8-arg constructor + `bennett(lr)` fallback otherwise) and delegates.
+- `README.md`: self_reversing section rewrites the previous 5-line note into a downstream-author-targeted callout with the explicit 8-arg constructor recipe + `bennett_direct` example + Sturm.jl impact (peak qubits 28 → ~22 on N=15 Shor mulmod).
+- `test/test_cvnb_bennett_direct.jl`: 18 assertions / 4 testsets — byte-identical to `bennett(lr)` when self_reversing=true, ArgumentError on false with precise message, U03 probe rejects forged dirty-ancilla, end-to-end QROM lookup via `bennett_direct`.
+
+**Test coverage:** the byte-identicality testset confirms `bennett_direct(lr) === bennett(lr)` semantically when `lr.self_reversing=true`. The U03 probe testset confirms `bennett_direct` doesn't bypass the validation harness — a forged self_reversing claim with a dirty-ancilla NOT-on-3 still raises. The end-to-end QROM testset is the canonical Sturm-shape example: 4-entry table, 2-bit index, W=4 output; circuit produces the right table entries AND uses forward-only gate count (length(c.gates) == length(lr.gates), NOT 2× + n_out).
+
+**Gotchas / Lessons:**
+
+1. **Post-7xng constructor arity shift.** The cvnb bead's description used the pre-7xng "7-arg backward-compat constructor" framing. After 7xng's dead-store removal earlier this session, that constructor is now the 6-arg form (no constant_wires), and the "9-arg form" with `self_reversing` is now the 8-arg form. Updated the docstring + README to match the post-7xng constructor counts. Lesson: when closing an ergonomics bead that cites specific constructor arities, re-check the source AFTER any preceding cleanup landed in the same session.
+
+2. **Errors must cite the alternative.** `bennett_direct` raises `ArgumentError` if `self_reversing=false`. The error message names BOTH the constructor recipe AND `bennett(lr)` as the fallback path. CLAUDE.md §1 fail-loud is necessary but not sufficient — fail-loud-AND-actionable beats fail-loud-and-cryptic.
+
+3. **Don't export `bennett_direct` if `bennett` itself isn't exported.** `bennett` is accessed via `using Bennett: bennett` (qualified import) — same pattern for `bennett_direct`. Adding it to the export list would create surface-area drift (pebbled_bennett, eager_bennett, etc. are exported, but the bare `bennett` is not — historical convention). Tests use the `using Bennett: bennett_direct` form to match.
+
+**Rejected alternatives:**
+
+- **Auto-promote a `self_reversing=false` lr to true after running the U03 probe** — proposed in the bead's "Acceptance criteria #1" Option A. Rejected: silently flipping a flag the caller chose is a footgun; the U03 probe is an EXPENSIVE validation pass (re-runs the gate sequence). If a caller wants auto-promote, they can call `_validate_self_reversing!(lr); bennett(<reconstructed lr with self_reversing=true>)` explicitly.
+- **Extend `bennett(lr; assert_self_reversing=true)` kwarg instead of a new function** — kwarg-on-a-position-arg-API mixes paradigms. A separate function name communicates the contract more clearly at every call site.
+
+**Filed (follow-ups):** none. Sturm.jl's ao1 / pw9 follow-up is downstream-side (their `qrom_lookup_xor!` switches to `bennett_direct`); not Bennett.jl's work to do.
+
+**Test count:** 84,346 → **84,364** (+18, exact match).
+
+---
+
 ## Session log — 2026-04-27 (post-bugs grind, LOC tier) — Bennett-7xng close (LoweringResult.constant_wires dead-store removal)
 
 **Shipped:** see git log around the next commit; `LoweringResult.constant_wires::Set{Int}` field deleted from src/lower.jl, plus the `resolve!` kwarg, the `lower()` declaration, the `union!(constant_wires, wires)` line, and all 13 call sites passing `Set{Int}()` to `LoweringResult` across 8 test files + src/tabulate.jl. Stale docstring line in src/bennett_transform.jl removed.

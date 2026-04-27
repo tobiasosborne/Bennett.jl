@@ -348,6 +348,11 @@ include("test_jc0y_gate_storage_contract.jl")
 # subtype count, Union arm bound, caller dispatch shape, extraction
 # allocation linearity.
 include("test_q04a_convert_instruction_contract.jl")
+# Bennett-cvnb / Sturm.jl-ao1 — bennett_direct convenience wrapper that
+# asserts self_reversing=true and errors loud otherwise. Surfaces the
+# existing fast path (bennett_transform.jl:101-105) for downstream
+# library authors. README "Pre-reversed primitives" callout updated.
+include("test_cvnb_bennett_direct.jl")
 # Bennett-qcso / U59 — compose(c1, c2) pipeline composition. Implements
 # c1.gates ++ renumbered(c2.gates) ++ reverse(c1.gates) with c2's input
 # wires positionally aliased onto c1's output wires. Self-reversing
