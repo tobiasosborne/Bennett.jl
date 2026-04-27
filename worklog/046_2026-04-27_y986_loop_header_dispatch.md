@@ -1,5 +1,52 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-27 — Bennett-y56a / U118 close (division-path canonicalisation — investigated, doc-only)
+
+**Shipped:** new regression test `test/test_y56a_division_paths.jl` (20 assertions) + docstring expansion on `lower_divrem!` (src/lower.jl) documenting the three division paths and the post-salb canonicalisation.
+
+**Why:** Bennett-y56a / U118 — review HIGH-9 flagged "triple-redundant integer division paths: lower_binop / soft_udiv / unregistered callee silent-skip — three codepaths, one of them silent."
+
+**Mode:** direct grind, "investigated, doc-only" disposition.
+
+**Investigation finding:** post-salb (closed earlier today) the situation is substantially cleaner than the review described:
+
+- **Path 1** (canonical): `lower_binop! → lower_divrem! → IRCall(_soft_udiv_compile)`. Includes sign handling for signed types.
+- **Path 2** (direct callee call): user calls `_soft_udiv_compile` directly → callee inline. Unsigned-only. Post-salb the public `soft_udiv` is NOT registered (it has a throw; the throw's `ijl_throw` hits the benign-prefix allowlist when Julia inlines, matching the LLVM-poison-equivalent contract documented in salb).
+- **Path 3** (unregistered callee, was silent): post-bjdg (closed earlier today) and post-salb's registry update, an unregistered callee raises `_ir_error("call to ... has no registered callee handler")` at ir_extract.jl:1751. NO LONGER SILENT.
+
+The remaining "redundancy" — that path 1 internally invokes path 2 via `lower_call!` — is by design (callee mechanism is uniform across all soft_* functions). Removing the callee mechanism for division would create asymmetry vs soft_fadd/soft_fmul/etc. and risk breaking byte-identical baselines.
+
+**Test coverage:** 20 assertions / 3 testsets:
+- Path 1 + Path 2 agree on unsigned division (b ≠ 0): 6 (a, b) pairs through both paths.
+- Path 1 sign-handling: 7 (a, b) pairs on Int8 with positive/negative inputs.
+- Path 3 (unregistered callee) errors loud: confirms post-salb error path with `@noinline` to force the call to survive Julia inlining.
+
+**Empirical gate-count comparison** (UInt64 a÷b + 1):
+- Path 1 (native ÷): 432,028 gates.
+- Path 2 (direct private call): 431,252 gates.
+- Path 2b (direct public soft_udiv call, throw silently dropped): 431,770 gates.
+
+The ~0.1-0.2% spread reflects the lower_divrem! sign-extension wrapper (path 1) and the throw setup (path 2b). All three produce identical results on valid (b ≠ 0) inputs.
+
+**Gotchas / Lessons:**
+
+1. **Salb today substantially cleaned up the bug surface.** Pre-salb the public `soft_udiv` was registered as the callee (no throwing wrapper); calling it directly went through path 2 via the public name. Post-salb, the public name is NOT registered, the private `_soft_udiv_compile` IS — so direct user calls go via Julia inlining (which absorbs the throw) rather than through the callee registry. The "silent skip" of unregistered callees is also gone (per bjdg's broader error-clarity work).
+
+2. **"Triple redundancy" framing was overstated.** Paths 1 and 2 are different LAYERS of the same call graph, not redundant alternatives. Path 1 (lower_divrem!) wraps path 2 (kernel callee inline) with sign handling. They produce different gate counts because they do different work — the wrapping is necessary for signed division.
+
+**Rejected alternatives:**
+
+- **Drop the callee mechanism for division (inline kernel directly into lower_divrem!)** — would create asymmetry with soft_fadd/soft_fmul/etc. AND would shift the byte-identical gate-count baselines for divrem-using benchmarks. Out of scope; the architectural symmetry is worth more than the small wire-budget gap.
+- **Drop lower_divrem! entirely; have ir_extract emit IRCall directly for udiv opcodes** — would lose the signed-handling layer. Path 1's sign-fix logic doesn't naturally fit in ir_extract (it's compile-time gate emission, not IR transformation).
+
+**Filed (follow-ups):** none.
+
+**Test count:** 83,756 → **83,776** (+20).
+
+**Next agent — start here:** Continue bugs-only. Remaining: `yys3` (manual 128-bit arithmetic — investigation), `q04a` / `jc0y` (3+1 refactors).
+
+---
+
 ## Session log — 2026-04-27 — Bennett-cklf / U128 close (resolve! SSA-path width assert)
 
 **Shipped:** `resolve!` (src/lower.jl:198-210) now asserts `length(wires) == width` on the SSA path. Pre-cklf the function silently discarded the caller's `width` argument and returned `var_wires[op.name]` regardless of length match. Pointer-typed operands (`width=0`) are exempt — pointers carry no width by convention.

@@ -1850,6 +1850,46 @@ end
 
 Lower udiv/urem/sdiv/srem by widening operands to UInt64, calling the
 soft division function via gate-level inlining, and truncating back.
+
+# Bennett-y56a / U118 — division-path canonicalisation
+
+There are three paths through which integer division can reach the
+gate stream:
+
+  1. **Native `a ÷ b` / `a % b`** (canonical user-facing): LLVM emits
+     `udiv`/`sdiv`/`urem`/`srem` → `IRBinOp` → `lower_binop!` (line ~1535)
+     → here. Sign extension, magnitude compute, sign-fix all live here.
+     This is the only path with full signed-arithmetic support.
+
+  2. **Direct call to `_soft_udiv_compile` / `_soft_urem_compile`** (rare):
+     user calls these private kernels directly. The callee mechanism
+     (Bennett.jl:301) routes through `lower_call!`. Unsigned-only —
+     no sign handling. The public `soft_udiv` / `soft_urem` (post-salb)
+     throw `DivideError` on b=0 and are NOT registered as callees;
+     direct user calls to them get inlined by Julia or hit the throw's
+     `ijl_throw` benign-prefix allowlist (matching the LLVM-poison-
+     equivalent contract documented in salb).
+
+  3. **Unregistered callee** (post-salb: errors loud): pre-salb an
+     unregistered callee fell to `return nothing` from
+     `_convert_instruction`, silently dropping the call. Post-salb
+     (Bennett-bjdg / U80, ir_extract.jl:1751) raises `_ir_error("call
+     to ... has no registered callee handler")`.
+
+The "triple redundancy" in the original review was the silent-skip
+path 3 plus paths 1 and 2 producing different outputs for the same
+operation. Path 3 is gone (now loud). Paths 1 and 2 produce the same
+unsigned division output (pinned by `test/test_y56a_division_paths.jl`)
+but path 1 wraps it with sign handling for signed types — they are
+NOT redundant in the strict sense, just two layers of the same call
+graph (path 1 internally invokes path 2 via `lower_call!`).
+
+Architectural choice: keep the callee-mechanism path (path 2) instead
+of inlining the kernel directly into `lower_divrem!`. Symmetry with
+soft_fadd/soft_fmul/etc. (every soft_* function is registered as a
+callee) outweighs the small wire-budget gap for divrem-specific
+inlining. If a future workload measures the gap as significant, file
+a follow-up against `lower_divrem!` directly.
 """
 function lower_divrem!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                        vw::Dict{Symbol,Vector{Int}}, inst::IRBinOp,
