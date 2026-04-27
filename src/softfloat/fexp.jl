@@ -245,8 +245,19 @@ end
 
 IEEE 754 double-precision 2^x on raw bit patterns.
 **Bit-exact vs musl/Arm Optimized Routines `exp2.c`** across the entire IEEE
-input range (≤0.527 ulp from true math; ≤1 ulp vs `Base.exp2`). Branchless
-integer arithmetic.
+input range (≤0.527 ulp from true math). Branchless integer arithmetic.
+
+# Variants — pick the one that matches your accuracy contract (Bennett-ys0d / U134)
+
+| Function           | Bit-exact vs                  | Notes                          |
+|--------------------|-------------------------------|--------------------------------|
+| `soft_exp2`        | musl `exp2.c`                 | this function                  |
+| `soft_exp2_julia`  | `Base.exp2`                   | use for round-trip with Julia  |
+| `soft_exp2_fast`   | musl outside subnormal range  | flushes subnormal output to 0  |
+
+`Base.exp2(::SoftFloat)` routes to `soft_exp2_julia` (Bennett.jl:414).
+Direct callers of `soft_exp2` who want `Base.exp2`-bit-exactness should
+switch to `soft_exp2_julia`. See `soft_exp` for the matching e^x variants.
 
 Algorithm: Tang-style with N=128 lookup table and degree-5 minimax polynomial
 (see Wilhelm/Sibidanov 2018, musl src/math/exp2.c). The integer-fractional
@@ -334,8 +345,22 @@ end
 
 IEEE 754 double-precision e^x on raw bit patterns.
 **Bit-exact vs musl/Arm Optimized Routines `exp.c`** across the entire IEEE
-input range (≤0.527 ulp from true math; ≤1 ulp vs `Base.exp`). Branchless
-integer arithmetic.
+input range (≤0.527 ulp from true math). Branchless integer arithmetic.
+
+# Variants — pick the one that matches your accuracy contract (Bennett-ys0d / U134)
+
+| Function           | Bit-exact vs                | Notes                         |
+|--------------------|-----------------------------|-------------------------------|
+| `soft_exp`         | musl `exp.c` (~0.9% off vs `Base.exp` by 1 ulp) | this function |
+| `soft_exp_julia`   | `Base.exp`                  | use for round-trip with Julia |
+| `soft_exp_fast`    | musl outside subnormal range | flushes subnormal output to 0 |
+
+**Default routing for SoftFloat:** `Base.exp(::SoftFloat)` is wired to
+`soft_exp_julia` (Bennett.jl:413), so user code calling `Base.exp` on a
+`SoftFloat` gets bit-exact-vs-Base.exp results automatically. Direct callers
+of `soft_exp` who want `Base.exp`-bit-exactness should switch to
+`soft_exp_julia`. The empirical disagreement rate (50k random samples in
+[-30, 30]) is pinned at ~0.9% by `test/test_ys0d_exp_accuracy_contract.jl`.
 
 Algorithm: Tang-style with N=128 lookup table, degree-5 minimax polynomial,
 and Cody-Waite range reduction `r = x − k·(ln2/N)` with `ln2/N` split as

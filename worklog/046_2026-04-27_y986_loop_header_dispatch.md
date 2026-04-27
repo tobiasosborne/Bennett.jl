@@ -1,5 +1,47 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-27 — Bennett-ys0d / U134 close (soft_exp accuracy contract docstring)
+
+**Shipped:** `soft_exp` and `soft_exp2` docstrings in src/softfloat/fexp.jl now include a "Variants" table making the bit-exactness contract explicit: `soft_exp` is bit-exact vs musl, `soft_exp_julia` is bit-exact vs `Base.exp`. Same for exp2. New regression test `test/test_ys0d_exp_accuracy_contract.jl` (24 assertions) pins the empirical contract.
+
+**Why:** Bennett-ys0d / U134 — review F6 flagged that `soft_exp` is off-by-1-ULP on ~0.9% of inputs vs `Base.exp` while `soft_exp_julia` is bit-exact. Discoverability bug: the user-facing default IS already correct (`Base.exp(::SoftFloat) = soft_exp_julia`, src/Bennett.jl:413), but a direct caller of `soft_exp` could be surprised by the gap.
+
+**Mode:** direct grind, doc-only.
+
+**Empirical confirmation (50k random samples in [-30, 30]):**
+- `soft_exp` vs `Base.exp`: 0.91% disagreement (matches the bead's claimed ~0.9%).
+- `soft_exp_julia` vs `Base.exp`: 0.0% disagreement.
+
+**Test coverage:** `test/test_ys0d_exp_accuracy_contract.jl` (24 assertions / 5 testsets):
+- `soft_exp_julia` bit-exact vs `Base.exp` (50k samples → 0% rate).
+- `soft_exp` ≤ ~2% off vs `Base.exp` (regression-guard upper bound; empirical baseline pinned in the upper-bound + lower-bound assertions so accidental "improvement" trips it too).
+- `soft_exp2_julia` bit-exact vs `Base.exp2` (300-range samples → 0% rate).
+- `Base.exp(::SoftFloat)` routing test: 11 representative inputs → soft_exp_julia output matches Base.exp output bit-for-bit.
+- `Base.exp2(::SoftFloat)` routing: 9 representative inputs.
+
+**Adjacent docstring updates:** `soft_exp` and `soft_exp2` now have a 3-row "Variants" table at the top of their docstrings explicitly naming `_julia` and `_fast` siblings + their accuracy contracts.
+
+**Gotchas / Lessons:**
+
+1. **The bug isn't in soft_exp's accuracy — it's in API discoverability.** soft_exp IS bit-exact vs musl (its documented contract). The musl bit-exact algorithm differs from Julia's by 1 ULP on ~0.9% of inputs. The fix isn't to change soft_exp; it's to make sure users know which variant matches their oracle.
+
+2. **The user-facing default was already correct.** Bennett.jl:413-414 routes Base.exp / Base.exp2 to the `_julia` (bit-exact) variants. So Julia code calling `Base.exp` on a SoftFloat gets bit-exact for free. The docstring update pre-emptively prevents direct-soft_exp-callers from being surprised.
+
+3. **Lower-bound regression check matters.** The test asserts `0.001 < rate < 0.02` for soft_exp — both upper AND lower bounds. The upper bound catches accidental degradation; the lower bound catches accidental "soft_exp accidentally became bit-exact" (which would mean someone changed the algorithm without realising it crossed the musl boundary, worth investigating). Pattern borrowed from chunk 045's gate-count regression baselines (CLAUDE.md §6).
+
+**Rejected alternatives:**
+
+- **Retire `soft_exp` (alias to `soft_exp_julia`)** — discarded; soft_exp's musl-bit-exactness is the load-bearing contract for users who care about cross-implementation reproducibility (e.g. testing against Arm Optimized Routines). The bead lists this as one option but the "document deprecation" path is just removing the wrong primitive.
+- **Rename `soft_exp` to `soft_exp_musl`** — discarded; would be a breaking API change for direct callers. The docstring update achieves the same discoverability without churn.
+
+**Filed (follow-ups):** none.
+
+**Test count:** 83,704 → **83,728** (+24).
+
+**Next agent — start here:** Continue bugs-only. Remaining: `y56a` (triple-redundant integer division — post-salb easier), `yys3` (manual 128-bit arithmetic), `q04a` / `jc0y` (3+1 refactors).
+
+---
+
 ## Session log — 2026-04-27 — Bennett-xiqt / U133 close (subnormal flush boundary — investigated, doc-only)
 
 **Shipped:** see git log; new regression test `test/test_xiqt_subnormal_boundary.jl` (26 assertions) + docstring update on `_sf_handle_subnormal` (src/softfloat/softfloat_common.jl) documenting the investigation finding.
