@@ -1,5 +1,64 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-27 (qxg9 bisect partial) — cf compile-time regression narrowed to a 3-commit window
+
+**Shipped:** Bennett-qxg9 notes updated with bisect data. No source changes. Followup to the same-day 1xub close.
+
+**Bisect data (`cf` impl, `max_n=64`, `optimize=false`, fresh subprocess via `benchmark/sweep_cell.jl`):**
+
+| Commit (oldest → newest) | Position | Compile time |
+|---|---|---|
+| 992b70a (Persistent-DS sweep, 2026-04-20) | (baseline) |   36 s — FAST |
+| 0ce4000 (Bennett-6t8s, ~2026-04-25)        | line 91/182  | 15.7 s — FAST |
+| 9539437 (worklog: doh6 ref, 2026-04-26)    | line 137/182 | 31.3 s — FAST |
+| **e4bb6cd (Bennett-5qrn / U57)**           | line 138/182 | INTERRUPTED |
+| **db52e1c (Bennett-qcso / U59)**           | line 141/182 | UNTESTED (pure new compose.jl; unlikely) |
+| **e8b7127 (Bennett-zmw3 / U111)**          | line 144/182 | >250 s — SLOW |
+| f68b353 (Bennett-jepw / U05-followup)      | line 154/182 | >250 s — SLOW |
+| fd4bd88 (Bennett-y986 / U05-followup-2)    | line 168/182 | >250 s — SLOW |
+| aec5788 (HEAD, today's 1xub commit)        | line 182/182 |  1213 s — SLOW |
+
+Regression appeared between **9539437 (FAST 31s)** and **e8b7127 (SLOW >250s)**. Two suspects in that window — both touch `src/lower.jl`'s hot path:
+
+1. **e4bb6cd — Bennett-5qrn**: trivial-identity peephole (+121 LOC). Per-`lower_binop!` syntactic check.
+2. **e8b7127 — Bennett-zmw3 / U111**: shift bounds + `resolve!` mask robustness (+47 LOC). Defensive asserts in `resolve!` — a classic O(N)→O(N²) failure mode at scale.
+
+**db52e1c (qcso)** is a pure new file (`src/compose.jl`, +186 LOC, no callsites added to existing lowering); unlikely to cause regression but should be confirmed.
+
+**Hypothesis:** Strongest suspect is **zmw3** based on the file scope ("resolve! mask cleanup" — `resolve!` is called O(N) times per gate at lowering, and the cf workload at max_n=64 has ~6M gates of SSA materialization to walk). 5qrn's `_try_identity_peephole!` is also called per-binop, but today's 1xub measurement showed cf max_n=16 went 5.1s (peephole on) ↔ 7.6s (peephole off) — a TINY delta that does NOT match a quadratic blowup story. So 5qrn is probably innocent on compile-time grounds, leaving zmw3 as the prime suspect.
+
+**Why:** 1xub close (earlier today) discovered the compile-time regression while running cf max_n=64; filed Bennett-qxg9 and deferred. User asked to follow up now ("when did it appear"); bisect interrupted to switch focus. Findings preserved in qxg9 notes + this entry for the next agent.
+
+**Methodology / gotchas:**
+
+1. **Use `git checkout <commit> -- src benchmark`, NOT detached-HEAD checkout.** The subdir-scoped checkout leaves CLAUDE.md / WORKLOG.md / .beads/ intact, so the bisect doesn't churn the worklog. Restore with `git checkout main -- src benchmark` at the end.
+
+2. **`git checkout <pre-tbm6-commit> -- benchmark` resurrects `benchmark/bc6_mul_strategies.jl`.** Karatsuba's `bc6` benchmark was deleted in 3da37c4 (Bennett-tbm6). Any bisect into pre-tbm6 commits brings the file back. After restoring to main, you must `git rm -f benchmark/bc6_mul_strategies.jl` — `git checkout main -- benchmark` does NOT remove paths absent from main. (Hit this in the cleanup phase of this session.)
+
+3. **The harness is bisect-stable.** `git log 992b70a..HEAD -- benchmark/sweep_cell.jl benchmark/sweep_persistent_impls_gen.jl` returns nothing — both files are byte-identical across the entire bisect window. Safe to compare across commits.
+
+4. **`timeout N` truncates `[compile] done in X s` printout.** The vlog line is printed AFTER the call returns, so a SIGTERM kills before the elapsed time prints. Discriminator becomes binary: completed (fast) vs killed (slow). For a quantitative wall-time, wrap the whole subprocess in `time` or `ts`. The 250s threshold is generous (>7× the 36s 2026-04-20 baseline) and reliably discriminates without false negatives.
+
+5. **Don't bisect cf max_n=64 in a tight loop without a hard timeout.** Each slow run is 5-20 minutes. Today's HEAD measurement (peephole on, full run) was 20 min 13 s.
+
+**Rejected alternatives:**
+
+- **Test 5qrn first** (started, interrupted). Was running when the user asked to switch focus. The 1xub same-day measurement on cf max_n=16 (peephole on 5.1s vs off 7.6s) already weakly evidences that 5qrn is NOT the cause — the gap is too small and the wrong sign for an O(N²) blowup.
+- **Run a full git bisect with --good/--bad markers.** Would require ~5-7 iterations of cf max_n=64; ~30-90 min total. Manual sampling is faster given we already have a 3-commit suspect window.
+
+**Filed (follow-ups):** none new (qxg9 notes updated in place).
+
+**Next agent starts here (qxg9 followup):**
+
+1. Check out `e4bb6cd` (5qrn): `git checkout e4bb6cd -- src benchmark && timeout 120 julia --project=. benchmark/sweep_cell.jl cf 64 /tmp/scratch.jsonl`. If FAST → regression is at e8b7127 (zmw3); if SLOW → regression is at e4bb6cd (5qrn).
+2. (If 5qrn FAST) confirm db52e1c (qcso) is also FAST as a sanity check, then implicate **zmw3**.
+3. Read `src/lower.jl` diff for the implicated commit. For zmw3, focus on what was added inside `resolve!` — likely an assertion or mask-recompute that runs per-call instead of once. Today's chunk-043 worklog entry for zmw3 has full context.
+4. **Restore working tree before commit:** `git checkout main -- src benchmark && git rm -f benchmark/bc6_mul_strategies.jl 2>/dev/null` (safe no-op if the bc6 file isn't resurrected).
+
+**Test count:** unchanged (no source/test changes today this session).
+
+---
+
 ## Session log — 2026-04-27 (LOC tier, BENCHMARKS.md refresh) — Bennett-1xub close (5qrn delta + sweep refresh) + Bennett-qxg9 filed (cf compile regression)
 
 **Shipped:** see git log around the next commit. Refreshed the persistent-DS sweep:
