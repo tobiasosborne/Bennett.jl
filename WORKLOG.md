@@ -1,27 +1,33 @@
 # Bennett.jl Work Log
 
-> # 🚨 NEXT AGENT — STRICT MANDATE 🚨
+> # 🚨 NEXT AGENT — START HERE 🚨
 >
-> **Read [`worklog/047_2026-04-27_heup_fold_constants_doc_only.md`](worklog/047_2026-04-27_heup_fold_constants_doc_only.md) FIRST**, then chunk 045 for the bugs-only directive.
+> **Read [`worklog/047_2026-04-27_heup_fold_constants_doc_only.md`](worklog/047_2026-04-27_heup_fold_constants_doc_only.md) FIRST.** It contains 7 session entries from 2026-04-27 (newest at top): tzrs stage-1 → tbm6 close → 7xng close → cvnb close → jc0y close → q04a close → heup close.
 >
-> **You are to work on `[bug]`-tagged beads ONLY.** No refactors. No renames.
-> No docstring polish. No naming-convention fixes. No "follow-up" filings as
-> a substitute for fixing a real bug.
+> **State of the bug backlog (2026-04-27 evening):** the bugs-only directive (chunk 045) is **EXHAUSTED on the actionable side**. Only 3 `[bug]` beads remain: `25dm` (P2, blocked on `z2dj` IN-PROGRESS T5-P6 dispatcher), `ponm` (P2, bd-tool schema bug — NOT a Bennett.jl source bug), `cc0.5` (P2 IN-PROGRESS — Julia TLS allocator GEP base, T5-P6.3 multi-language ingest, multi-session scope per its own notes).
 >
-> 12 open bugs as of 2026-04-27 evening (down from 24 at session start of
-> 2026-04-27 morning; salb + y986 closed in today's later session). The
-> full prioritised list is at the bottom of chunk 046. Pick one. Fix it.
-> Repeat. No procrastinating. No "not enough runway" excuses. No complaining
-> about scope.
+> **Active mode: structural / LOC refactors.** User explicitly lifted the bugs-only directive 2026-04-27 evening. Today's grind closed:
+> - `7xng` — LoweringResult.constant_wires dead-store removal (-45 LOC)
+> - `cvnb` — bennett_direct + self_reversing discoverability (Sturm.jl-ao1)
+> - `tbm6` — Karatsuba multiplier removed (~250 LOC delete)
+> - `tzrs` stage-1 — `_handle_intrinsic` extracted via 3+1 protocol (still OPEN; stages 2-5 deferred per CLAUDE.md §11)
 >
-> If a bug touches `lower.jl` / `ir_extract.jl` / `bennett_transform.jl` /
-> `gates.jl` / `ir_types.jl` / phi resolution → 3+1 protocol per CLAUDE.md §2.
-> Otherwise → direct grind. Always pair `verify_reversibility` with an
-> output-vs-Julia-oracle assertion (`verify_reversibility` does NOT check
-> semantic correctness — see today's 3of2 close).
+> **Active rule of thumb:** any change to `lower.jl` / `ir_extract.jl` / `bennett_transform.jl` / `gates.jl` / `ir_types.jl` / phi resolution → **3+1 protocol per CLAUDE.md §2** (2 parallel `Plan` proposers, synthesise, implement, review). Otherwise → direct grind. Always pair `verify_reversibility` with an output-vs-Julia-oracle assertion — `verify_reversibility` does NOT check semantic correctness (see today's 3of2 close + the chunk-045 directive).
 >
-> Older session logs are sharded into ~200-300 line chunks under `worklog/`,
-> file-numbered chronologically (000 = oldest, 046 = newest as of 2026-04-27).
+> **Suggested next pickups** (all P2/P3 non-bug, all need 3+1 because they touch core files):
+>   - `vdlg` (P2) — lower.jl 2,662 LOC structural split
+>   - `tzrs` stages 2-5 — remaining `_convert_instruction` arms (medium priority; stage 1 already shipped most of the value)
+>   - `x3jc` (P3) — ir_extract.jl 2,394 LOC similar to vdlg
+>   - `ehoa` second-half (P2) — `LoweringCtx` `::Any` field concretization (the back-compat-ctor half of ehoa was closed as a drive-by during tbm6)
+>   - `s92x` (P3) — `_detect_sret` 173-line soup
+>   - `vt0a` (P3) — Bennett-aware wire allocator (algorithmic; needs careful design)
+>
+> Smaller / contained next-tier work (no 3+1):
+>   - `1xub` — measure 5qrn delta on persistent-DS sweep + update BENCHMARKS.md
+>   - `64ob` — softfloat MD5 / soft_fma in BENCHMARKS.md
+>   - `qjet` — empirical timing-based reorder of test/runtests.jl (carries test-ordering risk)
+>
+> Older session logs are sharded into ~200-300 line chunks under `worklog/`, file-numbered chronologically (000 = oldest, 047 = newest as of 2026-04-27).
 
 This file is now an **index** — historical content was sharded out of the
 monolithic 9,774-line `WORKLOG.md` per Bennett-fyni / U70. Concatenating the
@@ -64,7 +70,7 @@ rejected paths, hand-off pointers). Avoid restating the diff:
 
 | File | Lines | First section |
 |---|---:|---|
-| [047_2026-04-27_heup_fold_constants_doc_only.md](worklog/047_2026-04-27_heup_fold_constants_doc_only.md) | ~80 | Session log — 2026-04-27 (evening) — Bennett-heup / U127 close (_fold_constants — investigated, doc-only) |
+| [047_2026-04-27_heup_fold_constants_doc_only.md](worklog/047_2026-04-27_heup_fold_constants_doc_only.md) | ~380 | Session log — 2026-04-27 (3+1 refactor, stage 1) — Bennett-tzrs partial (extract _handle_intrinsic) — followed by 6 more 2026-04-27 sessions: tbm6 / 7xng / cvnb / jc0y / q04a / heup |
 | [046_2026-04-27_y986_loop_header_dispatch.md](worklog/046_2026-04-27_y986_loop_header_dispatch.md) | ~510 | Session log — 2026-04-27 — Bennett-y986 / U05-followup-2 close (loop-header dispatch unification) |
 | [045_2026-04-27_day_summary_bugs_only_directive.md](worklog/045_2026-04-27_day_summary_bugs_only_directive.md) | 283 | Session log — 2026-04-27 — Bennett-salb / U119 close (div-by-0 + signed typemin/-1 contract) |
 | [044_2026-04-26_late_night_doh6.md](worklog/044_2026-04-26_late_night_doh6.md) | 282 | Session log — 2026-04-27 (early morning) — Bennett-3of2 / U112 close (wire-leak investigated, doc-only) + Bennett-vt0a filed |
