@@ -936,59 +936,74 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
     for _iter in 1:K
         vw_snapshot = Set(keys(vw))
 
-        # (a) Lower header's own non-phi instructions. Keep the original
-        # 4-type cascade for the header body — this preserves byte-identical
-        # gate counts for pre-existing tests (Collatz, soft_fdiv, etc.).
-        # The U05 expansion (dispatching to `_lower_inst!` for all IR types)
-        # is applied only to newly-supported body blocks in step (b).
+        # (a) Per-iteration LOCAL ctx for instruction dispatch. Mirrors the
+        # body-block ctx that pre-y986 lived inside the body-block loop,
+        # hoisted here to deduplicate header-body and body-block dispatch
+        # paths (Bennett-y986 / U05-followup-2).
+        #
+        # Pre-y986 the header had a hard-coded 4-type cascade
+        # (IRBinOp / IRICmp / IRSelect / IRCast) with no `else`; any
+        # IRCall / IRStore / IRLoad / IRAlloca / IRPtrOffset / IRVarGEP
+        # / IRExtractValue / IRInsertValue / non-loop-carried IRPhi in
+        # the header was silently dropped. The U05 body-block path already
+        # used `_lower_inst!` (the 12-type dispatcher) — y986 lifts that
+        # same dispatch to the header. Fail-loud guarantee comes from
+        # `_lower_inst!`'s catch-all method (lower.jl:190) per CLAUDE.md §1.
+        #
+        # Iteration-LOCAL guards (preserved from the pre-y986 body-block ctx):
+        # * `Dict{Symbol,Int}()` ssa_liveness — caller's populated liveness
+        #   would mark phi-destination operands as "dead" (no cross-iter
+        #   re-read modelled), letting Cuccaro's in-place adder corrupt
+        #   loop-carried accumulators. Empty dict ⇒ no operand looks dead.
+        # * `Ref(0)` inst_counter — the function-level counter is meaningless
+        #   across an unroll iteration.
+        # * `add=:ripple` — belt-and-braces. Post-U27 `_pick_add_strategy(:auto)`
+        #   returns `:ripple` regardless, so this is byte-identical to the
+        #   pre-y986 cascade for fast-path types. Override also defends
+        #   against an explicit caller-passed `add=:cuccaro`.
+        # * Iteration-LOCAL `iter_block_pred` / `iter_branch_info` /
+        #   `iter_preds` (Bennett-jepw): function-level dicts would only
+        #   see the last iteration's view of body-block wires — useless
+        #   to any consumer.
+        iter_block_pred = Dict{Symbol,Vector{Int}}()
+        iter_block_pred[hlabel] = block_pred[hlabel]
+        iter_branch_info = Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}()
+        iter_preds = Dict{Symbol,Vector{Symbol}}()
+
+        iter_ctx = LoweringCtx(gates, wa, vw, iter_preds, iter_branch_info,
+                               block_order, iter_block_pred,
+                               Dict{Symbol,Int}(), Ref(0),
+                               use_karatsuba, compact_calls,
+                               alloca_info, ptr_provenance, Ref(0),
+                               globals, :ripple, mul, entry_label)
+
+        # (a1) Lower header's non-phi instructions through the canonical
+        # dispatcher. `header_body_insts` is in source order (collected at
+        # line 901); phis are filtered out and the terminator lives in
+        # `header.terminator`, never in `header.instructions`.
         for inst in header_body_insts
-            if inst isa IRBinOp;    lower_binop!(gates, wa, vw, inst)
-            elseif inst isa IRICmp; lower_icmp!(gates, wa, vw, inst)
-            elseif inst isa IRSelect; lower_select!(gates, wa, vw, inst)
-            elseif inst isa IRCast; lower_cast!(gates, wa, vw, inst)
-            end
+            inst_counter[] += 1
+            _lower_inst!(iter_ctx, inst, hlabel)
         end
 
-        # Bennett-jepw: body-block predicate state is per-iteration LOCAL.
-        # We do NOT mutate the function-level block_pred / branch_info /
-        # preds dicts with body-block entries — each unroll iteration
-        # produces fresh wires for the same SSA labels, and the function-
-        # level pass would only see the last iteration's view.
-        # `raw_cond_wire` is `nothing` when there are no body blocks
-        # (Collatz / soft_fdiv etc. — header-only loops); in that case we
-        # fall through to (c) byte-identically with the pre-jepw path.
-        raw_cond_wire = nothing
-        if !isempty(body_block_order)
-            # (a2) Resolve the header's exit condition ONCE. We reuse this
-            # wire below in (c) (with polarity if needed) so we don't emit
-            # duplicate icmp gates.
-            raw_cond_wire = resolve!(gates, wa, vw, term.cond, 1)
+        # (a2) Resolve the header's exit condition ONCE — reused at (c).
+        # Lives between (a1) and (b) so any header-body inst that produces
+        # the cond's SSA operand has executed first (pre-y986 IRCall in
+        # header was dropped, masking this dependency).
+        raw_cond_wire = resolve!(gates, wa, vw, term.cond, 1)
 
-            iter_block_pred = Dict{Symbol,Vector{Int}}()
-            iter_block_pred[hlabel] = block_pred[hlabel]
-            iter_branch_info = Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}()
+        if !isempty(body_block_order)
             iter_branch_info[hlabel] = (raw_cond_wire, term.true_label, term.false_label)
-            iter_preds = Dict{Symbol,Vector{Symbol}}()
             # Seed: header → body successors (skip the exit and self-loops).
             for s in branch_targets(term)
                 (s == exit_label || s == hlabel) && continue
                 push!(get!(iter_preds, s, Symbol[]), hlabel)
             end
 
-            # (b) Lower body blocks in topo order. For each, compute its
-            # path predicate from in-region predecessors BEFORE dispatching
-            # its instructions, so any IRPhi in the body can resolve via
-            # `_edge_predicate!`. Bennett-httg / U05: the old `lower_loop!`
-            # called `lower_binop!(gates, wa, vw, inst)` with empty default
-            # kwargs — no `ssa_liveness`, no `inst_idx`. With those empty,
-            # the Cuccaro in-place picker almost never fires (no operand
-            # looks "dead"). If we thread the caller's populated
-            # `ssa_liveness` into loop-body dispatch, Cuccaro sees phi-
-            # destination operands as dead (liveness doesn't model cross-
-            # iteration phi re-reads) and writes in-place, silently
-            # corrupting the accumulator every iteration. Force `:ripple`
-            # inside the loop body to avoid the trap. Tied to Bennett-spa8
-            # (U27 :auto-dispatcher general fix); local override here.
+            # (b) Lower body blocks in topo order, reusing iter_ctx. For
+            # each, compute its path predicate from in-region predecessors
+            # BEFORE dispatching its instructions, so any IRPhi in the body
+            # can resolve via `_edge_predicate!` (Bennett-jepw).
             for blabel in body_block_order
                 bblock = block_map[blabel]
 
@@ -1003,13 +1018,6 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
                         _compute_block_pred!(gates, wa, blabel, iter_preds,
                                              iter_branch_info, iter_block_pred)
                 end
-
-                iter_ctx = LoweringCtx(gates, wa, vw, iter_preds, iter_branch_info,
-                                       block_order, iter_block_pred,
-                                       Dict{Symbol,Int}(), Ref(0),
-                                       use_karatsuba, compact_calls,
-                                       alloca_info, ptr_provenance, Ref(0),
-                                       globals, :ripple, mul, entry_label)
 
                 for inst in bblock.instructions
                     inst_counter[] += 1
@@ -1034,12 +1042,8 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
             end
         end
 
-        # (c) Exit condition. If body_block_order was empty (Collatz
-        # / soft_fdiv / header-only loops), raw_cond_wire is nothing —
-        # fall back to the original resolve! call to keep those baselines
-        # byte-identical. Otherwise reuse the wire computed in (a2).
-        exit_cond_wire = raw_cond_wire === nothing ?
-            resolve!(gates, wa, vw, term.cond, 1) : raw_cond_wire
+        # (c) Exit condition — always reuses the wire computed at (a2).
+        exit_cond_wire = raw_cond_wire
         if !exit_on_true
             exit_cond_wire = lower_not1!(gates, wa, exit_cond_wire)
         end
