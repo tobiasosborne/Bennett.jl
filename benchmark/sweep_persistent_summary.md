@@ -1,3 +1,59 @@
+# Persistent-DS Scaling Sweep
+
+## 2026-04-27 refresh — pipeline-wide ~3-4× gate improvement; 5qrn peephole delta < 1%
+
+**Bennett-1xub** re-ran the eight 2026-04-20 cells (linear_scan: max_n ∈ {4,16,64,256,1000}; cf: max_n ∈ {4,16,64}) at HEAD (post-5qrn peephole, post-many cc0/U-series fixes). Two passes per cell where applicable: peephole stubbed via `_try_identity_peephole!` early-return, then restored.
+
+### Total-cost refresh — HEAD (2026-04-27, peephole on) vs 2026-04-20
+
+| impl | max_n | 2026-04-20 gates | 2026-04-27 gates | factor |
+|---|---:|---:|---:|---:|
+| linear_scan | 4    |       6,350 |     1,810 | 3.5× |
+| linear_scan | 16   |      22,902 |     6,642 | 3.4× |
+| linear_scan | 64   |      89,302 |    26,522 | 3.4× |
+| linear_scan | 256  |     355,158 |   106,284 | 3.3× |
+| linear_scan | 1000 |   1,384,726 |   414,028 | 3.3× |
+| cf          | 4    |      61,728 |    15,084 | 4.1× |
+| cf          | 16   |   1,077,452 |   292,528 | 3.7× |
+| cf          | 64   |  17,458,600 | 6,206,464 | 2.8× |
+
+linear_scan per-set drops from ~1,400 to ~414 gates/set (3.3× across the entire range, asymptotically constant). The headline scaling shape is unchanged: linear_scan O(max_n), cf O(max_n²). The ~3-4× factor is shared across cells and is NOT 5qrn-specific — it accumulates from the post-2026-04-20 commits (cc0.x ConstantExpr / SLP / pointer / phi work, fold_constants default flip, sret + callee infrastructure, Bennett-y986 loop dispatch, Bennett-jepw diamond phi, etc.).
+
+### 5qrn peephole delta (HEAD with vs without peephole)
+
+`_try_identity_peephole!` stubbed at entry to isolate 5qrn's impact:
+
+| impl | max_n | peephole off | peephole on |   Δ | Δ % |
+|---|---:|---:|---:|---:|---:|
+| linear_scan | 4    |   1,828 |   1,810 |    -18 | 1.0% |
+| linear_scan | 16   |   6,708 |   6,642 |    -66 | 1.0% |
+| linear_scan | 64   |  26,780 |  26,522 |   -258 | 1.0% |
+| cf          | 4    |  15,174 |  15,084 |    -90 | 0.6% |
+| cf          | 16   | 294,034 | 292,528 | -1,506 | 0.5% |
+
+**Peephole impact on this workload: 0.5–1.0%, NOT the catalogue's estimated 20-40%.** Reason: the slot-preserve pattern in `sweep_ls_pmap_set/get` and `cf` lowers to `ifelse`/select chains, not `x+0` / `x*1`. The catalogue's H-2 estimate (review #17) modelled "preserve N-1 slots" as arithmetic identities; in practice it's branchless select. The peephole fires only on a few constant-folded perimeter ops (NOT-count differs by 18-258), not on the bulk of the lowered slot-write logic.
+
+The Bennett-5qrn micro-benchmark numbers (`x*Int8(1)` 692 → 26 gates, 26.6×) ARE real — but for THIS workload the 5qrn impact is negligible. Other peepholes (selecting away the `ifelse(cond, x, x)` redundancy, or eliminating two-wire AND-with-self) would target this workload more directly; not currently filed.
+
+### Compile-time anomaly: cf @ max_n=64
+
+| max_n | 2026-04-20 cf compile_s | 2026-04-27 cf compile_s | factor |
+|---:|---:|---:|---:|
+| 4  |  30.4 |    3.3 | 9.3× faster |
+| 16 |  31.1 |    5.1 | 6.1× faster |
+| 64 |  36.0 | **1213.5** | **33.7× SLOWER** |
+
+Linear_scan compile time scales gracefully (3-76 s for max_n 4..1000); cf compile time was effectively constant in 2026-04-20 (30-36 s) but is now super-linear at max_n ≥ 64. Hypothesis: a phi/select resolution path that was cheap pre-cc0 series is now O(max_n²) or worse on cf's diff-bookkeeping pattern. Filed as a follow-up bead by 1xub. Not in scope for the BENCHMARKS.md refresh.
+
+### Methodology notes
+
+- All cells `optimize=false` (per CLAUDE.md §5 + Bennett-cc0.7).
+- Subprocess-isolated via `benchmark/sweep_cell.jl <impl> <max_n>`.
+- Peephole-off measurements performed by inserting `return nothing` as the first statement of `_try_identity_peephole!` in `src/lower.jl`; restored verbatim via `git checkout HEAD -- src/lower.jl`.
+- All cells `verified=true` in both passes.
+
+---
+
 # Persistent-DS Scaling Sweep — 2026-04-20
 
 ## Question

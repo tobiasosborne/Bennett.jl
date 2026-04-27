@@ -2,7 +2,7 @@
 
 > # 🚨 NEXT AGENT — START HERE 🚨
 >
-> **Read [`worklog/047_2026-04-27_heup_fold_constants_doc_only.md`](worklog/047_2026-04-27_heup_fold_constants_doc_only.md) FIRST.** It contains 7 session entries from 2026-04-27 (newest at top): tzrs stage-1 → tbm6 close → 7xng close → cvnb close → jc0y close → q04a close → heup close.
+> **Read [`worklog/048_2026-04-27_1xub_persistent_ds_refresh.md`](worklog/048_2026-04-27_1xub_persistent_ds_refresh.md) FIRST**, then [`worklog/047_2026-04-27_heup_fold_constants_doc_only.md`](worklog/047_2026-04-27_heup_fold_constants_doc_only.md) (7 prior 2026-04-27 entries: tzrs stage-1 → tbm6 → 7xng → cvnb → jc0y → q04a → heup).
 >
 > **State of the bug backlog (2026-04-27 evening):** the bugs-only directive (chunk 045) is **EXHAUSTED on the actionable side**. Only 3 `[bug]` beads remain: `25dm` (P2, blocked on `z2dj` IN-PROGRESS T5-P6 dispatcher), `ponm` (P2, bd-tool schema bug — NOT a Bennett.jl source bug), `cc0.5` (P2 IN-PROGRESS — Julia TLS allocator GEP base, T5-P6.3 multi-language ingest, multi-session scope per its own notes).
 >
@@ -70,6 +70,7 @@ rejected paths, hand-off pointers). Avoid restating the diff:
 
 | File | Lines | First section |
 |---|---:|---|
+| [048_2026-04-27_1xub_persistent_ds_refresh.md](worklog/048_2026-04-27_1xub_persistent_ds_refresh.md) | ~75 | Session log — 2026-04-27 (LOC tier, BENCHMARKS.md refresh) — Bennett-1xub close (5qrn delta + sweep refresh) + Bennett-qxg9 filed (cf compile regression) |
 | [047_2026-04-27_heup_fold_constants_doc_only.md](worklog/047_2026-04-27_heup_fold_constants_doc_only.md) | ~380 | Session log — 2026-04-27 (3+1 refactor, stage 1) — Bennett-tzrs partial (extract _handle_intrinsic) — followed by 6 more 2026-04-27 sessions: tbm6 / 7xng / cvnb / jc0y / q04a / heup |
 | [046_2026-04-27_y986_loop_header_dispatch.md](worklog/046_2026-04-27_y986_loop_header_dispatch.md) | ~510 | Session log — 2026-04-27 — Bennett-y986 / U05-followup-2 close (loop-header dispatch unification) |
 | [045_2026-04-27_day_summary_bugs_only_directive.md](worklog/045_2026-04-27_day_summary_bugs_only_directive.md) | 283 | Session log — 2026-04-27 — Bennett-salb / U119 close (div-by-0 + signed typemin/-1 contract) |

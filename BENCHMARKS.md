@@ -137,6 +137,35 @@ dispatcher `_pick_alloca_strategy`. Each row is the gate cost of a single op.
 | QROM (T1c.2) | read-only global constant table | — | 4(L-1) Toffoli + O(L·W) CNOT |
 | Feistel hash (T3a.1) | reversible bijective key hash | — | 8W Toffoli |
 
+## Persistent-DS scaling sweep (T5)
+
+Refreshed 2026-04-27 (Bennett-1xub). All cells `optimize=false`,
+`verified=true`. Workload: K = max_n inserts then 1 lookup.
+Subprocess-isolated via `benchmark/sweep_cell.jl`. Full per-cell breakdown
++ 5qrn peephole delta in `benchmark/sweep_persistent_summary.md`.
+
+| impl | max_n | Total | Toffoli | Wires | Compile (s) |
+|---|---:|---:|---:|---:|---:|
+| linear_scan | 4    |     1,810 |     210 |     2,205 |    3.1 |
+| linear_scan | 16   |     6,642 |     814 |     7,413 |    3.2 |
+| linear_scan | 64   |    26,522 |   3,218 |    28,245 |    3.5 |
+| linear_scan | 256  |   106,284 |  12,830 |   111,557 |    7.4 |
+| linear_scan | 1000 |   414,028 |  50,074 |   434,357 |   76.3 |
+| cf          | 4    |    15,084 |     934 |    18,877 |    3.3 |
+| cf          | 16   |   292,528 |  25,938 |   312,985 |    5.1 |
+| cf          | 64   | 6,206,464 |1,025,894|  5,011,657|  1213.5 |
+
+**linear_scan** is at ~414 gates/set asymptotically (constant in max_n,
+3.3× lower than the 2026-04-20 baseline of ~1,400). **cf** is O(max_n²)
+in gates as before; compile-time at max_n=64 has regressed sharply
+(36 s → 1,214 s) — filed as a follow-up.
+
+**Bennett-5qrn trivial-identity peephole impact on this workload: 0.5–1.0%.**
+The original catalogue estimate (review #17 H-2) was 20-40%, but the
+slot-preserve pattern lowers to `ifelse`/select chains, not `x+0`/`x*1`,
+so the peephole barely fires here. The micro-benchmark wins (`x*1`
+692 → 26 gates) ARE real but don't translate to this workload.
+
 ## Head-to-head vs published reversible compilers
 
 | Benchmark | Bennett.jl | ReVerC 2017 | Ratio |
@@ -165,8 +194,9 @@ dispatcher `_pick_alloca_strategy`. Each row is the gate cost of a single op.
   linear_scan winner + Feistel hash-cons + multi-language ingest .ll/.bc).
   Per Bennett-uoem / U54 (2026-04-25): four candidate impls (Okasaki,
   HAMT, CF, Jenkins) preserved at `src/persistent/research/` after the
-  2026-04-20 sweep showed `linear_scan` is at the per-`set` floor
-  (~1,400 gates, constant in `max_n`).
+  sweep showed `linear_scan` is at the per-`set` floor (~414 gates
+  post-2026-04-27 refresh, constant in `max_n`; was ~1,400 in the
+  initial 2026-04-20 sweep — see the persistent-DS section above).
 - ◐ T5-P6 — `_pick_alloca_strategy :persistent_tree` arm (Bennett-z2dj,
   in_progress; CORE CHANGE per CLAUDE.md §2 → 3+1 protocol).
 - ○ T5-P7 — head-to-head Pareto front + paper outline
