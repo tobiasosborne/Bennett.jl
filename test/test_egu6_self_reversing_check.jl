@@ -35,14 +35,14 @@ using Bennett: ReversibleGate, NOTGate, CNOTGate, ToffoliGate, GateGroup,
         # returns a broken circuit. Post-fix: the probe catches it.
         gates = ReversibleGate[NOTGate(3)]
         lr = LoweringResult(gates, 3, [1], [2], [1], [1],
-                            Set{Int}(), GateGroup[], true)
+                            GateGroup[], true)
         @test_throws ErrorException bennett(lr)
     end
 
     @testset "T2: error message identifies the violating invariant" begin
         gates = ReversibleGate[NOTGate(3)]
         lr = LoweringResult(gates, 3, [1], [2], [1], [1],
-                            Set{Int}(), GateGroup[], true)
+                            GateGroup[], true)
         err = try
             bennett(lr); nothing
         catch e
@@ -59,7 +59,7 @@ using Bennett: ReversibleGate, NOTGate, CNOTGate, ToffoliGate, GateGroup,
         # old path (and the old verify_reversibility) greenlit this.
         gates = ReversibleGate[NOTGate(1)]
         lr = LoweringResult(gates, 2, [1], [2], [1], [1],
-                            Set{Int}(), GateGroup[], true)
+                            GateGroup[], true)
         @test_throws ErrorException bennett(lr)
     end
 

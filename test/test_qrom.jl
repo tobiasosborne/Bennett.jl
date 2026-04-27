@@ -29,7 +29,7 @@ function _compile_qrom(data::Vector{UInt64}, W::Int)
     data_out = emit_qrom!(gates, wa, data, idx_wires, W)
 
     lr = LoweringResult(gates, wire_count(wa), idx_wires, data_out,
-                        [n_idx], [W], Set{Int}())
+                        [n_idx], [W])
     return bennett(lr)
 end
 

@@ -28,7 +28,7 @@ using Bennett: emit_shadow_store!, emit_shadow_load!,
         out = emit_shadow_load!(gates, wa, primal, W)
 
         c = bennett(LoweringResult(gates, wire_count(wa), x, out,
-                                    [W], [W], Set{Int}()))
+                                    [W], [W]))
         @test verify_reversibility(c)
         for xv in UInt8(0):UInt8(255)
             # Bennett-zc50 / U100: simulate preserves UInt8-in → UInt8-out.
@@ -51,7 +51,7 @@ using Bennett: emit_shadow_store!, emit_shadow_load!,
         out = emit_shadow_load!(gates, wa, primal, W)
 
         c = bennett(LoweringResult(gates, wire_count(wa), vcat(x, y), out,
-                                    [W, W], [W], Set{Int}()))
+                                    [W, W], [W]))
         @test verify_reversibility(c)
         for xv in UInt8(0):UInt8(15), yv in UInt8(0):UInt8(15)
             @test simulate(c, (xv, yv)) == yv
@@ -76,7 +76,7 @@ using Bennett: emit_shadow_store!, emit_shadow_load!,
         # Output is (v1 || v2) — concatenated; test exercise checks each
         out = vcat(v1, v2)
         c = bennett(LoweringResult(gates, wire_count(wa), vcat(x, y), out,
-                                    [W, W], [W, W], Set{Int}()))
+                                    [W, W], [W, W]))
         @test verify_reversibility(c)
         for xv in UInt8(0):UInt8(3), yv in UInt8(0):UInt8(3)
             got = simulate(c, (xv, yv))
@@ -125,7 +125,7 @@ using Bennett: emit_shadow_store!, emit_shadow_load!,
 
         c = bennett(LoweringResult(gates, wire_count(wa),
                                     vcat(vals...), out,
-                                    fill(W, 5), [W], Set{Int}()))
+                                    fill(W, 5), [W]))
         @test verify_reversibility(c)
         # Sample inputs (exhaustive 16^5 is infeasible)
         for _ in 1:50

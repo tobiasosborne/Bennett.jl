@@ -52,7 +52,6 @@ struct LoweringResult
     output_wires::Vector{Int}
     input_widths::Vector{Int}
     output_elem_widths::Vector{Int}
-    constant_wires::Set{Int}       # wires carrying compile-time constants
     gate_groups::Vector{GateGroup} # SSA instruction → gate range mapping
     # P1: if true, the entire gate sequence is a self-cleaning primitive
     # (e.g. Sun-Borissov `lower_mul_qcla_tree!`). `bennett()` honors this
@@ -60,18 +59,18 @@ struct LoweringResult
     self_reversing::Bool
 end
 
-# Backward-compatible 7-arg constructor (existing call sites still work)
+# Bennett-7xng: 6-arg convenience — gate_groups defaults empty, not self-reversing.
 LoweringResult(gates, n_wires, input_wires, output_wires,
-               input_widths, output_elem_widths, constant_wires) =
+               input_widths, output_elem_widths) =
     LoweringResult(gates, n_wires, input_wires, output_wires,
-                   input_widths, output_elem_widths, constant_wires, GateGroup[], false)
+                   input_widths, output_elem_widths, GateGroup[], false)
 
-# 8-arg constructor (legacy, pre-P1)
+# 7-arg convenience — explicit gate_groups, default not self-reversing.
 LoweringResult(gates, n_wires, input_wires, output_wires,
-               input_widths, output_elem_widths, constant_wires,
+               input_widths, output_elem_widths,
                gate_groups::Vector{GateGroup}) =
     LoweringResult(gates, n_wires, input_wires, output_wires,
-                   input_widths, output_elem_widths, constant_wires, gate_groups, false)
+                   input_widths, output_elem_widths, gate_groups, false)
 
 """Bundles shared lowering state for instruction dispatch."""
 struct LoweringCtx
@@ -193,8 +192,7 @@ _lower_inst!(::LoweringCtx, inst::IRInst, ::Symbol) =
 # ---- operand resolution ----
 
 function resolve!(gates::Vector{ReversibleGate}, wa::WireAllocator,
-                  var_wires::Dict{Symbol,Vector{Int}}, op::IROperand, width::Int;
-                  constant_wires::Set{Int}=Set{Int}())
+                  var_wires::Dict{Symbol,Vector{Int}}, op::IROperand, width::Int)
     if op.kind == :ssa
         haskey(var_wires, op.name) || error("resolve!: undefined SSA variable: %$(op.name)")
         wires = var_wires[op.name]
@@ -246,8 +244,6 @@ function resolve!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                 push!(gates, NOTGate(wires[i]))
             end
         end
-        # Mark as constant — these can be reconstructed without ancillae
-        union!(constant_wires, wires)
         return wires
     end
 end
@@ -396,7 +392,6 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
     vw = Dict{Symbol,Vector{Int}}()
     input_wires = Int[]
     input_widths = Int[]
-    constant_wires = Set{Int}()    # wires carrying compile-time constants
     gate_groups = GateGroup[]      # SSA instruction → gate range mapping
 
     # Compute SSA liveness for in-place optimization
@@ -564,8 +559,7 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
     end
 
     lr = LoweringResult(gates, wire_count(wa), input_wires, output_wires,
-                         input_widths, parsed.ret_elem_widths, constant_wires,
-                         gate_groups)
+                         input_widths, parsed.ret_elem_widths, gate_groups)
 
     if fold_constants
         lr = _fold_constants(lr)
@@ -697,7 +691,7 @@ function _fold_constants(lr::LoweringResult)
 
     # Rebuild gate groups (invalidated by folding — clear them)
     return LoweringResult(folded, lr.n_wires, lr.input_wires, lr.output_wires,
-                          lr.input_widths, lr.output_elem_widths, lr.constant_wires)
+                          lr.input_widths, lr.output_elem_widths)
 end
 
 function lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_order;

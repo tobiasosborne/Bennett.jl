@@ -208,6 +208,6 @@ function lower_tabulate(f, arg_types::Type{<:Tuple},
     output_wires = emit_qrom!(gates, wa, table, input_wires, out_width)
 
     return LoweringResult(gates, wire_count(wa), input_wires, output_wires,
-                          copy(input_widths), [out_width], Set{Int}(),
+                          copy(input_widths), [out_width],
                           GateGroup[], true)   # self_reversing = true
 end

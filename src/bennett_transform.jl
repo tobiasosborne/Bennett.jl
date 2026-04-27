@@ -87,9 +87,6 @@ made reversible at the cost of additional auxiliary memory by recording
 intermediate results, copying out the final answer, and then running
 the forward computation in reverse to clear the record.  The whole
 codebase is named after this paper.
-
-Tracks constant_wires from the lowering result for future optimization
-(activity analysis, shared constant allocation).
 """
 function bennett(lr::LoweringResult)
     # P1: self-reversing primitives (e.g. Sun-Borissov multiplier, QROM

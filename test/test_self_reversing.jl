@@ -10,7 +10,7 @@ function _mk_lr(gates, n_wires, input_wires, output_wires, input_widths, output_
                 self_reversing::Bool=false)
     return LoweringResult(gates, n_wires, input_wires, output_wires,
                           input_widths, output_elem_widths,
-                          Set{Int}(), GateGroup[], self_reversing)
+                          GateGroup[], self_reversing)
 end
 
 @testset "P1: self_reversing=false keeps current Bennett wrap (gate count doubles)" begin
@@ -58,11 +58,10 @@ end
 end
 
 @testset "P1: backward compat — LoweringResult without self_reversing defaults to false" begin
-    # Construct LoweringResult via the legacy 8-arg constructor (no self_reversing).
-    # The Bennett wrap should behave as pre-P1.
+    # Construct LoweringResult via the 6-arg convenience (no gate_groups,
+    # no self_reversing). The Bennett wrap should behave as pre-P1.
     gates = ReversibleGate[CNOTGate(1, 2)]
-    # 7-arg constructor (no gate_groups, no self_reversing)
-    lr7 = LoweringResult(gates, 2, [1], [2], [1], [1], Set{Int}())
-    c7 = bennett(lr7)
-    @test length(c7.gates) == 2 + 1  # 2 CNOTs + 1 copy-out = standard wrap
+    lr6 = LoweringResult(gates, 2, [1], [2], [1], [1])
+    c6 = bennett(lr6)
+    @test length(c6.gates) == 2 + 1  # 2 CNOTs + 1 copy-out = standard wrap
 end

@@ -62,11 +62,11 @@ using Bennett
 
     @testset "self_reversing primitives are not corrupted by the fold" begin
         # `_fold_constants` drops `gate_groups` and previously also dropped
-        # `self_reversing` (7-arg constructor). A self-reversing `lr` that
-        # then entered `bennett()` would have been double-run. Pin the
-        # round-trip: fold(lr_self_reversing) must preserve self_reversing.
+        # `self_reversing` (a pre-P1 constructor). A self-reversing `lr`
+        # that then entered `bennett()` would have been double-run. Pin
+        # the round-trip: fold(lr_self_reversing) must preserve self_reversing.
         lr = Bennett.LoweringResult(Bennett.ReversibleGate[], 4,
-                                    [1, 2], [3, 4], [2], [2], Set{Int}(),
+                                    [1, 2], [3, 4], [2], [2],
                                     Bennett.GateGroup[], true)
         lr2 = Bennett._fold_constants(lr)
         @test lr2.self_reversing == true

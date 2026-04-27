@@ -1,5 +1,40 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-27 (post-bugs grind, LOC tier) — Bennett-7xng close (LoweringResult.constant_wires dead-store removal)
+
+**Shipped:** see git log around the next commit; `LoweringResult.constant_wires::Set{Int}` field deleted from src/lower.jl, plus the `resolve!` kwarg, the `lower()` declaration, the `union!(constant_wires, wires)` line, and all 13 call sites passing `Set{Int}()` to `LoweringResult` across 8 test files + src/tabulate.jl. Stale docstring line in src/bennett_transform.jl removed.
+
+**Why:** Bennett-7xng (P3 task; spun out as a drive-by from Bennett-5qrn / U57). The bead correctly identified that `resolve!` took `constant_wires::Set{Int}=Set{Int}()` as a kwarg with default empty Set, and NO caller threaded the lowering-scope set through. The mutation `union!(constant_wires, wires)` at lower.jl:249 was always operating on a caller-local empty Set that was discarded after the call. The field on `LoweringResult` was always materialised as the empty Set the lowering scope created at line 399. `_fold_constants` rebuilds its own `known` table from scratch; no consumer.
+
+**Mode:** direct grind, "delete the dead store" disposition (Option B per the bead's prescription; (a) thread it through was rejected because no current consumer has an actual use for it).
+
+**Net change:**
+- `src/lower.jl`: -1 struct field, -1 line in `resolve!` signature, -3 lines in `resolve!` body (`union!` + comment), -1 line in `lower()` declaration, -1 line in main return call, -1 line in `_fold_constants` rebuild call. Backward-compat constructors trimmed from 7-arg/8-arg (with constant_wires) to 6-arg/7-arg shapes — same convenience surface, one fewer field per signature.
+- `src/tabulate.jl`: dropped `Set{Int}(),` from the 9-arg constructor call.
+- `src/bennett_transform.jl`: removed stale "Tracks constant_wires from the lowering result for future optimization" docstring line.
+- 8 test files: dropped `Set{Int}()` from 13 LoweringResult constructor call sites.
+
+**Test coverage:** no new test file added — the existing 84,346 assertions exhaustively exercise every reversible_compile path AND every constructor variant. Full Pkg.test green: `84346 pass + 2 pre-existing broken / 5m31s`. Test count unchanged (this is pure LOC reduction).
+
+**Gotchas / Lessons:**
+
+1. **Constructor-arg position is a backward-compat surface.** Every test file passing `Set{Int}()` as the 7th positional arg had to be updated. Found via `grep -rn "Set{Int}()" test/ src/` filtered to LoweringResult call sites. Deleting a struct field is mechanical but easy to miss a site — the smoke test (`reversible_compile + verify_reversibility + simulate`) caught only top-level breakage; the per-file test runs caught the test_self_reversing.jl + test_egu6 sites. Always re-grep AFTER editing the struct, not before.
+
+2. **`docs/design/` snapshots are frozen but `src/` docstrings reference them.** The src/bennett_transform.jl docstring referenced `constant_wires` as "for future optimization" — this is the kind of forward-looking doc that rots when the field is removed but no commit touches the doc. Pattern: when removing a public-API field, grep its name in BOTH source AND docstrings AND the docs/ tree.
+
+3. **Backward-compat constructors are convenience APIs, not contracts.** I considered preserving the 7-arg constructor for "external compatibility" but no Sturm.jl or other downstream consumer was found via grep. CLAUDE.md §11 ("don't add abstractions beyond what the task requires") + the bead's explicit "Option B is fine" makes the decision clean.
+
+**Rejected alternatives:**
+
+- **Option A (thread it through properly)** — would require ~30 LOC of plumbing through `lower_block_insts!` → `lower_binop!` → `resolve!` to actually populate the set, plus a downstream consumer (peephole, fold) to read it. The 5qrn peephole already operates without it; `_fold_constants` builds its own table. Adding plumbing for a hypothetical future use violates §11.
+- **Keep the field but rename to `_constant_wires_unused` with a deprecation comment** — fossil noise. CLAUDE.md "avoid backwards-compat hacks like renaming unused _vars".
+
+**Filed (follow-ups):** none.
+
+**Test count:** 84,346 → **84,346** (unchanged — pure LOC reduction).
+
+---
+
 ## Session log — 2026-04-27 (late evening) — Bennett-q04a / 59jj-cut close (_convert_instruction Union return — investigated, doc-only)
 
 **Shipped:** see git log around the next commit; `_convert_instruction` (src/ir_extract.jl:1250-1271) gains a 17-line investigation comment + new contract test `test/test_q04a_convert_instruction_contract.jl` (9 assertions / 4 testsets) registered in runtests.jl.

@@ -30,7 +30,7 @@ function _compile_feistel(W::Int; rounds::Int=4)
     key = allocate!(wa, W)
     out = emit_feistel!(gates, wa, key, W; rounds)
     return bennett(LoweringResult(gates, wire_count(wa), key, out,
-                                   [W], [W], Set{Int}()))
+                                   [W], [W]))
 end
 
 @testset "T3a.1 4-round Feistel reversible hash" begin

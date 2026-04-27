@@ -51,7 +51,7 @@ using Bennett
         # Net: same gate, just relocated to materialization.
         @testset "NOTGate: flip-then-materialize" begin
             lr = Bennett.LoweringResult(Bennett.ReversibleGate[Bennett.NOTGate(3)],
-                                        4, [1, 2], [3], [2], [1], Set{Int}(),
+                                        4, [1, 2], [3], [2], [1],
                                         Bennett.GateGroup[], false)
             out = Bennett._fold_constants(lr)
             @test length(out.gates) == 1
@@ -65,7 +65,7 @@ using Bennett
             lr = Bennett.LoweringResult(Bennett.ReversibleGate[
                                             Bennett.NOTGate(3),
                                             Bennett.CNOTGate(3, 4)],
-                                        5, [1, 2], [3, 4], [2], [2], Set{Int}(),
+                                        5, [1, 2], [3, 4], [2], [2],
                                         Bennett.GateGroup[], false)
             out = Bennett._fold_constants(lr)
             @test all(g -> g isa Bennett.NOTGate, out.gates)
@@ -77,7 +77,7 @@ using Bennett
         # Control is data-dependent → emit CNOT as-is, target leaves `known`.
         @testset "CNOTGate: data control passes through" begin
             lr = Bennett.LoweringResult(Bennett.ReversibleGate[Bennett.CNOTGate(1, 3)],
-                                        4, [1, 2], [3], [2], [1], Set{Int}(),
+                                        4, [1, 2], [3], [2], [1],
                                         Bennett.GateGroup[], false)
             out = Bennett._fold_constants(lr)
             @test length(out.gates) == 1
@@ -92,7 +92,7 @@ using Bennett
             lr = Bennett.LoweringResult(Bennett.ReversibleGate[
                                             Bennett.NOTGate(3),
                                             Bennett.ToffoliGate(3, 4, 5)],
-                                        6, [1, 2], [5], [2], [1], Set{Int}(),
+                                        6, [1, 2], [5], [2], [1],
                                         Bennett.GateGroup[], false)
             out = Bennett._fold_constants(lr)
             @test count(g -> g isa Bennett.ToffoliGate, out.gates) == 0
@@ -108,7 +108,7 @@ using Bennett
             lr = Bennett.LoweringResult(Bennett.ReversibleGate[
                                             Bennett.NOTGate(3),
                                             Bennett.ToffoliGate(3, 1, 4)],
-                                        4, [1, 2], [4], [2], [1], Set{Int}(),
+                                        4, [1, 2], [4], [2], [1],
                                         Bennett.GateGroup[], false)
             out = Bennett._fold_constants(lr)
             @test count(g -> g isa Bennett.ToffoliGate, out.gates) == 0
@@ -131,7 +131,7 @@ using Bennett
                                            Bennett.NOTGate(3), Bennett.NOTGate(3),
                                            Bennett.NOTGate(3), Bennett.NOTGate(3),
                                            Bennett.NOTGate(3)],
-                                       4, [1, 2], [3], [2], [1], Set{Int}(),
+                                       4, [1, 2], [3], [2], [1],
                                        Bennett.GateGroup[], true)  # self_reversing=true
         out = Bennett._fold_constants(lr_sr)
         @test out === lr_sr               # exact pointer-equality short-circuit
