@@ -197,7 +197,20 @@ function resolve!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                   constant_wires::Set{Int}=Set{Int}())
     if op.kind == :ssa
         haskey(var_wires, op.name) || error("resolve!: undefined SSA variable: %$(op.name)")
-        return var_wires[op.name]
+        wires = var_wires[op.name]
+        # Bennett-cklf / U128: pre-fix the SSA path silently discarded the
+        # caller's `width` arg — `wires` was returned regardless of length
+        # mismatch. Mismatches downstream produced opaque wire-index errors
+        # far from the root cause. Assert the contract loud per CLAUDE.md §1.
+        # Pointer-typed operands (width=0) are exempt: pointers carry no
+        # width and the caller passes 0 by convention (cf. lower_phi!,
+        # lower_select! handling).
+        if width != 0 && length(wires) != width
+            error("resolve!: SSA operand %$(op.name) has length(wires)=$(length(wires)) " *
+                  "but caller advertised width=$width — width contract violated " *
+                  "(Bennett-cklf / U128)")
+        end
+        return wires
     else
         # Bennett-ibz5 / U96: the OPAQUE_PTR_SENTINEL (`IROperand(:const,
         # :__opaque_ptr__, 0)`) is the placeholder `_operand_safe` returns

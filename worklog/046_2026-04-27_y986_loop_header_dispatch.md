@@ -1,5 +1,35 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-27 — Bennett-cklf / U128 close (resolve! SSA-path width assert)
+
+**Shipped:** `resolve!` (src/lower.jl:198-210) now asserts `length(wires) == width` on the SSA path. Pre-cklf the function silently discarded the caller's `width` argument and returned `var_wires[op.name]` regardless of length match. Pointer-typed operands (`width=0`) are exempt — pointers carry no width by convention.
+
+**Why:** Bennett-cklf / U128 — review F5: the SSA path's silently-discarded width argument let downstream consumers index into wire vectors based on their advertised width while the actual length might differ, producing opaque BoundsErrors or silent miscompilations. Per CLAUDE.md §1 fail-loud, the contract should be asserted.
+
+**Mode:** direct grind. 5-line addition, plus precise error message.
+
+**Test coverage:** `test/test_cklf_resolve_width_assert.jl` (7 assertions / 4 testsets):
+- Matched width: returns wires unchanged.
+- Pointer exemption (width=0): accepts any wire-vector length.
+- Mismatched width: precise error containing "cklf", "length(wires)=N", "width=M".
+- Undefined SSA: error fires first (precedes the length check).
+
+**Adjacent — pattern alignment:** mirrors Bennett-fq8n / U84 (`lower_phi!` width assertion at lower.jl:1272+). Same shape: SSA operand reaches a width-aware caller, length-vs-width must match or fail loud.
+
+**Regression check:** Full Pkg.test 83,756 / 83,758 pass + 2 pre-existing broken (4m20s). Test count 83,749 → 83,756 (+7). All existing `resolve!` callers satisfy the new contract — no need to fix any caller.
+
+**Gotchas / Lessons:**
+
+1. **Pointer-typed operands are width=0 by convention.** I almost wrote a stricter assertion `length(wires) == width` unconditionally, which would have tripped on every pointer SSA reference. The `width != 0` exemption pre-empts that. CLAUDE.md "Phi Resolution and Control Flow — CORRECTNESS RISK" warns about pointer-typed phi/select; the same width=0 sentinel applies here.
+
+**Filed (follow-ups):** none.
+
+**Test count:** 83,749 → **83,756** (+7).
+
+**Next agent — start here:** Continue bugs-only. Remaining: `y56a` (triple-redundant integer division — investigation+dedup, post-salb easier), `yys3` (manual 128-bit arithmetic — investigation), `q04a` / `jc0y` (3+1 refactors, larger scope).
+
+---
+
 ## Session log — 2026-04-27 — Bennett-qmk6 / U82 + Bennett-dq8l / U81 close (precise _type_width error dispatch)
 
 **Shipped:** `_type_width` (src/ir_extract.jl) now dispatches `VectorType` (qmk6), `StructType` (qmk6-related), and `VoidType` (dq8l) explicitly with precise error messages. Pre-fix all three fell through to a generic "unsupported LLVM type for width query: <type>" message.
