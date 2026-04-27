@@ -45,14 +45,34 @@ of precision. For an already-normalized input (bit 52 set), this is a no-op.
 
 Precondition: `m` has no bits set above bit 52. All callers guarantee this
 (subnormal inputs have `m < 2^52`; normal inputs have `m < 2^53` with bit 52
-set, so already-normalized). `m == 0` yields a pathological result (63
-shifts, no leading 1 found) but callers handle zero inputs via the select
-chain before using `m`.
+set, so already-normalized).
+
+# Bennett-tpg0 / U135 — m == 0 contract
+
+Pre-tpg0 the function had a caller-trust contract: `m == 0` produced
+`(0, e - 63)` (every CLZ stage shifts because no leading 1 is found),
+documented as "callers handle zero inputs via the select chain before
+using m". A future caller that didn't pre-guard would silently get a
+nonsense exponent.
+
+Post-tpg0: `m == 0` returns `(0, e)` unchanged. Branchless via an
+`ifelse` substitute pattern — internally use `IMPLICIT` (1<<52) as the
+sentinel during CLZ (a no-op for the already-normalized form), then
+restore `m=0` and `e` at exit. Byte-identical output for all `m != 0`
+inputs because the substitute only fires on `m == 0`. Pinned by
+`test_tpg0_normalize_zero_input.jl`.
 
 Six-stage branchless binary-search CLZ; structure mirrors `_sf_normalize_clz`
 but the target bit is 52 instead of 55.
 """
 @inline function _sf_normalize_to_bit52(m::UInt64, e::Int64)
+    # Bennett-tpg0: defensive guard for m == 0. Substitute IMPLICIT
+    # (1<<52, leading 1 already at the target bit) so the CLZ is a
+    # no-op; restore zero outputs at the end.
+    m_zero = m == UInt64(0)
+    e_orig = e
+    m = ifelse(m_zero, IMPLICIT, m)
+
     need32 = (m & (UInt64(0xFFFFFFFF) << 21)) == UInt64(0)
     m = ifelse(need32, m << 32, m)
     e = ifelse(need32, e - Int64(32), e)
@@ -77,7 +97,11 @@ but the target bit is 52 instead of 55.
     m = ifelse(need1, m << 1, m)
     e = ifelse(need1, e - Int64(1), e)
 
-    return (m, e)
+    # Restore zero: byte-identical for m != 0 (m_zero is false, ifelse
+    # picks the CLZ result); for m == 0 returns (0, e_orig).
+    m_final = ifelse(m_zero, UInt64(0), m)
+    e_final = ifelse(m_zero, e_orig, e)
+    return (m_final, e_final)
 end
 
 """

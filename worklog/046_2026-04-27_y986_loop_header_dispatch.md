@@ -1,5 +1,42 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-27 — Bennett-tpg0 / U135 close (_sf_normalize_to_bit52 zero-input contract)
+
+**Shipped:** see git log; `_sf_normalize_to_bit52` in src/softfloat/softfloat_common.jl now handles `m == 0` explicitly, returning `(0, e)` unchanged. Pre-tpg0 the function had a caller-trust contract: `m == 0` produced `(0, e - 63)` (every CLZ stage shifts because no leading 1 is found), documented as "callers handle zero inputs via the select chain before using m". Defensive removal of the contract.
+
+**Why:** Bennett-tpg0 / U135 — review F13: pathological behaviour on m==0 with caller-trust contract. Per CLAUDE.md §1 fail-loud, silent garbage-exponent output is wrong. Multiple callers (fdiv, fmul, fma, fsqrt) all pre-guard zero today, but a future caller that doesn't would silently get nonsense.
+
+**Mode:** direct grind. Pure defensive: branchless `ifelse` substitute pattern using `IMPLICIT` (1<<52) as an internal sentinel during the CLZ (a no-op for the already-normalized form), then restore the original `m=0` and `e` at exit.
+
+**Byte-identicality argument:** for any `m != 0`, `m_zero` is `false`, so the entry `ifelse` picks `m` unchanged and the exit `ifelse` picks the CLZ result. The CLZ logic is unchanged. Therefore output for `m != 0` is byte-identical pre-vs-post fix. Empirically confirmed: full Pkg.test green, all softfloat tests (fdiv, fmul, fma, fsqrt) byte-identical.
+
+**Test coverage:** `test/test_tpg0_normalize_zero_input.jl` (454 assertions / 4 testsets):
+- m == 0 returns `(0, e)` for 8 representative `e` values (was `(0, e - 63)` pre-fix).
+- m != 0 already-normalized inputs are no-ops (24 cases).
+- m != 0 subnormal inputs normalize correctly (handle-table cases, 14 assertions).
+- 200 random subnormal inputs cross-checked against Julia's `leading_zeros` oracle (400 assertions).
+
+**Full suite green:** Pkg.test 83,678 / 83,680 pass + 2 pre-existing broken (3m59s). Test count 83,224 → 83,678 (+454, exact match).
+
+**Gotchas / Lessons:**
+
+1. **The `IMPLICIT = 1 << 52` sentinel is the right choice for the substitute** because the CLZ specifically looks for the bit-52 leading 1. With the substitute in place, `need32` / `need16` / ... / `need1` are all `false` (the bit-52 bit IS set), so no shift is performed and `e` is unchanged. Then the exit `ifelse` discards the unchanged-m=IMPLICIT and returns 0.
+
+2. **Hand-computed test tables are error-prone for CLZ-style functions.** My first table had `(UInt64(0xFFFFFFFF), 20)` — leading 1 is at bit 31, so shift = 52 - 31 = 21, not 20. Switched to using `leading_zeros(m)` to compute the expected shift dynamically. Lesson: for any CLZ test, prefer the language-builtin oracle over hand-typed shift counts.
+
+**Rejected alternatives:**
+
+- **`error()` on m == 0** — rejected; this function is `@inline`d into compiled SoftFloat code that becomes a callee. An `error()` would emit `@ijl_throw` in the IR, breaking `lower_call!` extraction (same problem we hit with salb).
+- **No defensive guard, just docstring** — rejected; the bead explicitly asks "Handle m == 0 explicitly (either return early or assert it cannot happen)". Branchless guard satisfies the "return early" form without a branch.
+
+**Filed (follow-ups):** none.
+
+**Test count:** 83,224 → **83,678** (+454).
+
+**Next agent — start here:** Continue bugs-only. Remaining softfloat tier: `xiqt` (subnormal flush boundary), `ys0d` (soft_exp 0.9% off-by-1-ULP). Then `y56a`, `yys3`, `q04a`, `jc0y`.
+
+---
+
 ## Session log — 2026-04-27 — Bennett-bjdg / U80 close (precise constant-operand error messages) + Sturm-cvnb file
 
 **Shipped:** see git log; `_operand` in src/ir_extract.jl now dispatches `ConstantFP`, `PoisonValue`, `UndefValue`, and `ConstantPointerNull` operands to precise error messages naming the kind, the value's textual form, and the relevant Bennett-side limitation. Pre-bjdg these all fell through to the misleading "unknown operand ref ... — the producing instruction was skipped or is not yet supported; check the cc0.x gaps in the extractor" — wrong because there is no producer for a constant.
