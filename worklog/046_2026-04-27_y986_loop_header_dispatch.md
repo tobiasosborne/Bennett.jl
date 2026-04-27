@@ -1,5 +1,37 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-27 — Bennett-yys3 / U163 close (UInt128 compiler-rt premise — investigated, doc-only)
+
+**Shipped:** new contract test `test/test_yys3_uint128_compiler_rt.jl` (11 assertions) + docstring update on the 128-bit helpers banner in src/softfloat/softfloat_common.jl. Empirically verifies the bead's premise is stale and pins the manual helpers' correctness via UInt128 cross-checks.
+
+**Why:** Bennett-yys3 / U163 — review F14 flagged 200+ LOC of manual 128-bit arithmetic in softfloat_common.jl as existing solely to avoid `__udivti3` / `__umodti3` compiler-rt calls.
+
+**Mode:** direct grind, "investigated, doc-only" disposition.
+
+**Investigation finding:** the bead's premise is empirically stale in current Julia (1.12). `code_llvm(f, (UInt128, UInt128), optimize=false)` for `*`, `+`, `-`, `<<`, `>>`, `÷`, AND `%` emits NO call to `__udivti3` or `__umodti3` — Julia's UInt128 lowering inlines/expands all these operations directly. Modern compiler-rt for these ops appears to be built into LLVM lowering rather than a runtime call.
+
+**Why kept as-is:** the manual helpers' explicit hi/lo decomposition is the direct ancestor of soft_fma's gate sequence. Replacing them with UInt128 ops would shift soft_fma's gate-emission profile and require re-measuring every pinned baseline (CLAUDE.md §6). Out of scope for the bugs-only directive; the savings would be in source-file LOC, not in gates emitted.
+
+**Test coverage:** 11 assertions / 2 testsets:
+- "UInt128 arithmetic ops do NOT emit `__udivti3`/`__umodti3`": 7 ops × `code_llvm` IR scan → all 0 matches.
+- "Manual helpers still produce correct results": cross-checks `_sf_widemul_u64_to_128`, `_add128`, `_sub128`, `_neg128` against native UInt128 ops as oracle. Pins the helpers' contracts so any future refactor can cross-check.
+
+**Adjacent docstring update:** the 128-bit helpers banner at softfloat_common.jl:230+ now reads "historical 'no UInt128' rationale is stale" and points at the test for empirical verification + cites `Bennett-yys3` for the investigation context.
+
+**Gotchas / Lessons:**
+
+1. **Premise drift in beads filed against compiler-RT behaviors.** The bead was filed when an older Julia/LLVM version may have emitted these calls. Julia 1.12's UInt128 lowering doesn't. Lesson: for any "Julia/LLVM emits X" bead, verify the claim against the current toolchain BEFORE designing a fix. Adds ~30 sec of `code_llvm` probing.
+
+2. **"Investigated, doc-only" is the right disposition for stale-premise beads** (chunk 045 pattern, cf. 2yky/3of2/xiqt/y56a). The contract test serves as a regression guard: if a future Julia version DOES start emitting `__udivti3`, the test trips and reopens this bead.
+
+**Filed (follow-ups):** none.
+
+**Test count:** 83,776 → **83,787** (+11).
+
+**Next agent — start here:** Continue bugs-only. Remaining: `heup` (P3, _fold_constants mixes three concerns — 93-line pass off-by-default; investigation), `q04a` / `jc0y` (P3, both 3+1 refactors).
+
+---
+
 ## Session log — 2026-04-27 — Bennett-y56a / U118 close (division-path canonicalisation — investigated, doc-only)
 
 **Shipped:** new regression test `test/test_y56a_division_paths.jl` (20 assertions) + docstring expansion on `lower_divrem!` (src/lower.jl) documenting the three division paths and the post-salb canonicalisation.

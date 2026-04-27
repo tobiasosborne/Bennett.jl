@@ -229,9 +229,26 @@ end
 # ────────────────────────────────────────────────────────────────────────
 # 128-bit helpers for soft_fma (Bennett-0xx3)
 #
-# All branchless `@inline`. No UInt128 (emits `__udivti3` / `__umodti3`
-# non-callee intrinsics). 128-bit values are represented as (hi, lo)
+# All branchless `@inline`. 128-bit values are represented as (hi, lo)
 # UInt64 pairs, matching the pattern in `fsqrt.jl` for 128-bit radicand.
+#
+# # Bennett-yys3 / U163 — historical "no UInt128" rationale is stale
+#
+# The original docstring claimed UInt128 emits `__udivti3` / `__umodti3`
+# compiler-rt intrinsics that lower_call! couldn't extract. Empirically
+# (Julia 1.12, verified by `test/test_yys3_uint128_compiler_rt.jl`):
+# UInt128 ops `*`, `+`, `-`, `<<`, `>>`, `÷`, `%` all compile to inlined
+# sequences with NO compiler-rt calls. The hand-rolled hi/lo helpers
+# below could be replaced by native UInt128 arithmetic with no
+# compiler-rt risk.
+#
+# Why kept as-is: the helpers' explicit hi/lo decomposition is the
+# direct ancestor of the gate sequence soft_fma emits; replacing them
+# with native UInt128 ops would shift soft_fma's gate-emission profile
+# and require re-measuring every soft_fma baseline (CLAUDE.md §6). Out
+# of scope for the bugs-only directive that surfaced this; the contract
+# tests in `test/test_yys3_uint128_compiler_rt.jl` pin the helpers'
+# correctness so a future refactor can cross-check.
 # ────────────────────────────────────────────────────────────────────────
 
 """
