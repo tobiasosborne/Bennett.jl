@@ -1,5 +1,69 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-27 — Bennett-bjdg / U80 close (precise constant-operand error messages) + Sturm-cvnb file
+
+**Shipped:** see git log; `_operand` in src/ir_extract.jl now dispatches `ConstantFP`, `PoisonValue`, `UndefValue`, and `ConstantPointerNull` operands to precise error messages naming the kind, the value's textual form, and the relevant Bennett-side limitation. Pre-bjdg these all fell through to the misleading "unknown operand ref ... — the producing instruction was skipped or is not yet supported; check the cc0.x gaps in the extractor" — wrong because there is no producer for a constant.
+
+**Why:** Bennett-bjdg / U80, surfaced as a gotcha during d77b earlier today (chunk 046 d77b entry, gotcha #2). User expects a Float64 literal in operand position to either be lowered (via SoftFloat) or emit a clear "Float64 constants not supported" message, not a hunt for a missing extractor branch.
+
+**Mode:** direct grind. Error-message-only change to `_operand`'s else-branch fallthrough. No semantic change.
+
+**Test coverage:** `test/test_bjdg_constant_operand_errors.jl` (4 assertions / 2 testsets):
+- `(a::Float64, b::Float64) -> a < b ? 1.0 : 0.0` → asserts the new error mentions "ConstantFP" and does NOT contain the misleading "producing instruction was skipped" phrase.
+- `(a::Float64, b::Float64) -> 1.0` → same.
+
+PoisonValue and UndefValue paths covered by the dispatch but not exercised in the test (hard to trigger from Julia source without writing raw LLVM IR — the LLVM optimizer rarely emits these against optimize=false). The dispatch is mechanical and will fire when LLVM does emit them.
+
+**Adjacent:** ConstantPointerNull dispatched via `LLVM.API.LLVMGetValueKind` because LLVM.jl doesn't expose a Julia-level type (pattern borrowed from `_ptr_identity` at src/ir_extract.jl:2210+).
+
+**Full suite green:** Pkg.test 83,224 / 83,226 pass + 2 pre-existing broken (4m13s). Test count 83,220 → 83,224 (+4, exact match).
+
+**Filed (follow-ups):** none for bjdg itself. Earlier in this session: `Bennett-cvnb` (P3 task) filed in response to a Sturm.jl feature request — see separate entry below.
+
+**Test count:** 83,220 → **83,224** (+4).
+
+**Next agent — start here:** Continue bugs-only. With salb + y986 + gboa + d77b + bjdg closed today, ~9 [bug] beads remain. Suggested order:
+- **softfloat tier**: `tpg0`, `xiqt`, `ys0d` — each needs the §13 subnormal-output testset.
+- **`y56a`** — triple-redundant integer division.
+- **`yys3`** — manual 128-bit arithmetic (investigation).
+- **`q04a` / `jc0y`** — yesterday's 3+1 filings.
+
+---
+
+## Session log — 2026-04-27 — Sturm.jl feature-request investigation, filed Bennett-cvnb (no Bennett-side code change)
+
+**Shipped:** see git log around the bd-cache commit 811c4c7; `Bennett-cvnb` (P3 task) filed.
+
+**Why:** Sturm.jl escalated a feature request for a `bennett_direct(lr)` entry point that bypasses the Bennett-1973 forward+copy+uncompute wrap for already-reversible LoweringResults. Sturm reported ~4× Toffoli + ~6 extra ancillae in their windowed Shor mulmod path (Sturm Session 74; 192s vs ~30s expected at N=15, c_mul=2).
+
+**Investigation finding:** the fast path **already exists**. `bennett(lr)` at `src/bennett_transform.jl:101-105` short-circuits to forward-only emission when `lr.self_reversing == true`, validated by `_validate_self_reversing!` (Bennett-egu6 / U03 contract probe battery). Bennett's own `lower_tabulate` (src/tabulate.jl:208-212) is the canonical caller; it sets `self_reversing=true` via the 9th positional arg of the LoweringResult constructor. Sturm's `qrom_lookup_xor!` uses the 7-arg backward-compat constructor (src/lower.jl:64-67) which silently defaults `self_reversing=false` → wrap is applied. README:137 documents the flag but discoverability is poor.
+
+**Conclusion:** no Bennett-side code change required for Sturm to get the speedup. The Sturm-side fix is to change one constructor call to the 9-arg form passing `self_reversing=true`. Bennett-cvnb captures the discoverability improvement (add `bennett_direct` convenience alias + README "pre-reversed circuits" callout + bennett() docstring expansion) so future downstream users don't hit the same gap.
+
+**Cited references** (in the bead):
+- src/bennett_transform.jl:101-105 (existing fast path).
+- src/lower.jl:48-74 (LoweringResult struct + 7-arg constructor that defaults `self_reversing=false`).
+- src/tabulate.jl:208-212 (canonical `self_reversing=true` caller).
+- src/qrom.jl:28-30 (Bennett's own emit_qrom! is garbage-free, matches Sturm's emit_qrom! contract).
+- README.md:137 (existing — but unprominent — documentation).
+- Sturm.jl Session 74 worklog, Sturm.jl-2qp, Sturm.jl-ao1, Sturm.jl-pw9 (Sturm-side context).
+
+**Gotchas / Lessons:**
+
+1. **Backward-compat constructors silently drop new fields.** The 7-arg LoweringResult constructor was added pre-self_reversing (Bennett-P1) and now silently defaults the flag to `false`. Downstream users not following Bennett.jl's history have no visibility into this. Lesson: when adding a new boolean flag with a non-trivial perf impact, surface it in the constructor signature OR add a deprecation warning to the older shorter-arity constructor pointing at the new one.
+
+2. **README mentions ≠ README findability.** README:137 documents `self_reversing`. Sturm read it but didn't recognise it as load-bearing for their case. Lesson: a single-line mention buried in a feature list isn't enough for a flag with a 4× perf swing; needs a dedicated callout section for downstream library authors.
+
+3. **External users' diagnoses are valuable but verify.** Sturm correctly identified the symptom (4× Toffoli, 6 extra ancillae) and traced it to "Bennett's compile overhead". Their proposed fix (new entry point) was based on an incorrect inference (wrap is unconditional). The correct mechanism existed; the user just couldn't find it. Always run the Sturm-side investigation step they proposed ("confirm in Bennett source...") before agreeing the API needs a new entry point.
+
+**Rejected alternatives:**
+
+- **Implement `bennett_direct` immediately** — declined for now; not a bug, and the per-the-directive bugs-only mandate takes priority. Filed as Bennett-cvnb for the next non-bugs cycle. Sturm can move forward by switching to the 9-arg constructor today.
+
+**Filed:** `Bennett-cvnb` (P3 task) — Surface self_reversing fast-path discoverability for downstream users.
+
+---
+
 ## Session log — 2026-04-27 — Bennett-d77b / U132 close (full LLVM fcmp predicate coverage)
 
 **Shipped:** see git log around the next commit; 6 new soft_fcmp_* primitives (`ord`, `uno`, `one`, `ueq`, `ult`, `ule`) added to `src/softfloat/fcmp.jl`, registered in `_CALLEES_FP_CMP`, and wired into `ir_extract.jl`'s LLVM-fcmp dispatch table. Combined with the existing 4 (oeq, olt, ole, une) plus operand-swap dispatch for the four GT/GE forms (ogt → olt(b,a), oge → ole(b,a), ugt → ult(b,a), uge → ule(b,a)), every LLVM fcmp predicate now routes to a callee — pre-d77b 8 predicates (`one/ord/uno/ueq/ugt/uge/ult/ule`) raised `_ir_error("unsupported fcmp predicate $pred_int")`.

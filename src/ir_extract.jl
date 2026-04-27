@@ -2786,8 +2786,53 @@ function _operand(val::LLVM.Value, names::Dict{_LLVMRef, Symbol})
         # Bennett-cc0.4: fold statically-decidable ConstantExprs (today:
         # pointer-typed icmp eq/ne between named globals) to i1 literals.
         return _fold_constexpr_operand(val, names)
+    elseif val isa LLVM.ConstantFP
+        # Bennett-bjdg / U80: floating-point constant in operand position.
+        # Bennett.jl extracts integer values and routes Float64 arithmetic
+        # through the SoftFloat dispatcher (src/Bennett.jl:380+); raw
+        # ConstantFP operands have no canonical integer encoding here.
+        # Pre-bjdg this fell through to the misleading "unknown operand
+        # ref ... producing instruction was skipped" error.
+        error("ir_extract.jl: ConstantFP operand not supported: " *
+              "$(string(val)) — Bennett.jl does not lower raw " *
+              "floating-point constants. Wrap in `SoftFloat(...)` at the " *
+              "call site, or change the function to take/return integer " *
+              "types. See src/Bennett.jl:380+ for the SoftFloat dispatch " *
+              "path. (Bennett-bjdg / U80)")
+    elseif val isa LLVM.PoisonValue
+        # Bennett-bjdg / U80: poison operand. Per LLVM LangRef poison is
+        # undefined behavior on observation; reading it is never legal.
+        error("ir_extract.jl: PoisonValue operand: $(string(val)) — " *
+              "reading poison is undefined behavior per LLVM LangRef. " *
+              "This usually means a prior instruction produced poison " *
+              "(integer overflow flagged with `nsw`/`nuw`, divide by " *
+              "zero, etc.) and the result is being consumed without a " *
+              "guard. Bennett.jl rejects poison operands to fail fast. " *
+              "(Bennett-bjdg / U80)")
+    elseif val isa LLVM.UndefValue
+        # Bennett-bjdg / U80: undef operand (UndefValue, not the
+        # PoisonValue subclass — the latter caught above). Implementation-
+        # defined per LLVM LangRef; Bennett.jl rejects to fail fast per
+        # CLAUDE.md §1.
+        error("ir_extract.jl: UndefValue operand: $(string(val)) — " *
+              "reading undef is implementation-defined per LLVM LangRef. " *
+              "Bennett.jl rejects undef operands to fail fast " *
+              "(CLAUDE.md §1). (Bennett-bjdg / U80)")
     else
+        # Bennett-bjdg / U80: precise check for ConstantPointerNull
+        # (LLVM.jl doesn't expose a Julia-level type for it, so use the
+        # value-kind C API). Anything else still in this branch is a
+        # genuinely-unknown SSA ref — the original error message applies.
         r = val.ref
+        if r != C_NULL
+            kind = LLVM.API.LLVMGetValueKind(r)
+            if kind == LLVM.API.LLVMConstantPointerNullValueKind
+                error("ir_extract.jl: ConstantPointerNull operand: " *
+                      "$(string(val)) — null-pointer dereference. " *
+                      "Bennett.jl does not currently lower null-pointer " *
+                      "operands. (Bennett-bjdg / U80)")
+            end
+        end
         haskey(names, r) || error(
             "ir_extract.jl: unknown operand ref for: $(string(val)) — the " *
             "producing instruction was skipped or is not yet supported; " *
