@@ -1,5 +1,49 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-27 — Bennett-gboa / U139 close (zero-ancilla in-place op contracts)
+
+**Shipped:** see git log around the next commit; explicit pre/post wire-state contracts added to `lower_add_cuccaro!` (src/adder.jl), the `:trunc` branch of `lower_cast!` (src/lower.jl), `lower_divrem!`'s truncation step (src/lower.jl), and `_cond_negate_inplace!` (src/lower.jl). New regression test `test/test_gboa_dirty_bit_hygiene.jl` (180 assertions) pins the contracts as load-bearing assertions: bypasses Bennett's outer reverse pass and runs the raw gate sequences via `Bennett.apply!` to verify input-preservation, in-place result correctness, and ancilla-zero invariants directly.
+
+**Why:** Bennett-gboa / U139 — the review at `reviews/2026-04-21/07_arithmetic_bugs.md` F8 flagged that zero-ancilla in-place ops have implicit pre/post contracts. A reader can't tell from the code alone which wires must be zero before/after. Bennett's outer reverse pass cleans up whatever the gate sequence leaves dirty, so correctness holds today, but any future liveness-driven freeing pass that reuses these wires mid-circuit could silently miscompile (Bennett-3of2 / U112 is the canonical example: the Cuccaro `free!` rewrite passed `verify_reversibility` while producing sign-flipped sdiv outputs).
+
+**Mode:** direct grind. Doc-only + a dedicated contract test; no algorithmic changes; no gate emission shifts. CLAUDE.md §2's 3+1 trip-wire is for behavior-changing changes to the core pipeline — adding docstrings + a wire-state assertion test doesn't qualify.
+
+**Test coverage:** 180 assertions across 3 testsets (`test/test_gboa_dirty_bit_hygiene.jl`):
+- **Cuccaro contract** (8 W ∈ {2,3,4,8} × 7 (a,b) cases × 3 contract checks ≈ 100+ assertions): a preserved, b ← (a+b) mod 2^W, ancilla X restored to 0.
+- **`:trunc` source-wire preservation** (6 (F,T) sizes × 4 src values × 2 contract checks): src wires unchanged, r holds low T bits.
+- **`_cond_negate_inplace!` cond+val invariant** (3 W × 2 cond × 4 val × 2 contract checks): cond preserved, val correctly negated/preserved (carry leak documented separately per Bennett-3of2 / U112).
+
+**Adjacent test stays green:** `test_op6a_cuccaro_gate_count` 30/30, `test_division` 4819/4819, `test_gate_count_regression` 39/39 — confirms the docstring + contract-test additions are correctness-neutral. Full Pkg.test 81,662 / 81,664 pass + 2 pre-existing broken (4m15s). Test count 81,482 → 81,662 (+180, exact match).
+
+**Gotchas / Lessons:**
+
+1. **`Bennett.apply!` is the lowest-level simulation primitive** (src/simulator.jl:1-3): three single-line methods on `(::Vector{Bool}, ::NOTGate/CNOTGate/ToffoliGate)`. Tests that need to exercise raw gate sequences without the Bennett wrap can build a `bits = zeros(Bool, n)` and apply gates manually. This is how the gboa contract test bypasses `bennett()` to assert wire-state invariants directly. The `WireAllocator` exposes `.next_wire` which gives the upper bound on allocated wires.
+
+2. **`_cond_negate_inplace!`'s carry leak is real and load-bearing** — the function emits MAJ-ripple-up gates that compute carries into the (W+1) `next_carry` wires and never UMA-ripple them back down. The wires get uncomputed by Bennett's OUTER reverse pass at simulate time. The gboa contract test pins the cond+val invariant but explicitly does NOT assert carry-zero; that would fail because the function leaves them dirty. Documented in the docstring's "Wire budget" section (Bennett-3of2 / U112) — left as-is by design.
+
+3. **The contracts hold today; the test is a regression guard.** Unlike a typical RED-GREEN cycle where the test fails before the fix, this is a "the contract was always implicit; now it's load-bearing." Any future change that violates the contract — e.g. a free-list rewrite of Cuccaro, a liveness pass that reuses src wires post-trunc, a refactor of cond-negate that drops the cond-preservation gates — will trip the gboa test. That's the value, not RED-GREEN.
+
+**Rejected alternatives:**
+
+- **`@assert` runtime checks inside the lower_* functions** — Julia doesn't disable `@assert` by default, so this would impose unconditional runtime cost on every Cuccaro/trunc/divrem call. Test-time assertion via the contract test is the right shape: zero runtime cost, full coverage at CI / manual `Pkg.test`.
+- **Env-flag-gated `@debug` logging of wire state** — would require building a snapshot mechanism, doesn't catch bugs unless someone enables the flag and runs every code path. The contract test is more disciplined.
+- **Lower-level wrapper functions that enforce the contract** (e.g. `lower_add_cuccaro_safe!`) — adds API surface for no real benefit. The contract is a CALLER-OBLIGATION at the existing call sites; the docstrings make that explicit.
+
+**Filed (follow-ups):** none. The contracts are now explicit at every site flagged by the review.
+
+**Test count:** 81,482 → **81,662** (+180).
+
+**Next agent — start here:** Continue bugs-only per the chunk-045 directive. With salb + y986 + gboa closed today, the next-pickup list (per the y986 close pointer + measurement):
+
+- **`d77b`** (P3) — only 4 of 14 LLVM fcmp predicates implemented. Feature-shaped; verify whether documented scope cut or genuine bug.
+- **softfloat tier**: `tpg0` / `xiqt` / `ys0d` — each needs the §13 `subnormal-output range` testset, mirror the `soft_exp` pattern.
+- **`y56a`** (P3) — triple-redundant integer division paths. Now easier post-salb: `_soft_udiv_compile` is the canonical kernel, redundancy can be measured + removed.
+- **`bjdg`** (P3) — ConstantFP/Poison/Undef in scalar operand → misleading error.
+- **`yys3`** (P3) — 200+ LOC manual 128-bit arithmetic to avoid `__udivti3` / `__umodti3`. Investigation-shaped.
+- **`q04a` / `jc0y`** (P3, both 3+1) — yesterday's filings; structural refactors.
+
+---
+
 ## Session log — 2026-04-27 — Bennett-y986 / U05-followup-2 close (loop-header dispatch unification)
 
 **Shipped:** see git log around the next commit; `lower_loop!` now routes header non-phi instructions through the canonical `_lower_inst!` dispatcher (12 IR types) instead of the pre-y986 4-type cascade (IRBinOp / IRICmp / IRSelect / IRCast) with no `else`. The iteration-LOCAL ctx pattern that already existed for body blocks (Bennett-jepw) is hoisted to the top of the iteration and reused for both header-body and body-block dispatch. Fail-loud guarantee comes from `_lower_inst!`'s catch-all (lower.jl:190) per CLAUDE.md §1.

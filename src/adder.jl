@@ -35,6 +35,24 @@ Only 1 ancilla qubit (X) vs W-1 in traditional ripple-carry.
 The "2n NOT" advertised in the original paper appears in the
 carry-out variant; this mod-2^W form omits both.
 
+# Wire-state contract (Bennett-gboa / U139)
+
+**Pre:** `a[1:W]` and `b[1:W]` hold the SSA operand bits. The internal
+ancilla `X[1]` is freshly allocated (zero by `WireAllocator` invariant).
+
+**Post (by construction; pinned by `test_gboa_dirty_bit_hygiene.jl`):**
+- `a[1:W]` unchanged (Phase-3 UMA gates restore each `a[i]`).
+- `b[1:W]` holds `(a + b) mod 2^W`.
+- `X[1]` returned to `0` by Phase-3's last UMA pair, restoring it to
+  the ancilla-zero invariant. No outer Bennett-reverse uncomputation
+  is needed for X — the function self-cleans.
+
+**Caller responsibility:** if the caller's liveness analysis decides
+to free `b` mid-circuit, it MUST first uncompute the gates emitted
+here (or wrap the whole call in Bennett's reverse pass). The function
+does NOT track `b`'s dirty-bit lifetime — `b` is overwritten and
+holds the result; the original `b` value is gone.
+
 Input: a[1:W], b[1:W] (a unchanged, b overwritten with a+b mod 2^W).
 """
 function lower_add_cuccaro!(gates::Vector{ReversibleGate}, wa::WireAllocator,

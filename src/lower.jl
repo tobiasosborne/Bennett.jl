@@ -1810,6 +1810,18 @@ function lower_cast!(gates, wa, vw, inst::IRCast)
         for i in 1:F; push!(gates, CNOTGate(src[i], r[i])); end
         for i in F+1:T; push!(gates, CNOTGate(src[F], r[i])); end
     elseif inst.op == :trunc
+        # Bennett-gboa / U139 wire-state contract:
+        #   - r[1:T] ← src[1:T] (CNOT-copy of the low T bits).
+        #   - src[T+1..F] are NOT touched: they remain at their SSA-input
+        #     values for the rest of the gate sequence. This is intentional
+        #     — `src` is a pure SSA read, not consumed. Bennett's outer
+        #     reverse pass uncomputes whatever produced src in the first
+        #     place; the high bits never need explicit zeroing here.
+        #   - r is freshly allocated (zero-initialised), so the result wires
+        #     don't have a "dirty" issue.
+        # If a future liveness pass wants to free src mid-circuit, it must
+        # first uncompute src's full F-bit producer — NOT just bits 1..T.
+        # Pinned by `test/test_gboa_dirty_bit_hygiene.jl`.
         for i in 1:T; push!(gates, CNOTGate(src[i], r[i])); end
     else
         error("lower_cast!: unknown cast op :$(inst.op) (supported: $_IR_CAST_OPS)")
@@ -1896,7 +1908,15 @@ function lower_divrem!(gates::Vector{ReversibleGate}, wa::WireAllocator,
         end
     end
 
-    # Truncate to W bits
+    # Truncate to W bits.
+    # Bennett-gboa / U139 wire-state contract: bits [W+1..64] of `result64`
+    # retain the high bits of the soft_udiv output (often non-zero for sdiv
+    # where signed-extension produces all-ones high bits). They are NOT
+    # zeroed in-flight. Bennett's outer reverse pass uncomputes the soft_udiv
+    # inlining at simulate time, restoring all 64 result64 wires to zero.
+    # `result` is freshly allocated and only receives the low W bits.
+    # If a future liveness pass tries to free `result64` mid-circuit it MUST
+    # uncompute the full soft_udiv kernel first — NOT just bits 1..W.
     result = allocate!(wa, W)
     for i in 1:W
         push!(gates, CNOTGate(result64[i], result[i]))
@@ -1906,6 +1926,18 @@ end
 
 """
 Conditionally negate a value in-place: if cond=1, val = -val (two's complement).
+
+# Wire-state contract (Bennett-gboa / U139)
+
+**Pre:** `val[1:W]` and `cond[1]` hold SSA values; carry wires freshly
+allocated (zero by `WireAllocator` invariant).
+
+**Post (pinned by `test_gboa_dirty_bit_hygiene.jl`):**
+- `cond[1]` unchanged.
+- `val[1:W]` ← `(-val) mod 2^W` if `cond[1] == 1`, else unchanged.
+- The W+1 carry wires (`carry` + W `next_carry`) are NOT cleaned up by
+  this function; they are uncomputed by Bennett's outer reverse pass
+  (gates are self-inverse). See "Wire budget" note below.
 
 # Wire budget — Bennett-3of2 / U112 (investigated, left as-is)
 
