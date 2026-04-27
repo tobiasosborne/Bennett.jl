@@ -1,5 +1,55 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-27 (late evening) — Bennett-jc0y / 59jj-cut close (gate-storage layout — investigated, doc-only)
+
+**Shipped:** see git log around the next commit; `ReversibleCircuit` docstring (src/gates.jl:24-58) gains a "Storage layout decision" section + new contract test `test/test_jc0y_gate_storage_contract.jl` (11 assertions / 4 testsets) registered in runtests.jl.
+
+**Why:** Bennett-jc0y / 59jj-cut — review #18 F13 claimed `Vector{ReversibleGate}` boxes ~56 MB on 1.4M-gate SHA-256 circuits AND `apply!` is type-unstable per gate in the simulate hot loop. Filed 2026-04-26 as a 3+1 candidate.
+
+**Mode:** investigation first per the chunk-045 directive ("MEASURE before designing the fix"). After empirical verification, "investigated, doc-only" disposition (chunk 045 / 046 / 047 pattern, cf. 2yky / 3of2 / xiqt / y56a / yys3 / heup).
+
+**Investigation finding — performance premise largely stale, memory premise modest:**
+
+1. **`apply!` is NOT type-unstable in the simulate hot loop.** Empirical: `simulate(c, UInt64(7))` on a 28k-gate `x*x` circuit shows 4 allocations / 12.4 KiB total — bounded, not O(|gates|). Julia's union-splitting on the three concrete subtypes (`NOTGate` / `CNOTGate` / `ToffoliGate`) eliminates per-gate boxing inside the compiled `_simulate` function. The bead's claim was based on REPL-scope iteration (`for g in c.gates; apply!(b, g); end` at global scope), where dispatch IS dynamic — but that's not the production hot path.
+
+2. **Memory savings are real but modest (~26%).** Live measurement on UInt64 `(a*b)+(c*d)*(a+b)` at 85k gates: boxed layout 3.7 MB vs flat 32-byte tagged union 2.7 MB. Linear extrapolation to a hypothetical 1.4M-gate SHA-256: 56 MB → 41 MB savings (~15 MB). Not a make-or-break reduction.
+
+3. **Refactor blast radius is high.** 24+ source-file sites take `Vector{ReversibleGate}` as parameter type — every `lower_*!` helper (adder, qcla, multiplier, qrom, feistel, partial_products, parallel_adder_tree, fast_copy, shadow_memory), all strategy variants (eager, value_eager, pebbling, sat_pebbling, pebbled_groups), bennett_transform, simulator. Any storage-layout refactor must touch all of them AND must NOT shift the 39 pinned gate-count baselines.
+
+The bead's three candidate fixes (tagged-union via SumTypes.jl; StructArrays.jl; three parallel concrete vectors) all have the same blast radius. Net cost vs benefit: not worth it today.
+
+**Test coverage:** `test/test_jc0y_gate_storage_contract.jl` — 11 assertions / 4 testsets:
+
+- **Allocation contract** — simulate on a 28k-gate UInt64 mul allocates < 200 KiB total AND < 8 B/gate. If apply! starts boxing per gate, both bounds trip immediately.
+- **Memory layout contract** — pins `sizeof(NOTGate)=8`, `sizeof(CNOTGate)=16`, `sizeof(ToffoliGate)=24`. Live boxed-vs-flat ratio pinned at 20-40% (current ~26%); outside the band → baseline shifted.
+- **Compiled-function loop shape** — `@noinline _drive!(bits, gates)` driving `for g in gates; apply!(bits, g); end` allocates < 1 KiB independent of `length(gates)`. Pins the canonical hot-loop shape so a future refactor can't accidentally lose union-splitting.
+- **Method table** — exactly 3 concrete `ReversibleGate` subtypes; `subtypes(ReversibleGate) == {NOTGate, CNOTGate, ToffoliGate}`. If a 4th lands, the union-splitting analysis needs re-measurement.
+
+**Adjacent docstring update:** `ReversibleCircuit` (src/gates.jl:24-58) gains a "Storage layout decision" section citing the empirical finding, the 26% memory delta, and the 24+ site blast radius. Future agents resurrecting this work have the live numbers to beat as a baseline.
+
+**Gotchas / Lessons:**
+
+1. **REPL-scope `for g in c.gates` ≠ in-function dispatch.** First measurement at global scope showed 111k allocs / 2.74 MiB on 28k gates → 4 allocs/gate, "confirming" the bead. Same loop wrapped in a `@noinline` function: < 1 KiB total. Julia union-splits inside a compiled function but not at REPL/global scope. Always measure with the same call shape the production hot path uses.
+
+2. **Allocation-ratio assertions need an n_wires axis, not n_gates.** First test attempt asserted `a2/a1 < 0.10 * (n2_gates/n1_gates)` and tripped because `simulate`'s allocation footprint scales with `n_wires` (Bool buffer + input snapshot), not `n_gates`. Fixed by switching to a hard byte cap (200 KiB) plus a per-gate ratio (< 8 B/gate), both of which fail loud if per-gate boxing returns.
+
+3. **`InteractiveUtils.subtypes` is NOT in `Base`.** Test file needed `using InteractiveUtils: subtypes`; runtests.jl doesn't import it transitively.
+
+4. **The bead spec ("3+1 protocol per CLAUDE.md §2") was correct AT FILING TIME but the underlying premise stale.** Filing this as a 3+1 candidate was reasonable on the review's surface read; the empirical verification changed the calculus. CLAUDE.md §2's 3+1 trip-wire applies to behavior-changing changes; doc-only doesn't qualify.
+
+**Rejected alternatives:**
+
+- **Implement tagged-union via SumTypes.jl** — would touch 24+ lower_*! parameter signatures + every strategy variant + bennett_transform + simulator. Net memory savings ~15 MB on 1.4M-gate SHA-256; net dev cost: a 3+1 cycle plus careful per-baseline pin verification. Out of proportion. Defer until a real workload OOMs.
+- **Implement hand-rolled flat union (Int64 tag + 3 wire indices, 32 B per element)** — same blast radius as SumTypes; smaller dependency surface; same defer rationale.
+- **StructArrays.jl** — adds a dep, struct-of-arrays layout has worse cache behavior for the simulator's per-gate access pattern (which reads all wires of one gate at a time). Memory parity with the tagged union, no perf win.
+- **Three parallel concrete vectors** — would require encoding gate ORDER (which currently is implicit in vector position). Adds a sequencing primitive; complexity dominates the win.
+
+**Filed (follow-ups):** none. The contract test is the regression guard. Future work resurrecting this should start by re-running the test on a SHA-256 circuit and measuring the OOM threshold concretely.
+
+**Test count:** 84,326 → **84,337** (+11, exact match).
+
+---
+
 ## Session log — 2026-04-27 (evening) — Bennett-heup / U127 close (_fold_constants — investigated, doc-only)
 
 **Shipped:** see git log around the next commit; expanded `_fold_constants` docstring (src/lower.jl:577-602) + new contract test `test/test_heup_fold_constants_contract.jl` (539 assertions / 4 testsets) registered in runtests.jl.

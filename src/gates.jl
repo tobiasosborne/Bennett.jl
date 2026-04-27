@@ -27,6 +27,32 @@ end
 A reversible circuit: a sequence of NOT/CNOT/Toffoli gates operating on wires.
 Produced by `reversible_compile` or `bennett`. The circuit satisfies the Bennett
 invariant: all ancilla wires return to zero after execution.
+
+# Storage layout decision (Bennett-jc0y / 59jj cut, investigated 2026-04-27)
+
+`gates::Vector{ReversibleGate}` is intentionally typed with the abstract
+supertype rather than a tagged-union or struct-of-arrays encoding. Empirical
+measurement (`test/test_jc0y_gate_storage_contract.jl`):
+
+  - Memory: boxed layout adds ~26% overhead vs a flat 32-byte tagged union
+    (live: UInt64 `(a*b)+(c*d)*(a+b)` at 85k gates → 3.7 MB boxed vs 2.7 MB
+    flat). Modest savings.
+
+  - Simulate hot loop: bounded-allocation regardless of gate count.
+    `_simulate` (src/simulator.jl) drives `for gate in c.gates; apply!(bits,
+    gate); end`; Julia's union-splitting on the three concrete subtypes
+    (NOTGate / CNOTGate / ToffoliGate) eliminates per-gate boxing inside the
+    compiled function. A 28k-gate circuit allocates < 200 KiB total —
+    n_wires-scaling, NOT n_gates-scaling.
+
+  - Refactor blast radius: 24+ sites (every `lower_*!` helper, all strategy
+    variants, bennett_transform, simulator) take `Vector{ReversibleGate}` as
+    a parameter type. A storage-layout change must touch all of them and
+    must NOT shift the 39 pinned gate-count baselines.
+
+The trade-off favours the current shape until a real workload OOMs. The
+contract test pins the empirical baselines so a future agent can measure
+the shift before committing to the refactor.
 """
 struct ReversibleCircuit
     n_wires::Int

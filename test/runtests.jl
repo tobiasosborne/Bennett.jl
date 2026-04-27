@@ -335,6 +335,12 @@ include("test_5qrn_identity_peepholes.jl")
 # reduction baselines). Investigated → doc-only: bead claims "off-by-default"
 # and "mixes three concerns" both stale post-epwy / U28.
 include("test_heup_fold_constants_contract.jl")
+# Bennett-jc0y / 59jj-cut — ReversibleCircuit.gates storage contract pin.
+# Investigated → doc-only: bead claims "type-unstable apply! per gate" stale
+# (Julia union-splits NOT/CNOT/Toffoli inside _simulate's hot loop); memory
+# savings real but ~26% with 24+ site blast radius. Refactor deferred until
+# a real workload OOMs; this file pins empirical baselines.
+include("test_jc0y_gate_storage_contract.jl")
 # Bennett-qcso / U59 — compose(c1, c2) pipeline composition. Implements
 # c1.gates ++ renumbered(c2.gates) ++ reverse(c1.gates) with c2's input
 # wires positionally aliased onto c1's output wires. Self-reversing
