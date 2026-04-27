@@ -1,5 +1,33 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-27 — Bennett-qmk6 / U82 + Bennett-dq8l / U81 close (precise _type_width error dispatch)
+
+**Shipped:** `_type_width` (src/ir_extract.jl) now dispatches `VectorType` (qmk6), `StructType` (qmk6-related), and `VoidType` (dq8l) explicitly with precise error messages. Pre-fix all three fell through to a generic "unsupported LLVM type for width query: <type>" message.
+
+**Why:** Two beads, same site, one fix. qmk6 (vector-valued returns produce misleading "width query" error) and dq8l (void-return non-sret crashes in `_type_width` with generic message) both fired from `_type_width`'s catch-all else-branch. Consolidating the fix per CLAUDE.md §1 (fail loud with context) and §12 (don't proliferate dispatch sites).
+
+**Mode:** direct grind — error-message clarity, no semantic change.
+
+**Test coverage:** `test/test_qmk6_dq8l_type_width_errors.jl` (21 assertions / 4 testsets):
+- VectorType: 3 vector shapes (i32×4, i64×2, i8×16) — error names "VectorType" + cites cc0.7 / qmk6.
+- VoidType: error names "VoidType" + cites dq8l, points at upstream caller.
+- StructType: error names "StructType" + suggests sret / extractvalue.
+- Existing happy paths: int/float/double/half/array all unchanged (regression guard).
+
+**Gotchas / Lessons:**
+
+1. **LLVM.jl float type constructors are named `DoubleType()` / `FloatType()` / `HalfType()`, NOT `LLVMDouble()` etc.** The latter are TYPE NAMES (the Julia structs that wrap LLVM's typed value), not constructors. My first test attempt called `LLVM.LLVMDouble()` and got `MethodError: no method matching` for all three. Lesson: when adding tests that construct LLVM.Type instances, use the `*Type()` constructors per LLVM.jl's API.
+
+2. **Two beads fixed in one commit is fine when the fix is single-site.** Per chunk 045 directive, "DO NOT file new follow-up beads as a substitute for fixing a real bug" — but consolidating two beads that the same edit closes isn't filing follow-ups, it's just efficient batching. Worklog calls out both bead IDs; commit message cites both.
+
+**Filed (follow-ups):** none.
+
+**Test count:** 83,728 → **83,749** (+21).
+
+**Next agent — start here:** Continue bugs-only. Remaining: `cklf` (resolve! silently discards width arg — similar error-clarity work), `y56a` (triple-redundant integer division — investigation+dedup, post-salb easier), `yys3` (manual 128-bit arithmetic — investigation), `q04a` / `jc0y` (3+1 refactors, larger scope).
+
+---
+
 ## Session log — 2026-04-27 — Bennett-ys0d / U134 close (soft_exp accuracy contract docstring)
 
 **Shipped:** `soft_exp` and `soft_exp2` docstrings in src/softfloat/fexp.jl now include a "Variants" table making the bit-exactness contract explicit: `soft_exp` is bit-exact vs musl, `soft_exp_julia` is bit-exact vs `Base.exp`. Same for exp2. New regression test `test/test_ys0d_exp_accuracy_contract.jl` (24 assertions) pins the empirical contract.

@@ -2857,6 +2857,37 @@ function _type_width(tp)
         tp isa LLVM.LLVMFloat  && return 32
         tp isa LLVM.LLVMHalf   && return 16
         error("ir_extract.jl: unsupported float type for width query: $tp")
+    elseif tp isa LLVM.VectorType
+        # Bennett-qmk6 / U82: precise error for vector-typed values reaching
+        # the scalar width-query path. Vector lanes have their own dedicated
+        # extractors (`_vector_shape`, `_resolve_vec_lanes`) used by the
+        # cc0.7 vector-handling code; if a value is asking for a scalar
+        # width when its type is a vector, the caller is on the wrong path.
+        error("ir_extract.jl: VectorType $(tp) reached scalar _type_width — " *
+              "vectors are extracted via `_vector_shape` / `_resolve_vec_lanes` " *
+              "(Bennett-cc0.7 MVP). If you got here from a vector return type, " *
+              "Bennett.jl does not yet support vector-valued returns. " *
+              "(Bennett-qmk6 / U82)")
+    elseif tp isa LLVM.StructType
+        # Bennett-qmk6 / U82 (related): struct-typed values can't be encoded
+        # as a single width. They're handled either via sret (the caller
+        # passes a pointer to the struct as an extra argument) or via
+        # `extractvalue` / `insertvalue` after extraction. A bare struct
+        # arriving at scalar _type_width means the surrounding dispatch
+        # missed the aggregate case.
+        error("ir_extract.jl: StructType $(tp) reached scalar _type_width — " *
+              "structs are aggregate values; pass via sret or unpack with " *
+              "extractvalue. (Bennett-qmk6 / U82)")
+    elseif tp isa LLVM.VoidType
+        # Bennett-dq8l / U81: void return type reaching _type_width means a
+        # void-returning instruction is being treated as a value-producing
+        # instruction. Likely a void call or store handler missed its
+        # branch. Pre-fix this fell through to the generic message.
+        error("ir_extract.jl: VoidType reached _type_width — caller is " *
+              "querying the width of a void value (likely a void-returning " *
+              "call or a store/branch instruction). Void instructions don't " *
+              "produce SSA values; the surrounding dispatch should special-case " *
+              "them upstream. (Bennett-dq8l / U81)")
     else
         error("ir_extract.jl: unsupported LLVM type for width query: $tp")
     end
