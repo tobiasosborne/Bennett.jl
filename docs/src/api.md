@@ -22,7 +22,7 @@ circuit = reversible_compile(f, Int8;
     max_loop_iterations=0,     # Max loop unrolling iterations (0 = no loops)
     compact_calls=false,       # Apply Bennett per-callee to limit wire accumulation
     add=:auto,                 # Adder strategy: :auto | :ripple | :cuccaro | :qcla
-    mul=:auto,                 # Multiplier strategy: :auto | :shift_add | :karatsuba | :qcla_tree
+    mul=:auto,                 # Multiplier strategy: :auto | :shift_add | :qcla_tree
     bit_width=0,               # >0: narrow all widths to bit_width (see _narrow_ir)
 )
 ```
@@ -36,10 +36,11 @@ circuit = reversible_compile(f, Int8;
 - `:qcla` — Draper-Kutin-Rains-Svore 2004 carry-lookahead, `O(log n)` Toffoli-depth, `O(n)` ancilla.
 
 **`mul=` selects the multiplier lowering:**
-- `:auto` (default) — shift-and-add; falls back to Karatsuba if the legacy `use_karatsuba` path is set and `W > 4`.
+- `:auto` (default) — shift-and-add at `target=:gate_count`; promotes to `qcla_tree` at `target=:depth`.
 - `:shift_add` — schoolbook (`lower_mul!`), `O(W²)` Toffoli, `O(W)` peak wires.
-- `:karatsuba` — recursive (`lower_mul_karatsuba!`), `O(W^log₂3)` Toffoli, `O(W^log₂5)` wires.
 - `:qcla_tree` — Sun-Borissov 2026 (`lower_mul_qcla_tree!`), `O(log²n)` Toffoli-depth, `O(n²)` Toffoli/ancilla; self-reversing primitive.
+
+(Bennett-tbm6 retired `:karatsuba` 2026-04-27 — the implementation was 1.91-3.49× WORSE Toffoli count than schoolbook at every supported width W ≤ 64; asymptotic crossover sits past W=128 which `ir_extract` cannot lower today.)
 
 Unknown strategy symbols raise an error at `lower()` entry.
 

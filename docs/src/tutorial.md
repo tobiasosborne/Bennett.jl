@@ -180,10 +180,12 @@ When to use what:
 | Classical reversible CMOS       | `:shift_add`, `:ripple`    |
 | Ancilla-constrained NISQ        | `:shift_add`, `:cuccaro`   |
 | Depth-limited FTQC              | `:qcla_tree`, `:qcla`      |
-| Gate-count at W ≥ 32            | `:karatsuba`                |
 
-See `benchmark/bc6_mul_strategies.jl` for the full head-to-head table and
-[BENCHMARKS.md](../../BENCHMARKS.md) for the headline numbers.
+See [BENCHMARKS.md](../../BENCHMARKS.md) for the headline numbers.
+
+(Bennett-tbm6, 2026-04-27: `:karatsuba` removed — vestigial at every
+supported width. The asymptotic O(W^log₂3) Toffoli savings never crossed
+schoolbook's O(W²) at W ≤ 64, and `ir_extract` cannot lower W=128 today.)
 
 ## 9. Space Optimization
 

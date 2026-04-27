@@ -1,12 +1,14 @@
 using Test
 using Bennett
 
-# Bennett-4fri / U30: `:auto` mul dispatcher never picked `:qcla_tree`
-# or `:karatsuba` — defaulted to `:shift_add` for every width. The
-# README's 6× T-depth win at W=32/64 was locked behind an opt-in. The
-# fix is a `target` kwarg: `target=:gate_count` (default) preserves
-# the shift-and-add choice; `target=:depth` promotes `:auto` to
-# `:qcla_tree`, which has strictly better Toffoli-depth.
+# Bennett-4fri / U30: `:auto` mul dispatcher never picked `:qcla_tree` —
+# defaulted to `:shift_add` for every width. The README's 6× T-depth win
+# at W=32/64 was locked behind an opt-in. The fix is a `target` kwarg:
+# `target=:gate_count` (default) preserves the shift-and-add choice;
+# `target=:depth` promotes `:auto` to `:qcla_tree`, which has strictly
+# better Toffoli-depth.
+# (Bennett-tbm6 2026-04-27: `:karatsuba` was retired — vestigial at all
+# supported widths. The original 4fri text mentioned it; updated here.)
 #
 # This pins:
 #   1. Default behaviour unchanged (`target=:gate_count`, shift-and-add).

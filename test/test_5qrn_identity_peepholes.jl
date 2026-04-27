@@ -13,9 +13,9 @@
 # The peephole detects `IROperand(:const, _, k)` operands at the
 # `lower_binop!` dispatcher BEFORE `resolve!` materialises the constant
 # into ancilla wires. Detection is purely syntactic so the optimisation
-# cannot misfire on data-dependent operands inside `lower_mul_wide!` /
-# Karatsuba (those leaf-level adders are called directly with wire
-# vectors, never through `lower_binop!`).
+# cannot misfire on data-dependent operands inside `lower_mul_wide!`
+# (the leaf-level adders are called directly with wire vectors, never
+# through `lower_binop!`).
 
 using Test
 using Bennett

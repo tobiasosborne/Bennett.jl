@@ -1,5 +1,55 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-27 (LOC tier, big delete) — Bennett-tbm6 close (Karatsuba multiplier removed)
+
+**Shipped:** see git log around the next commit. Karatsuba multiplier deleted across 7 source/doc files: ~250 LOC net removal.
+
+**Why:** Bennett-tbm6 — Karatsuba was empirically vestigial at every supported width. The bead's measured table (post-U27 ripple-add defaults):
+
+| W   | schoolbook Toff | karatsuba Toff | k:s ratio |
+|-----|----------------:|---------------:|-----------|
+|   8 |             144 |            502 | 3.49 |
+|  16 |             664 |           2000 | 3.01 |
+|  32 |            2856 |           6960 | 2.44 |
+|  64 |           11848 |          22658 | 1.91 |
+
+The trend is consistent with O(W^log₂3) vs O(W²) asymptotics but ratio never crossed 1 — the asymptotic crossover sits past W=128, beyond what `ir_extract` lowers today (Int128 sret unsupported). The path was a maintenance liability with zero practical wins.
+
+**Mode:** direct grind, Option (C) per the bead's prescription (full removal vs salvage / lift W=128 ceiling / deprecation-warn). Per CLAUDE.md §11 ("don't add abstractions beyond what the task requires"), salvage was wrong: there's no caller demand and the underlying algorithm has known wire-cost asymptotic problems (Θ(W^log₂5)) that won't go away.
+
+**Sites touched:**
+
+- `src/multiplier.jl`: deleted `lower_mul_karatsuba!` + `_karatsuba_wide!` (~140 LOC) + the 60-line cost-tradeoff docstring. Replaced with a 7-line removal note citing tbm6.
+- `src/lower.jl`: removed `use_karatsuba::Bool` field from `LoweringCtx`, deleted the three dead 11/12/13-arg backward-compat `LoweringCtx` constructors (~33 LOC; no internal call site used them — both internal callers pass the full positional list), removed `use_karatsuba` kwarg from `lower()`, `lower_block_insts!`, `lower_loop!`, `lower_binop!`, and the `_lower_inst!(::IRBinOp)` dispatch. Simplified `_pick_mul_strategy` to drop the `use_karatsuba::Bool` arg and the `:karatsuba` return arm. Strategy validation error message now lists `:auto, :shift_add, :qcla_tree` and explicitly cites tbm6 for `:karatsuba` removal.
+- `test/test_karatsuba.jl`: deleted (orphan — was never registered in runtests.jl).
+- `benchmark/bc6_mul_strategies.jl`: deleted.
+- `test/test_mul_dispatcher.jl`: replaced the `:karatsuba forces Karatsuba` positive testset (4×3 simulate cross-product + verify = 13 assertions) with a single `@test_throws` checking that `:karatsuba` is now rejected.
+- `test/test_4fri_mul_target.jl` + `test/test_5qrn_identity_peepholes.jl`: cleaned up `:karatsuba` mentions in headers / comments.
+- `docs/src/api.md`: removed `:karatsuba` from the `mul=` strategy menu + cited tbm6.
+- `docs/src/tutorial.md`: removed the "Gate-count at W ≥ 32 → :karatsuba" recommendation row + the bc6 benchmark reference; cited tbm6.
+
+**Test count:** 84,364 → **84,352** (-12 from the test_mul_dispatcher.jl shrink: 13 cross-product assertions → 1 @test_throws).
+
+**Adjacent cleanup (drive-by, partial ehoa):** the three dead `LoweringCtx` backward-compat constructors at the previous lines 112-145 were also removed. Both internal call sites (`lower_block_insts!` ~717, `lower_loop!` ~1003) pass the full positional argument list; the compat shims had zero remaining callers post-tbm6. This closes the `LoweringCtx has 4 back-compat constructors` half of Bennett-ehoa (the `::Any` field concretization half remains; that needs 3+1 per CLAUDE.md §2).
+
+**Gotchas / Lessons:**
+
+1. **`use_karatsuba::Bool` was a thread-through, not a strategy selector.** The struct field, the kwarg in `lower()`, and the kwarg in `lower_binop!` formed an indirect path: `lower()` → `lower_block_insts!`(kwarg) → `LoweringCtx`(field) → `_lower_inst!(::IRBinOp)` → `lower_binop!`(kwarg) → `_pick_mul_strategy(use_karatsuba=...)`. AND there was an explicit `mul=:karatsuba` selector. So Karatsuba could be selected EITHER by `lower(use_karatsuba=true)` OR by `lower(mul=:karatsuba)`. Removing both paths required tracing through every layer, but each layer was mechanical once identified. Lesson: when a feature has both a "smart pick" flag AND an explicit selector, removing it requires walking BOTH paths AND verifying neither is referenced from public docs / tutorials / external callers.
+
+2. **Orphan test files exist.** `test/test_karatsuba.jl` was a 56-line file with hand-written assertions that never appeared in `runtests.jl`. Was probably included via a deleted include() at some point; the orphan persisted. CLAUDE.md §11 "don't keep dead code" — files in `test/` not registered in runtests.jl are dead code by definition.
+
+3. **Public docs lag source code.** `docs/src/api.md` and `docs/src/tutorial.md` both still listed `:karatsuba` as a recommended strategy AND referenced `benchmark/bc6_mul_strategies.jl`. The `mul=` kwarg in the public API surface flows through to the docstrings, so removing a strategy requires sweeping ALL doc references — not just the implementation. `grep -rn "karatsuba" docs/` is the canonical check.
+
+**Rejected alternatives:**
+
+- **Option (D) deprecation warning** — would have left ~150 LOC in place plus added a `@warn` + a deprecation-period commitment. CLAUDE.md "avoid backwards-compat hacks". Direct removal is cleaner for vestigial-with-zero-callers code.
+- **Option (B) lift W=128 ceiling first** — requires Int128 sret support in `ir_extract.jl`, which is a separate substantial effort. The crossover is hypothetical until measured at W=128+; removing now and resurrecting from the bead's commit history is cleaner than carrying dead code.
+- **Option (A) audit impl for waste** — even with optimistic 50% reduction, Karatsuba would still be 1.0-1.7× WORSE than schoolbook at supported widths. Not worth the audit.
+
+**Filed (follow-ups):** none. The `LoweringCtx::Any` concretization half of `Bennett-ehoa` remains open (3+1 protocol required per CLAUDE.md §2).
+
+---
+
 ## Session log — 2026-04-27 (post-bugs grind, ergonomics tier) — Bennett-cvnb close (bennett_direct + self_reversing discoverability)
 
 **Shipped:** see git log around the next commit; new `bennett_direct(lr)` convenience entry point at src/bennett_transform.jl + `bennett()` docstring expansion + README "Pre-reversed primitives" callout rewrite + test/test_cvnb_bennett_direct.jl (18 assertions / 4 testsets) registered in runtests.jl.

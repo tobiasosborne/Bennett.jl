@@ -83,7 +83,6 @@ struct LoweringCtx
     block_pred::Dict{Symbol,Vector{Int}}
     ssa_liveness::Dict{Symbol,Int}
     inst_counter::Ref{Int}
-    use_karatsuba::Bool
     compact_calls::Bool
     # T1b.3: reversible memory (store/alloca) state
     alloca_info::Dict{Symbol, Tuple{Int,Int}}                 # alloca dest → (elem_width, n_elems)
@@ -98,7 +97,9 @@ struct LoweringCtx
     globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}}          # global name → (data, elem_width)
     # D1: add-op strategy dispatcher (:auto, :ripple, :cuccaro, :qcla)
     add::Symbol
-    # P2/P3: mul-op strategy dispatcher (:auto, :shift_add, :karatsuba, :qcla_tree)
+    # P2/P3: mul-op strategy dispatcher (:auto, :shift_add, :qcla_tree).
+    # Bennett-tbm6 (2026-04-27): :karatsuba removed — vestigial at every
+    # supported width, see src/multiplier.jl:35 for the empirical sweep.
     mul::Symbol
     # Bennett-cc0 M2c: entry (unconditional) block label. Stores in this block
     # use the ungated shadow path (preserves BENCHMARKS.md gate counts).
@@ -108,42 +109,10 @@ struct LoweringCtx
     entry_label::Symbol
 end
 
-# Backward-compatible constructor: existing sites don't need to pass the new fields.
-LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
-            block_pred, ssa_liveness, inst_counter, use_karatsuba, compact_calls) =
-    LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
-                block_pred, ssa_liveness, inst_counter, use_karatsuba, compact_calls,
-                Dict{Symbol,Tuple{Int,Int}}(),
-                Dict{Symbol,Vector{PtrOrigin}}(),
-                Ref(0),
-                Dict{Symbol,Tuple{Vector{UInt64},Int}}(),
-                :auto, :auto, Symbol(""))
-
-# 12-arg constructor for callers that want to pass globals explicitly.
-LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
-            block_pred, ssa_liveness, inst_counter, use_karatsuba, compact_calls,
-            globals::Dict{Symbol,Tuple{Vector{UInt64},Int}}) =
-    LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
-                block_pred, ssa_liveness, inst_counter, use_karatsuba, compact_calls,
-                Dict{Symbol,Tuple{Int,Int}}(),
-                Dict{Symbol,Vector{PtrOrigin}}(),
-                Ref(0),
-                globals,
-                :auto, :auto, Symbol(""))
-
-# 13-arg constructor: adds the add-strategy field.
-LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
-            block_pred, ssa_liveness, inst_counter, use_karatsuba, compact_calls,
-            globals::Dict{Symbol,Tuple{Vector{UInt64},Int}}, add::Symbol,
-            mul::Symbol=:auto) =
-    LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
-                block_pred, ssa_liveness, inst_counter, use_karatsuba, compact_calls,
-                Dict{Symbol,Tuple{Int,Int}}(),
-                Dict{Symbol,Vector{PtrOrigin}}(),
-                Ref(0),
-                globals,
-                add, mul, Symbol(""))
-
+# Bennett-tbm6 (2026-04-27): the 11-arg / 12-arg / 13-arg backward-compat
+# `LoweringCtx` constructors were removed. Both internal call sites
+# (`lower_block_insts!` ~717, `lower_loop!` ~1003) pass the full positional
+# argument list; the compat shims had no remaining callers.
 # Dispatched instruction lowering — Julia selects the method by inst type
 _lower_inst!(ctx::LoweringCtx, inst::IRPhi, label::Symbol) =
     lower_phi!(ctx.gates, ctx.wa, ctx.vw, inst, label, ctx.preds, ctx.branch_info, ctx.block_order;
@@ -152,7 +121,7 @@ _lower_inst!(ctx::LoweringCtx, inst::IRPhi, label::Symbol) =
 _lower_inst!(ctx::LoweringCtx, inst::IRBinOp, ::Symbol) =
     lower_binop!(ctx.gates, ctx.wa, ctx.vw, inst;
                  ssa_liveness=ctx.ssa_liveness, inst_idx=ctx.inst_counter[],
-                 use_karatsuba=ctx.use_karatsuba, add=ctx.add, mul=ctx.mul)
+                 add=ctx.add, mul=ctx.mul)
 
 _lower_inst!(ctx::LoweringCtx, inst::IRICmp, ::Symbol) =
     lower_icmp!(ctx.gates, ctx.wa, ctx.vw, inst)
@@ -368,13 +337,13 @@ end
 # ==== main lowering entry point ====
 
 function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=true,
-               use_karatsuba::Bool=false, fold_constants::Bool=true, compact_calls::Bool=false,
+               fold_constants::Bool=true, compact_calls::Bool=false,
                add::Symbol=:auto, mul::Symbol=:auto,
                target::Symbol=:gate_count)
     add in (:auto, :ripple, :cuccaro, :qcla) ||
         error("lower: unknown add strategy :$add; supported: :auto, :ripple, :cuccaro, :qcla")
-    mul in (:auto, :shift_add, :karatsuba, :qcla_tree) ||
-        error("lower: unknown mul strategy :$mul; supported: :auto, :shift_add, :karatsuba, :qcla_tree")
+    mul in (:auto, :shift_add, :qcla_tree) ||
+        error("lower: unknown mul strategy :$mul; supported: :auto, :shift_add, :qcla_tree (Bennett-tbm6: :karatsuba removed 2026-04-27)")
     # Bennett-4fri / U30: `target` selects the objective the `:auto`
     # dispatchers optimise for. `:gate_count` (default) preserves the
     # pre-U30 choices; `:depth` switches `mul=:auto` to `qcla_tree`
@@ -498,7 +467,7 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
             lower_loop!(gates, wa, vw, block, block_map, back_edges,
                         max_loop_iterations, preds, branch_info;
                         block_pred, ssa_liveness, inst_counter, gate_groups,
-                        use_karatsuba, compact_calls, globals=parsed.globals, add, mul,
+                        compact_calls, globals=parsed.globals, add, mul,
                         alloca_info, ptr_provenance, entry_label=order[1],
                         block_order, loop_headers)
             if length(gates) >= _gs
@@ -508,7 +477,7 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
         else
             lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_order;
                                block_pred, ssa_liveness, inst_counter, gate_groups,
-                               use_karatsuba, compact_calls, globals=parsed.globals, add, mul,
+                               compact_calls, globals=parsed.globals, add, mul,
                                alloca_info, ptr_provenance, entry_label=order[1])
         end
 
@@ -699,7 +668,6 @@ function lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_orde
                            ssa_liveness::Dict{Symbol,Int}=Dict{Symbol,Int}(),
                            inst_counter::Ref{Int}=Ref(0),
                            gate_groups::Vector{GateGroup}=GateGroup[],
-                           use_karatsuba::Bool=false,
                            compact_calls::Bool=false,
                            globals::Dict{Symbol,Tuple{Vector{UInt64},Int}}=Dict{Symbol,Tuple{Vector{UInt64},Int}}(),
                            add::Symbol=:auto, mul::Symbol=:auto,
@@ -715,7 +683,7 @@ function lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_orde
                            # (backward-compat for direct callers).
                            entry_label::Symbol=Symbol(""))
     ctx = LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
-                      block_pred, ssa_liveness, inst_counter, use_karatsuba, compact_calls,
+                      block_pred, ssa_liveness, inst_counter, compact_calls,
                       alloca_info, ptr_provenance, Ref(0),
                       globals, add, mul, entry_label)
     for inst in block.instructions
@@ -887,7 +855,6 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
                      ssa_liveness::Dict{Symbol,Int}=Dict{Symbol,Int}(),
                      inst_counter::Ref{Int}=Ref(0),
                      gate_groups::Vector{GateGroup}=GateGroup[],
-                     use_karatsuba::Bool=false,
                      compact_calls::Bool=false,
                      globals::Dict{Symbol,Tuple{Vector{UInt64},Int}}=Dict{Symbol,Tuple{Vector{UInt64},Int}}(),
                      add::Symbol=:auto, mul::Symbol=:auto,
@@ -1000,7 +967,7 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
         iter_ctx = LoweringCtx(gates, wa, vw, iter_preds, iter_branch_info,
                                block_order, iter_block_pred,
                                Dict{Symbol,Int}(), Ref(0),
-                               use_karatsuba, compact_calls,
+                               compact_calls,
                                alloca_info, ptr_provenance, Ref(0),
                                globals, :ripple, mul, entry_label)
 
@@ -1347,31 +1314,34 @@ function _pick_add_strategy(user_choice::Symbol, W::Int, op2_dead::Bool, livenes
 end
 
 """
-    _pick_mul_strategy(user_choice, W, use_karatsuba;
-                       target=:gate_count) -> Symbol
+    _pick_mul_strategy(user_choice, W; target=:gate_count) -> Symbol
 
-Resolve `mul=:auto|:shift_add|:karatsuba|:qcla_tree` into a concrete
-strategy. Explicit choices bypass the heuristic entirely.
+Resolve `mul=:auto|:shift_add|:qcla_tree` into a concrete strategy.
+Explicit choices bypass the heuristic entirely.
 
 For `:auto`:
-- `target=:gate_count` (default): Karatsuba when the legacy
-  `use_karatsuba` kwarg is set AND W > 4; else shift-and-add.
-  Shift-and-add wins on total Toffoli count and wire budget.
+- `target=:gate_count` (default): shift-and-add. Wins on total Toffoli
+  count and wire budget at every supported width.
 - `target=:depth`: `qcla_tree` (Sun-Borissov 2023). O(log² n) Toffoli
   depth vs shift-and-add's O(n); depth drops ~3-6× at W=32/64.
   Costs ~5× more total Toffoli and ~2.5× more wires.
 
 Bennett-4fri / U30: the `target` arm closes the "qcla_tree is never
 picked by :auto" gap.
+
+Bennett-tbm6 (2026-04-27): `:karatsuba` removed. The implementation
+was vestigial at every supported width (W ≤ 64) — see src/multiplier.jl:35
+for the empirical sweep showing 1.91-3.49× WORSE Toffoli count than
+schoolbook at every measured W. The asymptotic crossover sits past W=128,
+beyond what `ir_extract` lowers today.
 """
-function _pick_mul_strategy(user_choice::Symbol, W::Int, use_karatsuba::Bool;
+function _pick_mul_strategy(user_choice::Symbol, W::Int;
                             target::Symbol=:gate_count)
     user_choice === :shift_add && return :shift_add
-    user_choice === :karatsuba && return :karatsuba
     user_choice === :qcla_tree && return :qcla_tree
-    user_choice === :auto || error("_pick_mul_strategy: unknown choice :$user_choice")
+    user_choice === :auto || error("_pick_mul_strategy: unknown choice :$user_choice (supported: :auto, :shift_add, :qcla_tree)")
     target === :depth && return :qcla_tree
-    (use_karatsuba && W > 4) ? :karatsuba : :shift_add
+    return :shift_add
 end
 
 # ==== Bennett-5qrn / U57: trivial-identity peepholes ====
@@ -1488,7 +1458,6 @@ end
 function lower_binop!(gates, wa, vw, inst::IRBinOp;
                       ssa_liveness::Dict{Symbol,Int}=Dict{Symbol,Int}(),
                       inst_idx::Int=0,
-                      use_karatsuba::Bool=false,
                       add::Symbol=:auto, mul::Symbol=:auto)
     # Bennett-5qrn / U57: trivial-identity peephole. Short-circuits before
     # `resolve!` so neither the constant operand nor the heavy adder/multiplier
@@ -1535,10 +1504,8 @@ function lower_binop!(gates, wa, vw, inst::IRBinOp;
             end
         elseif inst.op == :sub; lower_sub!(gates, wa, a, b, W)
         elseif inst.op == :mul
-            mstrat = _pick_mul_strategy(mul, W, use_karatsuba)
-            if mstrat == :karatsuba
-                lower_mul_karatsuba!(gates, wa, a, b, W)
-            elseif mstrat == :qcla_tree
+            mstrat = _pick_mul_strategy(mul, W)
+            if mstrat == :qcla_tree
                 lower_mul_qcla_tree!(gates, wa, a, b, W)[1:W]   # mod 2^W
             else
                 lower_mul!(gates, wa, a, b, W)
