@@ -330,6 +330,11 @@ include("test_doh6_docs_makejl.jl")
 # gates (26.6× reduction at fold_constants=false). Pinned formulas:
 # copy-out 3W+2, zero-result W+2.
 include("test_5qrn_identity_peepholes.jl")
+# Bennett-heup / U127 — _fold_constants contract pin (default-true at every
+# entry point, per-arm dispatch witnesses, self_reversing short-circuit,
+# reduction baselines). Investigated → doc-only: bead claims "off-by-default"
+# and "mixes three concerns" both stale post-epwy / U28.
+include("test_heup_fold_constants_contract.jl")
 # Bennett-qcso / U59 — compose(c1, c2) pipeline composition. Implements
 # c1.gates ++ renumbered(c2.gates) ++ reverse(c1.gates) with c2's input
 # wires positionally aliased onto c1's output wires. Self-reversing

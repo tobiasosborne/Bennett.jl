@@ -578,6 +578,26 @@ end
 Constant folding pass: propagate known wire values through the gate list,
 eliminating gates whose controls are all constant and simplifying partially-
 constant gates.
+
+Single abstract-interpretation pass over `known::Dict{Int,Bool}` (per non-input
+wire's compile-time-constant value). Three operator-dispatch arms — `NOTGate`
+(flip-then-materialize), `CNOTGate` (constant-control collapses or pass-through),
+`ToffoliGate` (one-known-false noop / both-known-true target flip /
+one-known-true reduce-to-CNOT). Per Bennett-heup / U127, the "three concerns"
+framing in reviews/2026-04-21/12_torvalds.md B10 + 13_carmack.md F8 was
+empirically a single concern (constant propagation through reversible gates)
+with three operator cases; splitting would duplicate state-update logic.
+
+Default wired to `true` since Bennett-epwy / U28 (2026-04-24): the pass is
+strictly safe (only removes / simplifies gates, never adds). Empirical wins
+on the canonical benchmarks (live 2026-04-27, post-5qrn peephole layer):
+- polynomial `x*x + 3x + 1`  total 848 → 482; Toffoli 352 → 168
+- `x*x Int8`                 Toffoli 296 → 144; depth 97 → 89
+- `x*3 Int8` (optimize=false) gates ≥ 3× without folding
+
+Contracts pinned by `test/test_heup_fold_constants_contract.jl` (539
+assertions): per-arm dispatch witnesses, default-true at every entry point,
+self_reversing short-circuit (per Bennett-egu6 / U03), and reduction baselines.
 """
 function _fold_constants(lr::LoweringResult)
     # U03 / Bennett-egu6: a self-reversing primitive (e.g. Sun-Borissov
@@ -1873,8 +1893,8 @@ gate stream:
   3. **Unregistered callee** (post-salb: errors loud): pre-salb an
      unregistered callee fell to `return nothing` from
      `_convert_instruction`, silently dropping the call. Post-salb
-     (Bennett-bjdg / U80, ir_extract.jl:1751) raises `_ir_error("call
-     to ... has no registered callee handler")`.
+     (Bennett-bjdg / U80, ir_extract.jl:1751) raises a precise
+     "no registered callee handler" message via `_ir_error`.
 
 The "triple redundancy" in the original review was the silent-skip
 path 3 plus paths 1 and 2 producing different outputs for the same

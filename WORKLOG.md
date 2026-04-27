@@ -2,7 +2,7 @@
 
 > # 🚨 NEXT AGENT — STRICT MANDATE 🚨
 >
-> **Read [`worklog/046_2026-04-27_y986_loop_header_dispatch.md`](worklog/046_2026-04-27_y986_loop_header_dispatch.md) FIRST**, then chunk 045 for the bugs-only directive.
+> **Read [`worklog/047_2026-04-27_heup_fold_constants_doc_only.md`](worklog/047_2026-04-27_heup_fold_constants_doc_only.md) FIRST**, then chunk 045 for the bugs-only directive.
 >
 > **You are to work on `[bug]`-tagged beads ONLY.** No refactors. No renames.
 > No docstring polish. No naming-convention fixes. No "follow-up" filings as
@@ -64,7 +64,8 @@ rejected paths, hand-off pointers). Avoid restating the diff:
 
 | File | Lines | First section |
 |---|---:|---|
-| [046_2026-04-27_y986_loop_header_dispatch.md](worklog/046_2026-04-27_y986_loop_header_dispatch.md) | ~150 | Session log — 2026-04-27 — Bennett-y986 / U05-followup-2 close (loop-header dispatch unification) |
+| [047_2026-04-27_heup_fold_constants_doc_only.md](worklog/047_2026-04-27_heup_fold_constants_doc_only.md) | ~80 | Session log — 2026-04-27 (evening) — Bennett-heup / U127 close (_fold_constants — investigated, doc-only) |
+| [046_2026-04-27_y986_loop_header_dispatch.md](worklog/046_2026-04-27_y986_loop_header_dispatch.md) | ~510 | Session log — 2026-04-27 — Bennett-y986 / U05-followup-2 close (loop-header dispatch unification) |
 | [045_2026-04-27_day_summary_bugs_only_directive.md](worklog/045_2026-04-27_day_summary_bugs_only_directive.md) | 283 | Session log — 2026-04-27 — Bennett-salb / U119 close (div-by-0 + signed typemin/-1 contract) |
 | [044_2026-04-26_late_night_doh6.md](worklog/044_2026-04-26_late_night_doh6.md) | 282 | Session log — 2026-04-27 (early morning) — Bennett-3of2 / U112 close (wire-leak investigated, doc-only) + Bennett-vt0a filed |
 | [043_2026-04-26_late_afternoon_wlf6_6u9q.md](worklog/043_2026-04-26_late_afternoon_wlf6_6u9q.md) | 274 | Session log — 2026-04-26 (late night) — 9c4o close (lower.jl deps load before lower.jl) |
