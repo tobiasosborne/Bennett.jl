@@ -1,5 +1,68 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-27 (3+1 refactor, stage 1) — Bennett-tzrs partial (extract _handle_intrinsic)
+
+**Shipped:** commit 904fe4d. First slice of Bennett-tzrs / U41 — 270-line LLVM-intrinsic prefix block lifted out of `_convert_instruction`'s 836-line body into a dedicated `_handle_intrinsic(cname, inst, names, counter, dest, ops)` helper. Bead REMAINS OPEN; stages 2-5 deferred.
+
+**Why:** Bennett-tzrs / U41 is a P2 structural task. CLAUDE.md §2 mandates 3+1 protocol for any change to ir_extract.jl. Spawned 2 `Plan` proposers in parallel.
+
+**3+1 outcome:**
+
+- **Proposer A** → `Dict{LLVM.API.LLVMOpcode, Function}` dispatch keyed off the opcode int. Argued: single hash + cmp per call, table-driven clarity. Identified `_handle_call` as a single function (intrinsic table + callee registry + benign allowlist all in one — the benign-allowlist is a fail-loud guard, not a peer arm).
+
+- **Proposer B** → `if/elseif` over named helpers, NOT a Dict. Argued: the q04a contract test pins a 200 KiB allocation cap on `extract_parsed_ir`; a `Dict{_, Function}` adds hash + cmp + boxed Function values that risk regressing that bound. Julia's union-splitting on a typed `if/elseif` jump table preserves type stability that Dict-as-dispatch loses. Also argued for "minimum viable first commit" = intrinsic block ONLY (~270 LOC moved, 14 distinct prefix branches).
+
+- **Synthesis (the +1, orchestrator):**
+  - **Mechanism: B wins.** The 200 KiB allocation cap is a real constraint. Plus CLAUDE.md §11 favors plain functions over Dict-as-dispatch when both work.
+  - **Granularity: B wins.** "Minimum viable first commit" matches CLAUDE.md §8 ("get feedback fast — every 50 lines, not 500").
+  - **Vector twin: both reject unification.** Sharing helpers, not dispatchers.
+  - **All extractions stay in src/ir_extract.jl** (preserves cc0.x catch's `occursin("ir_extract.jl:", msg)` heuristic).
+
+**Implementation:** `_handle_intrinsic` placed immediately above `_convert_instruction`. The original 270-line block in the call arm replaced with a 2-line dispatch:
+
+```julia
+handled = _handle_intrinsic(cname, inst, names, counter, dest, ops)
+handled === nothing || return handled
+```
+
+Order of `if startswith(cname, ...)` branches preserved exactly — load-bearing because `llvm.minnum` / `llvm.minimum` (and `maxnum` / `maximum`) share handlers via prefix-match, and the floor/ceil/trunc/rint/round branch is intentionally a no-op (registered-callee path picks up `soft_floor` / `soft_ceil` / etc.).
+
+**Verified canaries (per Proposer B's "after each handler extraction" sequence):**
+
+- `test/test_gate_count_regression.jl` — 39/39 byte-identical baselines.
+- `test/test_q04a_convert_instruction_contract.jl` — 9/9 (Union arm count in [10, 22], caller dispatch shape pinned, 200 KiB allocation cap intact).
+- Full Pkg.test — 84,352 / 84,354 (same count as pre-extraction; 2 pre-existing broken; 3m59s).
+
+**Stages 2-5 (DEFERRED):** the remaining arms in `_convert_instruction` are:
+
+- Stage 2 candidates (binop / icmp / select / phi / div_rem / cast / branch): each is **6-11 LOC** in body. The bead asks for "handlers ~10-20 LOC"; these are already AT or BELOW that target. Wrapping each in a named function adds ~5 LOC signature/end overhead per arm vs ~6-11 LOC body — a 50-80% overhead ratio.
+- Stage 3-5 (terminators / memory / casts): mostly 10-30 LOC; closer to the bead's target but still mechanical.
+
+Per CLAUDE.md §11 ("Don't add abstractions beyond what the task requires"), stopping at stage 1 is the right call: the BIG win was the 270-line intrinsic block, not the 6-11 LOC per-arm extractions. If a future bug class concentrates in one of those arms, the 3+1 protocol can be re-invoked then with concrete evidence.
+
+**Gotchas / Lessons:**
+
+1. **`LLVM.operands(inst)` returns `LLVM.UserOperandSet`, not `Vector`.** First attempt at `_handle_intrinsic`'s signature used `ops::Vector` — Julia raised `MethodError: no method matching` immediately on first compile. Loosened to untyped `ops` (since the body just indexes `ops[1]`, `ops[2]`, etc., which UserOperandSet supports). Lesson: when extracting helpers from a function that calls into LLVM.jl, leave operand-set parameters untyped unless you've verified the concrete return type of `LLVM.operands(...)`.
+
+2. **`if` doesn't create scope in Julia.** The call arm has TWO consecutive `if n_ops >= 1` blocks. The first declares `cname`; the second uses it. This works because both are inside the same outer function scope. Almost-broke this when I considered putting `_handle_intrinsic` inline as `cname = ...; result = if startswith(...) ... end`; the original two-`if` shape preserves the scoping correctly post-extraction.
+
+3. **Sed-based block replacement requires careful boundary identification.** Used `sed -i '1707,1975c\...'` to replace 269 lines with a 2-line call site. Lesson: always `cp` the file to /tmp first as a safety net before any sed in-place edit. The pre-edit copy at /tmp/ir_extract_pre_tzrs.jl was the bisect anchor when the first smoke run failed (`MethodError: no method matching _handle_intrinsic`); diffing revealed the type-annotation issue immediately.
+
+4. **OOM kill mid-Pkg.test was external.** First Pkg.test run died with exit 137 (SIGKILL by oom-killer) at the precompile step. Second run completed in 3m59s with the same code. Per the chunk-045 lesson (WSL OOM scare): Bennett.jl's full suite peaks ~1 GB; do not investigate the project unless a future test file genuinely exceeds 4 GB RSS. The kill was external pressure (concurrent Julia test runs from other shells).
+
+**Rejected alternatives:**
+
+- **Stage 2-5 in this session** — diminishing returns per CLAUDE.md §11. The 6-11 LOC arms don't benefit from extraction.
+- **Dict{Opcode, Function} dispatch (Proposer A's mechanism)** — risks regressing the 200 KiB allocation cap.
+- **Move handlers to a new file (e.g. `ir_extract_handlers.jl`)** — would break the cc0.x catch's `occursin("ir_extract.jl:", msg)` benign-error heuristic. Both proposers identified this risk.
+- **Unify scalar+vector dispatchers** — both proposers rejected: forces every handler to branch on vector-vs-scalar internally; the existing `_safe_is_vector_type(inst)` early-out is a clean seam.
+
+**Filed (follow-ups):** none. Bead remains open with notes recording stage-1 completion + stage-2-5 deferral rationale.
+
+**Test count:** 84,352 → **84,352** (unchanged — pure structural extraction).
+
+---
+
 ## Session log — 2026-04-27 (LOC tier, big delete) — Bennett-tbm6 close (Karatsuba multiplier removed)
 
 **Shipped:** see git log around the next commit. Karatsuba multiplier deleted across 7 source/doc files: ~250 LOC net removal.
