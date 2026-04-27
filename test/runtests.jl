@@ -341,6 +341,13 @@ include("test_heup_fold_constants_contract.jl")
 # savings real but ~26% with 24+ site blast radius. Refactor deferred until
 # a real workload OOMs; this file pins empirical baselines.
 include("test_jc0y_gate_storage_contract.jl")
+# Bennett-q04a / 59jj-cut — _convert_instruction Union-return contract.
+# Investigated → doc-only: 18-arm Union return is real, but extraction
+# is one-shot per compile (~5% of extract cost) — refactor blast radius
+# (function body + caller dispatch) out of proportion. Pin IRInst
+# subtype count, Union arm bound, caller dispatch shape, extraction
+# allocation linearity.
+include("test_q04a_convert_instruction_contract.jl")
 # Bennett-qcso / U59 — compose(c1, c2) pipeline composition. Implements
 # c1.gates ++ renumbered(c2.gates) ++ reverse(c1.gates) with c2's input
 # wires positionally aliased onto c1's output wires. Self-reversing

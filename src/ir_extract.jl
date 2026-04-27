@@ -1249,6 +1249,25 @@ end
 
 # ---- instruction conversion ----
 
+# Bennett-q04a / 59jj-cut: this function returns a Union of 16 IRInst
+# subtypes plus `Nothing` (skip) plus `Vector{IRInst}` (cc0.7 vector
+# expansion) — 18 arms, beyond Julia's union-splitting threshold. The
+# call site in `_walk_function!` (~line 1003-1018) dispatches via four
+# isa-checks: `=== nothing`, `isa Vector`, `isa IRRet||IRBranch||IRSwitch`,
+# else. Investigated 2026-04-27 (worklog/047, q04a entry):
+#   - Empirical extraction cost: ~1.93 KiB / 7-instruction fn; the per-
+#     instruction box from this Union contributes ~5% of the total.
+#   - Extraction is one-shot per compile — NOT a runtime hot path.
+#   - Splitting into `_convert_instruction_single::IRInst` +
+#     `_convert_instruction_expand!(out::Vector{IRInst}, ...)` would
+#     eliminate the Vector + Nothing arms but still leaves an abstract-
+#     IRInst return (16 concrete subtypes — Julia handles this fine).
+#     Refactor blast radius: the function body (1252-2200) plus the
+#     caller dispatch — substantial churn for ~5% extraction speedup.
+# Decision: doc-only. Contract pinned by `test/test_q04a_convert_instruction_contract.jl`
+# (9 assertions): IRInst subtype count = 16, Union arm count bounded
+# 10-22, caller dispatch shape pinned, extraction allocation linear in
+# instruction count. Re-measure if a workload OOMs during extraction.
 function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symbol},
                               counter::Ref{Int},
                               lanes::Dict{_LLVMRef, Vector{IROperand}}=Dict{_LLVMRef, Vector{IROperand}}())

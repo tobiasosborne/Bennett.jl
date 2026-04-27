@@ -1,5 +1,71 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-27 (late evening) — Bennett-q04a / 59jj-cut close (_convert_instruction Union return — investigated, doc-only)
+
+**Shipped:** see git log around the next commit; `_convert_instruction` (src/ir_extract.jl:1250-1271) gains a 17-line investigation comment + new contract test `test/test_q04a_convert_instruction_contract.jl` (9 assertions / 4 testsets) registered in runtests.jl.
+
+**Why:** Bennett-q04a / 59jj-cut — review #18 F12 prescribed splitting `_convert_instruction` 17-arm Union return into `_single::IRInst` + `_expand!(out, ...)`. Filed 2026-04-26 as a 3+1 candidate.
+
+**Mode:** investigation first per the chunk-045 directive. After empirical verification, "investigated, doc-only" disposition — same shape as today's heup + jc0y closes.
+
+**Investigation finding — premise valid, cost/benefit out of proportion:**
+
+1. **The 17-arm Union return IS real.** `code_warntype(_convert_instruction, ...)` shows `Body::Union{Nothing, IRAlloca, IRBinOp, IRBranch, IRCall, IRCast, IRExtractValue, IRICmp, IRInsertValue, IRLoad, IRPhi, IRPtrOffset, IRRet, IRSelect, IRStore, IRSwitch, IRVarGEP, Vector}` = 18 arms. Past Julia's union-splitting threshold (~4-7 arms).
+
+2. **But extraction is one-shot per compile, NOT a hot path.** Empirical: extracting `(a::Int64, b::Int64) -> a + b * (a - b) + a*a - b*b` (7 instructions, optimize=false) costs 1.93 KiB / 1.93k allocations — dominated by LLVM module setup overhead (one-time-per-call), not the per-instruction Union return. The 18-arm Union contributes ≤16 B box per call × 7 = ~112 B = ~5% of the 1.93 KiB total.
+
+3. **Refactor blast radius is significant.** The function body spans src/ir_extract.jl:1252-2200 (~950 lines) with 17+ return paths. Splitting into `_single::IRInst` + `_expand!(out::Vector{IRInst}, ...)` requires touching every return path PLUS the caller dispatch at src/ir_extract.jl:1003-1018. Per CLAUDE.md §2: any change to ir_extract.jl requires 3+1 protocol. Net cost (~2 hours of careful refactoring + 3+1 review cycle) vs ~5% extraction speedup on a one-shot path.
+
+**Test coverage:** `test/test_q04a_convert_instruction_contract.jl` — 9 assertions / 4 testsets:
+
+- **IRInst subtype count = 16** — pins the canonical set of concrete IR types. If a new subtype lands, the refactor calculus shifts (Union grows or shrinks). Trip = re-measurement signal.
+- **Union arm bound 10-22** — `code_warntype` parsing validates the Body return type stays inside this band. Lower bound catches accidental Union explosion; upper bound catches accidental over-narrowing.
+- **Caller dispatch shape** — pinned via canonical substring matches in src/ir_extract.jl: `ir_inst === nothing && continue`, `ir_inst isa Vector`, `ir_inst isa IRRet || ir_inst isa IRBranch || ir_inst isa IRSwitch`. Any refactor must update all three together.
+- **Extraction allocation linearity** — extraction cost on a 7-inst function < 200 KiB; ratio between 1-binop vs 5-binop function < 3×. Detects accidental N²-blowup if a future change moves expensive work into the per-instruction loop.
+
+**Adjacent docstring update:** `_convert_instruction` (src/ir_extract.jl:1250-1271) gains a 17-line "Bennett-q04a / 59jj-cut" comment naming the Union arm count, the empirical cost breakdown, the proposed split prescription, the blast radius, and the contract test. Future agents resurrecting this work have the live numbers + the rejection rationale.
+
+**Gotchas / Lessons:**
+
+1. **Bead's prescription was structurally clean but cost/benefit out of proportion.** The split is mechanical and would type-stabilise the return — it's textbook good code. But the empirical perf gain (~5% on a one-shot extraction path) does not justify the 3+1 cycle + 950-line function body churn. Same calibration as jc0y earlier today: "real but modest, with high blast radius."
+
+2. **`@code_warntype` Body line is the canonical type-stability check.** The contract test parses the warntype output as a string — fragile (Julia version drift could change the format), but no public API exists for "give me the inferred return type." Pinned with regex tolerant of both `Body::Union{...}` and `Body::IRInst` shapes so the test trips clearly when the situation changes.
+
+3. **`InteractiveUtils.subtypes` (not `Base.subtypes`).** Same as jc0y; runtests.jl doesn't import InteractiveUtils, so the test file does its own `using InteractiveUtils: subtypes, code_warntype`.
+
+**Rejected alternatives:**
+
+- **Implement the split (`_single` + `_expand!`)** — would touch every return path of a 950-line function plus the caller dispatch. ~5% extraction speedup is not worth the 3+1 cycle. Defer until extraction becomes a measurable bottleneck (e.g. Sturm's million-line workloads).
+- **Replace the Union with `IRInst` (abstract supertype) by wrapping `Vector` results in a sentinel `IRInstList <: IRInst`** — would require a new public type that is then immediately unwrapped at the call site. Adds API surface for no real benefit. Splitting is cleaner than wrapping.
+- **Cache the dispatch result via `@nospecialize`** — would suppress Julia's specialisation on `inst::LLVM.Instruction` and likely INCREASE dispatch cost. Wrong direction.
+
+**Filed (follow-ups):** none. The contract test is the regression guard. If Sturm or another downstream finds extraction OOMing on million-instruction workloads, resurrect q04a with the live numbers from the contract test as the bar to beat.
+
+**Test count:** 84,337 → **84,346** (+9, exact match).
+
+### Branch state at session-end
+
+`main @ <next commit>`, pushed and up to date with `origin/main`. Worklog: chunk 047 has heup + jc0y + q04a; **all actionable Bennett.jl bugs are now closed.**
+
+### Bd-tracked snapshot (post-q04a close)
+
+```
+bd ready -n 200 | grep '\[bug\]' → 2 open [bug] beads.
+- P2: 25dm (blocked on z2dj IN-PROGRESS — T5-P6 dispatcher).
+- P2: ponm (bd-infra: wisp_dependencies table missing — NOT a Bennett.jl bug).
+- IN-PROGRESS: cc0.5 (P2 bug — Julia TLS allocator GEP base, T5-P6.3).
+```
+
+**Next agent — start here:** The bugs-only directive (chunk 045) is now exhausted on the actionable Bennett.jl side. Remaining work falls into three buckets:
+
+1. **`25dm`** is gated on `z2dj` (T5-P6 dispatcher). Drive `z2dj` forward (3+1 per docs/design/p6_consensus.md) to unblock `25dm`'s @test_throws → real-pass conversion. This is non-bug work.
+2. **`ponm`** is a beads-tool schema migration (`wisp_dependencies` missing). Cross-team / out-of-Bennett-jl scope.
+3. **`cc0.5`** is in-progress (Julia TLS allocator GEP base). Already claimed; pickup if you have context.
+
+If lifting the bugs-only directive: the chunk-045 refactor pile (P3 LOC reductions in lower.jl / ir_extract.jl, error monoculture, IROperand primitive obsession, etc.) is the next tier. Per chunk-045: "**~88.5% non-bugs** (refactors, docs, polish, structural, features)" — the non-bug catalogue is sizeable but lower priority than driving Sturm features.
+
+---
+
 ## Session log — 2026-04-27 (late evening) — Bennett-jc0y / 59jj-cut close (gate-storage layout — investigated, doc-only)
 
 **Shipped:** see git log around the next commit; `ReversibleCircuit` docstring (src/gates.jl:24-58) gains a "Storage layout decision" section + new contract test `test/test_jc0y_gate_storage_contract.jl` (11 assertions / 4 testsets) registered in runtests.jl.
