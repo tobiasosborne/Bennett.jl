@@ -294,8 +294,11 @@ _narrow_inst(inst::IRInst, W::Int) = inst  # fallback: pass through
 # matching group; the loop registers it on module load.
 
 # Integer division / remainder (called by `lower_binop!` for udiv/sdiv/urem/srem).
+# Per Bennett-salb / U119, the registered callees are the throw-free `_compile`
+# variants — the public `soft_udiv` / `soft_urem` raise DivideError on b=0,
+# which would emit an external @ijl_throw that lower_call! cannot extract.
 const _CALLEES_INTEGER_DIV = (
-    soft_udiv, soft_urem,
+    _soft_udiv_compile, _soft_urem_compile,
 )
 
 # IEEE 754 binary 64-bit arithmetic.

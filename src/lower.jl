@@ -1857,8 +1857,13 @@ function lower_divrem!(gates::Vector{ReversibleGate}, wa::WireAllocator,
         _cond_negate_inplace!(gates, wa, b64, b_sign, 64)
     end
 
-    # Select callee
-    callee = (inst.op in (:udiv, :sdiv)) ? soft_udiv : soft_urem
+    # Select callee — per Bennett-salb / U119 we use the throw-free `_compile`
+    # variants. The public soft_udiv/soft_urem raise DivideError on b=0
+    # (matching Base.div), but their LLVM IR contains @ijl_throw which
+    # lower_call! cannot extract. Compiled circuits therefore inherit
+    # LLVM-poison-equivalent behavior on b=0 / signed typemin÷-1
+    # (deterministic but unspecified — see _soft_udiv_compile docstring).
+    callee = (inst.op in (:udiv, :sdiv)) ? _soft_udiv_compile : _soft_urem_compile
 
     # Create IRCall and lower it
     call_dest = Symbol("__div_$(inst.dest)")

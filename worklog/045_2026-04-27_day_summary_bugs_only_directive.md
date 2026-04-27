@@ -1,5 +1,51 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-27 — Bennett-salb / U119 close (div-by-0 + signed typemin/-1 contract)
+
+**Shipped:** see git log around the next commit; dual-function split for `soft_udiv` / `soft_urem` so the public API throws `DivideError` (matching `Base.div`) while the gate-inlined kernel stays branchless.
+
+**Why:** Bennett-salb / U119 — `soft_udiv(a, 0)` silently returned `typemax(UInt64)`, `soft_urem(a, 0)` silently returned `a`, and `lower_divrem!` for signed `typemin/-1` silently wrapped to `typemin`. Native Julia raises `DivideError` in all three cases. Per CLAUDE.md §1, silent garbage is the wrong default.
+
+**Design:** the kernel cannot throw — adding `iszero(b) && throw(DivideError())` would emit `@ijl_throw` (an external runtime call) into the kernel's LLVM IR, which `lower_call!` cannot extract (callees must be source-available). So the fix splits each function in two:
+
+- Private `_soft_udiv_compile` / `_soft_urem_compile` — current branchless body, registered as the callee in `_CALLEES_INTEGER_DIV` and used as the callee in `lower_divrem!`. LLVM-poison-equivalent on `b == 0`: deterministic but unspecified output (`typemax` for udiv, dividend for urem).
+- Public `soft_udiv` / `soft_urem` — thin wrapper, throws `DivideError` on `b == 0` and otherwise delegates. For direct Julia callers.
+
+For signed `typemin ÷ -1` (handled at the `lower_divrem!` wrapper, not inside the kernel), the documented behaviour is the deterministic wrap to `typemin` — also LLVM-poison-equivalent. Matches the bead's "fail loudly OR produce LLVM-specified poison" clause.
+
+**Test coverage:** `test/test_salb_div_by_zero.jl` (146 assertions / 6 testsets):
+- `@test_throws DivideError` on the public API for 6 representative `a` values (each of udiv / urem).
+- Positive correctness on the public API (b ≠ 0) — 6 a × 6 b = 72 each.
+- `_compile` callees: documented poison-equivalent on b=0 (typemax / dividend); positive correctness on b ≠ 0.
+- Compiled-circuit smoke: `(x::UInt8) ÷ (y::UInt8)` and `(x::UInt8) % (y::UInt8)` with `y=0` returns the documented poison value across `a`; `verify_reversibility` holds.
+- Compiled-circuit smoke: `typemin(Int8) ÷ Int8(-1)` returns `typemin(Int8)`; `verify_reversibility` holds.
+
+**Gate counts byte-identical** — the rename + wrapper is a pure refactor of the public surface. `test_gate_count_regression.jl` 39/39 unchanged. `test_division.jl` 4819/4819 unchanged (its tests pre-guard `b == 0` via ternary so don't hit the new throw). Full Pkg.test 81,398 / 81,400 pass + 2 pre-existing broken (4m20s).
+
+**Mode:** direct grind. The change is purely a public-API split + documentation; the gate-emission path is untouched (just renamed). 3+1 protocol not invoked per the chunk-045 calibration ("defensive change → direct").
+
+**Gotchas / Lessons:**
+
+1. **Constant divisor `x ÷ Int8(0)` fails to compile with a misleading `BoundsError`** — separate from the silent-wrong-result bug fixed here. LLVM constant-folds the divisor at IR extraction, producing a poison/undef operand that `_convert_instruction` mishandles. This is bjdg-adjacent (ConstantFP/Poison/Undef in scalar operand → misleading error). Variable-divisor case (`(x, y) -> x ÷ y` with `y=0` only at sim time) is the one that exercises `lower_divrem!` and was the actual silent-garbage bug.
+
+2. **Existing `test/test_division.jl:47` already documented the `typemin/-1` UB explicitly** (`# Edge cases (skip typemin/-1 which is UB: overflow)`). The bead was filed because the test author flagged the gap; this close converts "documented UB skipped in tests" → "documented poison-equivalent behaviour with explicit test asserting the deterministic value".
+
+3. **Adding `throw` to a kernel breaks `lower_call!` extraction.** Confirmed empirically: `code_llvm(probe_udiv, …, optimize=false)` for a body containing `iszero(b) && throw(DivideError())` produces `call void @ijl_throw(ptr %jl_diverror_exception)` plus `unreachable` plus `@llvm.trap()`. The dual-function split is the right pattern for any future "kernel + safety wrapper" pair (cf. soft_fdiv, soft_fsqrt etc. — those don't throw because IEEE 754 has well-defined NaN/Inf semantics that don't need DivideError).
+
+**Rejected alternatives:**
+
+- **Single function with `iszero` short-circuit + `throw`** — would break `lower_call!` extraction, see gotcha #3 above. Empirically confirmed before writing the dual-function code.
+- **Emit gate-level poison-detection wires in `lower_divrem!`** — would shift gate-count baselines (CLAUDE.md §6) and add ancilla; out of scope for the LLVM-poison-equivalent contract the bead allows. Could be a future "strict-mode" follow-up if a user actually wants runtime trap-on-poison; not filing because nobody has asked.
+- **Renaming public `soft_udiv` rather than wrapping it** — discarded; `soft_udiv` is exported in `src/Bennett.jl:298` and matching `Base.div` semantics (throws on div-by-zero) is the right contract for the public name.
+
+**Filed (follow-ups):** none. Bennett-bjdg (ConstantFP/Poison/Undef misleading error) already exists and covers the constant-divisor `BoundsError` observed in gotcha #1.
+
+**Test count:** 81,252 → **81,398** (+146).
+
+**Next agent — start here:** Continue bugs-only per the chunk-045 directive. With `salb` closed, remaining P3 bugs in suggested pickup order: `gboa` (zero-ancilla dirty-bit hygiene, likely doc-only), `d77b` (4 of 14 fcmp predicates implemented — feature-shaped, check if it's a documented scope cut), softfloat tier `tpg0` / `xiqt` / `ys0d` (each needs the §13 subnormal-output testset), `y56a` (triple-redundant integer division paths — investigation + dedup), then the heavyweight `y986` (3+1 required, will shift gate-count baselines for Collatz / soft_fdiv).
+
+---
+
 ## Session log — 2026-04-27 — bugs-only grind: 8 closes (jepw + 59jj + p94b + fq8n + lgzx + ibz5 + t3j0 + 2yky)
 
 **Shipped:** see git log around `f68b353..0330595` (10 code commits + bd-cache syncs).
