@@ -1249,6 +1249,290 @@ end
 
 # ---- instruction conversion ----
 
+# Bennett-tzrs / U41 (first-cut, 2026-04-27): the LLVM-intrinsic prefix
+# dispatch was lifted out of `_convert_instruction`'s 836-line body into
+# this helper. Order of `if startswith(cname, "...")` branches is LOAD-
+# BEARING — `llvm.minnum` / `llvm.minimum` and `llvm.maxnum` / `llvm.maximum`
+# share handlers via prefix-match, and the floor/ceil/trunc/rint/round
+# branch is INTENTIONALLY a no-op (it lets the registered-callee path in
+# `_convert_instruction` pick up `soft_floor` / `soft_ceil` / etc. via
+# the SoftFloat dispatch). Returns `nothing` if no intrinsic matched —
+# the call site then proceeds to the registered-callee lookup and the
+# benign-allowlist guard. Per CLAUDE.md §2 this is part of the 3+1-mandated
+# tzrs refactor (proposers: A and B; orchestrator: tobias 2026-04-27).
+function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
+                           names::Dict{_LLVMRef, Symbol}, counter::Ref{Int},
+                           dest::Symbol, ops)
+    if startswith(cname, "llvm.umax")
+        cmp_dest = _auto_name(counter)
+        w = _iwidth(ops[1])
+        return [
+            IRICmp(cmp_dest, :uge, _operand(ops[1], names), _operand(ops[2], names), w),
+            IRSelect(dest, ssa(cmp_dest), _operand(ops[1], names), _operand(ops[2], names), w)
+        ]
+    end
+    if startswith(cname, "llvm.umin")
+        cmp_dest = _auto_name(counter)
+        w = _iwidth(ops[1])
+        return [
+            IRICmp(cmp_dest, :ule, _operand(ops[1], names), _operand(ops[2], names), w),
+            IRSelect(dest, ssa(cmp_dest), _operand(ops[1], names), _operand(ops[2], names), w)
+        ]
+    end
+    if startswith(cname, "llvm.smax")
+        cmp_dest = _auto_name(counter)
+        w = _iwidth(ops[1])
+        return [
+            IRICmp(cmp_dest, :sge, _operand(ops[1], names), _operand(ops[2], names), w),
+            IRSelect(dest, ssa(cmp_dest), _operand(ops[1], names), _operand(ops[2], names), w)
+        ]
+    end
+    if startswith(cname, "llvm.smin")
+        cmp_dest = _auto_name(counter)
+        w = _iwidth(ops[1])
+        return [
+            IRICmp(cmp_dest, :sle, _operand(ops[1], names), _operand(ops[2], names), w),
+            IRSelect(dest, ssa(cmp_dest), _operand(ops[1], names), _operand(ops[2], names), w)
+        ]
+    end
+    # llvm.abs.iN(x, is_int_min_poison) = x >= 0 ? x : 0 - x
+    if startswith(cname, "llvm.abs")
+        w = _iwidth(ops[1])
+        x_op = _operand(ops[1], names)
+        neg_dest = _auto_name(counter)
+        cmp_dest = _auto_name(counter)
+        return [
+            IRBinOp(neg_dest, :sub, iconst(0), x_op, w),
+            IRICmp(cmp_dest, :sge, x_op, iconst(0), w),
+            IRSelect(dest, ssa(cmp_dest), x_op, ssa(neg_dest), w),
+        ]
+    end
+    # llvm.ctpop.iN(x) = popcount(x)
+    # Expand: sum of individual bits via cascaded add
+    if startswith(cname, "llvm.ctpop")
+        w = _iwidth(ops[1])
+        x_op = _operand(ops[1], names)
+        result = IRInst[]
+        # Extract each bit: bit_i = (x >> i) & 1
+        # Then sum them up: result = bit_0 + bit_1 + ... + bit_{W-1}
+        prev = _auto_name(counter)
+        push!(result, IRBinOp(prev, :and, x_op, iconst(1), w))
+        for i in 1:(w - 1)
+            shifted = _auto_name(counter)
+            bit = _auto_name(counter)
+            acc = _auto_name(counter)
+            push!(result, IRBinOp(shifted, :lshr, x_op, iconst(i), w))
+            push!(result, IRBinOp(bit, :and, ssa(shifted), iconst(1), w))
+            push!(result, IRBinOp(acc, :add, ssa(prev), ssa(bit), w))
+            prev = acc
+        end
+        # Rename last accumulator to dest
+        push!(result, IRBinOp(dest, :add, ssa(prev), iconst(0), w))
+        return result
+    end
+    # llvm.ctlz.iN(x, is_zero_poison) = count leading zeros
+    # Expand: cascade LSB→MSB so highest set bit wins (overwrites last)
+    if startswith(cname, "llvm.ctlz")
+        w = _iwidth(ops[1])
+        x_op = _operand(ops[1], names)
+        result = IRInst[]
+        prev = _auto_name(counter)
+        push!(result, IRBinOp(prev, :add, iconst(w), iconst(0), w))  # default: W (all zeros)
+        for i in 0:(w - 1)  # LSB to MSB; last match = highest bit = correct clz
+            shifted = _auto_name(counter)
+            bit = _auto_name(counter)
+            is_set = _auto_name(counter)
+            new_val = _auto_name(counter)
+            push!(result, IRBinOp(shifted, :lshr, x_op, iconst(i), w))
+            push!(result, IRBinOp(bit, :and, ssa(shifted), iconst(1), w))
+            push!(result, IRICmp(is_set, :ne, ssa(bit), iconst(0), w))
+            push!(result, IRSelect(new_val, ssa(is_set), iconst(w - 1 - i), ssa(prev), w))
+            prev = new_val
+        end
+        push!(result, IRBinOp(dest, :add, ssa(prev), iconst(0), w))
+        return result
+    end
+    # llvm.cttz.iN(x, is_zero_poison) = count trailing zeros
+    # Cascade MSB→LSB so lowest set bit wins (overwrites last)
+    if startswith(cname, "llvm.cttz")
+        w = _iwidth(ops[1])
+        x_op = _operand(ops[1], names)
+        result = IRInst[]
+        prev = _auto_name(counter)
+        push!(result, IRBinOp(prev, :add, iconst(w), iconst(0), w))
+        for i in (w - 1):-1:0  # MSB to LSB; last match = lowest bit = correct ctz
+            shifted = _auto_name(counter)
+            bit = _auto_name(counter)
+            is_set = _auto_name(counter)
+            new_val = _auto_name(counter)
+            push!(result, IRBinOp(shifted, :lshr, x_op, iconst(i), w))
+            push!(result, IRBinOp(bit, :and, ssa(shifted), iconst(1), w))
+            push!(result, IRICmp(is_set, :ne, ssa(bit), iconst(0), w))
+            push!(result, IRSelect(new_val, ssa(is_set), iconst(i), ssa(prev), w))
+            prev = new_val
+        end
+        push!(result, IRBinOp(dest, :add, ssa(prev), iconst(0), w))
+        return result
+    end
+    # llvm.bitreverse.iN(x) = reverse bit order
+    # Expand: for each bit, shift to mirrored position and OR together
+    if startswith(cname, "llvm.bitreverse")
+        w = _iwidth(ops[1])
+        x_op = _operand(ops[1], names)
+        result = IRInst[]
+        # bit_i → position (W-1-i): shift right by i, mask, shift left by (W-1-i)
+        prev = _auto_name(counter)
+        # First bit
+        shifted0 = _auto_name(counter)
+        push!(result, IRBinOp(shifted0, :lshr, x_op, iconst(0), w))
+        push!(result, IRBinOp(prev, :and, ssa(shifted0), iconst(1), w))
+        shl0 = _auto_name(counter)
+        push!(result, IRBinOp(shl0, :shl, ssa(prev), iconst(w - 1), w))
+        prev = shl0
+        for i in 1:(w - 1)
+            shifted = _auto_name(counter)
+            bit = _auto_name(counter)
+            placed = _auto_name(counter)
+            acc = _auto_name(counter)
+            push!(result, IRBinOp(shifted, :lshr, x_op, iconst(i), w))
+            push!(result, IRBinOp(bit, :and, ssa(shifted), iconst(1), w))
+            push!(result, IRBinOp(placed, :shl, ssa(bit), iconst(w - 1 - i), w))
+            push!(result, IRBinOp(acc, :or, ssa(prev), ssa(placed), w))
+            prev = acc
+        end
+        push!(result, IRBinOp(dest, :add, ssa(prev), iconst(0), w))
+        return result
+    end
+    # llvm.bswap.iN(x) = reverse byte order (N must be multiple of 16)
+    if startswith(cname, "llvm.bswap")
+        w = _iwidth(ops[1])
+        x_op = _operand(ops[1], names)
+        n_bytes = w ÷ 8
+        result = IRInst[]
+        # Extract each byte, shift to swapped position, OR together
+        prev = _auto_name(counter)
+        byte0 = _auto_name(counter)
+        push!(result, IRBinOp(byte0, :and, x_op, iconst(255), w))
+        push!(result, IRBinOp(prev, :shl, ssa(byte0), iconst((n_bytes - 1) * 8), w))
+        for b in 1:(n_bytes - 1)
+            shifted = _auto_name(counter)
+            byte_val = _auto_name(counter)
+            placed = _auto_name(counter)
+            acc = _auto_name(counter)
+            push!(result, IRBinOp(shifted, :lshr, x_op, iconst(b * 8), w))
+            push!(result, IRBinOp(byte_val, :and, ssa(shifted), iconst(255), w))
+            push!(result, IRBinOp(placed, :shl, ssa(byte_val), iconst((n_bytes - 1 - b) * 8), w))
+            push!(result, IRBinOp(acc, :or, ssa(prev), ssa(placed), w))
+            prev = acc
+        end
+        push!(result, IRBinOp(dest, :add, ssa(prev), iconst(0), w))
+        return result
+    end
+    # llvm.fshl.i64(a, b, shift) = (a << shift) | (b >> (64 - shift))
+    if startswith(cname, "llvm.fshl")
+        w = _iwidth(ops[1])
+        a_op = _operand(ops[1], names)
+        b_op = _operand(ops[2], names)
+        sh_op = _operand(ops[3], names)
+        shl_dest = _auto_name(counter)
+        lshr_dest = _auto_name(counter)
+        if sh_op.kind == :const
+            # Constant-fold: w - const is const (no runtime sub needed)
+            return [
+                IRBinOp(shl_dest, :shl, a_op, sh_op, w),
+                IRBinOp(lshr_dest, :lshr, b_op, iconst(w - sh_op.value), w),
+                IRBinOp(dest, :or, ssa(shl_dest), ssa(lshr_dest), w),
+            ]
+        else
+            rsh_amount = _auto_name(counter)
+            return [
+                IRBinOp(shl_dest, :shl, a_op, sh_op, w),
+                IRBinOp(rsh_amount, :sub, iconst(w), sh_op, w),
+                IRBinOp(lshr_dest, :lshr, b_op, ssa(rsh_amount), w),
+                IRBinOp(dest, :or, ssa(shl_dest), ssa(lshr_dest), w),
+            ]
+        end
+    end
+    # llvm.fshr.i64(a, b, shift) = (a << (64 - shift)) | (b >> shift)
+    if startswith(cname, "llvm.fshr")
+        w = _iwidth(ops[1])
+        a_op = _operand(ops[1], names)
+        b_op = _operand(ops[2], names)
+        sh_op = _operand(ops[3], names)
+        shl_dest = _auto_name(counter)
+        lshr_dest = _auto_name(counter)
+        if sh_op.kind == :const
+            # Constant-fold: w - const is const
+            return [
+                IRBinOp(shl_dest, :shl, a_op, iconst(w - sh_op.value), w),
+                IRBinOp(lshr_dest, :lshr, b_op, sh_op, w),
+                IRBinOp(dest, :or, ssa(shl_dest), ssa(lshr_dest), w),
+            ]
+        else
+            shl_amount = _auto_name(counter)
+            return [
+                IRBinOp(shl_amount, :sub, iconst(w), sh_op, w),
+                IRBinOp(shl_dest, :shl, a_op, ssa(shl_amount), w),
+                IRBinOp(lshr_dest, :lshr, b_op, sh_op, w),
+                IRBinOp(dest, :or, ssa(shl_dest), ssa(lshr_dest), w),
+            ]
+        end
+    end
+    # llvm.fabs: clear sign bit (AND with ~sign_bit)
+    if startswith(cname, "llvm.fabs")
+        w = _iwidth(ops[1])
+        mask = w == 64 ? typemax(Int64) : Int((1 << (w - 1)) - 1)
+        return IRBinOp(dest, :and, _operand(ops[1], names), iconst(mask), w)
+    end
+    # llvm.copysign: (x AND ~sign_bit) OR (y AND sign_bit)
+    if startswith(cname, "llvm.copysign")
+        w = _iwidth(ops[1])
+        mag_mask = w == 64 ? typemax(Int64) : Int((1 << (w - 1)) - 1)
+        sign_bit = w == 64 ? typemin(Int64) : Int(1 << (w - 1))
+        x_op = _operand(ops[1], names)
+        y_op = _operand(ops[2], names)
+        mag = _auto_name(counter)
+        sgn = _auto_name(counter)
+        return [
+            IRBinOp(mag, :and, x_op, iconst(mag_mask), w),
+            IRBinOp(sgn, :and, y_op, iconst(sign_bit), w),
+            IRBinOp(dest, :or, ssa(mag), ssa(sgn), w),
+        ]
+    end
+    # llvm.floor / llvm.ceil / llvm.trunc / llvm.rint / llvm.round
+    # Intentionally NO return: the registered-callee path in
+    # `_convert_instruction` picks these up via SoftFloat dispatch
+    # (`soft_floor` / `soft_ceil` / `soft_trunc` are registered callees).
+    # Falling through to the next `if` keeps the original semantics.
+    if startswith(cname, "llvm.floor") || startswith(cname, "llvm.ceil") ||
+       startswith(cname, "llvm.trunc") || startswith(cname, "llvm.rint") ||
+       startswith(cname, "llvm.round")
+        # No-op: handled by callee registry
+    end
+    # llvm.minnum / llvm.maxnum / llvm.minimum / llvm.maximum
+    if startswith(cname, "llvm.minnum") || startswith(cname, "llvm.minimum")
+        w = _iwidth(ops[1])
+        x_op = _operand(ops[1], names)
+        y_op = _operand(ops[2], names)
+        cmp = _auto_name(counter)
+        return [
+            IRICmp(cmp, :slt, x_op, y_op, w),
+            IRSelect(dest, ssa(cmp), x_op, y_op, w),
+        ]
+    end
+    if startswith(cname, "llvm.maxnum") || startswith(cname, "llvm.maximum")
+        w = _iwidth(ops[1])
+        x_op = _operand(ops[1], names)
+        y_op = _operand(ops[2], names)
+        cmp = _auto_name(counter)
+        return [
+            IRICmp(cmp, :sgt, x_op, y_op, w),
+            IRSelect(dest, ssa(cmp), x_op, y_op, w),
+        ]
+    end
+    return nothing
+end
+
 # Bennett-q04a / 59jj-cut: this function returns a Union of 16 IRInst
 # subtypes plus `Nothing` (skip) plus `Vector{IRInst}` (cc0.7 vector
 # expansion) — 18 arms, beyond Julia's union-splitting threshold. The
@@ -1420,275 +1704,12 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 e isa InterruptException && rethrow()
                 ""
             end
-            if startswith(cname, "llvm.umax")
-                cmp_dest = _auto_name(counter)
-                w = _iwidth(ops[1])
-                return [
-                    IRICmp(cmp_dest, :uge, _operand(ops[1], names), _operand(ops[2], names), w),
-                    IRSelect(dest, ssa(cmp_dest), _operand(ops[1], names), _operand(ops[2], names), w)
-                ]
-            end
-            if startswith(cname, "llvm.umin")
-                cmp_dest = _auto_name(counter)
-                w = _iwidth(ops[1])
-                return [
-                    IRICmp(cmp_dest, :ule, _operand(ops[1], names), _operand(ops[2], names), w),
-                    IRSelect(dest, ssa(cmp_dest), _operand(ops[1], names), _operand(ops[2], names), w)
-                ]
-            end
-            if startswith(cname, "llvm.smax")
-                cmp_dest = _auto_name(counter)
-                w = _iwidth(ops[1])
-                return [
-                    IRICmp(cmp_dest, :sge, _operand(ops[1], names), _operand(ops[2], names), w),
-                    IRSelect(dest, ssa(cmp_dest), _operand(ops[1], names), _operand(ops[2], names), w)
-                ]
-            end
-            if startswith(cname, "llvm.smin")
-                cmp_dest = _auto_name(counter)
-                w = _iwidth(ops[1])
-                return [
-                    IRICmp(cmp_dest, :sle, _operand(ops[1], names), _operand(ops[2], names), w),
-                    IRSelect(dest, ssa(cmp_dest), _operand(ops[1], names), _operand(ops[2], names), w)
-                ]
-            end
-            # llvm.abs.iN(x, is_int_min_poison) = x >= 0 ? x : 0 - x
-            if startswith(cname, "llvm.abs")
-                w = _iwidth(ops[1])
-                x_op = _operand(ops[1], names)
-                neg_dest = _auto_name(counter)
-                cmp_dest = _auto_name(counter)
-                return [
-                    IRBinOp(neg_dest, :sub, iconst(0), x_op, w),
-                    IRICmp(cmp_dest, :sge, x_op, iconst(0), w),
-                    IRSelect(dest, ssa(cmp_dest), x_op, ssa(neg_dest), w),
-                ]
-            end
-            # llvm.ctpop.iN(x) = popcount(x)
-            # Expand: sum of individual bits via cascaded add
-            if startswith(cname, "llvm.ctpop")
-                w = _iwidth(ops[1])
-                x_op = _operand(ops[1], names)
-                result = IRInst[]
-                # Extract each bit: bit_i = (x >> i) & 1
-                # Then sum them up: result = bit_0 + bit_1 + ... + bit_{W-1}
-                prev = _auto_name(counter)
-                push!(result, IRBinOp(prev, :and, x_op, iconst(1), w))
-                for i in 1:(w - 1)
-                    shifted = _auto_name(counter)
-                    bit = _auto_name(counter)
-                    acc = _auto_name(counter)
-                    push!(result, IRBinOp(shifted, :lshr, x_op, iconst(i), w))
-                    push!(result, IRBinOp(bit, :and, ssa(shifted), iconst(1), w))
-                    push!(result, IRBinOp(acc, :add, ssa(prev), ssa(bit), w))
-                    prev = acc
-                end
-                # Rename last accumulator to dest
-                push!(result, IRBinOp(dest, :add, ssa(prev), iconst(0), w))
-                return result
-            end
-            # llvm.ctlz.iN(x, is_zero_poison) = count leading zeros
-            # Expand: cascade LSB→MSB so highest set bit wins (overwrites last)
-            if startswith(cname, "llvm.ctlz")
-                w = _iwidth(ops[1])
-                x_op = _operand(ops[1], names)
-                result = IRInst[]
-                prev = _auto_name(counter)
-                push!(result, IRBinOp(prev, :add, iconst(w), iconst(0), w))  # default: W (all zeros)
-                for i in 0:(w - 1)  # LSB to MSB; last match = highest bit = correct clz
-                    shifted = _auto_name(counter)
-                    bit = _auto_name(counter)
-                    is_set = _auto_name(counter)
-                    new_val = _auto_name(counter)
-                    push!(result, IRBinOp(shifted, :lshr, x_op, iconst(i), w))
-                    push!(result, IRBinOp(bit, :and, ssa(shifted), iconst(1), w))
-                    push!(result, IRICmp(is_set, :ne, ssa(bit), iconst(0), w))
-                    push!(result, IRSelect(new_val, ssa(is_set), iconst(w - 1 - i), ssa(prev), w))
-                    prev = new_val
-                end
-                push!(result, IRBinOp(dest, :add, ssa(prev), iconst(0), w))
-                return result
-            end
-            # llvm.cttz.iN(x, is_zero_poison) = count trailing zeros
-            # Cascade MSB→LSB so lowest set bit wins (overwrites last)
-            if startswith(cname, "llvm.cttz")
-                w = _iwidth(ops[1])
-                x_op = _operand(ops[1], names)
-                result = IRInst[]
-                prev = _auto_name(counter)
-                push!(result, IRBinOp(prev, :add, iconst(w), iconst(0), w))
-                for i in (w - 1):-1:0  # MSB to LSB; last match = lowest bit = correct ctz
-                    shifted = _auto_name(counter)
-                    bit = _auto_name(counter)
-                    is_set = _auto_name(counter)
-                    new_val = _auto_name(counter)
-                    push!(result, IRBinOp(shifted, :lshr, x_op, iconst(i), w))
-                    push!(result, IRBinOp(bit, :and, ssa(shifted), iconst(1), w))
-                    push!(result, IRICmp(is_set, :ne, ssa(bit), iconst(0), w))
-                    push!(result, IRSelect(new_val, ssa(is_set), iconst(i), ssa(prev), w))
-                    prev = new_val
-                end
-                push!(result, IRBinOp(dest, :add, ssa(prev), iconst(0), w))
-                return result
-            end
-            # llvm.bitreverse.iN(x) = reverse bit order
-            # Expand: for each bit, shift to mirrored position and OR together
-            if startswith(cname, "llvm.bitreverse")
-                w = _iwidth(ops[1])
-                x_op = _operand(ops[1], names)
-                result = IRInst[]
-                # bit_i → position (W-1-i): shift right by i, mask, shift left by (W-1-i)
-                prev = _auto_name(counter)
-                # First bit
-                shifted0 = _auto_name(counter)
-                push!(result, IRBinOp(shifted0, :lshr, x_op, iconst(0), w))
-                push!(result, IRBinOp(prev, :and, ssa(shifted0), iconst(1), w))
-                shl0 = _auto_name(counter)
-                push!(result, IRBinOp(shl0, :shl, ssa(prev), iconst(w - 1), w))
-                prev = shl0
-                for i in 1:(w - 1)
-                    shifted = _auto_name(counter)
-                    bit = _auto_name(counter)
-                    placed = _auto_name(counter)
-                    acc = _auto_name(counter)
-                    push!(result, IRBinOp(shifted, :lshr, x_op, iconst(i), w))
-                    push!(result, IRBinOp(bit, :and, ssa(shifted), iconst(1), w))
-                    push!(result, IRBinOp(placed, :shl, ssa(bit), iconst(w - 1 - i), w))
-                    push!(result, IRBinOp(acc, :or, ssa(prev), ssa(placed), w))
-                    prev = acc
-                end
-                push!(result, IRBinOp(dest, :add, ssa(prev), iconst(0), w))
-                return result
-            end
-            # llvm.bswap.iN(x) = reverse byte order (N must be multiple of 16)
-            if startswith(cname, "llvm.bswap")
-                w = _iwidth(ops[1])
-                x_op = _operand(ops[1], names)
-                n_bytes = w ÷ 8
-                result = IRInst[]
-                # Extract each byte, shift to swapped position, OR together
-                prev = _auto_name(counter)
-                byte0 = _auto_name(counter)
-                push!(result, IRBinOp(byte0, :and, x_op, iconst(255), w))
-                push!(result, IRBinOp(prev, :shl, ssa(byte0), iconst((n_bytes - 1) * 8), w))
-                for b in 1:(n_bytes - 1)
-                    shifted = _auto_name(counter)
-                    byte_val = _auto_name(counter)
-                    placed = _auto_name(counter)
-                    acc = _auto_name(counter)
-                    push!(result, IRBinOp(shifted, :lshr, x_op, iconst(b * 8), w))
-                    push!(result, IRBinOp(byte_val, :and, ssa(shifted), iconst(255), w))
-                    push!(result, IRBinOp(placed, :shl, ssa(byte_val), iconst((n_bytes - 1 - b) * 8), w))
-                    push!(result, IRBinOp(acc, :or, ssa(prev), ssa(placed), w))
-                    prev = acc
-                end
-                push!(result, IRBinOp(dest, :add, ssa(prev), iconst(0), w))
-                return result
-            end
-            # llvm.fshl.i64(a, b, shift) = (a << shift) | (b >> (64 - shift))
-            if startswith(cname, "llvm.fshl")
-                w = _iwidth(ops[1])
-                a_op = _operand(ops[1], names)
-                b_op = _operand(ops[2], names)
-                sh_op = _operand(ops[3], names)
-                shl_dest = _auto_name(counter)
-                lshr_dest = _auto_name(counter)
-                if sh_op.kind == :const
-                    # Constant-fold: w - const is const (no runtime sub needed)
-                    return [
-                        IRBinOp(shl_dest, :shl, a_op, sh_op, w),
-                        IRBinOp(lshr_dest, :lshr, b_op, iconst(w - sh_op.value), w),
-                        IRBinOp(dest, :or, ssa(shl_dest), ssa(lshr_dest), w),
-                    ]
-                else
-                    rsh_amount = _auto_name(counter)
-                    return [
-                        IRBinOp(shl_dest, :shl, a_op, sh_op, w),
-                        IRBinOp(rsh_amount, :sub, iconst(w), sh_op, w),
-                        IRBinOp(lshr_dest, :lshr, b_op, ssa(rsh_amount), w),
-                        IRBinOp(dest, :or, ssa(shl_dest), ssa(lshr_dest), w),
-                    ]
-                end
-            end
-            # llvm.fshr.i64(a, b, shift) = (a << (64 - shift)) | (b >> shift)
-            if startswith(cname, "llvm.fshr")
-                w = _iwidth(ops[1])
-                a_op = _operand(ops[1], names)
-                b_op = _operand(ops[2], names)
-                sh_op = _operand(ops[3], names)
-                shl_dest = _auto_name(counter)
-                lshr_dest = _auto_name(counter)
-                if sh_op.kind == :const
-                    # Constant-fold: w - const is const
-                    return [
-                        IRBinOp(shl_dest, :shl, a_op, iconst(w - sh_op.value), w),
-                        IRBinOp(lshr_dest, :lshr, b_op, sh_op, w),
-                        IRBinOp(dest, :or, ssa(shl_dest), ssa(lshr_dest), w),
-                    ]
-                else
-                    shl_amount = _auto_name(counter)
-                    return [
-                        IRBinOp(shl_amount, :sub, iconst(w), sh_op, w),
-                        IRBinOp(shl_dest, :shl, a_op, ssa(shl_amount), w),
-                        IRBinOp(lshr_dest, :lshr, b_op, sh_op, w),
-                        IRBinOp(dest, :or, ssa(shl_dest), ssa(lshr_dest), w),
-                    ]
-                end
-            end
-            # llvm.fabs: clear sign bit (AND with ~sign_bit)
-            if startswith(cname, "llvm.fabs")
-                w = _iwidth(ops[1])
-                mask = w == 64 ? typemax(Int64) : Int((1 << (w - 1)) - 1)
-                return IRBinOp(dest, :and, _operand(ops[1], names), iconst(mask), w)
-            end
-            # llvm.copysign: (x AND ~sign_bit) OR (y AND sign_bit)
-            if startswith(cname, "llvm.copysign")
-                w = _iwidth(ops[1])
-                mag_mask = w == 64 ? typemax(Int64) : Int((1 << (w - 1)) - 1)
-                sign_bit = w == 64 ? typemin(Int64) : Int(1 << (w - 1))
-                x_op = _operand(ops[1], names)
-                y_op = _operand(ops[2], names)
-                mag = _auto_name(counter)
-                sgn = _auto_name(counter)
-                return [
-                    IRBinOp(mag, :and, x_op, iconst(mag_mask), w),
-                    IRBinOp(sgn, :and, y_op, iconst(sign_bit), w),
-                    IRBinOp(dest, :or, ssa(mag), ssa(sgn), w),
-                ]
-            end
-            # llvm.floor / llvm.ceil / llvm.trunc / llvm.rint / llvm.round
-            if startswith(cname, "llvm.floor") || startswith(cname, "llvm.ceil") ||
-               startswith(cname, "llvm.trunc") || startswith(cname, "llvm.rint") ||
-               startswith(cname, "llvm.round")
-                # Route through soft_floor/ceil/trunc via SoftFloat dispatch
-                # These are handled by the callee registry (registered soft_floor etc.)
-                # At the LLVM level, these operate on native floats — but in the
-                # SoftFloat wrapper path, Julia dispatches to our SoftFloat methods
-                # which call soft_floor/ceil/trunc on UInt64. Those are registered
-                # callees, so ir_extract picks them up via _lookup_callee.
-                # Skip: let the standard callee path handle it.
-            end
-            # llvm.minnum / llvm.maxnum / llvm.minimum / llvm.maximum
-            if startswith(cname, "llvm.minnum") || startswith(cname, "llvm.minimum")
-                w = _iwidth(ops[1])
-                x_op = _operand(ops[1], names)
-                y_op = _operand(ops[2], names)
-                cmp = _auto_name(counter)
-                return [
-                    IRICmp(cmp, :slt, x_op, y_op, w),
-                    IRSelect(dest, ssa(cmp), x_op, y_op, w),
-                ]
-            end
-            if startswith(cname, "llvm.maxnum") || startswith(cname, "llvm.maximum")
-                w = _iwidth(ops[1])
-                x_op = _operand(ops[1], names)
-                y_op = _operand(ops[2], names)
-                cmp = _auto_name(counter)
-                return [
-                    IRICmp(cmp, :sgt, x_op, y_op, w),
-                    IRSelect(dest, ssa(cmp), x_op, y_op, w),
-                ]
-            end
+            # Bennett-tzrs / U41 first cut: dispatch the LLVM-intrinsic
+            # prefix block to `_handle_intrinsic` (helper above). Returns
+            # nothing if no intrinsic matched; we then fall through to the
+            # registered-callee path.
+            handled = _handle_intrinsic(cname, inst, names, counter, dest, ops)
+            handled === nothing || return handled
         end
         # Known Julia function calls → IRCall for gate-level inlining
         if n_ops >= 1
