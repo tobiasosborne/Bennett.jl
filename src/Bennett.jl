@@ -316,9 +316,14 @@ const _CALLEES_FP_ROUND = (
     soft_floor, soft_ceil, soft_trunc,
 )
 
-# IEEE 754 comparison (returns i1).
+# IEEE 754 comparison (returns i1). Bennett-d77b / U132: 6 new primitives
+# (ord, uno, one, ueq, ult, ule) complete the LLVM fcmp predicate table.
+# Combined with operand-swap dispatch in ir_extract.jl for ogt/oge/ugt/uge,
+# every LLVM fcmp predicate routes to a callee.
 const _CALLEES_FP_CMP = (
     soft_fcmp_olt, soft_fcmp_oeq, soft_fcmp_ole, soft_fcmp_une,
+    soft_fcmp_ord, soft_fcmp_uno, soft_fcmp_one,
+    soft_fcmp_ueq, soft_fcmp_ult, soft_fcmp_ule,
 )
 
 # IEEE 754 width / signedness conversions.

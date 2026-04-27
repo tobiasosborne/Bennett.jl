@@ -1,5 +1,51 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-27 — Bennett-d77b / U132 close (full LLVM fcmp predicate coverage)
+
+**Shipped:** see git log around the next commit; 6 new soft_fcmp_* primitives (`ord`, `uno`, `one`, `ueq`, `ult`, `ule`) added to `src/softfloat/fcmp.jl`, registered in `_CALLEES_FP_CMP`, and wired into `ir_extract.jl`'s LLVM-fcmp dispatch table. Combined with the existing 4 (oeq, olt, ole, une) plus operand-swap dispatch for the four GT/GE forms (ogt → olt(b,a), oge → ole(b,a), ugt → ult(b,a), uge → ule(b,a)), every LLVM fcmp predicate now routes to a callee — pre-d77b 8 predicates (`one/ord/uno/ueq/ugt/uge/ult/ule`) raised `_ir_error("unsupported fcmp predicate $pred_int")`.
+
+**Why:** Bennett-d77b / U132 — pre-fix, user code that emitted any of the 8 missing predicates failed at compile time with a fail-loud error (correct per CLAUDE.md §1, but blocks legitimate workloads). The bead listed all 10 missing predicates from the catalogue; 4 were already swap-derivable from existing primitives, leaving 6 genuine new implementations.
+
+**Mode:** direct grind. New primitives are pure-Julia, branchless, with NaN-aware semantics derived from the existing `_either_nan` pattern factored out into a small helper. No core-pipeline algorithmic change; all behavior shifts gated on previously-rejected predicates.
+
+**Implementation note (`une = !oeq`):** the existing `soft_fcmp_une = 1 - oeq` is correct because `!oeq` covers BOTH unordered (NaN) and ordered-not-equal cases — verified equivalent to the canonical `uno | one`. Left as-is; documented in the docstring.
+
+**Test coverage:** `test/test_d77b_fcmp_predicates.jl` (1540 assertions / 8 testsets):
+- 6 testsets × 144 (12 × 12 input pairs covering finite ±, ±0, ±Inf, NaN, denormal) = 864 direct primitive checks vs Julia oracles for `ord`, `uno`, `one`, `ueq`, `ult`, `ule`.
+- 1 cross-check testset: existing 4 predicates (`olt`, `oeq`, `ole`, `une`) still match their Julia oracles after the fcmp.jl edit.
+- 1 compiled-circuit testset: `(a::Float64, b::Float64) -> op(a,b) ? Int8(1) : Int8(0)` for each new predicate, simulating the IR-extraction → lowering path with both finite and NaN inputs.
+
+**Adjacent test fixed in flight:** `test/test_kmuj_callee_groups.jl` pinned `length(_CALLEES_FP_CMP) == 4` and the total `n_grouped == 45`. Both updated to 10 / 51 with a comment citing d77b. Caught by the first full Pkg.test run (failed with 2 fails); fixed before re-running.
+
+**Full suite green:** Pkg.test 83,220 / 83,222 pass + 2 pre-existing broken (4m14s). Test count 81,662 → 83,220 (+1558: 1540 d77b file + 18 from kmuj iterating over the larger group).
+
+**Gotchas / Lessons:**
+
+1. **`simulate(c, ::Type{T}, inputs)::T`** (the typed-output overload from Bennett-59jj) is **integer-only**. For Float64 IO compiled circuits, use the 2-arg form `simulate(c, (bits(a), bits(b)))` with `bits(x) = reinterpret(UInt64, x)`. This caught my first compiled-circuit testset attempt; the typed overload threw `MethodError: no method matching simulate(::ReversibleCircuit, ::Type{Int8}, ::Tuple{Float64, Float64})`. The simulator operates on raw bit-vectors, so Float64 inputs must be reinterpreted to UInt64 at the call site.
+
+2. **The cc0.x ConstantFP gap** (Bennett-bjdg): `(a::Float64, b::Float64) -> a < b ? 1.0 : 0.0` fails extraction because `1.0` and `0.0` reach the IR as `ConstantFP` operands that ir_extract doesn't yet recognise. Worked around by returning `Int8(1) : Int8(0)` instead. The pinned compiled-circuit tests use the integer-result idiom.
+
+3. **Pinned-count regression tests are easy to forget when adding registered callees.** `test_kmuj_callee_groups.jl` is the canonical lookout: any new entry in `_CALLEE_GROUPS` requires updating the per-group length and the total `n_grouped`. Saved by the full Pkg.test run; would have been caught earlier by grepping for `_CALLEES_FP_CMP` in tests before adding entries.
+
+**Rejected alternatives:**
+
+- **Implement only the 6 truly-missing primitives and skip ugt/uge** (treating them as "errors are fine, they're rare") — discarded; CLAUDE.md §1 wants fail-loud, but the catalogue and bead explicitly call out ugt/uge as missing. Adding the 4-line swap dispatch in ir_extract is trivial and gives complete LangRef coverage.
+- **Refactor existing `soft_fcmp_olt` / `soft_fcmp_oeq` to share a `_classify(a, b)` helper returning `(a_nan, b_nan, both_zero, abs_lt, abs_eq, ...)` tuple** — would be cleaner but is a refactor, out of scope per the bugs-only directive. Filed mentally for a future refactor pass; not creating a follow-up bead per the directive ("DO NOT file new follow-up beads as a substitute for fixing a real bug").
+- **Implement `false` (predicate 0) and `true` (predicate 15) as constant returns** — out of scope; bead doesn't list them. They'd be `iconst(0)` / `iconst(1)` rather than callees, which is structurally different.
+
+**Filed (follow-ups):** none.
+
+**Test count:** 81,662 → **83,220** (+1558 = 1540 from d77b file + 18 from kmuj iteration over larger group).
+
+**Next agent — start here:** With salb + y986 + gboa + d77b closed today, 10 `[bug]` beads remain. Suggested order:
+- **softfloat tier**: `tpg0` (`_sf_normalize_to_bit52` on m=0), `xiqt` (subnormal flush boundary), `ys0d` (`soft_exp` 0.9% off-by-1-ULP). Each needs the §13 `subnormal-output range` testset.
+- **`y56a`** (P3) — triple-redundant integer division paths. Post-salb the `_soft_udiv_compile` is the canonical kernel.
+- **`bjdg`** (P3) — ConstantFP/Poison/Undef in scalar operand → misleading error. Surfaced again as gotcha #2 above.
+- **`yys3`** (P3) — manual 128-bit arithmetic.
+- **`q04a` / `jc0y`** (both 3+1) — yesterday's filings.
+
+---
+
 ## Session log — 2026-04-27 — Bennett-gboa / U139 close (zero-ancilla in-place op contracts)
 
 **Shipped:** see git log around the next commit; explicit pre/post wire-state contracts added to `lower_add_cuccaro!` (src/adder.jl), the `:trunc` branch of `lower_cast!` (src/lower.jl), `lower_divrem!`'s truncation step (src/lower.jl), and `_cond_negate_inplace!` (src/lower.jl). New regression test `test/test_gboa_dirty_bit_hygiene.jl` (180 assertions) pins the contracts as load-bearing assertions: bypasses Bennett's outer reverse pass and runs the raw gate sequences via `Bennett.apply!` to verify input-preservation, in-place result correctness, and ancilla-zero invariants directly.

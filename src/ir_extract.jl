@@ -1978,6 +1978,25 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         elseif pred_int == 3  # OGE: a >= b → ole(b, a)
             callee = _lookup_callee("soft_fcmp_ole")
             op1, op2 = op2, op1  # swap
+        # Bennett-d77b / U132: 6 new direct predicates + 2 more swap-derived
+        elseif pred_int == 6  # ONE: ordered not-equal
+            callee = _lookup_callee("soft_fcmp_one")
+        elseif pred_int == 7  # ORD: neither NaN
+            callee = _lookup_callee("soft_fcmp_ord")
+        elseif pred_int == 8  # UNO: at least one NaN
+            callee = _lookup_callee("soft_fcmp_uno")
+        elseif pred_int == 9  # UEQ: unordered equal
+            callee = _lookup_callee("soft_fcmp_ueq")
+        elseif pred_int == 10  # UGT: a > b unordered → ult(b, a)
+            callee = _lookup_callee("soft_fcmp_ult")
+            op1, op2 = op2, op1  # swap
+        elseif pred_int == 11  # UGE: a >= b unordered → ule(b, a)
+            callee = _lookup_callee("soft_fcmp_ule")
+            op1, op2 = op2, op1  # swap
+        elseif pred_int == 12  # ULT: unordered less-than
+            callee = _lookup_callee("soft_fcmp_ult")
+        elseif pred_int == 13  # ULE: unordered less-than-or-equal
+            callee = _lookup_callee("soft_fcmp_ule")
         else
             _ir_error(inst, "unsupported fcmp predicate $pred_int")
         end

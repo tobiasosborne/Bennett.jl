@@ -41,14 +41,17 @@ using Bennett
     end
 
     @testset "total registered count matches expected" begin
-        # 2 + 5 + 2 + 3 + 4 + 5 + 6 + 12 + 6 = 45
+        # 2 + 5 + 2 + 3 + 10 + 5 + 6 + 12 + 6 = 51
+        # (FP_CMP grew from 4 to 10 with Bennett-d77b / U132: 6 new
+        # soft_fcmp_* primitives ord/uno/one/ueq/ult/ule completing the
+        # LLVM fcmp predicate table.)
         n_grouped = sum(length(g) for g in Bennett._CALLEE_GROUPS)
-        @test n_grouped == 45
+        @test n_grouped == 51
 
         # _known_callees may contain more if anything else (test fixtures,
-        # other modules) registered, but it must contain at LEAST the 45
+        # other modules) registered, but it must contain at LEAST the 51
         # we register from the groups.
-        @test length(Bennett._known_callees) >= 45
+        @test length(Bennett._known_callees) >= 51
     end
 
     @testset "group sizes match the documented partition" begin
@@ -56,7 +59,7 @@ using Bennett
         @test length(Bennett._CALLEES_FP_BINARY)          == 5
         @test length(Bennett._CALLEES_FP_UNARY)           == 2
         @test length(Bennett._CALLEES_FP_ROUND)           == 3
-        @test length(Bennett._CALLEES_FP_CMP)             == 4
+        @test length(Bennett._CALLEES_FP_CMP)             == 10  # d77b: 4 → 10
         @test length(Bennett._CALLEES_FP_CONV)            == 5
         @test length(Bennett._CALLEES_FP_TRANS)           == 6
         @test length(Bennett._CALLEES_MUX_EXCH)           == 12

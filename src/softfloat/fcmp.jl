@@ -94,7 +94,92 @@ end
     soft_fcmp_une(a::UInt64, b::UInt64) -> UInt64
 
 IEEE 754 unordered not-equal: a != b or either is NaN.
+
+`une` ≡ `uno | one` ≡ `!oeq` (the latter holds because both unordered
+operands AND ordered-not-equal operands have `oeq == 0`).
 """
 @inline function soft_fcmp_une(a::UInt64, b::UInt64)::UInt64
     return UInt64(1) - soft_fcmp_oeq(a, b)
+end
+
+# Bennett-d77b / U132: 6 new soft_fcmp_* primitives complete the LLVM
+# fcmp predicate table (ord, uno, one, ueq, ult, ule). Combined with the
+# existing 4 (oeq, olt, ole, une) and the operand-swap dispatch in
+# ir_extract.jl for ogt/oge/ugt/uge, every LLVM fcmp predicate now routes
+# to a callee. All return UInt64(0) or UInt64(1).
+
+"""
+    _either_nan(a::UInt64, b::UInt64) -> Bool
+
+Branchless test: at least one of `a`, `b` is a (quiet or signalling) NaN
+in IEEE 754 binary64. NaN encoding: exponent = `0x7FF` AND fraction != 0.
+"""
+@inline function _either_nan(a::UInt64, b::UInt64)::Bool
+    ea = (a >> 52) & UInt64(0x7FF)
+    eb = (b >> 52) & UInt64(0x7FF)
+    fa = a & FRAC_MASK
+    fb = b & FRAC_MASK
+    a_nan = (ea == UInt64(0x7FF)) & (fa != UInt64(0))
+    b_nan = (eb == UInt64(0x7FF)) & (fb != UInt64(0))
+    return a_nan | b_nan
+end
+
+"""
+    soft_fcmp_ord(a::UInt64, b::UInt64) -> UInt64
+
+IEEE 754 ordered: neither `a` nor `b` is NaN. Returns 1 if both are
+non-NaN, 0 otherwise. Fully branchless.
+"""
+function soft_fcmp_ord(a::UInt64, b::UInt64)::UInt64
+    return UInt64(!_either_nan(a, b))
+end
+
+"""
+    soft_fcmp_uno(a::UInt64, b::UInt64) -> UInt64
+
+IEEE 754 unordered: at least one of `a`, `b` is NaN. Returns 1 if any
+NaN operand is present, 0 otherwise. Fully branchless.
+"""
+function soft_fcmp_uno(a::UInt64, b::UInt64)::UInt64
+    return UInt64(_either_nan(a, b))
+end
+
+"""
+    soft_fcmp_one(a::UInt64, b::UInt64) -> UInt64
+
+IEEE 754 ordered not-equal: both operands are non-NaN AND `a != b`.
+Note `+0.0 == -0.0` per IEEE 754, so `one(+0, -0)` returns 0.
+"""
+@inline function soft_fcmp_one(a::UInt64, b::UInt64)::UInt64
+    return soft_fcmp_ord(a, b) & (UInt64(1) - soft_fcmp_oeq(a, b))
+end
+
+"""
+    soft_fcmp_ueq(a::UInt64, b::UInt64) -> UInt64
+
+IEEE 754 unordered equal: at least one operand is NaN OR `a == b`.
+Returns 1 in either case. NaN comparisons return 1 (the "unordered" bit).
+"""
+@inline function soft_fcmp_ueq(a::UInt64, b::UInt64)::UInt64
+    return soft_fcmp_uno(a, b) | soft_fcmp_oeq(a, b)
+end
+
+"""
+    soft_fcmp_ult(a::UInt64, b::UInt64) -> UInt64
+
+IEEE 754 unordered less-than: at least one operand is NaN OR `a < b`
+(ordered). NaN comparisons return 1.
+"""
+@inline function soft_fcmp_ult(a::UInt64, b::UInt64)::UInt64
+    return soft_fcmp_uno(a, b) | soft_fcmp_olt(a, b)
+end
+
+"""
+    soft_fcmp_ule(a::UInt64, b::UInt64) -> UInt64
+
+IEEE 754 unordered less-than-or-equal: at least one operand is NaN OR
+`a <= b` (ordered). NaN comparisons return 1.
+"""
+@inline function soft_fcmp_ule(a::UInt64, b::UInt64)::UInt64
+    return soft_fcmp_uno(a, b) | soft_fcmp_ole(a, b)
 end
