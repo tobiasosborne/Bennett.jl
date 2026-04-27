@@ -1,5 +1,49 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-27 — Bennett-xiqt / U133 close (subnormal flush boundary — investigated, doc-only)
+
+**Shipped:** see git log; new regression test `test/test_xiqt_subnormal_boundary.jl` (26 assertions) + docstring update on `_sf_handle_subnormal` (src/softfloat/softfloat_common.jl) documenting the investigation finding.
+
+**Why:** Bennett-xiqt / U133 — review F8/M6 flagged `_sf_handle_subnormal`'s `flush_to_zero = shift_sub >= 56` boundary as potentially dropping the IEEE-754 RTNE round-up case for values whose true magnitude is just above half of smallest subnormal.
+
+**Mode:** direct grind, "investigated, doc-only" disposition (chunk 045 pattern, cf. 2yky / 3of2).
+
+**Investigation finding:** the boundary is theoretically RTNE-incorrect at `shift_sub == 56` with `wr` bit 55 set, BUT no current caller produces such inputs that disagree with `Base.*`:
+
+- 200k+ random `soft_fmul` inputs in subnormal-range: 0 disagreements vs `Base.*`.
+- 200k+ random `soft_fdiv` inputs: 0 disagreements vs `Base./`.
+- 100k each `soft_fadd` / `soft_fsub` / `soft_fma` (with c=0): 0 disagreements vs `Base.{+,-,fma}`.
+
+**The boundary IS exercised:** at `shift_sub ∈ [56, 60]` (~0.4% of fmul calls in the random sweep). And wr's bit 55 IS always set in those cases. But the wr encoding at the boundary doesn't have a naive "bit 55 = round bit" reading — for all observed inputs, the TRUE mathematical value is below half of smallest subnormal, so `Base.*` also rounds these to ±0.
+
+**Test coverage:** `test/test_xiqt_subnormal_boundary.jl` (26 assertions / 3 testsets):
+- Helper-level: pinned current behavior at `shift_sub ∈ {0, 55, 56}`.
+- End-to-end: 5k random calls each of fmul/fdiv/fadd/fsub vs `Base.*`, asserting 0 disagreements.
+- Targeted: handcrafted boundary cases (`a=2^-1022`, `b=k*2^-53` for `k ∈ {1.0, 1.1, 1.25, 1.5, 1.75}`) — all match `Base.*`.
+
+The targeted boundary cases (e.g. `a*b3 = 1.5*2^-1075`) DO produce smallest subnormal (`0x1`), confirming that fmul handles the IEEE-754 round-up correctly via a different code path (shift_sub = 53 in that case, NOT 56).
+
+**Gotchas / Lessons:**
+
+1. **"Theoretical bug" beads need empirical verification before fixing.** The review's analysis of the helper's logic was correct in isolation, but the helper is only called from soft_f* code that pre-scales the wr and result_exp such that the "round-up" case manifests as `shift_sub ∈ [50, 55]`, NOT 56. Fixing the helper to handle shift_sub == 56 "correctly" would have changed observable behavior for 0 inputs and risked breaking the 200k empirically-verified outputs.
+
+2. **The disagreement scan should NOT filter on "near-zero region" before counting.** My first scan filtered for `(base_r & 0x7FFF...) <= 16` and got 0 disagreements — but I'd already filtered out potential bugs at higher magnitudes. Re-running without the filter (just "any disagreement") was the right cross-check; still 0.
+
+3. **Helper-level tests MUST be paired with end-to-end tests.** I instrumented `_sf_handle_subnormal` to histogram shift_sub values and confirmed the boundary IS exercised — without that, I might have wrongly concluded the bug was unreachable. The instrumented trace + the 0-disagreement empirical scan together give the full picture.
+
+**Rejected alternatives:**
+
+- **Fix the boundary at shift_sub == 56 to handle round-up** — would change behavior for 0 inputs (since no fmul/fdiv/fma/fadd input produces a wr that disagrees with Base.* at the boundary). Net cost: gate-count shift in soft_f* lowerings AND the risk of breaking the empirically-verified 0-disagreement behavior. Out of scope for a P3 BUG with no observable failure.
+- **Add a `@warn` log at shift_sub == 56 with bit 55 set** — would fire ~0.4% of the time on legitimate inputs. Useless noise.
+
+**Filed (follow-ups):** none. If a future caller IS constructed that disagrees with `Base.*` at the flush boundary, the new regression-guard test will trip and reopen this bead.
+
+**Test count:** 83,678 → **83,704** (+26).
+
+**Next agent — start here:** Continue bugs-only. Remaining: `ys0d` (soft_exp 0.9% off-by-1-ULP), `y56a` (triple-redundant integer division), `yys3` (manual 128-bit arithmetic), `q04a` / `jc0y` (3+1 refactors).
+
+---
+
 ## Session log — 2026-04-27 — Bennett-tpg0 / U135 close (_sf_normalize_to_bit52 zero-input contract)
 
 **Shipped:** see git log; `_sf_normalize_to_bit52` in src/softfloat/softfloat_common.jl now handles `m == 0` explicitly, returning `(0, e)` unchanged. Pre-tpg0 the function had a caller-trust contract: `m == 0` produced `(0, e - 63)` (every CLZ stage shifts because no leading 1 is found), documented as "callers handle zero inputs via the select chain before using m". Defensive removal of the contract.

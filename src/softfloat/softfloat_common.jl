@@ -139,11 +139,37 @@ Six-stage binary-search CLZ (count leading zeros).
 end
 
 """
-    _sf_handle_subnormal(wr, result_exp, result_sign) -> (wr, result_exp, flushed_result)
+    _sf_handle_subnormal(wr, result_exp, result_sign) -> (wr, result_exp, flushed_result, subnormal, flush_to_zero)
 
 Handle subnormal result (exponent underflow). Returns updated wr, result_exp,
 and the flushed-to-zero result for use in the final select chain.
 Also returns `subnormal` and `flush_to_zero` flags.
+
+# Bennett-xiqt / U133 — flush boundary investigation
+
+The review (reviews/2026-04-21/11_softfloat.md F8/M6) flagged
+`flush_to_zero = shift_sub >= 56` as potentially dropping the round-up
+case for values whose true magnitude is just above half of smallest
+subnormal. Per IEEE-754 RTNE, such values should round UP to smallest
+subnormal (frac = 1), not flush to ±0.
+
+**Empirical investigation (Bennett-xiqt):** 200k+ random fmul, 200k+
+random fdiv, 100k each of fadd/fsub/fma calls with subnormal-range
+inputs produced ZERO disagreements vs `Base.*` / `Base.fma`. The flush
+boundary IS exercised at `shift_sub ∈ [56, 60]` (~0.4% of fmul calls)
+AND wr's bit 55 IS always set in those cases — but the wr encoding
+at the boundary doesn't have a naive "bit 55 = round bit" reading.
+For all observed inputs, `Base.*` ALSO rounds these to ±0 (the true
+mathematical value is below half of smallest subnormal because of
+how fmul scales wr).
+
+**Disposition:** investigated, doc-only. The theoretical RTNE-incorrectness
+at `shift_sub == 56` with bit 55 set is not triggered by any current
+soft_f* caller. `test/test_xiqt_subnormal_boundary.jl` pins the
+empirical-agreement contract as a regression guard against future
+changes to (a) this helper or (b) the wr encoding produced by
+fmul/fdiv/fma/fadd. If a future caller IS constructed that disagrees
+with `Base.*`, that test will trip and reopen this bead.
 """
 @inline function _sf_handle_subnormal(wr::UInt64, result_exp::Int64, result_sign::UInt64)
     subnormal = result_exp <= Int64(0)
