@@ -1,8 +1,8 @@
 # Bennett.jl Work Log
 
-## Session log — 2026-04-28 — LOC-tier grind (12 beads closed: qxg9, 64ob, j8uy, g7r8, mggz, b3go, 4bcp, hjwp, fehu, 2hhx, 2unc, 8h41)
+## Session log — 2026-04-28 — LOC-tier grind (13 beads closed: qxg9, 64ob, j8uy, g7r8, mggz, b3go, 4bcp, hjwp, fehu, 2hhx, 2unc, 8h41, 6e0i)
 
-**Shipped:** see git log around `c4ec762..140bb91` (12 commits). Fix-then-grind session covering one P2 perf bug (qxg9) plus eleven P3 closes spanning benchmarks, regression infra, compat-hack removal, docstring inlining, error-message ergonomics, baseline policy, simulator perf, soft_round implementation, fail-loud narrowing, and constructor cleanup. All 90,041 tests pass (was 84,620 at session start: +5,421 from new 4bcp/fehu/2hhx tests).
+**Shipped:** see git log around `c4ec762..7253720` (~14 commits). Fix-then-grind session covering one P2 perf bug (qxg9) plus twelve P3 closes spanning benchmarks, regression infra, compat-hack removal, docstring inlining, error-message ergonomics, baseline policy, simulator perf, soft_round implementation, fail-loud narrowing, constructor cleanup, and @assert convention. All 90,041 tests pass (was 84,620 at session start: +5,421 from new 4bcp/fehu/2hhx tests).
 
 **Why:** User directive at session start was "deal with the perf regression, then keep grinding through the catalogue." qxg9 was the carry-over from chunk 048's partial bisect; the rest are LOC-tier wins from `bd ready`'s P3 stack.
 
@@ -20,6 +20,7 @@
 10. **2hhx** (P3) — implemented `soft_round` (IEEE 754 roundToIntegralTiesToEven) in `src/softfloat/fround.jl`. Branchless bit-twiddle: special-cases NaN/Inf/subnormal/|x|<0.5/|x|=0.5/|x|in(0.5,1.0)/|x|>=2^52, plus the general bit-twiddle for |x| in [1.0, 2^52) computing round-bit + sticky + ties-to-even via mantissa LSB-after-truncation. Registered in `_CALLEES_FP_ROUND`; `Base.round(::SoftFloat)` dispatch added. 5,091 new asserts (5,000-input random raw-bits sweep + edge cases) bit-exact vs `Base.round(::Float64)`.
 11. **2unc** (P3) — replaced silent `_narrow_inst(inst::IRInst, W) = inst` fallthrough with explicit `error()` per CLAUDE.md §1. Pre-fix, narrowing a function with IRPtrOffset / IRVarGEP / IRLoad / IRSwitch silently passed those nodes through with pre-narrow widths (opaque downstream wire mismatch). Now fails loud naming the type and pointing at the fix location.
 12. **8h41** (P3) — removed the 7-arg `LoweringResult` convenience constructor (explicit gate_groups + default false self_reversing). The single source-of-truth caller at `src/lower.jl:527` was migrated to the canonical 8-arg form. The 6-arg "all defaults" convenience stays — used by 25+ test fixtures. API surface: 6-arg + 8-arg (was 6 + 7 + 8).
+13. **6e0i** (P3) — converted 3 length-contract checks at the top of `emit_shadow_store_guarded!` (src/shadow_memory.jl) from `cond || error(...)` to `@assert cond "..."`. Same lazy-message semantics; @assert keyword now signals INVARIANT to readers vs user-facing diagnostic. The broader codebase-wide @assert/error skew (2 vs 121 sites) remains a stylistic gradient out of scope for this close.
 
 **Gotchas / Lessons (cross-cutting):**
 
@@ -44,7 +45,7 @@
 **Filed (follow-ups):** none new this session. Most P3 ready beads remain — see bd ready.
 
 **Session metrics:**
-- Closed: 12 beads (1 P2 bug + 11 P3 tasks)
+- Closed: 13 beads (1 P2 bug + 12 P3 tasks)
 - LOC delta: ~+700 net (mostly soft_round impl + 5k-sample test sweep)
 - Test count: 84,620 → 90,041 (+5,421: mostly the 5,091 soft_round sweep, plus 12 from 4bcp + 315 from fehu).
 - Source files touched: `src/lower.jl`, `src/ir_types.jl`, `src/Bennett.jl`, `src/simulator.jl`, `src/softfloat/fdiv.jl`, `src/softfloat/fround.jl`. Of these, lower.jl + ir_types.jl + Bennett.jl are CLAUDE.md §2 core files — direct grind judged appropriate for surgical fixes (qxg9 = 3-line deletion, mggz = compat-hack removal with the bead specifically asking for it, 4bcp = pre-flight check addition, 2unc = error-message change, 8h41 = constructor removal with no risky callers). fehu, b3go, 2hhx are non-core (simulator + softfloat).
