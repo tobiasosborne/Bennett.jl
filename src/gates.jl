@@ -120,3 +120,18 @@ Base.eltype(::Type{ReversibleCircuit})          = ReversibleGate
 Base.getindex(c::ReversibleCircuit, i::Integer) = c.gates[i]
 Base.firstindex(c::ReversibleCircuit)           = firstindex(c.gates)
 Base.lastindex(c::ReversibleCircuit)            = lastindex(c.gates)
+
+
+# ==== Gate-type accessors (Bennett-mg6u / U201) ====
+# Common (target, controls) projection used by dep_dag.jl + eager.jl. Lives
+# here in gates.jl so both consumers can use it without depending on each
+# other. Bennett-348q / U108: controls returned as tuples (isbits, stack-
+# allocated) — both call sites only iterate, so a Tuple is transparent.
+
+_gate_target(g::NOTGate)     = g.target
+_gate_target(g::CNOTGate)    = g.target
+_gate_target(g::ToffoliGate) = g.target
+
+_gate_controls(g::NOTGate)     = ()
+_gate_controls(g::CNOTGate)    = (g.control,)
+_gate_controls(g::ToffoliGate) = (g.control1, g.control2)
