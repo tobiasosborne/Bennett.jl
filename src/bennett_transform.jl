@@ -129,7 +129,13 @@ function bennett(lr::LoweringResult)
     # self_reversing primitive would poison every downstream circuit.
     if lr.self_reversing
         _validate_self_reversing!(lr)
-        return _build_circuit(copy(lr.gates), lr.n_wires, lr.input_wires,
+        # Bennett-nj5r / U200: pass lr.gates directly. ReversibleCircuit
+        # stores the array but does not mutate it; no caller mutates
+        # lr.gates after bennett() returns (verified across src/eager.jl,
+        # src/value_eager.jl, src/pebbling.jl, etc.). Skipping the
+        # defensive copy saves O(n_gates) allocation on every
+        # self_reversing circuit (lower_tabulate, mul_qcla_tree).
+        return _build_circuit(lr.gates, lr.n_wires, lr.input_wires,
                               lr.output_wires, lr)
     end
 
