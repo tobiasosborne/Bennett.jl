@@ -4,6 +4,42 @@
 IEEE 754 double-precision division on raw bit patterns.
 Uses only integer operations. Bit-exact with hardware `/`.
 Fully branchless.
+
+## Correctness sketch
+
+Both inputs are pre-normalized so the leading 1 sits at bit 52 (Bennett-r6e3
+fixed a subnormal-divisor bug where this was assumed but not enforced — the
+fix prepends `_sf_normalize_to_bit52` to both ma and mb). After
+normalization, ma, mb ∈ [2^52, 2^53), so the true quotient ma/mb ∈ [1/2, 2)
+and fits in 56 bits with 55 fractional bits.
+
+The 56-iteration restoring-division loop maintains the invariant
+`r < 2·mb` before each iteration:
+  * Initial: r = ma < 2^53 ≤ 2·mb (since mb ≥ 2^52).
+  * Per-iteration: subtract mb if r ≥ mb (so r < mb), then shift left by 1
+    (so r < 2·mb).
+Each iteration extracts one quotient bit (whether the subtraction fired)
+and shifts it into q. After 56 iterations, q is the 56-bit truncated
+quotient with leading 1 at bit 54 or 55 depending on whether ma ≥ mb.
+
+The final remainder `r` carries the rounded-off tail. We collapse any
+non-zero r into a single **sticky bit** OR'd into the quotient LSB. This
+preserves round-to-nearest-even: `_sf_round_and_pack` reads guard / round
+/ sticky from wr's low bits to compute the correctly-rounded result.
+
+Then a single normalization shift moves the leading 1 from bit 54 to
+bit 55 if ma < mb. CLZ-based subnormal renormalization handles the case
+where the result exponent went below the subnormal threshold. Finally
+`_sf_round_and_pack` produces the IEEE 754 binary64 result.
+
+The select chain at the bottom handles NaN / Inf / zero edge cases
+branchlessly per IEEE 754: a/0 = ±Inf (with NaN if a is also 0),
+0/b = ±0, Inf/finite = ±Inf, finite/Inf = ±0, NaN propagates with
+quieted payload.
+
+Tested bit-exactly against Base./ over 5000 randomly-drawn UInt64 pairs
+(test/test_9x75_softfloat_raw_bits_sweep.jl) plus the canonical edge
+cases in test/test_softfdiv*.jl and test/test_m63k_softfloat_strict_bits.jl.
 """
 @inline function soft_fdiv(a::UInt64, b::UInt64)::UInt64
     BIAS      = Int64(1023)
