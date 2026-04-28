@@ -347,6 +347,10 @@ include("test_fehu_simulate_inplace.jl")
 # Bit-exact vs Base.round(::Float64): ties-to-even, subnormals, ±Inf, NaN
 # (with quiet-bit), boundary at 2^52, plus 5,000-sample raw-bits sweep.
 include("test_2hhx_soft_round.jl")
+# Bennett-is5s / U131 — diagnose_nonzero(circuit, inputs) helper for
+# bisecting Bennett-invariant violations (returns all violations
+# without throwing). Subset of is5s; --dump-ir / verbose deferred.
+include("test_is5s_diagnose_nonzero.jl")
 # Bennett-jc0y / 59jj-cut — ReversibleCircuit.gates storage contract pin.
 # Investigated → doc-only: bead claims "type-unstable apply! per gate" stale
 # (Julia union-splits NOT/CNOT/Toffoli inside _simulate's hot loop); memory

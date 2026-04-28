@@ -241,6 +241,136 @@ function _simulate_with_buffer!(bits::Vector{Bool}, circuit::ReversibleCircuit,
 end
 
 """
+    diagnose_nonzero(c::ReversibleCircuit, input) -> NamedTuple
+    diagnose_nonzero(c::ReversibleCircuit, inputs::Tuple) -> NamedTuple
+
+Bennett-is5s / U131: replay the circuit forward without throwing on
+ancilla-non-zero or input-mutation, and return a structured report of
+every Bennett-invariant violation. Useful when a `simulate(c, x)` call
+threw "Ancilla wire N not zero" and you need to see ALL the violations
+plus enough context to bisect the buggy gate range.
+
+Returns:
+
+```
+(
+  ancilla_violations    = [(wire_index, gate_idx_first_set), ...],
+  input_violations      = [(input_index, wire_index, expected, got), ...],
+  output                = <whatever simulate would have returned>,
+  n_gates               = length(c.gates),
+  n_wires               = c.n_wires,
+)
+```
+
+`gate_idx_first_set` records the gate index after which each violating
+ancilla wire first became 1 (re-runs the circuit to find it). For an
+ancilla left at 1 because of a missed uncompute, this is typically the
+forward gate that set it; for one set then never cleared, it bisects
+the buggy gate range.
+
+Does NOT throw on violations — by design, this is the `simulate`
+counterpart that surfaces them all at once. For a strict check that
+throws, use `simulate` (or `verify_reversibility` for full sweeps).
+
+# Example
+
+```jldoctest; setup = :(using Bennett)
+julia> c = reversible_compile(x -> x + Int8(1), Int8);
+
+julia> r = diagnose_nonzero(c, Int8(5));
+
+julia> r.ancilla_violations
+Tuple{Int64, Int64}[]
+
+julia> r.input_violations
+NamedTuple[]
+```
+"""
+function diagnose_nonzero(circuit::ReversibleCircuit, inputs::Tuple{Vararg{Integer}})
+    length(inputs) == length(circuit.input_widths) || throw(ArgumentError(
+        "diagnose_nonzero: expected $(length(circuit.input_widths)) inputs, " *
+        "got $(length(inputs))"))
+    bits = zeros(Bool, circuit.n_wires)
+    offset = 0
+    for (k, w) in enumerate(circuit.input_widths)
+        v = inputs[k]
+        for i in 1:w
+            bits[circuit.input_wires[offset + i]] = (v >> (i - 1)) & 1 == 1
+        end
+        offset += w
+    end
+    input_snapshot = Bool[bits[w] for w in circuit.input_wires]
+
+    # First pass: just run gates and record final state.
+    for g in circuit.gates
+        apply!(bits, g)
+    end
+
+    ancilla_wires_set = Int[]
+    for w in circuit.ancilla_wires
+        bits[w] && push!(ancilla_wires_set, w)
+    end
+
+    # If any ancilla wires are dirty, replay with provenance to find
+    # the gate index after which each first became 1 (the most useful
+    # debugging info — points at the originating Toffoli/CNOT).
+    ancilla_violations = Tuple{Int,Int}[]
+    if !isempty(ancilla_wires_set)
+        bits2 = zeros(Bool, circuit.n_wires)
+        offset = 0
+        for (k, w) in enumerate(circuit.input_widths)
+            v = inputs[k]
+            for i in 1:w
+                bits2[circuit.input_wires[offset + i]] = (v >> (i - 1)) & 1 == 1
+            end
+            offset += w
+        end
+        first_set = Dict{Int,Int}()
+        for (gi, g) in enumerate(circuit.gates)
+            apply!(bits2, g)
+            for w in ancilla_wires_set
+                if bits2[w] && !haskey(first_set, w)
+                    first_set[w] = gi
+                end
+            end
+        end
+        for w in ancilla_wires_set
+            push!(ancilla_violations, (w, get(first_set, w, -1)))
+        end
+    end
+
+    input_violations = NamedTuple[]
+    for (k, w) in pairs(circuit.input_wires)
+        if bits[w] != input_snapshot[k]
+            push!(input_violations, (input_index=k, wire_index=w,
+                                      expected=input_snapshot[k], got=bits[w]))
+        end
+    end
+
+    widths_align = !isempty(inputs) && !isempty(circuit.output_elem_widths) &&
+                   all(w == circuit.input_widths[1] for w in circuit.input_widths) &&
+                   all(w == circuit.input_widths[1] for w in circuit.output_elem_widths)
+    unsigned_out = widths_align && all(x isa Unsigned for x in inputs)
+    output = _read_output(bits, circuit.output_wires,
+                          circuit.output_elem_widths, unsigned_out)
+
+    return (
+        ancilla_violations = ancilla_violations,
+        input_violations   = input_violations,
+        output             = output,
+        n_gates            = length(circuit.gates),
+        n_wires            = circuit.n_wires,
+    )
+end
+
+function diagnose_nonzero(circuit::ReversibleCircuit, input::Integer)
+    length(circuit.input_widths) == 1 || throw(ArgumentError(
+        "diagnose_nonzero(c, input): single-input form requires " *
+        "length(c.input_widths) == 1; got $(length(circuit.input_widths))"))
+    return diagnose_nonzero(circuit, (input,))
+end
+
+"""
 Read the output value from the simulation bit vector. Returns
 Int8/16/32/64 (or UInt… if `unsigned_out` is true) for single-element
 outputs, or a Tuple for multi-element (insertvalue) outputs. For tuple
