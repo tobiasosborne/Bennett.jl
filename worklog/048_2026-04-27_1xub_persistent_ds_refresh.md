@@ -1,10 +1,15 @@
 # Bennett.jl Work Log
 
-## Session log — 2026-04-28 — LOC-tier grind (50 beads closed in one session)
+## Session log — 2026-04-28 — LOC-tier grind (51 beads closed + kv7b epic partials)
 
-**Closes (substantive, 28):** qxg9 (P2 BUG), 64ob, j8uy, g7r8, mggz, b3go, 4bcp, hjwp, fehu, 2hhx, 2unc, 8h41, 6e0i, ajap, c3xv, nj5r, 9ryk, xgf6, 26dt, mg6u, s8gs, wolk, k30d, z2q1, nr62, ecgh, tf9s, is5s, 4nvl.
+**Closes (substantive, 30):** qxg9 (P2 BUG), 64ob, j8uy, g7r8, mggz, b3go, 4bcp, hjwp, fehu, 2hhx, 2unc, 8h41, 6e0i, ajap, c3xv, nj5r, 9ryk, xgf6, 26dt, mg6u, s8gs, wolk, k30d, z2q1, nr62, ecgh, tf9s, is5s, 4nvl, **19g6** (Bennett.jl 545→270 LOC split into 4 files: narrow.jl/callees.jl/softfloat_dispatch.jl/precompile.jl).
 
 **Closes (LLVM-opcode/intrinsic verify-or-fail-loud, 21):** e38, 6k4, 1ae, psi, 4gc (intrinsics already in benign_prefixes silent-drop list); iaq, nd9, cx1, 909, e84, c1t, f4m, mcj, 32k, 82f (EH + runtime opcodes covered by the unsupported-opcode fail-loud catch-all at src/ir_extract.jl:2120); ay7, xml, px9, dop, 6nq, bmq (pointer-cast + atomic + fence opcodes — same fail-loud path; ptrtoint/inttoptr/addrspacecast also have cc0.6 breadcrumb errors at lines 2308-2311 + 2211-2213). Per CLAUDE.md §1 + §11: don't preemptively implement opcodes/intrinsics the current corpus doesn't exercise.
+
+**kv7b (P2 epic) partial progress:** addressed 4 of the epic's 19 sub-items:
+  - #03 F13 — `test_constant_wire_count.jl` baselines tightened from `>= 0/1` smoke checks to exact pinned values (3/1/4/2 for the 4 test functions).
+  - #03 F12 (×3) — added assertions to 3 previously-zero-test testsets: `test_eager_bennett.jl` "gate count baselines" now asserts eager preserves bennett() gate count + Toffoli + pinned i8 baselines + peak_live_wires inequality + verify_reversibility; `test_ancilla_reuse.jl` chain/poly ancilla baselines pinned at 25/249; `test_liveness.jl` multi-use variable now asserts the comment's invariant (`liveness[arg] >= 2`).
+Net +10 asserts. Epic kv7b stays open with 15+ remaining sub-items.
 
 **Shipped:** see git log around `c4ec762..174cff0` (~24 commits). Fix-then-grind session covering one P2 perf bug (qxg9) plus 21 P3/P4 closes spanning benchmarks, regression infrastructure, compat-hack removal, docstring inlining, error-message ergonomics, baseline policy, simulator perf, soft_round implementation, fail-loud narrowing, constructor cleanup, @assert convention, error-message parametrization, U03-checked self_reversing flag, defensive-copy elimination, QCLA W>=4 explanation, BENCHMARKS row refresh (soft_fmul -42%, soft_fadd -34%), FTZ contract docs, accessor file move, type-stable kwarg defaults, and superseded-bead closes. All 90,041 tests pass (was 84,620 at session start: +5,421 from new 4bcp/fehu/2hhx tests).
 
@@ -65,7 +70,7 @@
 **Filed (follow-ups):** none new this session. Most P3 ready beads remain — see bd ready.
 
 **Session metrics:**
-- Closed: 50 beads (1 P2 bug + 33 P3 tasks + 16 P4 tasks; including 21 LLVM-opcode/intrinsic verify-or-fail-loud closes)
+- Closed: 51 beads (1 P2 bug + 34 P3 tasks + 16 P4 tasks; including 21 LLVM-opcode/intrinsic verify-or-fail-loud closes) + kv7b epic partials (4 of 19 sub-items)
 - LOC delta: net **-16,700** (4nvl gitignore alone is -17,818; new test/doc/source ~+1,100)
 - Test count: 84,620 → 90,060 (+5,440: 5,091 from 2hhx soft_round sweep, 315 from fehu, 12 from 4bcp, 19 from is5s, plus 3 from minor).
 - Source files touched: `src/lower.jl`, `src/ir_types.jl`, `src/Bennett.jl`, `src/simulator.jl`, `src/softfloat/fdiv.jl`, `src/softfloat/fround.jl`, `src/softfloat/fexp.jl`, `src/shadow_memory.jl`, `src/qcla.jl`, `src/gates.jl`, `src/dep_dag.jl`, `src/bennett_transform.jl`, `src/ir_extract.jl`. Of these, lower.jl + ir_extract.jl + ir_types.jl + Bennett.jl + bennett_transform.jl + gates.jl are CLAUDE.md §2 core files — direct grind judged appropriate for surgical fixes throughout (qxg9 sizehint! delete, mggz compat-hack delete, 4bcp pre-flight check, 2unc fail-loud, 8h41 constructor removal, ajap message rewrite, nj5r defensive-copy delete, 9ryk inline comment, mg6u accessor move, s8gs Union → empty default).
