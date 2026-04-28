@@ -59,18 +59,15 @@ struct LoweringResult
     self_reversing::Bool
 end
 
-# Bennett-7xng: 6-arg convenience — gate_groups defaults empty, not self-reversing.
+# Bennett-7xng + Bennett-8h41 / U87: 6-arg convenience — gate_groups
+# defaults empty, not self-reversing. The 7-arg variant (explicit
+# gate_groups + default false self_reversing) was removed; no current
+# callers used it. Callers needing explicit gate_groups must pass the
+# full 8-arg form (gate_groups, self_reversing) for clarity.
 LoweringResult(gates, n_wires, input_wires, output_wires,
                input_widths, output_elem_widths) =
     LoweringResult(gates, n_wires, input_wires, output_wires,
                    input_widths, output_elem_widths, GateGroup[], false)
-
-# 7-arg convenience — explicit gate_groups, default not self-reversing.
-LoweringResult(gates, n_wires, input_wires, output_wires,
-               input_widths, output_elem_widths,
-               gate_groups::Vector{GateGroup}) =
-    LoweringResult(gates, n_wires, input_wires, output_wires,
-                   input_widths, output_elem_widths, gate_groups, false)
 
 """Bundles shared lowering state for instruction dispatch."""
 struct LoweringCtx
@@ -528,7 +525,8 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
     end
 
     lr = LoweringResult(gates, wire_count(wa), input_wires, output_wires,
-                         input_widths, parsed.ret_elem_widths, gate_groups)
+                         input_widths, parsed.ret_elem_widths,
+                         gate_groups, false)  # self_reversing=false (default)
 
     if fold_constants
         lr = _fold_constants(lr)
