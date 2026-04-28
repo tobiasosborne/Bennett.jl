@@ -337,7 +337,7 @@ const _CALLEES_FP_UNARY = (
 
 # IEEE 754 rounding to integral (no precision loss; result still binary64).
 const _CALLEES_FP_ROUND = (
-    soft_floor, soft_ceil, soft_trunc,
+    soft_floor, soft_ceil, soft_trunc, soft_round,
 )
 
 # IEEE 754 comparison (returns i1). Bennett-d77b / U132: 6 new primitives
@@ -433,6 +433,7 @@ end
 @inline Base.floor(x::SoftFloat) = SoftFloat(soft_floor(x.bits))
 @inline Base.ceil(x::SoftFloat) = SoftFloat(soft_ceil(x.bits))
 @inline Base.trunc(x::SoftFloat) = SoftFloat(soft_trunc(x.bits))
+@inline Base.round(x::SoftFloat) = SoftFloat(soft_round(x.bits))
 @inline Base.sqrt(x::SoftFloat) = SoftFloat(soft_fsqrt(x.bits))
 @inline Base.exp(x::SoftFloat) = SoftFloat(soft_exp_julia(x.bits))
 @inline Base.exp2(x::SoftFloat) = SoftFloat(soft_exp2_julia(x.bits))
