@@ -454,12 +454,24 @@ end
 """
     soft_exp2_fast(a::UInt64) -> UInt64
 
-Fast variant of `soft_exp2` that flushes subnormal-output range to zero
-(x ∈ [-1075, -1022) → 0). ~1.4M gates cheaper per reversible compile.
-Bit-exact vs `soft_exp2` everywhere outside the subnormal range.
+Fast variant of `soft_exp2` that **flushes subnormal output to zero**
+(FTZ on output, NOT on input).
 
-Use when subnormal-range exactness isn't required (most numerical work).
-For full bit-exactness vs musl, use `soft_exp2`.
+# Contract (Bennett-26dt / U220)
+
+* **Input range:** all of Float64 (NaN/Inf/zero/normal/subnormal handled).
+* **Output FTZ:** for `x ∈ [-1075, -1022)` (the binade where
+  `Base.exp2(x)` produces a subnormal), this returns `+0.0` exactly
+  rather than the subnormal that `soft_exp2` produces.
+* **Bit-exactness:** matches `soft_exp2` (and `Base.exp2`) bit-for-bit
+  outside the FTZ range. There is no introduced ULP error in the
+  normal-output range — the speedup is purely the skipped subnormal-
+  output finalization.
+* **Cost:** ~1.4M gates cheaper per reversible compile.
+* **Use when:** subnormal-range exactness is not required (most
+  numerical work). FTZ-on-output is the standard ML-accelerator mode.
+* **Avoid when:** you need full bit-exactness vs musl `exp2` including
+  subnormal output — use `soft_exp2` instead.
 """
 @inline function soft_exp2_fast(a::UInt64)::UInt64
     sa = a >> 63
@@ -516,12 +528,28 @@ end
 """
     soft_exp_fast(a::UInt64) -> UInt64
 
-Fast variant of `soft_exp` that flushes subnormal-output range to zero
-(x ∈ [-745.13, -708.40] → 0). ~1.4M gates cheaper per reversible compile.
-Bit-exact vs `soft_exp` everywhere outside the subnormal range.
+Fast variant of `soft_exp` that **flushes subnormal output to zero**
+(FTZ on output, NOT on input).
 
-Use when subnormal-range exactness isn't required. For full bit-exactness
-vs musl (including subnormal output), use `soft_exp`.
+# Contract (Bennett-26dt / U220)
+
+* **Input range:** all of Float64 (NaN/Inf/zero/normal/subnormal handled).
+* **Output FTZ:** for `x ∈ [-745.13, -708.40]` (the binade where
+  `Base.exp(x)` produces a subnormal), this returns `+0.0` exactly
+  rather than the IEEE 754 subnormal that `soft_exp` produces.
+* **Bit-exactness:** matches `soft_exp` (and `Base.exp`) bit-for-bit
+  outside the FTZ range. There is no introduced ULP error in the
+  normal-output range — the speedup comes entirely from skipping the
+  subnormal-output denormal-multiply finalization, not from
+  approximating the polynomial.
+* **Cost:** ~1.4M gates cheaper per reversible compile.
+* **Use when:** subnormal-range exactness is not required (most
+  numerical work — gradient steps, activation functions, weight
+  updates). The IEEE 754 FTZ-on-output mode is widespread in HPC and
+  ML hardware (CUDA `__expf`, ARM `FPSCR.FZ`, Intel `_MM_FLUSH_ZERO`).
+* **Avoid when:** you need full bit-exactness vs musl `exp` including
+  subnormal output (e.g. cryptographic / determinism-sensitive code) —
+  use `soft_exp` instead.
 """
 @inline function soft_exp_fast(a::UInt64)::UInt64
     sa = a >> 63
