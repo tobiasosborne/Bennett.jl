@@ -308,7 +308,21 @@ _narrow_inst(inst::IRStore, W::Int) = IRStore(inst.ptr, inst.val,
 _narrow_inst(inst::IRAlloca, W::Int) = IRAlloca(inst.dest,
                                                 inst.elem_width > 1 ? W : 1,
                                                 inst.n_elems)
-_narrow_inst(inst::IRInst, W::Int) = inst  # fallback: pass through
+# Bennett-2unc / U85: Fail loud per CLAUDE.md §1. The pre-fix
+# fallback `_narrow_inst(inst::IRInst, W::Int) = inst` silently
+# passed through any IR node type without an explicit method, which
+# meant a function containing IRPtrOffset / IRVarGEP / IRLoad /
+# IRSwitch (the four IRInst subtypes still missing explicit methods)
+# would narrow to a circuit where those instructions retained their
+# pre-narrow widths — producing wire-width mismatches downstream
+# with no clear root cause. If you hit this error, add an explicit
+# `_narrow_inst(inst::IRYourType, W::Int) = ...` method above.
+function _narrow_inst(inst::IRInst, W::Int)
+    error("_narrow_inst: no method for $(typeof(inst)) — narrowing is " *
+          "not yet supported for this IR node type. Add an explicit " *
+          "_narrow_inst handler in src/Bennett.jl, or compile without " *
+          "the `bit_width` kwarg. (Bennett-2unc / U85)")
+end
 
 # ---- Register soft-float functions for gate-level inlining ----
 #
