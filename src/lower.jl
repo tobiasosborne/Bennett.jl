@@ -1377,7 +1377,6 @@ end
 function _emit_copy_out!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                           src::Vector{Int}, W::Int)
     r = allocate!(wa, W)
-    sizehint!(gates, length(gates) + W)
     for i in 1:W
         push!(gates, CNOTGate(src[i], r[i]))
     end
@@ -1397,7 +1396,6 @@ function _identity_emit_for_const(gates::Vector{ReversibleGate}, wa::WireAllocat
     # `x | all-ones` — all-ones result, never read x.
     if op === :or && k == mask
         r = allocate!(wa, W)
-        sizehint!(gates, length(gates) + W)
         for i in 1:W
             push!(gates, NOTGate(r[i]))
         end
@@ -1421,7 +1419,6 @@ function _identity_emit_for_const(gates::Vector{ReversibleGate}, wa::WireAllocat
     if op === :xor && k == mask
         a = resolve!(gates, wa, vw, ssa_op, W)
         r = _emit_copy_out!(gates, wa, a, W)
-        sizehint!(gates, length(gates) + W)
         for i in 1:W
             push!(gates, NOTGate(r[i]))
         end
