@@ -2,11 +2,11 @@
 
 > # 🚨 NEXT AGENT — START HERE 🚨
 >
-> **Read [`worklog/048_2026-04-27_1xub_persistent_ds_refresh.md`](worklog/048_2026-04-27_1xub_persistent_ds_refresh.md) FIRST** — top entry has the **Bennett-qxg9 bisect** (regression narrowed to 3-commit window, prime suspect zmw3); next entry below is the 1xub close (sweep refresh + 5qrn delta measurement). Then [`worklog/047_2026-04-27_heup_fold_constants_doc_only.md`](worklog/047_2026-04-27_heup_fold_constants_doc_only.md) (7 prior 2026-04-27 entries: tzrs stage-1 → tbm6 → 7xng → cvnb → jc0y → q04a → heup).
+> **Read [`worklog/048_2026-04-27_1xub_persistent_ds_refresh.md`](worklog/048_2026-04-27_1xub_persistent_ds_refresh.md) FIRST** — top entry is the **2026-04-28 LOC-tier grind summary** (9 beads closed: qxg9 sizehint! perf-bug fix at 33× compile-time speedup, 64ob/j8uy benchmarks, g7r8 regression check, mggz compat-hack removal, b3go docstring, 4bcp NTuple error, hjwp baseline policy, fehu simulate! 2.7× speedup). Below it: the 2026-04-28 qxg9 close detail, then 2026-04-27 qxg9 bisect data and 1xub close. Then [`worklog/047_2026-04-27_heup_fold_constants_doc_only.md`](worklog/047_2026-04-27_heup_fold_constants_doc_only.md) (7 prior 2026-04-27 entries: tzrs stage-1 → tbm6 → 7xng → cvnb → jc0y → q04a → heup).
 >
-> **State of the bug backlog (2026-04-27 evening):** the bugs-only directive (chunk 045) is **EXHAUSTED on the actionable side**. Only 3 `[bug]` beads remain: `25dm` (P2, blocked on `z2dj` IN-PROGRESS T5-P6 dispatcher), `ponm` (P2, bd-tool schema bug — NOT a Bennett.jl source bug), `cc0.5` (P2 IN-PROGRESS — Julia TLS allocator GEP base, T5-P6.3 multi-language ingest, multi-session scope per its own notes).
+> **State of the bug backlog (2026-04-28):** qxg9 closed today. Only 3 `[bug]` beads remain: `25dm` (P2, blocked on `z2dj` IN-PROGRESS T5-P6 dispatcher), `ponm` (P2, bd-tool schema bug — NOT a Bennett.jl source bug), `cc0.5` (P2 IN-PROGRESS — Julia TLS allocator GEP base, T5-P6.3 multi-language ingest, multi-session scope per its own notes).
 >
-> **Active mode: structural / LOC refactors.** User explicitly lifted the bugs-only directive 2026-04-27 evening. Today's grind closed:
+> **Active mode: structural / LOC refactors.** User explicitly lifted the bugs-only directive 2026-04-27 evening. Today's grind (2026-04-28) closed 9 beads — see chunk 048 top entry. Yesterday's (2026-04-27) closes:
 > - `7xng` — LoweringResult.constant_wires dead-store removal (-45 LOC)
 > - `cvnb` — bennett_direct + self_reversing discoverability (Sturm.jl-ao1)
 > - `tbm6` — Karatsuba multiplier removed (~250 LOC delete)
@@ -14,7 +14,7 @@
 >
 > **Active rule of thumb:** any change to `lower.jl` / `ir_extract.jl` / `bennett_transform.jl` / `gates.jl` / `ir_types.jl` / phi resolution → **3+1 protocol per CLAUDE.md §2** (2 parallel `Plan` proposers, synthesise, implement, review). Otherwise → direct grind. Always pair `verify_reversibility` with an output-vs-Julia-oracle assertion — `verify_reversibility` does NOT check semantic correctness (see today's 3of2 close + the chunk-045 directive).
 >
-> **Suggested next pickups** (all P2/P3 non-bug, all need 3+1 because they touch core files):
+> **Suggested next pickups** (all P2/P3 non-bug, most need 3+1 because they touch core files):
 >   - `vdlg` (P2) — lower.jl 2,662 LOC structural split
 >   - `tzrs` stages 2-5 — remaining `_convert_instruction` arms (medium priority; stage 1 already shipped most of the value)
 >   - `x3jc` (P3) — ir_extract.jl 2,394 LOC similar to vdlg
@@ -23,9 +23,14 @@
 >   - `vt0a` (P3) — Bennett-aware wire allocator (algorithmic; needs careful design)
 >
 > Smaller / contained next-tier work (no 3+1):
->   - `1xub` — measure 5qrn delta on persistent-DS sweep + update BENCHMARKS.md
->   - `64ob` — softfloat MD5 / soft_fma in BENCHMARKS.md
 >   - `qjet` — empirical timing-based reorder of test/runtests.jl (carries test-ordering risk)
+>   - `19g6` — src/Bennett.jl 297-line junk drawer (refactor target ≤80 LOC)
+>   - `iwv5` — wrap softfloat/persistent in proper modules (touches namespace; high blast radius)
+>   - `zpj7` — pebbling/eager file naming consistency
+>   - `2hhx` — soft_round (roundToIntegralTiesToEven) implementation
+>   - `3rph` — Float32 native arithmetic (currently fpext→f64→fptrunc)
+>   - `u2yp` — sat_pebbling.jl: wire (via fg2) or drop the PicoSAT dep
+>   - `u71l` — CompileOptions struct (565 callers; deferred 2026-04-28, needs careful design)
 >
 > Older session logs are sharded into ~200-300 line chunks under `worklog/`, file-numbered chronologically (000 = oldest, 047 = newest as of 2026-04-27).
 

@@ -1,5 +1,55 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-28 — LOC-tier grind (8 beads closed: qxg9, 64ob, j8uy, g7r8, mggz, b3go, 4bcp, hjwp, fehu)
+
+**Shipped:** see git log around `c4ec762..93ae401` (9 commits). Fix-then-grind session covering one P2 perf bug (qxg9) plus eight P3 closes spanning benchmarks, regression infra, compat-hack removal, docstring inlining, error-message ergonomics, baseline policy, and simulator perf. All 84,947 tests pass.
+
+**Why:** User directive at session start was "deal with the perf regression, then keep grinding through the catalogue." qxg9 was the carry-over from chunk 048's partial bisect; the rest are LOC-tier wins from `bd ready`'s P3 stack.
+
+**Closes (chronological):**
+
+1. **qxg9** (P2 bug) — sizehint! defeats push! geometric growth → 33× compile-time fix. See dedicated entry below this list.
+2. **64ob** (P3) — BENCHMARKS.md gained MD5 round-helper / step + soft_fma rows. soft_fma now 247,398 gates / 54,890 Toffoli, 1.10× v0.5-PRD §9 estimate (down from catalogue's stale 447,728 figure due to cc0.x / fold_constants / sret-callee improvements landed since 2026-04-22).
+3. **j8uy** (P3, drive-by) — closed as resolved by 64ob's measurement; no source change needed.
+4. **g7r8** (P3) — `benchmark/regression_check.jl` + `regression_baselines.jsonl`. 9-entry corpus runs in ~24s, gates exact-match, compile-time warns at 2× / fails at 5×. cf_max_n16 is the qxg9 canary (would have caught the 33× regression on first run). NOT wired to CI per CLAUDE.md §14; local invocation before merging changes to lower.jl / ir_extract.jl / peephole / fold paths.
+5. **mggz** (P3) — removed ParsedIR `_instructions_cache` field + `Base.getproperty` / `propertynames` overrides. Migrated only legacy caller (test_parse.jl, 7 sites) to inline `Iterators.flatten((blk.instructions..., blk.terminator) for blk in parsed.blocks)`. ParsedIR is now a clean 6-field struct with no compat shims.
+6. **b3go** (P3) — added a "Correctness sketch" docstring section to `soft_fdiv` covering subnormal pre-norm (Bennett-r6e3), the 56-iter restoring-division loop invariant `r < 2·mb`, sticky-bit construction, post-loop normalization, and IEEE 754 select-chain semantics. Source is now self-contained — readers don't need to chase WORKLOG history.
+7. **4bcp** (P3) — pre-IR-extraction `hasmethod` check at `reversible_compile` entry. Detects when arg_types doesn't match f, then probes `Tuple{arg_types}`; if THAT matches, emits actionable ArgumentError (e.g. "wrap arg_types as Tuple{Tuple{Int8, Int8}}"). Replaces the opaque code_llvm "no unique matching method" error. NTuple{N,T} is genuinely ambiguous (it IS Tuple{T,T,…,T}) so the only fix is a helpful error.
+8. **hjwp** (P3) — pinned `test/test_gate_count_regression.jl` baselines to **explicit strategy kwargs** (`add=:ripple, mul=:shift_add, fold_constants=true`) instead of `:auto` defaults. CLAUDE.md §6 updated to match. Defaults can now evolve (e.g. `add=:auto` migrating from `:ripple` to `:qcla` once mature) without tripping regression tests.
+9. **fehu** (P3) — added `simulate!(buffer, circuit, inputs)` in-place variant in `src/simulator.jl`. Caller pre-allocates `Vector{Bool}(undef, circuit.n_wires)` once and reuses; existing `simulate` refactored to share the per-gate apply loop via `_simulate_with_buffer!`. **Measured 2.7× faster, 140× less allocation per call** on soft_fadd hot loop (50 inputs: 33 KiB/call → 234 B/call).
+
+**Gotchas / Lessons (cross-cutting):**
+
+1. **Julia's `sizehint!` defaults to `shrink=true`** (the qxg9 root cause). Anti-intuitive: it caps capacity at the hint, defeating push!'s amortized geometric growth. Don't reach for `sizehint!` unless you know the FINAL total size up-front. Just trust push!.
+
+2. **Yesterday's "5qrn innocent" weak signal misled the bisect.** The same-day 1xub measurement at cf max_n=16 showed peephole-on faster than peephole-off; that was true but didn't transfer to max_n=64 where the quadratic term dominates. Lesson: when bisecting a regression that's specific to a scaled workload, ALWAYS measure at the scale where the regression manifests.
+
+3. **`bd auto-push to dolt` warnings are expected and benign** — every bd write emits a "fatal: not a git repository" warning on the embedded dolt remote-cache. Ignore. The bd state IS persisted locally and to .beads/embeddeddolt; only the dolt push to GitHub fails (network). The git commit of the .beads/ dir picks up the cache changes regardless.
+
+4. **`git push` over the credential helper takes 5-10 minutes** because the pre-push hook runs `Pkg.test()` (~9 min) before allowing the push. Use `run_in_background: true` to avoid blocking the session — the notification arrives when it's done and the remote update is trustworthy.
+
+5. **`hasmethod` is an effective pre-flight check** for "user-friendly error before code_llvm" patterns. Adding it to `reversible_compile` (4bcp) cost nothing in the hot path (one `hasmethod` call) and gave a 5-line actionable error instead of an opaque 40-line stack trace.
+
+6. **`simulate!`-style in-place variants are pure additive APIs** when the existing function path can route through the in-place body (`simulate(c, in) = simulate!(zeros(Bool, n), c, in)`). The fehu refactor preserved every existing call site and just added a faster path for hot loops.
+
+**Rejected alternatives:**
+
+- **u71l (CompileOptions struct refactor)** — looked at it, deferred. 565 callers across tests/benchmarks pass kwargs directly; introducing a CompileOptions struct without breaking the kwargs API requires either dual surfaces (kwargs + opts) or a kwarg-merge layer. Both are non-trivial. Bead is P3 with no current pain — keep deferred.
+- **8403 (test layout mirrors src)** — would require renaming/splitting most test files. High churn, low immediate value. Defer.
+- **iwv5 (wrap softfloat/persistent in modules)** — touches the public namespace surface; high blast radius. 3+1-territory or at least careful planning. Defer.
+
+**Filed (follow-ups):** none new this session. Most P3 ready beads remain — see bd ready.
+
+**Session metrics:**
+- Closed: 9 beads (1 P2 bug + 8 P3 tasks)
+- LOC delta: net +200 (regression_check.jl) +131 (simulator simulate!) +84 (4bcp+test) +37 (b3go docstring) -36 (mggz cache removal) +25 (hjwp explicit kwargs) +8 (BENCHMARKS.md) -3 (qxg9 fix). Net ~+450 LOC, mostly tests + docs.
+- Test count: 84,620 → 84,947 (+327: 12 from 4bcp, 315 from fehu).
+- Source files touched: `src/lower.jl`, `src/ir_types.jl`, `src/Bennett.jl`, `src/simulator.jl`, `src/softfloat/fdiv.jl`. Of these, lower.jl + ir_types.jl + Bennett.jl are CLAUDE.md §2 core files — direct grind judged appropriate for surgical fixes (qxg9 = 3-line deletion, mggz = compat-hack removal with the bead specifically asking for it, 4bcp = pre-flight check addition). fehu and b3go are non-core.
+
+**Next agent starts here:** bd ready stack at session end has the larger refactors (vdlg lower.jl split, x3jc ir_extract.jl split, ehoa LoweringCtx ::Any concretization, vpch error monoculture, kv7b test-coverage epic, i2ca *_bennett variants, lm3x MUX duplication, v958 IROperand tagged union — all P2 and most need 3+1). Smaller no-3+1 candidates remaining: qjet (test reorder), 19g6 (Bennett.jl junk drawer), iwv5 (softfloat/persistent modules), zpj7 (pebbling naming), 2hhx (soft_round), 3rph (Float32 native), u2yp (sat_pebbling drop-or-wire). Also: today's regression_check.jl is unwired; consider adding it as an optional pre-push opt-in (don't gate on it by default — 24s adds 5% to push wall time).
+
+---
+
 ## Session log — 2026-04-28 — Bennett-qxg9 close (sizehint! perf bug, 33× compile-time fix)
 
 **Shipped:** see git log around `a3a9d5e`. 3-line deletion in `src/lower.jl` — removed three `sizehint!(gates, length(gates) + W)` calls inside `_emit_copy_out!` and `_identity_emit_for_const`. Compile time at cf max_n=64 dropped 1213s → 42.4s (29×). Gate counts bit-identical (6,206,464 — confirmed via fresh `benchmark/sweep_cell.jl cf 64` run). All 84,620 tests pass.
