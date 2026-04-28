@@ -48,14 +48,23 @@ end
     end
 
     @testset "W=16 rounds=4 — bijective on sampled inputs" begin
+        # Bennett-kv7b / U65 (#03 F14): pre-fix the assertion was
+        # `length(outputs) >= 4000` on a 4096-input sample, tolerating
+        # up to ~2.3% collisions. Feistel networks are bijective by
+        # construction (Luby-Rackoff 1988); collisions on distinct
+        # inputs are a correctness bug, not a hash-density issue. The
+        # tolerance was masking real regressions. Now strict-bijective.
         c = _compile_feistel(16; rounds=4)
         @test verify_reversibility(c)
         outputs = Set{Int}()
+        n_inputs = 0
         for k in UInt16(0):UInt16(16):UInt16(0xfff0)
             out = simulate(c, k)
             push!(outputs, Int(reinterpret(UInt16, out)))
+            n_inputs += 1
         end
-        @test length(outputs) >= 4000  # should be dense under a good hash
+        # Strict bijection: every distinct input → distinct output.
+        @test length(outputs) == n_inputs   # was `>= 4000` (tolerated ~96 collisions)
     end
 
     @testset "W=32 rounds=4 — deterministic + reversible" begin
