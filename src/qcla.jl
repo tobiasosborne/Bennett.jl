@@ -46,6 +46,15 @@ function lower_add_qcla!(gates::Vector{ReversibleGate}, wa::WireAllocator,
 
     T = W >= 2 ? floor(Int, log2(W)) : 0      # highest P level used = T - 1
     popW = count_ones(W)
+    # Bennett-9ryk / U204: ancilla count W - popcount(W) - log₂W is non-negative
+    # only for W >= 4. At W=1 (popW=1, T=0) → 1-1-0=0, but the QCLA tree has no
+    # carry-lookahead structure at all. At W=2 (popW=1, T=1) → 2-1-1=0. At W=3
+    # (popW=2, T=1) → 3-2-1=0. At W=4 (popW=1, T=2) → 4-1-2=1, the first non-
+    # trivial carry-tree level. Below 4 the QCLA reduces to a pure ripple-carry
+    # path with no Xflat ancillae; we set n_anc=0 explicitly to skip the
+    # downstream lookup-tree expansion. See Draper-Kutin-Rains-Svore 2004 §4.1
+    # for the asymptotic bound; the W >= 4 threshold is the empirical lower
+    # edge of the formula's validity (lower W's lookahead degenerates to ripple).
     n_anc = W >= 4 ? W - popW - T : 0         # Xflat empty at small W
 
     Z = allocate!(wa, W + 1)
