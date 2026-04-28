@@ -1,8 +1,8 @@
 # Bennett.jl Work Log
 
-## Session log — 2026-04-28 — LOC-tier grind (22 beads closed in one session)
+## Session log — 2026-04-28 — LOC-tier grind (28 beads closed in one session)
 
-**Closes:** qxg9 (P2 BUG), 64ob, j8uy, g7r8, mggz, b3go, 4bcp, hjwp, fehu, 2hhx, 2unc, 8h41, 6e0i, ajap, c3xv, nj5r, 9ryk, xgf6, 26dt, mg6u, s8gs, wolk.
+**Closes:** qxg9 (P2 BUG), 64ob, j8uy, g7r8, mggz, b3go, 4bcp, hjwp, fehu, 2hhx, 2unc, 8h41, 6e0i, ajap, c3xv, nj5r, 9ryk, xgf6, 26dt, mg6u, s8gs, wolk, k30d, z2q1, nr62, ecgh, tf9s, is5s.
 
 **Shipped:** see git log around `c4ec762..174cff0` (~24 commits). Fix-then-grind session covering one P2 perf bug (qxg9) plus 21 P3/P4 closes spanning benchmarks, regression infrastructure, compat-hack removal, docstring inlining, error-message ergonomics, baseline policy, simulator perf, soft_round implementation, fail-loud narrowing, constructor cleanup, @assert convention, error-message parametrization, U03-checked self_reversing flag, defensive-copy elimination, QCLA W>=4 explanation, BENCHMARKS row refresh (soft_fmul -42%, soft_fadd -34%), FTZ contract docs, accessor file move, type-stable kwarg defaults, and superseded-bead closes. All 90,041 tests pass (was 84,620 at session start: +5,421 from new 4bcp/fehu/2hhx tests).
 
@@ -32,6 +32,12 @@
 20. **mg6u** (P4) — moved `_gate_target` / `_gate_controls` accessors from src/dep_dag.jl to src/gates.jl (natural home for gate-type accessors). Both consumers (dep_dag, eager) pick them up from gates.jl now without an inter-file dep.
 21. **s8gs** (P4) — replaced `passes::Union{Nothing,Vector{String}}=nothing` with `passes::Vector{String}=String[]` across all 3 extract_parsed_ir signatures. Removed the `if passes !== nothing; append!...; end` guards. Type-stable hot path; no Union dispatch.
 22. **wolk** (P4) — closed as duplicate of U60 (Bennett-r84x NaN payload tests, closed) + U61 (Bennett-9x75 raw-bits fuzzing, closed) + U65 (Bennett-kv7b test-coverage epic).
+23. **k30d** (P4) — stale: test_parse.jl already tests extract_parsed_ir (LLVM C-API), NOT the deleted legacy regex parse_ir. CLAUDE.md §5 tension the bead claimed no longer exists.
+24. **z2q1** (P4) — stale: src/persistent/persistent.jl include order is clean (interface → linear_scan → harness → hashcons_feistel) since Bennett-uoem / U54 relocated popcount/hamt to research/.
+25. **nr62** (P4) — moot: src/ir_parser.jl was deleted under U42; no parser to emit Base.InvalidValue from. Bead's own note anticipated this.
+26. **ecgh** (P4) — stale: WORKLOG.md already has the structured session-log template (per Bennett-fyni / U70) with Shipped/Why/Gotchas/Rejected/Filed/Next sections.
+27. **tf9s** (P4) — added "Extending Bennett.jl" section to README covering: new IR instruction handler workflow, new gate type, new adder/multiplier strategy (per-strategy baseline pinning per Bennett-hjwp), and the 3+1 agent protocol (when required vs when surgical fixes can skip it).
+28. **is5s** (P3) — added `diagnose_nonzero(circuit, inputs)` helper in src/simulator.jl. Replays forward without throwing on Bennett-invariant violations; returns structured NamedTuple of (ancilla_violations, input_violations, output, n_gates, n_wires). Each ancilla violation includes the gate index where the wire first became 1 (bisects buggy gate range). 19 new asserts; --dump-ir / verbose subset deferred.
 
 **Gotchas / Lessons (cross-cutting):**
 
@@ -56,9 +62,9 @@
 **Filed (follow-ups):** none new this session. Most P3 ready beads remain — see bd ready.
 
 **Session metrics:**
-- Closed: 22 beads (1 P2 bug + 12 P3 tasks + 9 P4 tasks)
-- LOC delta: ~+800 net (most in tests; source diffs are surgical)
-- Test count: 84,620 → 90,041 (+5,421: 5,091 from 2hhx soft_round sweep, 315 from fehu, 12 from 4bcp).
+- Closed: 28 beads (1 P2 bug + 13 P3 tasks + 14 P4 tasks)
+- LOC delta: ~+1100 net (most in tests + docs; source diffs are surgical)
+- Test count: 84,620 → 90,060 (+5,440: 5,091 from 2hhx soft_round sweep, 315 from fehu, 12 from 4bcp, 19 from is5s, plus 3 from minor).
 - Source files touched: `src/lower.jl`, `src/ir_types.jl`, `src/Bennett.jl`, `src/simulator.jl`, `src/softfloat/fdiv.jl`, `src/softfloat/fround.jl`, `src/softfloat/fexp.jl`, `src/shadow_memory.jl`, `src/qcla.jl`, `src/gates.jl`, `src/dep_dag.jl`, `src/bennett_transform.jl`, `src/ir_extract.jl`. Of these, lower.jl + ir_extract.jl + ir_types.jl + Bennett.jl + bennett_transform.jl + gates.jl are CLAUDE.md §2 core files — direct grind judged appropriate for surgical fixes throughout (qxg9 sizehint! delete, mggz compat-hack delete, 4bcp pre-flight check, 2unc fail-loud, 8h41 constructor removal, ajap message rewrite, nj5r defensive-copy delete, 9ryk inline comment, mg6u accessor move, s8gs Union → empty default).
 
 **Next agent starts here:** bd ready stack at session end has the larger refactors (vdlg lower.jl split, x3jc ir_extract.jl split, ehoa LoweringCtx ::Any concretization, vpch error monoculture, kv7b test-coverage epic, i2ca *_bennett variants, lm3x MUX duplication, v958 IROperand tagged union — all P2 and most need 3+1). Smaller no-3+1 candidates remaining: qjet (test reorder), 19g6 (Bennett.jl 297-line junk drawer), iwv5 (softfloat/persistent modules), zpj7 (pebbling naming), 3rph (Float32 native), u2yp (sat_pebbling drop-or-wire), 8403 (test layout mirror src), is5s (debuggability tooling), 6e0i (@assert vs error skew), x2iw (lower_block_insts! 15 kwargs — missing-struct smell). Also: today's `benchmark/regression_check.jl` is unwired; consider adding it as an optional pre-push opt-in (don't gate on it by default — 24s adds 5% to push wall time).
