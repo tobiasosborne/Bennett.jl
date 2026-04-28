@@ -319,44 +319,18 @@ struct ParsedIR
     # / U44: typed concretely as Union{Nothing, MemSSAInfo} after
     # MemSSAInfo's definition was moved here above ParsedIR.
     memssa::Union{Nothing, MemSSAInfo}
-    _instructions_cache::Vector{IRInst}  # cached flattened instructions for backward compat
 end
 
-# Constructor without cache or globals (auto-computes, empty globals, no memssa)
+# Constructor without globals or memssa (defaults: empty globals, no memssa).
 function ParsedIR(ret_width::Int, args::Vector{Tuple{Symbol, Int}},
                   blocks::Vector{IRBasicBlock}, ret_elem_widths::Vector{Int})
     ParsedIR(ret_width, args, blocks, ret_elem_widths,
              Dict{Symbol, Tuple{Vector{UInt64}, Int}}(), nothing)
 end
 
-# Constructor with globals but no memssa
+# Constructor with globals but no memssa.
 function ParsedIR(ret_width::Int, args::Vector{Tuple{Symbol, Int}},
                   blocks::Vector{IRBasicBlock}, ret_elem_widths::Vector{Int},
                   globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}})
     ParsedIR(ret_width, args, blocks, ret_elem_widths, globals, nothing)
 end
-
-# Full constructor (auto-computes instructions cache)
-function ParsedIR(ret_width::Int, args::Vector{Tuple{Symbol, Int}},
-                  blocks::Vector{IRBasicBlock}, ret_elem_widths::Vector{Int},
-                  globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}},
-                  memssa)
-    insts = IRInst[]
-    for block in blocks
-        append!(insts, block.instructions)
-        push!(insts, block.terminator)
-    end
-    ParsedIR(ret_width, args, blocks, ret_elem_widths, globals, memssa, insts)
-end
-
-# Backward compat: parsed.instructions returns cached flattened list
-function Base.getproperty(p::ParsedIR, name::Symbol)
-    if name === :instructions
-        return getfield(p, :_instructions_cache)
-    else
-        return getfield(p, name)
-    end
-end
-
-Base.propertynames(::ParsedIR) = (:ret_width, :args, :blocks, :instructions,
-                                   :ret_elem_widths, :globals, :memssa)

@@ -11,8 +11,8 @@
         parsed = extract_parsed_ir(f, Tuple{Int8})
         @test length(parsed.args) == 1
         @test parsed.ret_width == 8
-        @test any(i -> i isa Bennett.IRBinOp && i.op == :add, parsed.instructions)
-        @test any(i -> i isa Bennett.IRRet, parsed.instructions)
+        @test any(i -> i isa Bennett.IRBinOp && i.op == :add, Iterators.flatten((blk.instructions..., blk.terminator) for blk in parsed.blocks))
+        @test any(i -> i isa Bennett.IRRet, Iterators.flatten((blk.instructions..., blk.terminator) for blk in parsed.blocks))
         println("  IR for x+3:\n", ir)
     end
 
@@ -22,7 +22,7 @@
         parsed = extract_parsed_ir(g, Tuple{Int8})
         @test length(parsed.args) == 1
         @test parsed.ret_width == 8
-        @test any(i -> i isa Bennett.IRBinOp && i.op == :mul, parsed.instructions)
+        @test any(i -> i isa Bennett.IRBinOp && i.op == :mul, Iterators.flatten((blk.instructions..., blk.terminator) for blk in parsed.blocks))
         println("  IR for x^2+3x+1:\n", ir)
     end
 
@@ -30,8 +30,8 @@
         h(x::Int8) = (x & Int8(0x0f)) | (x >> 2)
         ir = extract_ir(h, Tuple{Int8})
         parsed = extract_parsed_ir(h, Tuple{Int8})
-        @test any(i -> i isa Bennett.IRBinOp && i.op == :and, parsed.instructions)
-        @test any(i -> i isa Bennett.IRBinOp && i.op == :or, parsed.instructions)
+        @test any(i -> i isa Bennett.IRBinOp && i.op == :and, Iterators.flatten((blk.instructions..., blk.terminator) for blk in parsed.blocks))
+        @test any(i -> i isa Bennett.IRBinOp && i.op == :or, Iterators.flatten((blk.instructions..., blk.terminator) for blk in parsed.blocks))
         println("  IR for bitwise:\n", ir)
     end
 
@@ -39,8 +39,8 @@
         k(x::Int8) = x > Int8(10) ? x + Int8(1) : x + Int8(2)
         ir = extract_ir(k, Tuple{Int8})
         parsed = extract_parsed_ir(k, Tuple{Int8})
-        @test any(i -> i isa Bennett.IRICmp, parsed.instructions)
-        @test any(i -> i isa Bennett.IRSelect, parsed.instructions)
+        @test any(i -> i isa Bennett.IRICmp, Iterators.flatten((blk.instructions..., blk.terminator) for blk in parsed.blocks))
+        @test any(i -> i isa Bennett.IRSelect, Iterators.flatten((blk.instructions..., blk.terminator) for blk in parsed.blocks))
         println("  IR for compare+select:\n", ir)
     end
 
