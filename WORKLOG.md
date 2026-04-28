@@ -2,11 +2,11 @@
 
 > # 🚨 NEXT AGENT — START HERE 🚨
 >
-> **Read [`worklog/048_2026-04-27_1xub_persistent_ds_refresh.md`](worklog/048_2026-04-27_1xub_persistent_ds_refresh.md) FIRST** — top entry is the **2026-04-28 LOC-tier grind summary** (9 beads closed: qxg9 sizehint! perf-bug fix at 33× compile-time speedup, 64ob/j8uy benchmarks, g7r8 regression check, mggz compat-hack removal, b3go docstring, 4bcp NTuple error, hjwp baseline policy, fehu simulate! 2.7× speedup). Below it: the 2026-04-28 qxg9 close detail, then 2026-04-27 qxg9 bisect data and 1xub close. Then [`worklog/047_2026-04-27_heup_fold_constants_doc_only.md`](worklog/047_2026-04-27_heup_fold_constants_doc_only.md) (7 prior 2026-04-27 entries: tzrs stage-1 → tbm6 → 7xng → cvnb → jc0y → q04a → heup).
+> **Read [`worklog/048_2026-04-27_1xub_persistent_ds_refresh.md`](worklog/048_2026-04-27_1xub_persistent_ds_refresh.md) FIRST** — top entry is the **2026-04-28 LOC-tier grind summary** (12 beads closed: qxg9 sizehint! perf-bug fix at 33× compile-time speedup, 64ob/j8uy benchmarks, g7r8 regression check, mggz compat-hack removal, b3go docstring, 4bcp NTuple error, hjwp baseline policy, fehu simulate! 2.7× speedup, 2hhx soft_round, 2unc fail-loud narrowing, 8h41 LoweringResult ctor cleanup). Below it: the 2026-04-28 qxg9 close detail, then 2026-04-27 qxg9 bisect data and 1xub close. Then [`worklog/047_2026-04-27_heup_fold_constants_doc_only.md`](worklog/047_2026-04-27_heup_fold_constants_doc_only.md) (7 prior 2026-04-27 entries: tzrs stage-1 → tbm6 → 7xng → cvnb → jc0y → q04a → heup).
 >
 > **State of the bug backlog (2026-04-28):** qxg9 closed today. Only 3 `[bug]` beads remain: `25dm` (P2, blocked on `z2dj` IN-PROGRESS T5-P6 dispatcher), `ponm` (P2, bd-tool schema bug — NOT a Bennett.jl source bug), `cc0.5` (P2 IN-PROGRESS — Julia TLS allocator GEP base, T5-P6.3 multi-language ingest, multi-session scope per its own notes).
 >
-> **Active mode: structural / LOC refactors.** User explicitly lifted the bugs-only directive 2026-04-27 evening. Today's grind (2026-04-28) closed 9 beads — see chunk 048 top entry. Yesterday's (2026-04-27) closes:
+> **Active mode: structural / LOC refactors.** User explicitly lifted the bugs-only directive 2026-04-27 evening. Today's grind (2026-04-28) closed 12 beads — see chunk 048 top entry. Yesterday's (2026-04-27) closes:
 > - `7xng` — LoweringResult.constant_wires dead-store removal (-45 LOC)
 > - `cvnb` — bennett_direct + self_reversing discoverability (Sturm.jl-ao1)
 > - `tbm6` — Karatsuba multiplier removed (~250 LOC delete)

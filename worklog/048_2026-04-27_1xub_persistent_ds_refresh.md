@@ -1,8 +1,8 @@
 # Bennett.jl Work Log
 
-## Session log — 2026-04-28 — LOC-tier grind (8 beads closed: qxg9, 64ob, j8uy, g7r8, mggz, b3go, 4bcp, hjwp, fehu)
+## Session log — 2026-04-28 — LOC-tier grind (12 beads closed: qxg9, 64ob, j8uy, g7r8, mggz, b3go, 4bcp, hjwp, fehu, 2hhx, 2unc, 8h41)
 
-**Shipped:** see git log around `c4ec762..93ae401` (9 commits). Fix-then-grind session covering one P2 perf bug (qxg9) plus eight P3 closes spanning benchmarks, regression infra, compat-hack removal, docstring inlining, error-message ergonomics, baseline policy, and simulator perf. All 84,947 tests pass.
+**Shipped:** see git log around `c4ec762..140bb91` (12 commits). Fix-then-grind session covering one P2 perf bug (qxg9) plus eleven P3 closes spanning benchmarks, regression infra, compat-hack removal, docstring inlining, error-message ergonomics, baseline policy, simulator perf, soft_round implementation, fail-loud narrowing, and constructor cleanup. All 90,041 tests pass (was 84,620 at session start: +5,421 from new 4bcp/fehu/2hhx tests).
 
 **Why:** User directive at session start was "deal with the perf regression, then keep grinding through the catalogue." qxg9 was the carry-over from chunk 048's partial bisect; the rest are LOC-tier wins from `bd ready`'s P3 stack.
 
@@ -17,6 +17,9 @@
 7. **4bcp** (P3) — pre-IR-extraction `hasmethod` check at `reversible_compile` entry. Detects when arg_types doesn't match f, then probes `Tuple{arg_types}`; if THAT matches, emits actionable ArgumentError (e.g. "wrap arg_types as Tuple{Tuple{Int8, Int8}}"). Replaces the opaque code_llvm "no unique matching method" error. NTuple{N,T} is genuinely ambiguous (it IS Tuple{T,T,…,T}) so the only fix is a helpful error.
 8. **hjwp** (P3) — pinned `test/test_gate_count_regression.jl` baselines to **explicit strategy kwargs** (`add=:ripple, mul=:shift_add, fold_constants=true`) instead of `:auto` defaults. CLAUDE.md §6 updated to match. Defaults can now evolve (e.g. `add=:auto` migrating from `:ripple` to `:qcla` once mature) without tripping regression tests.
 9. **fehu** (P3) — added `simulate!(buffer, circuit, inputs)` in-place variant in `src/simulator.jl`. Caller pre-allocates `Vector{Bool}(undef, circuit.n_wires)` once and reuses; existing `simulate` refactored to share the per-gate apply loop via `_simulate_with_buffer!`. **Measured 2.7× faster, 140× less allocation per call** on soft_fadd hot loop (50 inputs: 33 KiB/call → 234 B/call).
+10. **2hhx** (P3) — implemented `soft_round` (IEEE 754 roundToIntegralTiesToEven) in `src/softfloat/fround.jl`. Branchless bit-twiddle: special-cases NaN/Inf/subnormal/|x|<0.5/|x|=0.5/|x|in(0.5,1.0)/|x|>=2^52, plus the general bit-twiddle for |x| in [1.0, 2^52) computing round-bit + sticky + ties-to-even via mantissa LSB-after-truncation. Registered in `_CALLEES_FP_ROUND`; `Base.round(::SoftFloat)` dispatch added. 5,091 new asserts (5,000-input random raw-bits sweep + edge cases) bit-exact vs `Base.round(::Float64)`.
+11. **2unc** (P3) — replaced silent `_narrow_inst(inst::IRInst, W) = inst` fallthrough with explicit `error()` per CLAUDE.md §1. Pre-fix, narrowing a function with IRPtrOffset / IRVarGEP / IRLoad / IRSwitch silently passed those nodes through with pre-narrow widths (opaque downstream wire mismatch). Now fails loud naming the type and pointing at the fix location.
+12. **8h41** (P3) — removed the 7-arg `LoweringResult` convenience constructor (explicit gate_groups + default false self_reversing). The single source-of-truth caller at `src/lower.jl:527` was migrated to the canonical 8-arg form. The 6-arg "all defaults" convenience stays — used by 25+ test fixtures. API surface: 6-arg + 8-arg (was 6 + 7 + 8).
 
 **Gotchas / Lessons (cross-cutting):**
 
@@ -41,12 +44,12 @@
 **Filed (follow-ups):** none new this session. Most P3 ready beads remain — see bd ready.
 
 **Session metrics:**
-- Closed: 9 beads (1 P2 bug + 8 P3 tasks)
-- LOC delta: net +200 (regression_check.jl) +131 (simulator simulate!) +84 (4bcp+test) +37 (b3go docstring) -36 (mggz cache removal) +25 (hjwp explicit kwargs) +8 (BENCHMARKS.md) -3 (qxg9 fix). Net ~+450 LOC, mostly tests + docs.
-- Test count: 84,620 → 84,947 (+327: 12 from 4bcp, 315 from fehu).
-- Source files touched: `src/lower.jl`, `src/ir_types.jl`, `src/Bennett.jl`, `src/simulator.jl`, `src/softfloat/fdiv.jl`. Of these, lower.jl + ir_types.jl + Bennett.jl are CLAUDE.md §2 core files — direct grind judged appropriate for surgical fixes (qxg9 = 3-line deletion, mggz = compat-hack removal with the bead specifically asking for it, 4bcp = pre-flight check addition). fehu and b3go are non-core.
+- Closed: 12 beads (1 P2 bug + 11 P3 tasks)
+- LOC delta: ~+700 net (mostly soft_round impl + 5k-sample test sweep)
+- Test count: 84,620 → 90,041 (+5,421: mostly the 5,091 soft_round sweep, plus 12 from 4bcp + 315 from fehu).
+- Source files touched: `src/lower.jl`, `src/ir_types.jl`, `src/Bennett.jl`, `src/simulator.jl`, `src/softfloat/fdiv.jl`, `src/softfloat/fround.jl`. Of these, lower.jl + ir_types.jl + Bennett.jl are CLAUDE.md §2 core files — direct grind judged appropriate for surgical fixes (qxg9 = 3-line deletion, mggz = compat-hack removal with the bead specifically asking for it, 4bcp = pre-flight check addition, 2unc = error-message change, 8h41 = constructor removal with no risky callers). fehu, b3go, 2hhx are non-core (simulator + softfloat).
 
-**Next agent starts here:** bd ready stack at session end has the larger refactors (vdlg lower.jl split, x3jc ir_extract.jl split, ehoa LoweringCtx ::Any concretization, vpch error monoculture, kv7b test-coverage epic, i2ca *_bennett variants, lm3x MUX duplication, v958 IROperand tagged union — all P2 and most need 3+1). Smaller no-3+1 candidates remaining: qjet (test reorder), 19g6 (Bennett.jl junk drawer), iwv5 (softfloat/persistent modules), zpj7 (pebbling naming), 2hhx (soft_round), 3rph (Float32 native), u2yp (sat_pebbling drop-or-wire). Also: today's regression_check.jl is unwired; consider adding it as an optional pre-push opt-in (don't gate on it by default — 24s adds 5% to push wall time).
+**Next agent starts here:** bd ready stack at session end has the larger refactors (vdlg lower.jl split, x3jc ir_extract.jl split, ehoa LoweringCtx ::Any concretization, vpch error monoculture, kv7b test-coverage epic, i2ca *_bennett variants, lm3x MUX duplication, v958 IROperand tagged union — all P2 and most need 3+1). Smaller no-3+1 candidates remaining: qjet (test reorder), 19g6 (Bennett.jl 297-line junk drawer), iwv5 (softfloat/persistent modules), zpj7 (pebbling naming), 3rph (Float32 native), u2yp (sat_pebbling drop-or-wire), 8403 (test layout mirror src), is5s (debuggability tooling), 6e0i (@assert vs error skew), x2iw (lower_block_insts! 15 kwargs — missing-struct smell). Also: today's `benchmark/regression_check.jl` is unwired; consider adding it as an optional pre-push opt-in (don't gate on it by default — 24s adds 5% to push wall time).
 
 ---
 
