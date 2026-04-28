@@ -1,5 +1,36 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-28 — Bennett-qxg9 close (sizehint! perf bug, 33× compile-time fix)
+
+**Shipped:** see git log around `a3a9d5e`. 3-line deletion in `src/lower.jl` — removed three `sizehint!(gates, length(gates) + W)` calls inside `_emit_copy_out!` and `_identity_emit_for_const`. Compile time at cf max_n=64 dropped 1213s → 42.4s (29×). Gate counts bit-identical (6,206,464 — confirmed via fresh `benchmark/sweep_cell.jl cf 64` run). All 84,620 tests pass.
+
+**Why:** Bennett-qxg9 was the partial-bisect carry-over from yesterday (chunk 048 below). Today's full bisect resolved e4bb6cd (5qrn) as the regression commit, contradicting the prior session's "5qrn is innocent" hypothesis (which was based on a max_n=16 measurement where the quadratic blowup hadn't kicked in yet — peephole on 5.1s vs off 7.6s). Re-test at e4bb6cd alone: >230s timeout. Stub-and-confirm at HEAD: 41.5s. Fix-and-confirm: 42.4s.
+
+**Root cause:** `sizehint!(arr, n)` in Julia 1.12 defaults to `shrink=true`, capping array capacity at exactly `n`. The peephole called `sizehint!(gates, length(gates) + W)` immediately before W `push!` calls — this shrunk capacity to exactly `length+W`, defeating push!'s amortized geometric growth. The next chunk of W push!'s then forced a re-grow (copy of N elements), making each peephole hit cost O(N) instead of O(W). At N peephole hits, total cost is O(N²). cf max_n=64 has enough peephole hits (zero-mask diff bookkeeping) to make the quadratic term dominate.
+
+**Gotchas / Lessons:**
+
+1. **Julia's `sizehint!` defaults to `shrink=true`** — this is anti-intuitive when used as a "hint, not a cap." If you only want growth-direction hinting, you must pass `shrink=false`. Better idiom: just trust push!'s geometric growth (amortized O(1)) and skip sizehint! entirely unless you have a known total size up-front. The 3-line deletion here is the correct fix; no caller needed sizehint! at all.
+
+2. **Yesterday's "5qrn innocent" weak signal misled the bisect.** The same-day 1xub measurement of cf max_n=16 showed peephole-on (5.1s) faster than peephole-off (7.6s). That was a TRUE measurement at small scale, but the quadratic term only dominates at larger N. Lesson: when bisecting a regression that's specific to a scaled workload, ALWAYS measure at the scale where the regression manifests — small-scale evidence is not transferable. The previous worklog entry's prime-suspect choice (zmw3) was reasonable given the available data, but the conclusive bisect step required testing at max_n=64.
+
+3. **`sizehint!` was added defensively to "avoid reallocation cost"** — the author's intent was correct (push! does reallocate), but the implementation choice of `sizehint!` to current-length-plus-W defeated the geometric strategy. The general lesson: Julia's `Vector` is already optimal for amortized push! workloads. `sizehint!` is only beneficial when you know the FINAL size up-front (e.g., before a fixed-count loop), not at each iteration.
+
+**Rejected alternatives:**
+
+- **Disable peephole entirely.** Would lose the 26.6× `x*1` micro-bench win. The peephole is correct and beneficial — only the sizehint! hint was wrong.
+- **Pass `shrink=false` to sizehint!.** Would work, but the sizehint! itself is redundant given push!'s geometric growth. Cleaner to delete.
+- **Pre-compute total peephole hits and sizehint once at top of `lower!`.** Over-engineered for a problem that doesn't exist with vanilla push!.
+- **3+1 protocol** (CLAUDE.md §2 for lower.jl). Discussed: this is a 3-line surgical bug fix to a perf regression with the cause unambiguously identified. Direct grind per the same precedent as Bennett-zmw3 (also small lower.jl bug fix shipped without 3+1).
+
+**Filed (follow-ups):** none.
+
+**Next agent starts here:** qxg9 closed. Bd-ready list is back to the LOC-tier pickups (`vdlg`, `tzrs` 2-5, `x3jc`, `ehoa` 2nd half, `s92x`, `vt0a`, `64ob`, `qjet`). Continue grinding.
+
+**Test count:** unchanged (no new tests; 84,620 existing tests pass).
+
+---
+
 ## Session log — 2026-04-27 (qxg9 bisect partial) — cf compile-time regression narrowed to a 3-commit window
 
 **Shipped:** Bennett-qxg9 notes updated with bisect data. No source changes. Followup to the same-day 1xub close.
