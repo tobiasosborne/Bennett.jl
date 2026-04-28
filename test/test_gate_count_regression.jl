@@ -3,9 +3,13 @@ using Bennett
 
 @testset "Gate count regression baselines" begin
     # CLAUDE.md Principle 6: gate counts are regression baselines.
-    # Current pipeline: path-predicate phi resolution, fold_constants
-    # on by default (U28 / Bennett-epwy), `add=:auto` → `:ripple` (U27 /
-    # Bennett-spa8).
+    #
+    # Bennett-hjwp / U150: baselines are pinned to EXPLICIT strategy kwargs
+    # (`add=:ripple, fold_constants=true`) rather than `:auto` defaults.
+    # This decouples the baselines from default-strategy evolution: changing
+    # `add=:auto`'s pick (e.g. to qcla once landing) won't trip these tests.
+    # The defaults SHOULD eventually evolve as new primitives mature; only
+    # the explicit-strategy contracts are frozen here.
     #
     # Bennett-11xt / U23: each compiled circuit below now carries a
     # `verify_reversibility` call — gate counts alone are not
@@ -13,10 +17,10 @@ using Bennett
     # hit the same count.
 
     @testset "Addition gate counts (x + 1)" begin
-        c8  = reversible_compile(x -> x + Int8(1), Int8)
-        c16 = reversible_compile(x -> x + Int16(1), Int16)
-        c32 = reversible_compile(x -> x + Int32(1), Int32)
-        c64 = reversible_compile(x -> x + Int64(1), Int64)
+        c8  = reversible_compile(x -> x + Int8(1),  Int8;  add=:ripple, fold_constants=true)
+        c16 = reversible_compile(x -> x + Int16(1), Int16; add=:ripple, fold_constants=true)
+        c32 = reversible_compile(x -> x + Int32(1), Int32; add=:ripple, fold_constants=true)
+        c64 = reversible_compile(x -> x + Int64(1), Int64; add=:ripple, fold_constants=true)
         @test verify_reversibility(c8)
         @test verify_reversibility(c16)
         @test verify_reversibility(c32)
@@ -66,7 +70,8 @@ using Bennett
         # Post-U27 (:auto add → ripple): total=482, depth=36. The
         # ripple-add carry chain shortens post-fold significantly —
         # the constant `1` operand's high bits fold out cleanly.
-        c = reversible_compile(x -> x * x + Int8(3) * x + Int8(1), Int8)
+        c = reversible_compile(x -> x * x + Int8(3) * x + Int8(1), Int8;
+                                add=:ripple, mul=:shift_add, fold_constants=true)
         @test gate_count(c).total == 482
         @test toffoli_depth(c) == 36
         @test verify_reversibility(c)
@@ -76,7 +81,8 @@ using Bennett
     @testset "x + 3 gate count" begin
         # Pre-U27 (Cuccaro default): total=102, toffoli_depth=28.
         # Post-U27 (ripple): total=64, toffoli_depth=12.
-        c = reversible_compile(x -> x + Int8(3), Int8)
+        c = reversible_compile(x -> x + Int8(3), Int8;
+                                add=:ripple, fold_constants=true)
         @test gate_count(c).total == 64
         @test toffoli_depth(c) == 12
         @test verify_reversibility(c)
@@ -84,14 +90,18 @@ using Bennett
     end
 
     @testset "Multiplication Toffoli-depth (shift-and-add)" begin
-        # Baselines BEFORE the Sun-Borissov qcla_tree multiplier lands.
-        # Expected: gets replaced by O(log^2 n) once mul=:qcla_tree is wired.
+        # Baselines pinned to mul=:shift_add (per Bennett-hjwp). The
+        # Sun-Borissov qcla_tree multiplier is ALSO supported via
+        # mul=:qcla_tree; its baselines belong in a separate testset
+        # (see test_mul_qcla_tree.jl).
         # U28 / Bennett-epwy: fold_constants default flipped to true.
         # Pre-fix: Toffoli 296 / 1232, depth 68 / 214.
         # Post-fix: Toffoli 144 / 664, depth 62 / 208. The shift-and-add
         # chain on `x*x` folds the zero-initialised accumulator words.
-        c8  = reversible_compile(x -> x * x, Int8)
-        c16 = reversible_compile(x -> x * x, Int16)
+        c8  = reversible_compile(x -> x * x, Int8;
+                                  mul=:shift_add, fold_constants=true)
+        c16 = reversible_compile(x -> x * x, Int16;
+                                  mul=:shift_add, fold_constants=true)
         @test gate_count(c8).Toffoli  == 144
         @test gate_count(c16).Toffoli == 664
         @test toffoli_depth(c8)  == 62
