@@ -117,6 +117,59 @@ function simulate(circuit::ReversibleCircuit, ::Type{T},
 end
 
 function _simulate(circuit::ReversibleCircuit, inputs::Tuple)
+    bits = zeros(Bool, circuit.n_wires)
+    return _simulate_with_buffer!(bits, circuit, inputs)
+end
+
+"""
+    simulate!(buffer::Vector{Bool}, circuit::ReversibleCircuit, inputs) -> output
+
+Bennett-fehu / U105: in-place variant of [`simulate`](@ref) that reuses a
+caller-managed `Vector{Bool}` buffer instead of allocating a fresh one
+per call. Hot-loop callers (sweep harnesses, fuzzers, exhaustive Int8
+verification, soft-float bit-exact sweeps with thousands of inputs) can
+allocate `buffer = Vector{Bool}(undef, circuit.n_wires)` once and reuse
+it — saving the per-call zeros() allocation that costs ~O(n_wires).
+
+The buffer must have `length(buffer) == circuit.n_wires`; the function
+asserts this loud (Bennett-cklf-style contract) rather than silently
+truncating. Contents are reset to `false` before each call so the
+caller does not need to fill!() it themselves.
+
+# Example
+
+```jldoctest; setup = :(using Bennett)
+julia> c = reversible_compile(x -> x + Int8(1), Int8);
+
+julia> buf = Vector{Bool}(undef, c.n_wires);
+
+julia> [simulate!(buf, c, (Int8(i),)) for i in 0:3]
+4-element Vector{Int64}:
+ 1
+ 2
+ 3
+ 4
+```
+"""
+function simulate!(buffer::Vector{Bool}, circuit::ReversibleCircuit,
+                   inputs::Tuple{Vararg{Integer}})
+    length(buffer) == circuit.n_wires || throw(ArgumentError(
+        "simulate!: buffer length $(length(buffer)) != circuit.n_wires " *
+        "$(circuit.n_wires) — preallocate with " *
+        "Vector{Bool}(undef, circuit.n_wires)"))
+    fill!(buffer, false)
+    return _simulate_with_buffer!(buffer, circuit, inputs)
+end
+
+function simulate!(buffer::Vector{Bool}, circuit::ReversibleCircuit, input::Integer)
+    length(circuit.input_widths) == 1 || throw(ArgumentError(
+        "simulate!(buffer, circuit, input) requires single-input circuit, " *
+        "got $(length(circuit.input_widths)) inputs"))
+    return simulate!(buffer, circuit, (input,))
+end
+
+function _simulate_with_buffer!(bits::Vector{Bool}, circuit::ReversibleCircuit,
+                                 inputs::Tuple)
     # Bennett-6fg9 / U19: guard arity and per-input bit-width at entry.
     # Pre-fix, a too-long tuple silently dropped the extras, a too-short
     # tuple crashed with a raw BoundsError deep in the input-ingest loop,
@@ -129,8 +182,6 @@ function _simulate(circuit::ReversibleCircuit, inputs::Tuple)
     end
     circuit.n_wires > 0 || throw(ArgumentError(
         "simulate: circuit has n_wires = 0 (empty circuit)"))
-
-    bits = zeros(Bool, circuit.n_wires)
 
     offset = 0
     for (k, w) in enumerate(circuit.input_widths)

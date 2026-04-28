@@ -339,6 +339,10 @@ include("test_heup_fold_constants_contract.jl")
 # `reversible_compile(f, NTuple{2,Int8})` interprets NTuple as 2-arg
 # tuple; if f takes a single tuple arg, point at the `Tuple{NTuple}` wrap.
 include("test_4bcp_ntuple_input_error.jl")
+# Bennett-fehu / U105 — simulate!(buffer, circuit, inputs) in-place variant.
+# Hot-loop callers preallocate a Vector{Bool} once and reuse it across
+# many simulate calls.
+include("test_fehu_simulate_inplace.jl")
 # Bennett-jc0y / 59jj-cut — ReversibleCircuit.gates storage contract pin.
 # Investigated → doc-only: bead claims "type-unstable apply! per gate" stale
 # (Julia union-splits NOT/CNOT/Toffoli inside _simulate's hot loop); memory

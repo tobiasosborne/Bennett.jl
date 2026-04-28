@@ -40,7 +40,7 @@ include("memssa.jl")
 include("feistel.jl")
 include("persistent/persistent.jl")
 
-export reversible_compile, simulate, extract_ir, extract_parsed_ir, register_callee!
+export reversible_compile, simulate, simulate!, extract_ir, extract_parsed_ir, register_callee!
 export extract_parsed_ir_from_ll, extract_parsed_ir_from_bc
 export PersistentMapImpl, AbstractPersistentMap, verify_pmap_correctness, verify_pmap_persistence_invariant, pmap_demo_oracle, LINEAR_SCAN_IMPL
 # Bennett-uoem / U54: OKASAKI_IMPL + Okasaki API relocated to
