@@ -335,6 +335,10 @@ include("test_5qrn_identity_peepholes.jl")
 # reduction baselines). Investigated → doc-only: bead claims "off-by-default"
 # and "mixes three concerns" both stale post-epwy / U28.
 include("test_heup_fold_constants_contract.jl")
+# Bennett-4bcp / U102 — actionable error for NTuple-typed arg ambiguity.
+# `reversible_compile(f, NTuple{2,Int8})` interprets NTuple as 2-arg
+# tuple; if f takes a single tuple arg, point at the `Tuple{NTuple}` wrap.
+include("test_4bcp_ntuple_input_error.jl")
 # Bennett-jc0y / 59jj-cut — ReversibleCircuit.gates storage contract pin.
 # Investigated → doc-only: bead claims "type-unstable apply! per gate" stale
 # (Julia union-splits NOT/CNOT/Toffoli inside _simulate's hot loop); memory

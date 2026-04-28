@@ -171,6 +171,30 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
             "those"))
     end
 
+    # Bennett-4bcp / U102: NTuple{N,T} IS Tuple{T,T,...,T}, so passing
+    # `reversible_compile(f, NTuple{2,Int8})` dispatches here with
+    # arg_types = Tuple{Int8,Int8} (the 2-arg interpretation). If the
+    # user's function actually takes a single NTuple-typed argument,
+    # there's no method match and code_llvm later throws an opaque
+    # "no unique matching method" error. Detect both cases up-front
+    # and emit an actionable error pointing at the wrap fix.
+    if !hasmethod(f, arg_types)
+        wrapped = Tuple{arg_types}
+        if hasmethod(f, wrapped)
+            throw(ArgumentError(
+                "reversible_compile: $f has no method for arg_types=$arg_types " *
+                "(interpreted as $(length(arg_types.parameters)) separate args), " *
+                "but does match $wrapped (a single tuple-typed arg). " *
+                "If your function takes a single NTuple/Tuple argument, " *
+                "wrap arg_types as `Tuple{$arg_types}`. " *
+                "(Bennett-4bcp / U102: NTuple-as-arg-type ambiguity.)"))
+        else
+            throw(ArgumentError(
+                "reversible_compile: $f has no method for arg_types=$arg_types. " *
+                "Check the function signature matches the requested types."))
+        end
+    end
+
     strategy in (:auto, :tabulate, :expression) ||
         error("reversible_compile: unknown strategy :$strategy; " *
               "supported: :auto, :tabulate, :expression")
