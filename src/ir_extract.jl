@@ -41,7 +41,7 @@ Pass-pipeline control:
 function extract_parsed_ir(f, arg_types::Type{<:Tuple};
                            optimize::Bool=true,
                            preprocess::Bool=false,
-                           passes::Union{Nothing,Vector{String}}=nothing,
+                           passes::Vector{String}=String[],
                            use_memory_ssa::Bool=false)
     ir_string = sprint(io -> code_llvm(io, f, arg_types; debuginfo=:none, optimize, dump_module=true))
 
@@ -49,9 +49,7 @@ function extract_parsed_ir(f, arg_types::Type{<:Tuple};
     if preprocess
         append!(effective_passes, DEFAULT_PREPROCESSING_PASSES)
     end
-    if passes !== nothing
-        append!(effective_passes, passes)
-    end
+    append!(effective_passes, passes)  # no-op when empty (Bennett-s8gs / U206)
 
     # T2a.2: capture MemorySSA annotations before the main IR walk. Runs in a
     # separate context so stderr capture for the printer doesn't collide with
@@ -125,7 +123,7 @@ text. Available on this path because the input is already text.
 function extract_parsed_ir_from_ll(path::AbstractString;
                                     entry_function::AbstractString,
                                     preprocess::Bool=false,
-                                    passes::Union{Nothing,Vector{String}}=nothing,
+                                    passes::Vector{String}=String[],
                                     use_memory_ssa::Bool=false)
     isfile(path) || error(
         "ir_extract.jl: extract_parsed_ir_from_ll: file not found: $path")
@@ -136,9 +134,7 @@ function extract_parsed_ir_from_ll(path::AbstractString;
     if preprocess
         append!(effective_passes, DEFAULT_PREPROCESSING_PASSES)
     end
-    if passes !== nothing
-        append!(effective_passes, passes)
-    end
+    append!(effective_passes, passes)  # no-op when empty (Bennett-s8gs / U206)
 
     memssa = if use_memory_ssa
         annotated = _run_memssa_on_ir(ir_string; preprocess=preprocess)
@@ -178,7 +174,7 @@ use `extract_parsed_ir_from_ll`.
 function extract_parsed_ir_from_bc(path::AbstractString;
                                     entry_function::AbstractString,
                                     preprocess::Bool=false,
-                                    passes::Union{Nothing,Vector{String}}=nothing)
+                                    passes::Vector{String}=String[])
     isfile(path) || error(
         "ir_extract.jl: extract_parsed_ir_from_bc: file not found: $path")
 
@@ -186,9 +182,7 @@ function extract_parsed_ir_from_bc(path::AbstractString;
     if preprocess
         append!(effective_passes, DEFAULT_PREPROCESSING_PASSES)
     end
-    if passes !== nothing
-        append!(effective_passes, passes)
-    end
+    append!(effective_passes, passes)  # no-op when empty (Bennett-s8gs / U206)
 
     local result::ParsedIR
     LLVM.Context() do _ctx

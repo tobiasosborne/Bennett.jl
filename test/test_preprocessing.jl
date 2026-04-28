@@ -3,12 +3,15 @@ using Bennett
 
 @testset "T0.1 LLVM pass pipeline control in extract_parsed_ir" begin
 
-    @testset "backward compatibility: default passes=nothing" begin
+    @testset "default empty passes (Bennett-s8gs)" begin
+        # Bennett-s8gs / U206: passes defaults to String[] (empty Vector),
+        # not Union{Nothing,Vector{String}}. Type-stable hot path. Empty
+        # default and explicit empty are equivalent.
         f(x::Int8) = x + Int8(1)
         parsed_default = Bennett.extract_parsed_ir(f, Tuple{Int8})
-        parsed_nothing = Bennett.extract_parsed_ir(f, Tuple{Int8}; passes=nothing)
-        @test length(parsed_default.blocks) == length(parsed_nothing.blocks)
-        for (b1, b2) in zip(parsed_default.blocks, parsed_nothing.blocks)
+        parsed_empty   = Bennett.extract_parsed_ir(f, Tuple{Int8}; passes=String[])
+        @test length(parsed_default.blocks) == length(parsed_empty.blocks)
+        for (b1, b2) in zip(parsed_default.blocks, parsed_empty.blocks)
             @test length(b1.instructions) == length(b2.instructions)
         end
     end
