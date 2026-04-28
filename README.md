@@ -245,6 +245,54 @@ Julia function          LLVM IR                Parsed IR             Reversible 
 3. **Bennett** — `bennett(lr)` applies forward + CNOT-copy + reverse (all ancillae return to zero). Alternative: `pebbled_group_bennett` (SAT-pebbling), `value_eager_bennett` (PRS15 EAGER), `checkpoint_bennett`.
 4. **Simulate** — `simulate(circuit, input)` runs bit-vector simulation with ancilla-zero verification.
 
+## Extending Bennett.jl
+
+The compiler is structured around small, single-responsibility hooks. Most extensions land in one or two files; only changes to the core pipeline (per CLAUDE.md §2) require the **3+1 agent protocol** (2 independent design proposers + 1 implementer + 1 reviewer).
+
+### Adding a new LLVM instruction handler
+
+LLVM IR opcodes are converted to typed `IRInst` subtypes in [`src/ir_extract.jl`](src/ir_extract.jl), then lowered to gates in [`src/lower.jl`](src/lower.jl).
+
+1. **Decide the IR shape.** Look at `IRBinOp`, `IRICmp`, `IRSelect`, `IRPhi`, etc. in [`src/ir_types.jl`](src/ir_types.jl) for the existing struct conventions. Either reuse one (most arithmetic / comparison opcodes do) or add a new `struct YourOp <: IRInst`.
+2. **Extract.** Add a case in `_convert_instruction` (in `ir_extract.jl`) that builds your `IRInst` from an `LLVM.Instruction`. Always extract actual IR via `code_llvm(f, ArgTypes)` first — never guess the format (CLAUDE.md §5, §9).
+3. **Lower.** Add `lower_youropcode!(gates, wa, vw, inst::YourOp; …)` in `lower.jl`, and dispatch from `lower_block_insts!` to it.
+4. **Test.** Per CLAUDE.md §3 (red-green TDD): write a `test/test_<bead-id>_<opcode>.jl` that compiles a tiny Julia function exercising the opcode and asserts (a) `verify_reversibility` and (b) `simulate(c, x) == juliareference(x)` for representative inputs. For Int8, sweep all 256.
+5. **Worklog.** Prepend a session log entry to the current top chunk under `worklog/`.
+
+Because steps 2 and 3 touch core files (`ir_extract.jl`, `lower.jl`), use the 3+1 protocol unless the change is a surgical bug-fix or an obvious mechanical extension.
+
+### Adding a new gate type
+
+Most users will not need this — `NOTGate`, `CNOTGate`, `ToffoliGate` cover all classical reversible primitives — but if you're prototyping a higher-level operator (e.g. a multi-controlled Toffoli):
+
+1. Add `struct YourGate <: ReversibleGate` in [`src/gates.jl`](src/gates.jl), with `_gate_target` / `_gate_controls` accessors at the bottom of the same file.
+2. Add `apply!(b::Vector{Bool}, g::YourGate)` at the top of [`src/simulator.jl`](src/simulator.jl).
+3. Add `gate_count` / `t_count` / `toffoli_depth` cases in [`src/diagnostics.jl`](src/diagnostics.jl).
+4. Add `bennett_transform.jl` reverse semantics — usually trivial since reversible gates are self-inverse.
+
+Touches `gates.jl` (CLAUDE.md §2 core file) → 3+1 unless surgical.
+
+### Adding a new adder / multiplier strategy
+
+Strategies are routed via the `add` / `mul` kwargs to `reversible_compile`. Current dispatch lives in `_pick_add_strategy` and `_pick_mul_strategy` (in `lower.jl`).
+
+1. Implement `lower_add_yourname!(gates, wa, a, b, W)` (or `lower_mul_yourname!`) in `src/adder.jl` / `src/multiplier.jl` / a new file. Invariants: ancillae must end zero (Bennett's invariant) AND inputs must be preserved (Bennett-6azb / U58). Document gate-count and Toffoli-depth in the docstring.
+2. Add the strategy symbol to the `add ∈ (:auto, :ripple, :cuccaro, :qcla, :yourname)` validation in `lower()`.
+3. Wire it into `_pick_add_strategy(:yourname)` and add a case in the per-binop dispatcher.
+4. Pin a baseline in `test/test_gate_count_regression.jl` per **explicit** strategy kwarg (Bennett-hjwp / U150 — never pin via `:auto`, so the default dispatcher can evolve independently).
+
+### The 3+1 agent protocol
+
+Per **CLAUDE.md §2**, any change to the core pipeline (`ir_extract.jl`, `lower.jl`, `bennett_transform.jl`), gate types (`gates.jl`, `ir_types.jl`), or the phi resolution algorithm requires:
+
+- **2 proposer subagents** — independent design proposals; must not see each other's output.
+- **1 implementer** — picks the better proposal or synthesises.
+- **1 reviewer** (the orchestrator) — checks correctness, ancilla hygiene, and test coverage.
+
+This is what keeps the phi-resolution / false-path-sensitization class of bugs (CLAUDE.md "Phi Resolution and Control Flow" section) out of the codebase. Surgical bug fixes (a 3-line `sizehint!` removal, a single error-message rewrite, a known-stale compat-hack deletion) typically don't need the full ceremony — but call it explicitly when you skip it.
+
+Per CLAUDE.md §14, **no GitHub CI** — local quality gates only (`Pkg.test()`, the pre-push hook in `scripts/pre-push`, `bd` for issue tracking, and `benchmark/regression_check.jl` for compile-time + gate-count canaries).
+
 ## Documentation
 
 - **[Tutorial](docs/src/tutorial.md)** — compile your first reversible circuit in 10 minutes
