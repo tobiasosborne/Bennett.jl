@@ -15,8 +15,10 @@
         end
         @test verify_reversibility(c)
 
-        # Record baseline ancilla count for comparison with future optimized version
-        println("  chain ancilla baseline: ", ancilla_count(c))
+        # Bennett-kv7b / U65 (#03 F12): pin ancilla count rather than just
+        # printing it. Pre-fix the println alone was a 0-assertion path —
+        # ancilla regressions silently passed.
+        @test ancilla_count(c) == 25
     end
 
     @testset "polynomial — ancilla count" begin
@@ -26,6 +28,7 @@
             @test Int8(simulate(c, x)) == g(x)
         end
         @test verify_reversibility(c)
-        println("  polynomial ancilla baseline: ", ancilla_count(c))
+        # Bennett-kv7b / U65 (#03 F12): pin polynomial ancilla baseline.
+        @test ancilla_count(c) == 249
     end
 end

@@ -92,12 +92,26 @@
     end
 
     @testset "eager_bennett: gate count baselines" begin
+        # Bennett-kv7b / U65 (#03 F12): pre-fix this testset printed gate
+        # counts but had ZERO @test assertions — a regression that
+        # changed eager_bennett's output silently passed. Now pinned.
         f(x::Int8) = x + Int8(1)
         lr = Bennett.lower(Bennett.extract_parsed_ir(f, Tuple{Int8}))
         c_full  = Bennett.bennett(lr)
         c_eager = eager_bennett(lr)
         gc_full  = gate_count(c_full)
         gc_eager = gate_count(c_eager)
-        println("  x+1: full=$(gc_full.total) gates, eager=$(gc_eager.total) gates")
+        # eager_bennett MUST preserve the gate count of bennett() — it's
+        # a re-scheduling only (PRS15 EAGER cleanup), not an additional
+        # optimization. Toffoli count is identical for the same reason.
+        @test gc_eager.total == gc_full.total
+        @test gc_eager.Toffoli == gc_full.Toffoli
+        # Pinned post-U27/U28 baselines (matches test_gate_count_regression).
+        @test gc_full.total == 58
+        @test gc_full.Toffoli == 12
+        # eager_bennett's win is in peak_live_wires (not gate count).
+        @test peak_live_wires(c_eager) <= peak_live_wires(c_full)
+        @test verify_reversibility(c_full)
+        @test verify_reversibility(c_eager)
     end
 end

@@ -35,7 +35,10 @@ using Random
         # The input arg x should have last_use > first_use (used by both mul and add)
         arg_name = parsed.args[1][1]
         @test haskey(liveness, arg_name)
-        println("  x*x+x liveness: arg $(arg_name) last_use=$(liveness[arg_name])")
+        # Bennett-kv7b / U65 (#03 F12): assert the actual liveness invariant
+        # the comment claims — multi-use variables must have last_use beyond
+        # the first instruction. Pre-fix the println alone left no assertion.
+        @test liveness[arg_name] >= 2
     end
 
     @testset "dead_after correctly identifies dead variables" begin
