@@ -44,7 +44,14 @@ const FAIL_X = 5.0
 # Each entry: (label, builder_thunk). Keep total runtime < 60s for
 # fast feedback. Heavy entries (cf, soft_fma) cap at ~5s each.
 
-include(joinpath(@__DIR__, "sweep_persistent_impls_gen.jl"))
+# Bennett-4nvl / U212: regenerate sweep_persistent_impls_gen.jl if
+# missing (it's .gitignore'd as a 1.2MB auto-generated artifact).
+const _GEN_PATH = joinpath(@__DIR__, "sweep_persistent_impls_gen.jl")
+if !isfile(_GEN_PATH)
+    println("[gen] regenerating $(basename(_GEN_PATH)) ...")
+    include(joinpath(@__DIR__, "codegen_sweep_impls.jl"))
+end
+include(_GEN_PATH)
 
 const CORPUS = [
     # Integer arithmetic baselines (CLAUDE.md §6: pinned regressions)

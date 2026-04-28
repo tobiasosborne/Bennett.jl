@@ -40,7 +40,15 @@ vlog("[load]  loading Bennett + sweep_persistent_impls_gen.jl")
 flush(stdout)
 
 using Bennett
-include(joinpath(@__DIR__, "sweep_persistent_impls_gen.jl"))
+# Bennett-4nvl / U212: sweep_persistent_impls_gen.jl is .gitignore'd
+# (it's a 1.2MB auto-generated artifact). Auto-regenerate if missing
+# so the workflow stays single-command after a fresh checkout.
+const _GEN_PATH = joinpath(@__DIR__, "sweep_persistent_impls_gen.jl")
+if !isfile(_GEN_PATH)
+    vlog("[gen]   sweep_persistent_impls_gen.jl missing — regenerating ...")
+    include(joinpath(@__DIR__, "codegen_sweep_impls.jl"))
+end
+include(_GEN_PATH)
 
 vlog("[load]  done. rss=$(rss_mb())MB")
 
