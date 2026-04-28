@@ -98,9 +98,14 @@ See `emit_shadow_store!` for the unguarded base case.
 function emit_shadow_store_guarded!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                                     primal::Vector{Int}, tape_slot::Vector{Int},
                                     val::Vector{Int}, W::Int, pred_wire::Int)
-    length(primal)    == W || error("emit_shadow_store_guarded!: primal has $(length(primal)) wires, W=$W")
-    length(tape_slot) == W || error("emit_shadow_store_guarded!: tape_slot has $(length(tape_slot)) wires, W=$W")
-    length(val)       == W || error("emit_shadow_store_guarded!: val has $(length(val)) wires, W=$W")
+    # Bennett-6e0i / U129: callee-internal width invariants — these are
+    # programming-error checks (caller-side bug), not user-facing
+    # diagnostics. @assert's `||` semantics are identical to the prior
+    # `cond || error(...)` form (lazy message), but the @assert keyword
+    # signals INVARIANT to readers vs user-input validation.
+    @assert length(primal)    == W "emit_shadow_store_guarded!: primal has $(length(primal)) wires, W=$W"
+    @assert length(tape_slot) == W "emit_shadow_store_guarded!: tape_slot has $(length(tape_slot)) wires, W=$W"
+    @assert length(val)       == W "emit_shadow_store_guarded!: val has $(length(val)) wires, W=$W"
 
     for i in 1:W
         push!(gates, ToffoliGate(pred_wire, primal[i], tape_slot[i]))
