@@ -206,7 +206,12 @@ function _simulate_with_buffer!(bits::Vector{Bool}, circuit::ReversibleCircuit,
     end
 
     for w in circuit.ancilla_wires
-        bits[w] && error("Ancilla wire $w not zero — Bennett construction bug")
+        bits[w] && error("Ancilla wire $w not zero post-circuit — uncomputation " *
+                          "invariant violated. The circuit may have been built " *
+                          "via bennett(), pebbled_bennett(), value_eager_bennett(), " *
+                          "checkpoint_bennett(), or a custom strategy; the bug is " *
+                          "in whichever construction produced this gate sequence " *
+                          "(Bennett-ajap / U202).")
     end
 
     for (k, w) in pairs(circuit.input_wires)
