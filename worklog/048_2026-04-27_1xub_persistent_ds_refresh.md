@@ -6,10 +6,11 @@
 
 **Closes (LLVM-opcode/intrinsic verify-or-fail-loud, 21):** e38, 6k4, 1ae, psi, 4gc (intrinsics already in benign_prefixes silent-drop list); iaq, nd9, cx1, 909, e84, c1t, f4m, mcj, 32k, 82f (EH + runtime opcodes covered by the unsupported-opcode fail-loud catch-all at src/ir_extract.jl:2120); ay7, xml, px9, dop, 6nq, bmq (pointer-cast + atomic + fence opcodes — same fail-loud path; ptrtoint/inttoptr/addrspacecast also have cc0.6 breadcrumb errors at lines 2308-2311 + 2211-2213). Per CLAUDE.md §1 + §11: don't preemptively implement opcodes/intrinsics the current corpus doesn't exercise.
 
-**kv7b (P2 epic) partial progress:** addressed 4 of the epic's 19 sub-items:
+**kv7b (P2 epic) partial progress:** addressed 5 of the epic's 19 sub-items:
   - #03 F13 — `test_constant_wire_count.jl` baselines tightened from `>= 0/1` smoke checks to exact pinned values (3/1/4/2 for the 4 test functions).
   - #03 F12 (×3) — added assertions to 3 previously-zero-test testsets: `test_eager_bennett.jl` "gate count baselines" now asserts eager preserves bennett() gate count + Toffoli + pinned i8 baselines + peak_live_wires inequality + verify_reversibility; `test_ancilla_reuse.jl` chain/poly ancilla baselines pinned at 25/249; `test_liveness.jl` multi-use variable now asserts the comment's invariant (`liveness[arg] >= 2`).
-Net +10 asserts. Epic kv7b stays open with 15+ remaining sub-items.
+  - #03 F14 — `test_feistel.jl` W=16 bijectivity check tightened from `>= 4000` (tolerated ~96 collisions on 4096 inputs ≈ 2.3%) to strict `length(outputs) == n_inputs`. Feistel networks are bijective by construction (Luby-Rackoff 1988); the slop was masking real regressions.
+Net +11 asserts. Epic kv7b stays open with 14+ remaining sub-items.
 
 **Shipped:** see git log around `c4ec762..174cff0` (~24 commits). Fix-then-grind session covering one P2 perf bug (qxg9) plus 21 P3/P4 closes spanning benchmarks, regression infrastructure, compat-hack removal, docstring inlining, error-message ergonomics, baseline policy, simulator perf, soft_round implementation, fail-loud narrowing, constructor cleanup, @assert convention, error-message parametrization, U03-checked self_reversing flag, defensive-copy elimination, QCLA W>=4 explanation, BENCHMARKS row refresh (soft_fmul -42%, soft_fadd -34%), FTZ contract docs, accessor file move, type-stable kwarg defaults, and superseded-bead closes. All 90,041 tests pass (was 84,620 at session start: +5,421 from new 4bcp/fehu/2hhx tests).
 
