@@ -198,11 +198,14 @@ const _NOT_W(W)  = 5 * W + 2      # x⊕allones (copy + invert through Bennett)
         end
     end
 
-    @testset "static inspection — peephole helpers present in lower.jl" begin
+    @testset "static inspection — peephole helpers present in lowering/arith.jl" begin
         # Catches accidental deletion / rename of the helper functions.
         # If someone reverts the peephole, the static-presence test fires
         # before any gate-count drift would surface in CI.
-        path = joinpath(dirname(pathof(Bennett)), "lower.jl")
+        # Bennett-vdlg / U40 (2026-04-30): lower.jl was split along its
+        # `# ---- section ----` headers; the peephole helpers live in
+        # the `binary-op dispatch` section, now in lowering/arith.jl.
+        path = joinpath(dirname(pathof(Bennett)), "lowering", "arith.jl")
         src = read(path, String)
         @test occursin("_try_identity_peephole!", src)
         @test occursin("_identity_emit_for_const", src)

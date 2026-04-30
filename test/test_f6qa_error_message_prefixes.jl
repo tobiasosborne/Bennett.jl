@@ -74,12 +74,20 @@ end
 @testset "Bennett-f6qa / U97 — error message prefixes" begin
 
     @testset "lower.jl" begin
-        path = joinpath(dirname(pathof(Bennett)), "lower.jl")
-        offenders = _check_error_prefixes(path)
-        @test isempty(offenders)
-        if !isempty(offenders)
-            for o in offenders
-                @info "lower.jl: error message lacks recognised prefix: $(repr(o))"
+        # Bennett-vdlg / U40 (2026-04-30): lower.jl was split into
+        # src/lowering/*.jl. The intent of this testset is to scan the
+        # entire lowering pipeline for error-message prefix conformance.
+        lowering_dir = joinpath(dirname(pathof(Bennett)), "lowering")
+        files = sort!(filter(f -> endswith(f, ".jl"), readdir(lowering_dir)))
+        @test !isempty(files)  # split survived
+        all_offenders = String[]
+        for f in files
+            append!(all_offenders, _check_error_prefixes(joinpath(lowering_dir, f)))
+        end
+        @test isempty(all_offenders)
+        if !isempty(all_offenders)
+            for o in all_offenders
+                @info "lowering/*.jl: error message lacks recognised prefix: $(repr(o))"
             end
         end
     end
