@@ -93,8 +93,10 @@ end
     end
 
     @testset "pebbling-budget wording unified" begin
-        peb_path = joinpath(dirname(pathof(Bennett)), "pebbling.jl")
-        grp_path = joinpath(dirname(pathof(Bennett)), "pebbled_groups.jl")
+        # Bennett-zpj7 / U160 (2026-04-30): pebbling/eager files colocated
+        # into src/pebble/ — paths updated to match.
+        peb_path = joinpath(dirname(pathof(Bennett)), "pebble", "pebbling.jl")
+        grp_path = joinpath(dirname(pathof(Bennett)), "pebble", "pebbled_groups.jl")
 
         # Both files should now use the same "insufficient pebbles — need
         # at least N" wording.
