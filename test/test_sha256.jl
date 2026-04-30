@@ -1,3 +1,5 @@
+using Random
+
 @testset "SHA-256 round function benchmark" begin
     # SHA-256 helper functions (all pure UInt32 operations)
     ch(e::UInt32, f::UInt32, g::UInt32) = (e & f) ⊻ (~e & g)
@@ -68,5 +70,38 @@
         result2 = simulate(circuit, (UInt32(result[1]), a, b, c_, UInt32(result[2] % UInt32), e, f, g, k2, w2))
         @test UInt32(result2[1]) == expected2[1]
         @test UInt32(result2[2] % UInt32) == expected2[2]
+
+        # Bennett-kv7b / U65 (#03 F8, #05 F15) — was 2 inputs (well-known
+        # SHA-256 initial values + derived round 2). Add a fixed-seed random
+        # sweep over 64 random 320-bit input vectors plus 8 corner cases
+        # (all-zero, all-ones, alternating bit patterns, single-bit-set
+        # at each byte-boundary). At ~1670 gates per SHA-256 round and
+        # post-fehu simulate! at ~ms per call, 72 sims add <100ms to
+        # pkg test wall time but exercise the full 10-input × UInt32
+        # input space mass effectively.
+        rng = Random.MersenneTwister(0x5a256cd5)
+        corner_vectors = [
+            ntuple(_ -> UInt32(0), 10),
+            ntuple(_ -> typemax(UInt32), 10),
+            ntuple(i -> i % 2 == 1 ? UInt32(0xaaaaaaaa) : UInt32(0x55555555), 10),
+            ntuple(i -> i % 2 == 1 ? UInt32(0x55555555) : UInt32(0xaaaaaaaa), 10),
+            ntuple(i -> UInt32(1) << ((i*3) % 32), 10),
+            ntuple(i -> UInt32(0xdeadbeef) ⊻ UInt32(i), 10),
+            ntuple(i -> i == 1 ? UInt32(0) : UInt32(rand(rng, UInt32)), 10),  # a=0
+            ntuple(i -> i == 9 || i == 10 ? UInt32(0) : UInt32(rand(rng, UInt32)), 10),  # k=w=0
+        ]
+        for v in corner_vectors
+            exp = sha256_round(v...)
+            got = simulate(circuit, v)
+            @test UInt32(got[1]) == exp[1]
+            @test UInt32(got[2] % UInt32) == exp[2]
+        end
+        for _ in 1:64
+            v = ntuple(_ -> rand(rng, UInt32), 10)
+            exp = sha256_round(v...)
+            got = simulate(circuit, v)
+            @test UInt32(got[1]) == exp[1]
+            @test UInt32(got[2] % UInt32) == exp[2]
+        end
     end
 end
