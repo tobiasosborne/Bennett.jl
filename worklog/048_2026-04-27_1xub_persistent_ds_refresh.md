@@ -1,5 +1,62 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-30 — Bennett-vdlg / U40 close (lower.jl 3,172 LOC structural split)
+
+**Shipped:** see git log around the next commit. `src/lower.jl` (3,172 LOC, 93 top-level defs) split along its existing `# ---- section ----` headers into 9 files under `src/lowering/`:
+
+| file | LOC | scope |
+|---|---:|---|
+| `lowering/types.jl`     | 157 | `GateGroup` / `LoweringResult` / `LoweringCtx` + `_lower_inst!` dispatchers |
+| `lowering/operand.jl`   | 178 | `resolve!` / `_ssa_operands` / `compute_ssa_liveness` |
+| `lowering/driver.jl`    | 367 | `lower(::ParsedIR)` / `_fold_constants` / `lower_block_insts!` |
+| `lowering/cfg.jl`       | 358 | `topo_sort` / `find_back_edges` / `_collect_loop_body_blocks` / `lower_loop!` |
+| `lowering/phi.jl`       | 227 | path-predicate computation + `lower_phi!` + `resolve_phi_predicated!` |
+| `lowering/arith.jl`     | 534 | `lower_binop!` dispatcher + bitwise + const/var shifts + icmp + select + cast |
+| `lowering/aggregate.jl` | 524 | `lower_divrem!` + `_cond_negate_inplace!` + ptr/var-GEP + load variants + extract/insertvalue |
+| `lowering/call.jl`      | 147 | `_callee_arg_types` / `_assert_arg_widths_match` / `lower_call!` / `_remap_gate_offset` |
+| `lowering/memory.jl`    | 680 | T1b.3 reversible memory: `lower_alloca!` / `lower_store!` + variants + MUX-EXCH dispatch tables |
+
+`src/lower.jl` is now an 18-line loader that `include`s the 9 files in the original textual order. `src/Bennett.jl:26` still says `include("lower.jl")` — no change to package-level structure.
+
+All 90,071 tests pass (was 90,066 + 4 fail pre-test-update).
+
+**Why:** Bennett-vdlg / U40 was the largest LOC-tier P2 in the catalogue. User explicitly waived the 3+1 protocol for pure structural splits ("If the split works and there are no regressions, this is fine"). Splitting along the existing `# ---- section ----` headers is mechanical: every file matches one or two consecutive original sections, and concatenating the 9 files in load order is **byte-for-byte identical** to the pre-split `src/lower.jl` (verified via `cat ... | cmp - src/lower.jl`).
+
+**Test fallout (2 fixes):**
+
+1. **`test/test_5qrn_identity_peepholes.jl:201`** — static-inspection testset grep'd `lower.jl` for `_try_identity_peephole!`, `_identity_emit_for_const`, `_emit_copy_out!`, and the `Bennett-5qrn` breadcrumb. All four now live in `lowering/arith.jl` (the binary-op-dispatch section). Updated the path to `joinpath(dirname(pathof(Bennett)), "lowering", "arith.jl")`. 4 failed → 4 pass.
+
+2. **`test/test_f6qa_error_message_prefixes.jl:76`** — the `lower.jl` testset scanned for non-conformant error-message prefixes. The new 18-line loader has zero `error()` calls so the test would pass *vacuously* (real silent-pass regression). Updated to scan ALL files under `src/lowering/` via `readdir(lowering_dir)` plus a `@test !isempty(files)` guard so deleting the directory fails loud. 7/7 → 8/8.
+
+**Gotchas / Lessons:**
+
+1. **`wc -l` undercounts when the file ends without a trailing newline.** `wc -l src/lower.jl` reported 3172 — but `awk 'END{print NR}'` reported 3173. The original `src/lower.jl` ended with `...end\nend` (no final newline; the closing `end` of `_operand_to_u64!` is the 3173rd line). My first sed split used `2493,3172p` and dropped the final `end`, breaking `cmp` by 3 bytes. Fixed by extending to `2493,3173p`. **Idiom for line-range splits:** verify with `awk 'END{print NR}'` (counts records) rather than `wc -l` (counts newlines), then `cat ... | cmp - <orig>` as the gold check.
+
+2. **Static-inspection tests that grep file *paths* are fragile across structural splits.** Both 5qrn and f6qa would have caught real regressions (peephole deletion, error-prefix drift) — but they hard-coded `lower.jl`. Future split candidates (`vt0a` wire allocator, `x3jc` ir_extract.jl, `ehoa` LoweringCtx) should expect similar fallout. Cheap idiom: scan `readdir(<dir>)` instead of a single fixed file when the underlying intent is "scan all source under this concept".
+
+3. **No 3+1 needed for pure structural splits** despite `lower.jl` being a CLAUDE.md §2 core file. The user's framing: "no real new code is created — if the split works and there are no regressions, this is fine." The byte-for-byte `cmp` check + green test suite is the entire correctness argument; no design space to explore. Same precedent as Bennett-19g6 (Bennett.jl 545→270 LOC split) closed 2026-04-28.
+
+4. **Late-binding makes Julia-side splits trivial** as long as parse-time references (struct fields, `const` dispatch tables) stay in the same file. The `_MUX_EXCH_LOAD_DISPATCH` / `_MUX_EXCH_STORE_DISPATCH` Dicts at the bottom of the original file reference functions defined ~700 lines above them — both in the same lowering section, both now in `lowering/memory.jl`, no cross-file forward-reference needed. The `_lower_inst!(ctx, inst::IRPhi, ...)` dispatcher in `lowering/types.jl` calls `lower_phi!` defined later in `lowering/phi.jl` — this works because `_lower_inst!` is a *function*, resolved at call time.
+
+**Rejected alternatives:**
+
+- **Catalogue's suggested split** (`{core,phi,arith,memory,call,aggregate}.jl`, 6 files). Tried mentally; `core.jl` would be 1,060 LOC (types+operand+driver+cfg) which is still on the unreviewable side. The 9-file split below splits `core` into `types`/`operand`/`driver`/`cfg` — all 9 files end up between 147 and 680 LOC, average ~352. Reviewable per the catalogue's intent.
+- **Roll `aggregate.jl`'s extract/insertvalue (38 LOC) into `arith.jl`.** Would let `arith.jl` cover all "scalar-input scalar-output" instruction handlers. Decided against: the existing `# ---- aggregate operations ----` header at line 1822 spans 524 LOC including divrem and ptr/load/extract/insertvalue — keeping that section as one file faithfully matches the file's existing organisation, even though the header name is mildly misleading (the bulk is divrem + ptr/load, with extract/insertvalue at the tail).
+
+**Filed (follow-ups):** none new this session. The remaining LOC-tier P2/P3 candidates from chunk 048's "Next agent starts here" list are unaffected by this split: `tzrs` stages 2-5, `x3jc` (ir_extract.jl 2,394 LOC), `ehoa` 2nd half, `s92x`, `vt0a`, `kv7b` (test-coverage epic, 14+ sub-items), `i2ca`, `lm3x`, `v958`.
+
+**Next agent starts here:** `bd ready` stack still has the larger refactors. Direct successor candidates: `x3jc` (ir_extract.jl split) is the closest analogue to today's vdlg work — same mechanical line-range split pattern should apply. Cheap pre-flight before splitting: `awk 'END{print NR}' src/ir_extract.jl` and `grep -rln 'pathof(Bennett)' test/ | xargs grep -l ir_extract` to predict static-inspection-test fallout.
+
+**Test count:** 90,066 → 90,071 (+5: -4 from removing the broken 5qrn assertions / +4 from the corrected lowering/arith.jl assertions / +1 from the new f6qa `!isempty(files)` guard).
+
+**Source files touched:**
+- Created: `src/lowering/{types,operand,driver,cfg,phi,arith,aggregate,call,memory}.jl` (9 new files, all extracted via `sed -n 'L,Lp' src/lower.jl > ...`)
+- Modified: `src/lower.jl` (3,172 LOC → 18 LOC loader)
+- Modified: `test/test_5qrn_identity_peepholes.jl` (path update)
+- Modified: `test/test_f6qa_error_message_prefixes.jl` (scan all of `lowering/`)
+
+---
+
 ## Session log — 2026-04-28 — LOC-tier grind (51 beads closed + kv7b epic partials)
 
 **Closes (substantive, 30):** qxg9 (P2 BUG), 64ob, j8uy, g7r8, mggz, b3go, 4bcp, hjwp, fehu, 2hhx, 2unc, 8h41, 6e0i, ajap, c3xv, nj5r, 9ryk, xgf6, 26dt, mg6u, s8gs, wolk, k30d, z2q1, nr62, ecgh, tf9s, is5s, 4nvl, **19g6** (Bennett.jl 545→270 LOC split into 4 files: narrow.jl/callees.jl/softfloat_dispatch.jl/precompile.jl).
