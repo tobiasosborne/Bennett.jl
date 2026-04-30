@@ -32,7 +32,10 @@ using Bennett: extract_parsed_ir_from_ll
 
     # T1 — source inspection: the catch block no longer matches purely
     # on substring. Both required type guards must appear.
-    src_path = joinpath(dirname(dirname(@__FILE__)), "src", "ir_extract.jl")
+    # Bennett-x3jc / U116 (2026-04-30): ir_extract.jl was split into
+    # src/extract/*.jl. The cc0.3 catch + its anchor comment now live
+    # in src/extract/module_walk.jl (inside `_module_to_parsed_ir_on_func`).
+    src_path = joinpath(dirname(dirname(@__FILE__)), "src", "extract", "module_walk.jl")
     src = read(src_path, String)
 
     @testset "structural narrowing" begin
@@ -47,6 +50,9 @@ using Bennett: extract_parsed_ir_from_ll
         @test occursin("e isa MethodError", block)
         # Post-fix must reject Bennett-authored errors (our own `_ir_error`
         # outputs messages prefixed with `ir_extract.jl:` and Bennett-IDs).
+        # The literal `"ir_extract.jl:"` runtime prefix is emitted by
+        # `_ir_error_msg` in src/extract/errors.jl and is unchanged by the
+        # x3jc split (deliberate stable prefix, not a file-path reference).
         @test occursin("ir_extract.jl:", block) || occursin("bennett_authored", block)
     end
 

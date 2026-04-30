@@ -20,7 +20,9 @@ using Bennett
 
 @testset "Bennett-8kno / U95 — _extract_const_globals catch narrowing" begin
 
-    src_path = joinpath(dirname(pathof(Bennett)), "ir_extract.jl")
+    # Bennett-x3jc / U116 (2026-04-30): ir_extract.jl was split into
+    # src/extract/*.jl. `_extract_const_globals` now lives in module_walk.jl.
+    src_path = joinpath(dirname(pathof(Bennett)), "extract", "module_walk.jl")
     src = read(src_path, String)
     lines = split(src, '\n')
 

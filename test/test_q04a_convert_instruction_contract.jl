@@ -88,7 +88,10 @@ using InteractiveUtils: subtypes, code_warntype
     #    shape so a future agent can target it precisely.
     # =========================================================================
     @testset "caller dispatch shape at the extraction site" begin
-        src = read(joinpath(dirname(pathof(Bennett)), "ir_extract.jl"), String)
+        # Bennett-x3jc / U116 (2026-04-30): ir_extract.jl was split into
+        # src/extract/*.jl. The `_convert_instruction` 4-arm dispatch lives
+        # in `_module_to_parsed_ir_on_func` in src/extract/module_walk.jl.
+        src = read(joinpath(dirname(pathof(Bennett)), "extract", "module_walk.jl"), String)
         # The 4-arm dispatch lives at line ~1003-1018 (file may shift).
         # Pin the dispatch shape via canonical substrings that any refactor
         # MUST update together. Current shape (post-jepw + 6t8s):
