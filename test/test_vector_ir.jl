@@ -18,9 +18,11 @@ function f_splat_add(x::Int8)::Int8
 end
 
 @testset "cc0.7 — splat + vector add + extractelement" begin
+    # Bennett-kv7b / U65 (#03 F15) — was 6 sampled inputs.
+    # Now exhaustive Int8 (256 inputs).
     c = reversible_compile(f_splat_add, Int8; optimize=true)
     @test verify_reversibility(c)
-    for x in Int8[-8, -1, 0, 1, 7, 42]
+    for x in typemin(Int8):typemax(Int8)
         @test simulate(c, x) == f_splat_add(x)
     end
 end
@@ -39,9 +41,11 @@ function f_splat_icmp(x::Int8, y::Int8)::Int8
 end
 
 @testset "cc0.7 — vector icmp + extractelement <N x i1>" begin
+    # Bennett-kv7b / U65 (#03 F15) — was 3×4=12 sampled pairs.
+    # Now exhaustive 256×256 Int8.
     c = reversible_compile(f_splat_icmp, Int8, Int8; optimize=true)
     @test verify_reversibility(c)
-    for x in Int8[-4, 0, 3], y in Int8[-3, 0, 5, 9]
+    for x in typemin(Int8):typemax(Int8), y in typemin(Int8):typemax(Int8)
         @test simulate(c, (x, y)) == f_splat_icmp(x, y)
     end
 end
@@ -58,9 +62,11 @@ function f_const_vec_and(x::Int8)::Int8
 end
 
 @testset "cc0.7 — ConstantDataVector operand" begin
+    # Bennett-kv7b / U65 (#03 F15) — was 6 sampled inputs.
+    # Now exhaustive Int8.
     c = reversible_compile(f_const_vec_and, Int8; optimize=true)
     @test verify_reversibility(c)
-    for x in Int8[-128, -1, 0, 1, 42, 127]
+    for x in typemin(Int8):typemax(Int8)
         @test simulate(c, x) == f_const_vec_and(x)
     end
 end
