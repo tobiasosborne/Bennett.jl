@@ -1,5 +1,51 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-04-30 (continuation) — x3jc + zpj7 + kv7b sub-item (3 closes)
+
+**Shipped:** `4d7b5d8 Bennett-x3jc / U116`, `ece32f6 Bennett-zpj7 / U160`, plus the test/test_loop.jl Int8→all-widths expansion (kv7b epic partial #05 F19).
+
+| Bead | Scope | Mechanism |
+|---|---|---|
+| `x3jc` | `src/ir_extract.jl` (2,946 LOC) split into 9 files under `src/extract/` (entry 211 / callees 85 / errors 118 / sret 378 / module_walk 451 / instructions 879 / constexpr 225 / vectors 345 / helpers 254) | byte-identical line-range `sed`, same pattern as today's vdlg |
+| `zpj7` | 5 pebbling/eager files colocated into `src/pebble/` via `git mv` (filenames preserved) | rename detection keeps history + blame intact |
+| `kv7b` (#05 F19) | `test/test_loop.jl` Int8-only → Int8/Int16 exhaustive + Int32/Int64/UInt8/UInt64 sampled | +66,842 asserts (was 1 — exhaustive Int16 sweep alone is 65,536) |
+
+All 90,072 tests pass after vdlg + x3jc + zpj7. Final pkg test with kv7b loop expansion pending.
+
+**Why:** Bennett-vdlg established the mechanical-split pattern earlier today; x3jc was the next-largest core file (per the chunk-048 "Suggested next pickups"). zpj7 is a P3 colocation that addresses U160's "five pebbling/eager files with inconsistent naming" — the Bennett-fyni-style filename preservation (no rename) keeps the change at zero blast-radius for git blame and external doc references. The kv7b loop expansion is the cheapest visible test-coverage gap on the epic — the `acc += x` four-iteration body is identical lowering across all integer widths.
+
+**Test fallout (x3jc):** 4 static-inspection tests grep'd `ir_extract.jl` directly — `g27k` / `q04a` / `8kno` re-pointed at `src/extract/module_walk.jl` (where `_module_to_parsed_ir_on_func`, `_extract_const_globals`, and the `_convert_instruction` 4-arm caller all live); `uinn` was rewritten to scan every `src/extract/*.jl` per-file with file+line offenders, replacing the old single-file scan. Same fragile-static-test pattern as vdlg's 5qrn / f6qa fallout — see vdlg gotcha #2 below.
+
+**Test fallout (zpj7):** `test/test_f6qa_error_message_prefixes.jl` had the only static-inspection grep on `pebbling.jl` / `pebbled_groups.jl` paths (the pebbling-budget wording check). Updated to `joinpath(..., "pebble", "pebbling.jl")` and `..., "pebble", "pebbled_groups.jl")`. No other test file referenced these paths directly.
+
+**Gotchas / Lessons:**
+
+1. **The runtime `"ir_extract.jl:"` error-message prefix from `_ir_error_msg` is NOT a file-path reference** — it's a deliberate stable identifier baked into the error format. Survived the x3jc split untouched (it lives in `src/extract/errors.jl` as a literal string in the `return "ir_extract.jl: $opc_name in @$fname:%$bname: $inst_str — $reason"`). Don't be tempted to update it just because the file moved; downstream regex matchers (and the `g27k` test's `bennett_authored` discriminator) rely on the literal prefix.
+
+2. **`git mv` survives a rename + dir-create in one step** as long as the destination directory exists when the rename runs. `mkdir -p src/pebble && git mv src/X.jl src/pebble/X.jl` is the idiomatic pattern — git's rename detection picks up the move at 100% similarity, which is what makes `git log --follow src/pebble/pebbling.jl` work transparently.
+
+3. **The kv7b sub-items don't need 3+1.** They're test-only changes (no src/ touched) — `@test` additions, exhaustive→sampled coverage upgrades, zero-test testset assertions. Same pattern as the 4 sub-items closed 2026-04-28. 14+ kv7b sub-items still open; each is a 5-50 line test-only delta.
+
+4. **Random.MersenneTwister inside a per-test sample helper costs nothing** vs allocating it once at top-level and passing through. The fixed seed (`0x10092a7c` here) keeps the sample reproducible across runs — important so a CI-flake-free baseline can be pinned.
+
+**Rejected alternatives:**
+
+- **`u2yp` (drop-or-wire sat_pebbling.jl)** — investigated but skipped. The bead frames it as a binary user decision: either delete the 197 LOC + PicoSAT dep, or wait for `Bennett-fg2` (Kissat/CaDiCaL upgrade) to wire it. PicoSAT is not broken, the implementation works (4 testsets in test/test_sat_pebbling.jl pass), and there's no current pain — only a "dangling dep" tidiness concern. Destructive deletion of working code with tests should be a user call, not an autonomous one.
+- **`s92x` (`_detect_sret` 173-line refactor)** — postponed. Now that `_detect_sret` lives in `src/extract/sret.jl` (378 LOC), the surrounding context is finally bounded enough to refactor it cleanly. Worth picking up next session.
+- **`8403` (test layout mirror src)** — defer per chunk-048 ("high churn, low immediate value"). Especially with the new `src/lowering/` and `src/extract/` and `src/pebble/` subdirectories, mirroring the test layout would 3× the per-file directory bookkeeping for unclear gain.
+
+**Filed (follow-ups):** none new. Pre-push hook will run `Pkg.test()` (~9 min) before the batched 4-commit push.
+
+**Next agent starts here:** With `vdlg` + `x3jc` + `zpj7` shipped, the major LOC-tier P2/P3 splits are now done. Remaining LOC-tier work: `tzrs` stages 2-5 (extract more `_handle_intrinsic` arms — now in `src/extract/instructions.jl`), `s92x` (`_detect_sret` body — now in `src/extract/sret.jl`), `ehoa` 2nd half (`LoweringCtx` `::Any` field concretization — now in `src/lowering/types.jl`). Also: `kv7b` epic continuation (14+ test-coverage sub-items remaining; today closed 1 more — #05 F19 loop widths).
+
+**Test count:** 90,072 → expect ~156,914 (+66,842 from kv7b loop expansion: 65,536 Int16 exhaustive + 256 Int32 sampled + 256 Int64 sampled + 256 UInt8 exhaustive + 256 UInt64 sampled, plus carry-over from the original Int8 256). Confirmed after pkg test completes.
+
+**Source files touched:**
+- Created: `src/extract/{entry,callees,errors,sret,module_walk,instructions,constexpr,vectors,helpers}.jl` (9 new files via `sed`); `src/pebble/` directory (5 files relocated via `git mv`).
+- Modified: `src/ir_extract.jl` (2,946 LOC → 12 LOC loader); `src/Bennett.jl` (5 include lines updated to `pebble/`); `test/test_loop.jl` (1 → 6 testsets); 4 ir_extract path-test files; 1 pebble path-test file.
+
+---
+
 ## Session log — 2026-04-30 — Bennett-vdlg / U40 close (lower.jl 3,172 LOC structural split)
 
 **Shipped:** see git log around the next commit. `src/lower.jl` (3,172 LOC, 93 top-level defs) split along its existing `# ---- section ----` headers into 9 files under `src/lowering/`:
