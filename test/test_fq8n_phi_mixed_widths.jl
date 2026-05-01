@@ -26,8 +26,8 @@ using Bennett: WireAllocator, ReversibleGate, IRPhi, IROperand,
         # Phi declared width=8; one incoming has width 16 — mismatch.
         phi = IRPhi(:dest, 8,
                     Tuple{IROperand,Symbol}[
-                        (IROperand(:ssa, :a, 0), :BlockA),
-                        (IROperand(:ssa, :b, 0), :BlockB),
+                        (ssa(:a), :BlockA),
+                        (ssa(:b), :BlockB),
                     ])
         # Set up minimal block_pred so resolve_phi_predicated! is reached.
         block_pred = Dict{Symbol,Vector{Int}}()
@@ -50,8 +50,8 @@ using Bennett: WireAllocator, ReversibleGate, IRPhi, IROperand,
         vw[:b] = allocate!(wa, 8)
         phi = IRPhi(:dest, 8,
                     Tuple{IROperand,Symbol}[
-                        (IROperand(:ssa, :a, 0), :BlockA),
-                        (IROperand(:ssa, :b, 0), :BlockB),
+                        (ssa(:a), :BlockA),
+                        (ssa(:b), :BlockB),
                     ])
         block_pred = Dict{Symbol,Vector{Int}}()
         block_pred[:BlockA] = allocate!(wa, 1)
@@ -73,8 +73,8 @@ using Bennett: WireAllocator, ReversibleGate, IRPhi, IROperand,
         vw[:b] = allocate!(wa, 8)
         phi = IRPhi(:dest, 8,
                     Tuple{IROperand,Symbol}[
-                        (IROperand(:ssa, :a, 0), :BlockA),
-                        (IROperand(:ssa, :b, 0), :BlockB),
+                        (ssa(:a), :BlockA),
+                        (ssa(:b), :BlockB),
                     ])
         block_pred = Dict{Symbol,Vector{Int}}()
         block_pred[:BlockA] = allocate!(wa, 1)

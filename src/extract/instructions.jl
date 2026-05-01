@@ -187,7 +187,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
         sh_op = _operand(ops[3], names)
         shl_dest = _auto_name(counter)
         lshr_dest = _auto_name(counter)
-        if sh_op.kind == :const
+        if sh_op isa ConstOperand
             # Constant-fold: w - const is const (no runtime sub needed)
             return [
                 IRBinOp(shl_dest, :shl, a_op, sh_op, w),
@@ -212,7 +212,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
         sh_op = _operand(ops[3], names)
         shl_dest = _auto_name(counter)
         lshr_dest = _auto_name(counter)
-        if sh_op.kind == :const
+        if sh_op isa ConstOperand
             # Constant-fold: w - const is const
             return [
                 IRBinOp(shl_dest, :shl, a_op, iconst(w - sh_op.value), w),
@@ -679,7 +679,7 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             case_val = ops[3 + 2*i]     # ConstantInt
             case_bb  = ops[4 + 2*i]     # BasicBlock
             case_int = _const_int_as_int(case_val)
-            case_op = IROperand(:const, Symbol(string(case_int)), case_int)
+            case_op = iconst(case_int)
             target_label = Symbol(LLVM.name(case_bb))
             push!(cases, (case_op, target_label))
         end

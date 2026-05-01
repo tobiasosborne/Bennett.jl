@@ -18,11 +18,11 @@
 # that flows through ParsedIR and is rejected fail-loud at lowering time.
 # See `docs/design/cc03_05_consensus.md`.
 
-# Sentinel `IROperand` for pointer values the extractor cannot materialise as
-# a concrete wire reference. Produced when GlobalAlias resolution fails or
-# when a ConstantExpr's sub-operands can't be wrapped. Consumers that treat
-# it as user arithmetic fail loud in `lower.jl`'s `resolve!`.
-const OPAQUE_PTR_SENTINEL = IROperand(:const, :__opaque_ptr__, 0)
+# Bennett-v958 / U68: OPAQUE_PTR_SENTINEL is now defined in src/ir_types.jl
+# as the canonical singleton instance of `OpaquePtrSentinel <: IROperand`.
+# Re-imported into this module via `using .Bennett`-style transitive include.
+# Consumers that treat it as user arithmetic fail loud in `resolve!` via the
+# `OpaquePtrSentinel`-typed method (Bennett-ibz5 / U96).
 
 # Follow a GlobalAlias chain via raw C API (LLVM.jl has no `aliasee`
 # accessor). Returns the terminal non-alias ref, or nothing on cycles,

@@ -11,8 +11,9 @@ MVP: only (elem_width=8, n_elems=iconst(4)) is accepted. Anything else errors
 loudly; T1b.5 adds wider shapes.
 """
 function lower_alloca!(ctx::LoweringCtx, inst::IRAlloca)
-    inst.n_elems.kind == :const ||
-        error("lower_alloca!: dynamic n_elems not supported (%$(inst.n_elems.name)); " *
+    inst.n_elems isa ConstOperand ||
+        error("lower_alloca!: dynamic n_elems not supported " *
+              "(got $(typeof(inst.n_elems))); " *
               "T3b.3 shadow memory handles static-sized allocas only.")
     n = inst.n_elems.value
     n >= 1 || error("lower_alloca!: non-positive n_elems=$n")
@@ -81,7 +82,7 @@ preferred for shapes with N·W ≤ 64 (cheaper per-op cost). T4 shadow-
 checkpoint is the universal fallback for N·W > 64.
 """
 function _pick_alloca_strategy(shape::Tuple{Int,Int}, idx::IROperand)
-    idx.kind == :const && return :shadow
+    idx isa ConstOperand && return :shadow
     sym = get(_MUX_EXCH_STRATEGY, shape, nothing)
     sym === nothing || return sym
     # Bennett-cc0 M3a — T4 shadow-checkpoint MVP. Triggers for ANY shape
@@ -105,7 +106,7 @@ MVP: ptr must resolve via ptr_provenance to a (4, 8) alloca. Store width must
 be 8. All other cases error loudly.
 """
 function lower_store!(ctx::LoweringCtx, inst::IRStore, block_label::Symbol=Symbol(""))
-    inst.ptr.kind == :ssa ||
+    inst.ptr isa SSAOperand ||
         error("lower_store!: store to a constant pointer is not supported")
 
     haskey(ctx.ptr_provenance, inst.ptr.name) ||
@@ -186,7 +187,7 @@ function _emit_store_via_shadow_guarded!(ctx::LoweringCtx, inst::IRStore,
     elem_w, n = info
     inst.width == elem_w ||
         error("_emit_store_via_shadow_guarded!: store width=$(inst.width) doesn't match alloca elem_width=$elem_w")
-    idx_op.kind == :const ||
+    idx_op isa ConstOperand ||
         error("_emit_store_via_shadow_guarded!: non-const idx not supported in multi-origin path")
     0 <= idx_op.value < n ||
         error("_emit_store_via_shadow_guarded!: idx=$(idx_op.value) out of range [0, $n)")
@@ -661,10 +662,10 @@ function _wires_to_u64!(ctx::LoweringCtx, src::Vector{Int})
     return dst
 end
 
-# Resolve an IROperand to exactly 64 wires. For :const, materialize the value
-# with NOT gates. For :ssa, zero-extend via CNOT-copy.
+# Resolve an IROperand to exactly 64 wires. For ConstOperand, materialize the
+# value with NOT gates. For SSAOperand, zero-extend via CNOT-copy.
 function _operand_to_u64!(ctx::LoweringCtx, op::IROperand)
-    if op.kind == :const
+    if op isa ConstOperand
         dst = allocate!(ctx.wa, 64)
         v = UInt64(op.value)  # narrow to 64 bits
         for i in 1:64

@@ -10,7 +10,7 @@
 #   x|allones (all-ones result)                    → 3W + 2 gates (8 NOTs + 8 CNOTs + 8 NOTs = 26 at W=8)
 #   x⊕allones (~x)                                  → 5W + 2 gates (8 CNOTs + 8 NOTs + 8 CNOTs + 8 CNOTs + 8 NOTs at W=8)
 #
-# The peephole detects `IROperand(:const, _, k)` operands at the
+# The peephole detects `ConstOperand(k)` operands at the
 # `lower_binop!` dispatcher BEFORE `resolve!` materialises the constant
 # into ancilla wires. Detection is purely syntactic so the optimisation
 # cannot misfire on data-dependent operands inside `lower_mul_wide!`

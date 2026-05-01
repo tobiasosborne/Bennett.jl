@@ -81,7 +81,7 @@ end
     W >= 64 ? typemax(UInt64) : (UInt64(1) << W) - UInt64(1)
 
 @inline function _const_value_mod(op::IROperand, W::Int)
-    op.kind === :const || return nothing
+    op isa ConstOperand || return nothing
     return (reinterpret(UInt64, Int64(op.value))) & _wmask(W)
 end
 
@@ -115,7 +115,7 @@ function _identity_emit_for_const(gates::Vector{ReversibleGate}, wa::WireAllocat
 
     # Remaining cases need x. Bail if the other operand isn't an SSA name
     # (both-const case is rare and falls through to the heavy path / fold).
-    ssa_op.kind === :ssa || return nothing
+    ssa_op isa SSAOperand || return nothing
 
     if (op === :add  && k == 0) ||
        (op === :sub  && k == 0) ||
@@ -181,7 +181,7 @@ function lower_binop!(gates, wa, vw, inst::IRBinOp;
     W = inst.width
 
     result = if inst.op in (:shl, :lshr, :ashr)
-        if inst.op2.kind == :const
+        if inst.op2 isa ConstOperand
             k = inst.op2.value
             if inst.op == :shl;   lower_shl!(gates, wa, a, k, W)
             elseif inst.op == :lshr; lower_lshr!(gates, wa, a, k, W)
@@ -199,8 +199,8 @@ function lower_binop!(gates, wa, vw, inst::IRBinOp;
         # Use Cuccaro in-place adder when op2 is dead after this instruction.
         # Constants are always safe (their wires are freshly allocated by resolve!).
         # SSA vars are safe when this is their last use (liveness[name] <= inst_idx).
-        op2_dead = inst.op2.kind == :const ||
-                   (inst.op2.kind == :ssa && get(ssa_liveness, inst.op2.name, 0) <= inst_idx)
+        op2_dead = inst.op2 isa ConstOperand ||
+                   (inst.op2 isa SSAOperand && get(ssa_liveness, inst.op2.name, 0) <= inst_idx)
         if inst.op == :add
             strat = _pick_add_strategy(add, W, op2_dead, !isempty(ssa_liveness))
             if strat == :cuccaro
@@ -452,9 +452,9 @@ function lower_select!(gates, wa, vw, inst::IRSelect; ctx::Union{Nothing,Lowerin
     if inst.width == 0
         ctx === nothing &&
             error("lower_select!: ptr-select %$(inst.dest) requires ctx for ptr_provenance threading")
-        inst.op1.kind == :ssa ||
+        inst.op1 isa SSAOperand ||
             error("lower_select!: ptr-select %$(inst.dest) true-side is non-SSA ($(inst.op1))")
-        inst.op2.kind == :ssa ||
+        inst.op2 isa SSAOperand ||
             error("lower_select!: ptr-select %$(inst.dest) false-side is non-SSA ($(inst.op2))")
         haskey(ctx.ptr_provenance, inst.op1.name) ||
             error("lower_select!: ptr-select %$(inst.dest) true-side %$(inst.op1.name) has no provenance")

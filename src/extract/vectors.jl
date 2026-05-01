@@ -98,7 +98,7 @@ function _resolve_vec_lanes(val::LLVM.Value,
     end
     # Path D: poison / undef — sentinel lanes. Reading crashes fail-loud.
     if val isa LLVM.UndefValue || val isa LLVM.PoisonValue
-        return [IROperand(:const, :__poison_lane__, 0) for _ in 1:got_n]
+        return [POISON_LANE for _ in 1:got_n]
     end
     error("ir_extract.jl: cannot resolve vector lanes for $(string(val)) :: " *
           "$vt — not an SSA vector, ConstantDataVector, ConstantAggregateZero, " *
@@ -141,7 +141,7 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
         for i in 0:(n_result - 1)
             m = Int(LLVM.API.LLVMGetMaskValue(inst.ref, i))
             if m == -1                       # poison mask element
-                out[i + 1] = IROperand(:const, :__poison_lane__, 0)
+                out[i + 1] = POISON_LANE
             elseif 0 <= m < n_src
                 out[i + 1] = v1_lanes[m + 1]
             elseif n_src <= m < 2 * n_src
@@ -166,7 +166,7 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
         (0 <= idx < n) ||
             _ir_error(inst, "extractelement lane index $idx outside [0,$n)")
         lane_op = vec_lanes[idx + 1]
-        (lane_op.kind == :const && lane_op.name === :__poison_lane__) &&
+        lane_op === POISON_LANE &&
             _ir_error(inst, "extractelement reads poison lane — undefined behaviour")
         w = Int(LLVM.width(LLVM.value_type(inst)))
         return IRBinOp(dest, :add, lane_op, iconst(0), w)
@@ -289,7 +289,7 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
             shifted = IROperand[]
             for k in 0:(n_src - 1)
                 lane = src_lanes[k + 1]
-                (lane.kind == :const && lane.name === :__poison_lane__) &&
+                lane === POISON_LANE &&
                     _ir_error(inst, "vector→scalar bitcast reads poison lane at index $k")
                 zext_dest = _auto_name(counter)
                 push!(insts, IRCast(zext_dest, :zext, lane, 1, n_src))

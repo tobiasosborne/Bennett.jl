@@ -46,8 +46,7 @@ using Bennett: IRInsertValue, IRRet
             @test iv.elem_width == 64
             @test iv.n_elems == 9
             # No pending-lane sentinel survives.
-            @test !(iv.val.kind == :const &&
-                    iv.val.name === :__pending_vec_lane__)
+            @test !(iv.val isa Bennett.PendingVecLane)
         end
         @test last_block.terminator isa IRRet
         @test last_block.terminator.width == 576

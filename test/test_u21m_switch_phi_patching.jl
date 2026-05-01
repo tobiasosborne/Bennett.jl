@@ -59,7 +59,7 @@ default:
 
         # T2 — constant value 10 preserved for every incoming.
         for (val, _) in phi.incoming
-            @test val.kind == :const && val.value == 10
+            @test val isa Bennett.ConstOperand && val.value == 10
         end
 
         # T3 — end-to-end: reversible_compile + simulate agrees with the

@@ -2,7 +2,6 @@
 # Listed once here so a typo (`:slt` vs `:lt`, `:zxt` vs `:zext`) fails
 # at construction time with a clear error, not 500 lines later during
 # lowering when the elseif chain falls through.
-const _IR_OPERAND_KINDS = (:ssa, :const)
 const _IR_BINOP_OPS     = (:add, :sub, :mul, :and, :or, :xor,
                            :shl, :lshr, :ashr,
                            :udiv, :sdiv, :urem, :srem)
@@ -11,21 +10,46 @@ const _IR_ICMP_PREDS    = (:eq, :ne,
                            :slt, :sle, :sgt, :sge)
 const _IR_CAST_OPS      = (:sext, :zext, :trunc)
 
-# --- Operand: SSA variable or integer constant ---
+# --- Operand: abstract IROperand + concrete leaves (Bennett-v958 / U68) ---
+#
+# Replaces the prior tagged-union `struct IROperand` with `kind::Symbol`
+# discriminant. Concrete subtypes are dispatched on directly by `resolve!`,
+# `_ssa_names`, and the per-IR-type `_ssa_operands` methods, eliminating the
+# 47+ `.kind == :ssa|:const` discriminator sites and the four magic-named
+# `:const` sentinels (`OPAQUE_PTR`, `POISON_LANE`, `PENDING_VEC_LANE`,
+# `ZERO_AGG`) that piggy-backed on the old representation.
+abstract type IROperand end
 
-struct IROperand
-    kind::Symbol       # :ssa or :const
-    name::Symbol       # SSA name (if :ssa)
-    value::Int         # constant value (if :const)
-    function IROperand(kind::Symbol, name::Symbol, value::Int)
-        kind in _IR_OPERAND_KINDS ||
-            error("IROperand: kind=:$kind not in $_IR_OPERAND_KINDS")
-        new(kind, name, value)
-    end
+struct SSAOperand <: IROperand
+    name::Symbol
 end
 
-ssa(name::Symbol)    = IROperand(:ssa, name, 0)
-iconst(value::Int)   = IROperand(:const, Symbol(""), value)
+struct ConstOperand <: IROperand
+    value::Int
+end
+
+# Sentinels — extractor-internal placeholders. Each must be consumed by its
+# specialised lowering path; if any reaches `resolve!`, the catch-all method
+# fails loud per CLAUDE.md §1.
+struct OpaquePtrSentinel    <: IROperand end
+struct PoisonLaneSentinel   <: IROperand end
+struct ZeroAggSentinel      <: IROperand end
+
+# `PendingVecLane` is the only sentinel with a payload — sret aggregation
+# stashes the lane index until `_apply_pending_vec_writes!` distributes the
+# real per-lane values. Carrying the int avoids a separate side-table.
+struct PendingVecLane <: IROperand
+    lane::Int
+end
+
+# Canonical interned instances for the empty-payload sentinels. Identity-
+# checkable in hot paths (`op === OPAQUE_PTR_SENTINEL`).
+const OPAQUE_PTR_SENTINEL = OpaquePtrSentinel()
+const POISON_LANE         = PoisonLaneSentinel()
+const ZERO_AGG            = ZeroAggSentinel()
+
+ssa(name::Symbol)  = SSAOperand(name)
+iconst(value::Int) = ConstOperand(value)
 
 # --- Instructions ---
 
@@ -185,7 +209,12 @@ struct IRCall <: IRInst
     args::Vector{IROperand}
     arg_widths::Vector{Int}
     ret_width::Int
-    function IRCall(dest::Symbol, callee::Function, args::Vector{IROperand},
+    # Bennett-v958 / U68: accept any AbstractVector{<:IROperand} so callers
+    # writing `[ssa(:a), ssa(:b)]` (inferred as Vector{SSAOperand}) don't
+    # need to manually annotate the eltype. Coerce to Vector{IROperand} for
+    # storage stability — IRCall.args is the abstract-eltype canonical form.
+    function IRCall(dest::Symbol, callee::Function,
+                    args::AbstractVector{<:IROperand},
                     arg_widths::Vector{Int}, ret_width::Int)
         length(args) == length(arg_widths) ||
             error("IRCall: length(args)=$(length(args)) != length(arg_widths)=$(length(arg_widths)) " *
@@ -203,7 +232,7 @@ struct IRCall <: IRInst
             w >= 1 ||
                 error("IRCall: arg_widths[$i]=$w must be >= 1 (dest=$dest, callee=$(nameof(callee)))")
         end
-        new(dest, callee, args, arg_widths, ret_width)
+        new(dest, callee, convert(Vector{IROperand}, args), arg_widths, ret_width)
     end
 end
 
@@ -218,6 +247,13 @@ struct IRSwitch <: IRInst
     cond_width::Int                                    # bit width of condition
     default_label::Symbol                              # default target
     cases::Vector{Tuple{IROperand, Symbol}}            # (case_val, target_label)
+    # Bennett-v958 / U68: widened-eltype constructor to accept callers'
+    # `Vector{Tuple{ConstOperand, Symbol}}` (etc.) without manual annotation.
+    function IRSwitch(cond::IROperand, cond_width::Int, default_label::Symbol,
+                      cases::AbstractVector{<:Tuple{<:IROperand, Symbol}})
+        new(cond, cond_width, default_label,
+            convert(Vector{Tuple{IROperand, Symbol}}, cases))
+    end
 end
 
 struct IRPhi <: IRInst
@@ -225,13 +261,17 @@ struct IRPhi <: IRInst
     width::Int          # 0 is the Bennett-cc0 M2b pointer sentinel — same
                         # convention as IRSelect.
     incoming::Vector{Tuple{IROperand, Symbol}}  # (value, from_block)
-    function IRPhi(dest::Symbol, width::Int, incoming::Vector{Tuple{IROperand, Symbol}})
+    # Bennett-v958 / U68: accept any AbstractVector{<:Tuple{<:IROperand, Symbol}}
+    # so callers don't need to manually annotate the eltype after the
+    # IROperand → abstract-type refactor.
+    function IRPhi(dest::Symbol, width::Int,
+                   incoming::AbstractVector{<:Tuple{<:IROperand, Symbol}})
         width >= 0 ||
             error("IRPhi: width=$width must be >= 0 (dest=$dest); " *
                   "use 0 only for pointer-typed phis")
         isempty(incoming) &&
             error("IRPhi: incoming is empty (dest=$dest); a phi with no predecessors is malformed")
-        new(dest, width, incoming)
+        new(dest, width, convert(Vector{Tuple{IROperand, Symbol}}, incoming))
     end
 end
 

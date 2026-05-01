@@ -65,6 +65,13 @@ export NOTGate, CNOTGate, ToffoliGate, ReversibleGate
 # (REPL-visible), LoweringResult the return type of `lower` and input to
 # `bennett` (referenced in docs/src/api.md:139, 211).  Exporting both.
 export ParsedIR, LoweringResult
+# Bennett-v958 / U68: IROperand is now an abstract type with concrete
+# subtypes. Existing helpers `ssa(name)` / `iconst(value)` still construct
+# the right leaf type. The OPAQUE_PTR_SENTINEL singleton is exported for
+# backward compat (Bennett-ibz5 / U96 test depends on it).
+export IROperand, SSAOperand, ConstOperand, OpaquePtrSentinel,
+       PoisonLaneSentinel, ZeroAggSentinel, PendingVecLane,
+       OPAQUE_PTR_SENTINEL, POISON_LANE, ZERO_AGG, ssa, iconst
 export gate_count, ancilla_count, constant_wire_count, depth, t_count, t_depth, toffoli_depth, peak_live_wires, print_circuit, verify_reversibility
 export pebbled_bennett, eager_bennett, value_eager_bennett, pebbled_group_bennett, checkpoint_bennett
 

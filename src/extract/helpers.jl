@@ -123,7 +123,7 @@ function _operand(val::LLVM.Value, names::Dict{_LLVMRef, Symbol})
     if val isa LLVM.ConstantInt
         return iconst(_const_int_as_int(val))
     elseif val isa LLVM.ConstantAggregateZero
-        return IROperand(:const, :__zero_agg__, 0)  # special: zero aggregate
+        return ZERO_AGG  # Bennett-v958 / U68: ZeroAggSentinel singleton
     elseif val isa LLVM.ConstantExpr
         # Bennett-cc0.4: fold statically-decidable ConstantExprs (today:
         # pointer-typed icmp eq/ne between named globals) to i1 literals.

@@ -50,14 +50,14 @@ using LLVM
         @test alloca_inst !== nothing
         @test alloca_inst.dest == :p
         @test alloca_inst.elem_width == 8
-        @test alloca_inst.n_elems.kind == :const
+        @test alloca_inst.n_elems isa Bennett.ConstOperand
         @test alloca_inst.n_elems.value == 1
 
         # Store fields: ptr=ssa(:p), val=ssa(x::Int8), width=8
         @test store_inst !== nothing
-        @test store_inst.ptr.kind == :ssa
+        @test store_inst.ptr isa Bennett.SSAOperand
         @test store_inst.ptr.name == :p
-        @test store_inst.val.kind == :ssa
+        @test store_inst.val isa Bennett.SSAOperand
         @test store_inst.val.name == Symbol("x::Int8")
         @test store_inst.width == 8
     end
@@ -76,7 +76,7 @@ using LLVM
             insts = parsed.blocks[1].instructions
             allocas = filter(i -> i isa Bennett.IRAlloca, insts)
             @test length(allocas) == 1
-            @test allocas[1].n_elems.kind == :const
+            @test allocas[1].n_elems isa Bennett.ConstOperand
             @test allocas[1].n_elems.value == 4
             dispose(mod)
         end
@@ -96,7 +96,7 @@ using LLVM
             parsed = Bennett._module_to_parsed_ir(mod)
             stores = filter(i -> i isa Bennett.IRStore, parsed.blocks[1].instructions)
             @test length(stores) == 1
-            @test stores[1].val.kind == :const
+            @test stores[1].val isa Bennett.ConstOperand
             @test stores[1].val.value == 7
             dispose(mod)
         end

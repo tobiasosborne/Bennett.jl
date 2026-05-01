@@ -149,7 +149,7 @@ function _emit_qrom_from_gep!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     # Case 1 — compile-time-constant index: materialize `data[idx]` directly.
     # Zero gates for the lookup itself (just NOTs to set the output bits);
     # no QROM tree needed. Out-of-range index returns zero (zero-padded semantics).
-    if idx_op.kind == :const
+    if idx_op isa ConstOperand
         word = (0 <= idx_op.value < L) ? data[idx_op.value + 1] : UInt64(0)
         out = allocate!(wa, W)
         for bit in 0:W-1

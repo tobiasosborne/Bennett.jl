@@ -236,7 +236,7 @@ function _collect_sret_writes(func::LLVM.Function, sret_info, names::Dict{_LLVMR
                             haskey(slot_values, slot) && _ir_error(inst,
                                 "sret slot $slot already written; vector store " *
                                 "(lane $lane) cannot re-write it")
-                            slot_values[slot] = IROperand(:const, :__pending_vec_lane__, lane)
+                            slot_values[slot] = PendingVecLane(lane)
                         end
                         pending_vec[inst.ref] = (first_slot, n_lanes)
                         pending_val_refs[inst.ref] = val.ref
@@ -259,7 +259,7 @@ function _collect_sret_writes(func::LLVM.Function, sret_info, names::Dict{_LLVMR
                         "sret store slot $slot is out of range [0, $n)")
                     if haskey(slot_values, slot)
                         prior = slot_values[slot]
-                        if prior.kind == :const && prior.name === :__pending_vec_lane__
+                        if prior isa PendingVecLane
                             _ir_error(inst,
                                 "sret slot $slot was reserved by an earlier " *
                                 "vector sret store; scalar re-write unsupported")
@@ -364,7 +364,7 @@ function _synthesize_sret_chain(sret_info, slot_values::Dict{Int, IROperand},
     n  = sret_info.n_elems
     ew = sret_info.elem_width
     chain = IRInst[]
-    agg_op = IROperand(:const, :__zero_agg__, 0)
+    agg_op = ZERO_AGG
     last_dest = Symbol("")
     for k in 0:(n - 1)
         dest = _auto_name(counter)

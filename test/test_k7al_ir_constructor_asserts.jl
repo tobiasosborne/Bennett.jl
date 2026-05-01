@@ -20,13 +20,12 @@ using Bennett
 @testset "Bennett-k7al / U99 — IR constructor asserts" begin
 
     @testset "validation tables exist + non-empty" begin
-        @test !isempty(Bennett._IR_OPERAND_KINDS)
         @test !isempty(Bennett._IR_BINOP_OPS)
         @test !isempty(Bennett._IR_ICMP_PREDS)
         @test !isempty(Bennett._IR_CAST_OPS)
         # Sanity: each table is a Tuple of Symbols.
-        for tbl in (Bennett._IR_OPERAND_KINDS, Bennett._IR_BINOP_OPS,
-                    Bennett._IR_ICMP_PREDS, Bennett._IR_CAST_OPS)
+        for tbl in (Bennett._IR_BINOP_OPS, Bennett._IR_ICMP_PREDS,
+                    Bennett._IR_CAST_OPS)
             @test tbl isa Tuple
             for s in tbl
                 @test s isa Symbol
@@ -34,14 +33,24 @@ using Bennett
         end
     end
 
-    @testset "IROperand: kind validation" begin
-        # Happy paths — both helpers and the raw constructor.
+    @testset "IROperand: type hierarchy (Bennett-v958 / U68)" begin
+        # IROperand is now an abstract type; helpers construct concrete leaves.
+        @test Bennett.ssa(:x) isa Bennett.SSAOperand
         @test Bennett.ssa(:x) isa Bennett.IROperand
+        @test Bennett.iconst(7) isa Bennett.ConstOperand
         @test Bennett.iconst(7) isa Bennett.IROperand
-        @test Bennett.IROperand(:ssa, :x, 0) isa Bennett.IROperand
-
-        @test_throws "kind=:bogus" Bennett.IROperand(:bogus, :x, 0)
-        @test_throws "kind=:" Bennett.IROperand(:notakind, :x, 0)
+        # Sentinels are distinct subtypes.
+        @test Bennett.OPAQUE_PTR_SENTINEL isa Bennett.OpaquePtrSentinel
+        @test Bennett.POISON_LANE         isa Bennett.PoisonLaneSentinel
+        @test Bennett.ZERO_AGG            isa Bennett.ZeroAggSentinel
+        @test Bennett.PendingVecLane(3)   isa Bennett.PendingVecLane
+        # Each sentinel <: IROperand.
+        for op in (Bennett.OPAQUE_PTR_SENTINEL, Bennett.POISON_LANE,
+                   Bennett.ZERO_AGG, Bennett.PendingVecLane(0))
+            @test op isa Bennett.IROperand
+        end
+        # Cannot construct the abstract type directly.
+        @test_throws MethodError Bennett.IROperand()
     end
 
     @testset "IRBinOp: op + width validation" begin

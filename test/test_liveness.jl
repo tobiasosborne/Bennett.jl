@@ -69,7 +69,7 @@ using Random
         # (or close to it — ret reads the final sum)
         total_insts = sum(length(b.instructions) + 1 for b in parsed.blocks)
         ret_operand = parsed.blocks[end].terminator.op
-        if ret_operand.kind == :ssa
+        if ret_operand isa Bennett.SSAOperand
             @test liveness[ret_operand.name] == total_insts  # used by ret (last inst)
         end
         println("  polynomial: $(length(liveness)) vars, arg last_use=$(liveness[arg_name]), total_insts=$total_insts")

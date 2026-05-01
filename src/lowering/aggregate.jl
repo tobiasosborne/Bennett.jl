@@ -220,7 +220,7 @@ function lower_ptr_offset!(gates::Vector{ReversibleGate}, wa::WireAllocator,
         end
         new_origins = PtrOrigin[]
         for o in base_origins
-            o.idx_op.kind == :const || continue  # non-const base idx: skip
+            o.idx_op isa ConstOperand || continue  # non-const base idx: skip
             info = get(alloca_info, o.alloca_dest, nothing)
             info === nothing && continue
             ew = first(info)
@@ -322,7 +322,7 @@ current post-store state rather than a stale slice-alias of vw[ptr].
 Otherwise delegate to the legacy load path (pointer parameters, NTuple input).
 """
 function lower_load!(ctx::LoweringCtx, inst::IRLoad)
-    if inst.ptr.kind == :ssa && haskey(ctx.ptr_provenance, inst.ptr.name)
+    if inst.ptr isa SSAOperand && haskey(ctx.ptr_provenance, inst.ptr.name)
         origins = ctx.ptr_provenance[inst.ptr.name]
         isempty(origins) &&
             error("lower_load!: empty origin set for ptr %$(inst.ptr.name)")
@@ -358,7 +358,7 @@ function _lower_load_multi_origin!(ctx::LoweringCtx, inst::IRLoad,
         elem_w, n = info
         W == elem_w ||
             error("_lower_load_multi_origin!: load width=$W vs origin $(o.alloca_dest) elem_width=$elem_w")
-        o.idx_op.kind == :const ||
+        o.idx_op isa ConstOperand ||
             error("_lower_load_multi_origin!: multi-origin ptr with dynamic idx is NYI")
         0 <= o.idx_op.value < n ||
             error("_lower_load_multi_origin!: idx=$(o.idx_op.value) out of range [0, $n)")
@@ -502,7 +502,7 @@ function lower_insertvalue!(gates, wa, vw, inst::IRInsertValue)
     val_wires = resolve!(gates, wa, vw, inst.val, inst.elem_width)
 
     # Resolve or create the aggregate
-    if inst.agg.kind == :const && inst.agg.name == :__zero_agg__
+    if inst.agg === ZERO_AGG
         agg_wires = allocate!(wa, total_w)  # all zero already
     else
         agg_wires = resolve!(gates, wa, vw, inst.agg, total_w)

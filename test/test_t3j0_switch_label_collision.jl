@@ -25,14 +25,14 @@ using Bennett: IRBasicBlock, IRBranch, IRRet, IROperand, _expand_switches
         # ambiguity.
         bad_block = IRBasicBlock(:_sw_top_1,
                                  Bennett.IRInst[],
-                                 IRRet(IROperand(:const, Symbol(""), 0), 8))
+                                 IRRet(iconst(0), 8))
         @test_throws ErrorException _expand_switches([bad_block])
     end
 
     @testset "T2: _expand_switches errors on `_sw_cmp_` prefix too" begin
         bad_block = IRBasicBlock(:_sw_cmp_foo_3,
                                  Bennett.IRInst[],
-                                 IRRet(IROperand(:const, Symbol(""), 0), 8))
+                                 IRRet(iconst(0), 8))
         @test_throws ErrorException _expand_switches([bad_block])
     end
 
@@ -41,7 +41,7 @@ using Bennett: IRBasicBlock, IRBranch, IRRet, IROperand, _expand_switches
         # sentinel — would be confused with dead-code branches.
         bad_block = IRBasicBlock(:__unreachable__,
                                  Bennett.IRInst[],
-                                 IRRet(IROperand(:const, Symbol(""), 0), 8))
+                                 IRRet(iconst(0), 8))
         @test_throws ErrorException _expand_switches([bad_block])
     end
 
@@ -50,7 +50,7 @@ using Bennett: IRBasicBlock, IRBranch, IRRet, IROperand, _expand_switches
         # through untouched.
         ok_block = IRBasicBlock(:top,
                                 Bennett.IRInst[],
-                                IRRet(IROperand(:const, Symbol(""), 0), 8))
+                                IRRet(iconst(0), 8))
         result = _expand_switches([ok_block])
         @test length(result) == 1
         @test result[1].label === :top

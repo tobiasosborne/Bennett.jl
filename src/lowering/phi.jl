@@ -179,7 +179,7 @@ function lower_phi!(gates, wa, vw, inst::IRPhi, phi_block::Symbol,
             error("lower_phi!: ptr-phi %$(inst.dest) needs block_pred for edge predicates")
         merged = PtrOrigin[]
         for (val, src_block) in inst.incoming
-            val.kind == :ssa ||
+            val isa SSAOperand ||
                 error("lower_phi!: ptr-phi %$(inst.dest) incoming from non-SSA operand $(val)")
             haskey(ptr_provenance, val.name) ||
                 error("lower_phi!: ptr-phi %$(inst.dest) incoming %$(val.name) has no provenance")
