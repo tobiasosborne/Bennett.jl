@@ -55,6 +55,8 @@ include("persistent/persistent.jl")
 using .Persistent
 
 export reversible_compile, simulate, simulate!, diagnose_nonzero, extract_ir, extract_parsed_ir, register_callee!
+# Bennett-u71l / U161: bundled options struct; single source of defaults.
+export CompileOptions
 export extract_parsed_ir_from_ll, extract_parsed_ir_from_bc
 export PersistentMapImpl, AbstractPersistentMap, verify_pmap_correctness, verify_pmap_persistence_invariant, pmap_demo_oracle, LINEAR_SCAN_IMPL
 # Bennett-uoem / U54: OKASAKI_IMPL + Okasaki API relocated to
@@ -92,6 +94,47 @@ reversible_compile(f, types::Type...; kw...) = reversible_compile(f, Tuple{types
 const _SUPPORTED_SCALAR_ARGS = (Int8, Int16, Int32, Int64,
                                 UInt8, UInt16, UInt32, UInt64,
                                 Float64, Bool)
+
+"""
+    CompileOptions(; optimize=true, max_loop_iterations=0,
+                     compact_calls=false, bit_width=0,
+                     add=:auto, mul=:auto, strategy=:auto,
+                     fold_constants=true, target=:gate_count)
+
+Bundle of all optional configuration accepted by `reversible_compile`.
+Single source-of-truth for the defaults — each `reversible_compile`
+overload's kwarg defaults are sourced from `CompileOptions()`.
+
+Per-overload applicability (Bennett-u71l / U161):
+- **Tuple overload** (`reversible_compile(f, arg_types::Type{<:Tuple})`)
+  uses every field.
+- **ParsedIR overload** (`reversible_compile(parsed::ParsedIR)`) uses
+  `max_loop_iterations`, `compact_calls`, `add`, `mul`, `fold_constants`,
+  `target`. Setting `optimize`, `bit_width`, or `strategy` to a non-
+  default value on this path raises `ArgumentError`.
+- **Float64 overload** (`reversible_compile(f, ::Type{Float64}, …)`) uses
+  every field except `bit_width` (Float64 is fixed-width 64); non-default
+  `bit_width` raises `ArgumentError`.
+
+# Examples
+```julia
+opts = CompileOptions(add=:cuccaro, fold_constants=false)
+c = reversible_compile(x -> x + Int8(1), Tuple{Int8}, opts)
+```
+"""
+Base.@kwdef struct CompileOptions
+    optimize::Bool = true
+    max_loop_iterations::Int = 0
+    compact_calls::Bool = false
+    bit_width::Int = 0
+    add::Symbol = :auto
+    mul::Symbol = :auto
+    strategy::Symbol = :auto
+    fold_constants::Bool = true
+    target::Symbol = :gate_count
+end
+
+const _DEFAULT_COMPILE_OPTIONS = CompileOptions()
 
 # Bennett-xlsz / U29: unified kwargs validation across all three
 # `reversible_compile` overloads. A raw `MethodError` on a typo or on
@@ -166,12 +209,15 @@ const _TUPLE_OVERLOAD_KWARGS = (:optimize, :max_loop_iterations,
                                :strategy, :fold_constants, :target)
 
 function reversible_compile(f, arg_types::Type{<:Tuple};
-                            optimize::Bool=true, max_loop_iterations::Int=0,
-                            compact_calls::Bool=false, bit_width::Int=0,
-                            add::Symbol=:auto, mul::Symbol=:auto,
-                            strategy::Symbol=:auto,
-                            fold_constants::Bool=true,
-                            target::Symbol=:gate_count,
+                            optimize::Bool=_DEFAULT_COMPILE_OPTIONS.optimize,
+                            max_loop_iterations::Int=_DEFAULT_COMPILE_OPTIONS.max_loop_iterations,
+                            compact_calls::Bool=_DEFAULT_COMPILE_OPTIONS.compact_calls,
+                            bit_width::Int=_DEFAULT_COMPILE_OPTIONS.bit_width,
+                            add::Symbol=_DEFAULT_COMPILE_OPTIONS.add,
+                            mul::Symbol=_DEFAULT_COMPILE_OPTIONS.mul,
+                            strategy::Symbol=_DEFAULT_COMPILE_OPTIONS.strategy,
+                            fold_constants::Bool=_DEFAULT_COMPILE_OPTIONS.fold_constants,
+                            target::Symbol=_DEFAULT_COMPILE_OPTIONS.target,
                             kwargs...)
     _reject_unknown_kwargs("Tuple overload", _TUPLE_OVERLOAD_KWARGS,
                            (), kwargs)
@@ -269,17 +315,75 @@ circuit. This path skips IR extraction and the `strategy=:tabulate` /
 passing `optimize`, `bit_width`, or `strategy` here raises `ArgumentError`.
 """
 function reversible_compile(parsed::ParsedIR;
-                            max_loop_iterations::Int=0,
-                            compact_calls::Bool=false,
-                            add::Symbol=:auto, mul::Symbol=:auto,
-                            fold_constants::Bool=true,
-                            target::Symbol=:gate_count,
+                            max_loop_iterations::Int=_DEFAULT_COMPILE_OPTIONS.max_loop_iterations,
+                            compact_calls::Bool=_DEFAULT_COMPILE_OPTIONS.compact_calls,
+                            add::Symbol=_DEFAULT_COMPILE_OPTIONS.add,
+                            mul::Symbol=_DEFAULT_COMPILE_OPTIONS.mul,
+                            fold_constants::Bool=_DEFAULT_COMPILE_OPTIONS.fold_constants,
+                            target::Symbol=_DEFAULT_COMPILE_OPTIONS.target,
                             kwargs...)
     _reject_unknown_kwargs("ParsedIR overload", _PARSED_OVERLOAD_KWARGS,
                            _PARSED_OVERLOAD_CROSS_REJECT, kwargs)
     lr = lower(parsed; max_loop_iterations, compact_calls, add, mul,
                fold_constants, target)
     return bennett(lr)
+end
+
+# ---- CompileOptions overloads (Bennett-u71l / U161) ----
+#
+# Thin wrappers that unpack a `CompileOptions` bundle into the kwarg form.
+# Per-overload applicability is enforced by raising on non-default values
+# of fields that aren't accepted on this path (mirrors the kwarg-side
+# `_reject_unknown_kwargs` cross-rejection — same error class, same UX).
+
+@inline function _check_field_at_default(overload::String, opts::CompileOptions,
+                                          field::Symbol)
+    actual  = getfield(opts, field)
+    default = getfield(_DEFAULT_COMPILE_OPTIONS, field)
+    actual == default || throw(ArgumentError(
+        "reversible_compile ($overload): CompileOptions.$field=$(actual) " *
+        "is not supported on this overload — leave it at the default " *
+        "($(default))."))
+    return nothing
+end
+
+"""
+    reversible_compile(f, arg_types::Type{<:Tuple}, opts::CompileOptions)
+    reversible_compile(parsed::ParsedIR,            opts::CompileOptions)
+    reversible_compile(f, ::Type{Float64}, ts::Type{Float64}..., opts::CompileOptions)
+
+`CompileOptions`-bundle overloads of `reversible_compile`. Equivalent to
+the kwarg form with each field of `opts` forwarded as a kwarg of the
+same name. Per-overload applicability is enforced (e.g. setting
+`opts.bit_width` on the ParsedIR or Float64 overload raises
+`ArgumentError`).
+"""
+function reversible_compile(f, arg_types::Type{<:Tuple}, opts::CompileOptions)
+    return reversible_compile(f, arg_types;
+        optimize            = opts.optimize,
+        max_loop_iterations = opts.max_loop_iterations,
+        compact_calls       = opts.compact_calls,
+        bit_width           = opts.bit_width,
+        add                 = opts.add,
+        mul                 = opts.mul,
+        strategy            = opts.strategy,
+        fold_constants      = opts.fold_constants,
+        target              = opts.target,
+    )
+end
+
+function reversible_compile(parsed::ParsedIR, opts::CompileOptions)
+    _check_field_at_default("ParsedIR overload", opts, :optimize)
+    _check_field_at_default("ParsedIR overload", opts, :bit_width)
+    _check_field_at_default("ParsedIR overload", opts, :strategy)
+    return reversible_compile(parsed;
+        max_loop_iterations = opts.max_loop_iterations,
+        compact_calls       = opts.compact_calls,
+        add                 = opts.add,
+        mul                 = opts.mul,
+        fold_constants      = opts.fold_constants,
+        target              = opts.target,
+    )
 end
 
 # ---- Per-task implementations (Bennett-19g6 / U91 modular layout) ----

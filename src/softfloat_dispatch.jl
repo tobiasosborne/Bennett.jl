@@ -64,12 +64,14 @@ const _FLOAT64_OVERLOAD_KWARGS = (:optimize, :max_loop_iterations,
 const _FLOAT64_OVERLOAD_CROSS_REJECT = (:bit_width,)
 
 function reversible_compile(f::F, float_types::Type{Float64}...;
-                            optimize::Bool=true, max_loop_iterations::Int=0,
-                            compact_calls::Bool=false,
-                            strategy::Symbol=:auto,
-                            add::Symbol=:auto, mul::Symbol=:auto,
-                            fold_constants::Bool=true,
-                            target::Symbol=:gate_count,
+                            optimize::Bool=_DEFAULT_COMPILE_OPTIONS.optimize,
+                            max_loop_iterations::Int=_DEFAULT_COMPILE_OPTIONS.max_loop_iterations,
+                            compact_calls::Bool=_DEFAULT_COMPILE_OPTIONS.compact_calls,
+                            strategy::Symbol=_DEFAULT_COMPILE_OPTIONS.strategy,
+                            add::Symbol=_DEFAULT_COMPILE_OPTIONS.add,
+                            mul::Symbol=_DEFAULT_COMPILE_OPTIONS.mul,
+                            fold_constants::Bool=_DEFAULT_COMPILE_OPTIONS.fold_constants,
+                            target::Symbol=_DEFAULT_COMPILE_OPTIONS.target,
                             kwargs...) where {F}
     _reject_unknown_kwargs("Float64 overload", _FLOAT64_OVERLOAD_KWARGS,
                            _FLOAT64_OVERLOAD_CROSS_REJECT, kwargs)
@@ -99,4 +101,48 @@ function reversible_compile(f::F, float_types::Type{Float64}...;
     else
         error("Float64 compile supports up to 3 arguments (got $N)")
     end
+end
+
+# ---- Float64 + CompileOptions wrapper (Bennett-u71l / U161) ----
+function reversible_compile(f::F, ::Type{Float64}, opts::CompileOptions) where {F}
+    _check_field_at_default("Float64 overload", opts, :bit_width)
+    return reversible_compile(f, Float64;
+        optimize            = opts.optimize,
+        max_loop_iterations = opts.max_loop_iterations,
+        compact_calls       = opts.compact_calls,
+        strategy            = opts.strategy,
+        add                 = opts.add,
+        mul                 = opts.mul,
+        fold_constants      = opts.fold_constants,
+        target              = opts.target,
+    )
+end
+
+function reversible_compile(f::F, ::Type{Float64}, ::Type{Float64}, opts::CompileOptions) where {F}
+    _check_field_at_default("Float64 overload", opts, :bit_width)
+    return reversible_compile(f, Float64, Float64;
+        optimize            = opts.optimize,
+        max_loop_iterations = opts.max_loop_iterations,
+        compact_calls       = opts.compact_calls,
+        strategy            = opts.strategy,
+        add                 = opts.add,
+        mul                 = opts.mul,
+        fold_constants      = opts.fold_constants,
+        target              = opts.target,
+    )
+end
+
+function reversible_compile(f::F, ::Type{Float64}, ::Type{Float64}, ::Type{Float64},
+                            opts::CompileOptions) where {F}
+    _check_field_at_default("Float64 overload", opts, :bit_width)
+    return reversible_compile(f, Float64, Float64, Float64;
+        optimize            = opts.optimize,
+        max_loop_iterations = opts.max_loop_iterations,
+        compact_calls       = opts.compact_calls,
+        strategy            = opts.strategy,
+        add                 = opts.add,
+        mul                 = opts.mul,
+        fold_constants      = opts.fold_constants,
+        target              = opts.target,
+    )
 end
