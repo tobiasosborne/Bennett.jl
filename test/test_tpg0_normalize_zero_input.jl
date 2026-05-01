@@ -12,7 +12,8 @@
     # output is byte-identical (the IMPLICIT substitute is a no-op when
     # m already has bit 52 set; the CLZ doesn't underflow).
 
-    using Bennett: _sf_normalize_to_bit52
+    # Bennett-iwv5 / U90: softfloat internals live in `Bennett.SoftFloatLib`.
+    using Bennett.SoftFloatLib: _sf_normalize_to_bit52
 
     @testset "m == 0 returns (0, e) unchanged (no exponent garbage)" begin
         for e in (Int64(0), Int64(1), Int64(-100), Int64(1023), Int64(-1023),

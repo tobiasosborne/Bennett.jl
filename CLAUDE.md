@@ -142,7 +142,13 @@ Bennett.jl/                         # Project root. PRDs and CLAUDE.md live alon
     feistel.jl                      # reversible Feistel network for bijective hashing
 
     softfloat/                      # 17 files: IEEE 754 binary64 in pure integer arithmetic (bit-exact vs Julia native)
-      softfloat.jl                  # loader
+                                    # Bennett-iwv5 / U90: wrapped in `module SoftFloatLib`; 32 public soft_*
+                                    # primitives re-exported via `using .SoftFloatLib` in Bennett.jl. Internal
+                                    # helpers (_add128, _sf_normalize_to_bit52, _EXP_TAB, …) and bit-pattern
+                                    # constants (EXP_MASK, IMPLICIT, INDEF, QNAN) stay module-private. Module
+                                    # named `SoftFloatLib` (not `SoftFloat`) to avoid clash with the user-
+                                    # facing `struct SoftFloat` in src/softfloat_dispatch.jl.
+      softfloat.jl                  # `module SoftFloatLib` wrapper + include list + export list
       softfloat_common.jl           # shared branchless helpers (CLZ, round-to-nearest-even, ...)
       fadd.jl, fsub.jl, fmul.jl, fma.jl, fdiv.jl, fsqrt.jl, fneg.jl, fcmp.jl
       fpconv.jl, fptosi.jl, fptoui.jl, sitofp.jl, fround.jl
@@ -150,16 +156,20 @@ Bennett.jl/                         # Project root. PRDs and CLAUDE.md live alon
       fexp_julia.jl                 # Julia-idiom exp / exp2 variants
 
     persistent/                     # 10 files: persistent-map data structures (T5 workstream)
-      persistent.jl                 # loader
+                                    # Bennett-iwv5 / U90: wrapped in `module Persistent`; public surface
+                                    # (PersistentMapImpl, verify_pmap_*, LINEAR_SCAN_IMPL, soft_feistel*)
+                                    # re-exported via `using .Persistent`.
+      persistent.jl                 # `module Persistent` wrapper + include list + export list
       interface.jl                  # AbstractPersistentMap protocol
       harness.jl                    # correctness + benchmark harness (pmap_demo_oracle)
       linear_scan.jl                # brute-force baseline (winner at all measured scales — see worklog/026_2026-04-20_*.md)
-      okasaki_rbt.jl                # Okasaki 1999 red-black tree
-      hamt.jl                       # Bagwell HAMT
-      cf_semi_persistent.jl         # Conchon-Filliâtre semi-persistent map
-      hashcons_jenkins.jl           # Mogensen Jenkins-96 reversible hash
       hashcons_feistel.jl           # Feistel-based hash for hash-consing
-      popcount.jl                   # pure-integer popcount (HAMT helper)
+      research/                     # opt-in subdir, NOT loaded by Bennett module — relocated 2026-04-25 (Bennett-uoem / U54)
+        okasaki_rbt.jl              # Okasaki 1999 red-black tree
+        hamt.jl                     # Bagwell HAMT
+        cf_semi_persistent.jl       # Conchon-Filliâtre semi-persistent map
+        hashcons_jenkins.jl         # Mogensen Jenkins-96 reversible hash
+        popcount.jl                 # pure-integer popcount (HAMT helper)
 
   test/                             # 143 test/*.jl files / ~67k assertions / ~200 testsets / ~5 min cold Pkg.test
     runtests.jl                     # canonical registration order

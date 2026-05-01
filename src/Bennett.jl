@@ -16,6 +16,12 @@ include("multiplier.jl")
 # mul_qcla_tree.
 include("divider.jl")
 include("softfloat/softfloat.jl")
+# Bennett-iwv5 / U90: softfloat primitives live in submodule SoftFloatLib
+# so internal helpers (~75) and bit-pattern constants stay module-private.
+# `using` re-exposes the 32 public soft_* names at Bennett scope so the
+# downstream files (softmem, callees, lowering/*, persistent) keep their
+# unqualified `soft_fadd(...)` references.
+using .SoftFloatLib
 include("softmem.jl")
 include("qrom.jl")
 include("shadow_memory.jl")
@@ -42,6 +48,11 @@ include("tabulate.jl")
 include("memssa.jl")
 include("feistel.jl")
 include("persistent/persistent.jl")
+# Bennett-iwv5 / U90: persistent-DS public surface (PersistentMapImpl,
+# verify_pmap_*, LINEAR_SCAN_IMPL, soft_feistel*) re-exposed at Bennett
+# scope; internal helpers (_LS_STATE_LEN, _FEISTEL_HALF_W, …) stay module-
+# private.
+using .Persistent
 
 export reversible_compile, simulate, simulate!, diagnose_nonzero, extract_ir, extract_parsed_ir, register_callee!
 export extract_parsed_ir_from_ll, extract_parsed_ir_from_bc

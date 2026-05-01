@@ -26,7 +26,8 @@
     # Companion docstring update: src/softfloat/softfloat_common.jl
     # _sf_handle_subnormal docstring documents the finding.
 
-    using Bennett: _sf_handle_subnormal
+    # Bennett-iwv5 / U90: softfloat internals live in `Bennett.SoftFloatLib`.
+    using Bennett.SoftFloatLib: _sf_handle_subnormal
     bits(x::Float64) = reinterpret(UInt64, x)
     fb(x::UInt64) = reinterpret(Float64, x)
 

@@ -58,7 +58,7 @@
         # UInt128 ops can be cross-checked against these expected outputs.
         a = UInt64(0xDEADBEEFCAFEBABE)
         b = UInt64(0x0123456789ABCDEF)
-        (hi, lo) = Bennett._sf_widemul_u64_to_128(a, b)
+        (hi, lo) = Bennett.SoftFloatLib._sf_widemul_u64_to_128(a, b)
         # Cross-check against UInt128 widemul.
         expected = UInt128(a) * UInt128(b)
         @test (UInt128(hi) << 64) | UInt128(lo) == expected
@@ -66,19 +66,19 @@
         # _add128
         a_hi, a_lo = UInt64(0x1234), UInt64(0xFEDC)
         b_hi, b_lo = UInt64(0x5678), UInt64(0x9876)
-        (sum_hi, sum_lo) = Bennett._add128(a_hi, a_lo, b_hi, b_lo)
+        (sum_hi, sum_lo) = Bennett.SoftFloatLib._add128(a_hi, a_lo, b_hi, b_lo)
         expected = ((UInt128(a_hi) << 64) | UInt128(a_lo)) +
                    ((UInt128(b_hi) << 64) | UInt128(b_lo))
         @test (UInt128(sum_hi) << 64) | UInt128(sum_lo) == expected
 
         # _sub128
-        (diff_hi, diff_lo) = Bennett._sub128(a_hi, a_lo, b_hi, b_lo)
+        (diff_hi, diff_lo) = Bennett.SoftFloatLib._sub128(a_hi, a_lo, b_hi, b_lo)
         expected = ((UInt128(a_hi) << 64) | UInt128(a_lo)) -
                    ((UInt128(b_hi) << 64) | UInt128(b_lo))
         @test (UInt128(diff_hi) << 64) | UInt128(diff_lo) == expected
 
         # _neg128
-        (n_hi, n_lo) = Bennett._neg128(a_hi, a_lo)
+        (n_hi, n_lo) = Bennett.SoftFloatLib._neg128(a_hi, a_lo)
         expected = UInt128(0) - ((UInt128(a_hi) << 64) | UInt128(a_lo))
         @test (UInt128(n_hi) << 64) | UInt128(n_lo) == expected
     end
