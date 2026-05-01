@@ -479,6 +479,13 @@ if get(ENV, "BENNETT_RESEARCH_TESTS", "0") != "0"
     include("test_persistent_hashcons.jl")
 end
 
+# Bennett-8403 / U159: per-source-file unit test homes for the catalogue-
+# named files (Bennett.jl / lower.jl / ir_extract.jl). Other src/X.jl ↔
+# test/test_X.jl mappings are documented in test/PER_SOURCE_INDEX.md.
+include("test_bennett.jl")
+include("test_lower.jl")
+include("test_ir_extract.jl")
+
 # Bennett-fidj / U217: liveness × :auto add dispatcher coverage.
 include("test_fidj_liveness_auto_dispatcher.jl")
 
