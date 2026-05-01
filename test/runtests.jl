@@ -60,7 +60,7 @@ include("test_pebbling.jl")
 include("test_eager_bennett.jl")
 include("test_switch.jl")
 include("test_rev_memory.jl")
-include("test_sat_pebbling.jl")
+# Bennett-u2yp / U149: test_sat_pebbling.jl removed alongside src/pebble/sat_pebbling.jl
 include("test_intrinsics.jl")
 include("test_liveness.jl")
 include("test_sha256.jl")

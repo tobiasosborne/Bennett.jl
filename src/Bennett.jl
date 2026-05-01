@@ -43,7 +43,10 @@ include("pebble/pebbling.jl")
 include("pebble/eager.jl")
 include("pebble/value_eager.jl")
 include("pebble/pebbled_groups.jl")
-include("pebble/sat_pebbling.jl")
+# Bennett-u2yp / U149 (2026-05-01): src/pebble/sat_pebbling.jl + PicoSAT
+# dep dropped — 211 LOC unwired into any strategy dispatcher and the
+# replacement-with-modern-solver task lives in Bennett-fg2 (P2). Re-
+# introduce here when fg2 lands a Kissat/CaDiCaL backend.
 include("tabulate.jl")
 include("memssa.jl")
 include("feistel.jl")

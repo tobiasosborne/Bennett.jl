@@ -80,7 +80,7 @@ f(x::Int8)     ──►  extract_parsed_ir()  ──►  lower()  ──►  be
 
 ```
 Bennett.jl/                         # Project root. PRDs and CLAUDE.md live alongside Project.toml.
-  Project.toml                      # deps: LLVM.jl; extras: InteractiveUtils, Test, Random, Pkg, PicoSAT
+  Project.toml                      # deps: LLVM.jl, PrecompileTools, InteractiveUtils; extras: Test, Random
   Manifest.toml
   CLAUDE.md                         # this file — non-negotiable project rules
   README.md                         # public-facing intro
@@ -127,7 +127,7 @@ Bennett.jl/                         # Project root. PRDs and CLAUDE.md live alon
     pebbled_groups.jl               # group-level pebbling with wire reuse + checkpoint_bennett
     eager.jl                        # PRS15 EAGER cleanup (gate-level)
     value_eager.jl                  # PRS15 Algorithm 2 value-level EAGER
-    sat_pebbling.jl                 # Meuli et al. 2019 SAT-based optimal pebbling (PicoSAT)
+    # Bennett-u2yp / U149 (2026-05-01): sat_pebbling.jl + PicoSAT dep dropped — was 211 LOC unwired into any strategy dispatcher; modern-SAT-solver replacement tracked in Bennett-fg2 (P2).
     dep_dag.jl                      # gate dependency graph extraction
 
     # ---- Memory: reversible store/load primitives ----
