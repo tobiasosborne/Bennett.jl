@@ -413,55 +413,12 @@ function _lower_load_via_shadow!(ctx::LoweringCtx, inst::IRLoad,
     return nothing
 end
 
-function _lower_load_via_mux_4x8!(ctx::LoweringCtx, inst::IRLoad,
-                                   alloca_dest::Symbol, info::Tuple{Int,Int},
-                                   idx_op::IROperand)
-    inst.width == 8 ||
-        error("_lower_load_via_mux_4x8!: load width must be 8, got $(inst.width)")
-    arr_wires = ctx.vw[alloca_dest]
-    length(arr_wires) == 32 ||
-        error("_lower_load_via_mux_4x8!: expected 32-wire packed array at alloca $alloca_dest; got $(length(arr_wires))")
-
-    tag = _next_mux_tag!(ctx, "ld", inst.dest)
-    arr_sym = Symbol("__mux_load_arr_", tag)
-    idx_sym = Symbol("__mux_load_idx_", tag)
-    tmp_sym = Symbol("__mux_load_u64_", tag)
-
-    ctx.vw[arr_sym] = _wires_to_u64!(ctx, arr_wires)
-    ctx.vw[idx_sym] = _operand_to_u64!(ctx, idx_op)
-
-    call = IRCall(tmp_sym, soft_mux_load_4x8,
-                  [ssa(arr_sym), ssa(idx_sym)], [64, 64], 64)
-    lower_call!(ctx.gates, ctx.wa, ctx.vw, call; compact=ctx.compact_calls)
-
-    ctx.vw[inst.dest] = ctx.vw[tmp_sym][1:8]
-    return nothing
-end
-
-function _lower_load_via_mux_8x8!(ctx::LoweringCtx, inst::IRLoad,
-                                   alloca_dest::Symbol, info::Tuple{Int,Int},
-                                   idx_op::IROperand)
-    inst.width == 8 ||
-        error("_lower_load_via_mux_8x8!: load width must be 8, got $(inst.width)")
-    arr_wires = ctx.vw[alloca_dest]
-    length(arr_wires) == 64 ||
-        error("_lower_load_via_mux_8x8!: expected 64-wire packed array at alloca $alloca_dest")
-
-    tag = _next_mux_tag!(ctx, "ld", inst.dest)
-    arr_sym = Symbol("__mux_load_arr_", tag)
-    idx_sym = Symbol("__mux_load_idx_", tag)
-    tmp_sym = Symbol("__mux_load_u64_", tag)
-
-    ctx.vw[arr_sym] = _wires_to_u64!(ctx, arr_wires)
-    ctx.vw[idx_sym] = _operand_to_u64!(ctx, idx_op)
-
-    call = IRCall(tmp_sym, soft_mux_load_8x8,
-                  [ssa(arr_sym), ssa(idx_sym)], [64, 64], 64)
-    lower_call!(ctx.gates, ctx.wa, ctx.vw, call; compact=ctx.compact_calls)
-
-    ctx.vw[inst.dest] = ctx.vw[tmp_sym][1:8]
-    return nothing
-end
+# Bennett-lm3x / U56 (2026-05-01): hand-written `_lower_load_via_mux_4x8!`
+# and `_lower_load_via_mux_8x8!` were folded into the @eval loop in
+# src/lowering/memory.jl. Their bodies were textually identical to what
+# the loop generates; the only "specialness" was that they pre-dated the
+# parametric loop by one milestone (M1 vs M2a). Both definitions now come
+# from `_MUX_SHAPES_NW` in memory.jl.
 
 """Legacy direct load worker: CNOT-copy W bits from the wire array.
 Called only from `lower_load!(ctx, inst)` when no ptr_provenance entry exists

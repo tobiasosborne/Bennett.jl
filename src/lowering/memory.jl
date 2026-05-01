@@ -422,91 +422,30 @@ function _lower_load_via_shadow_checkpoint!(ctx::LoweringCtx, inst::IRLoad,
     return nothing
 end
 
+# Bennett-cc0 M1 + Bennett-lm3x / U56: parametric MUX EXCH helpers.
+# Generated via @eval over the shape list. Each (N, W) pair produces a
+# `_lower_load_via_mux_NxW!` and a `_lower_store_via_mux_NxW!`, both following
+# the same structure: validate width + packed-array size, pack operands into
+# UInt64, emit IRCall to the matching `soft_mux_*_NxW` callee, slice the low
+# N·W bits back into the primal wire list.
+#
 # Bennett-cc0 M2d: MUX-store dispatch is guarded when the store lives in a
 # non-entry block. `block_label == ctx.entry_label` (or the sentinel
-# Symbol("")) routes to the unguarded soft_mux_store_NxW callee — entry-block
+# Symbol("")) routes to the unguarded `soft_mux_store_NxW` callee — entry-block
 # stores therefore keep the byte-identical BENCHMARKS.md gate counts. Any
 # other block promotes the 1-wire block predicate into a 64-wire operand and
-# calls soft_mux_store_guarded_NxW, folding `pred` into the per-slot
-# `ifelse` cond. When `pred == 0` every slot returns OLD → `arr` unchanged.
-function _lower_store_via_mux_4x8!(ctx::LoweringCtx, inst::IRStore,
-                                   alloca_dest::Symbol, idx_op::IROperand;
-                                   block_label::Symbol=Symbol(""))
-    inst.width == 8 ||
-        error("_lower_store_via_mux_4x8!: store width must be 8, got $(inst.width)")
-    arr_wires = ctx.vw[alloca_dest]
-    length(arr_wires) == 32 ||
-        error("_lower_store_via_mux_4x8!: expected 32-wire packed array")
+# calls `soft_mux_store_guarded_NxW`, folding `pred` into the per-slot `ifelse`
+# cond. When `pred == 0` every slot returns OLD → `arr` unchanged.
+#
+# Bennett-lm3x / U56 (2026-05-01): the (4,8) and (8,8) shapes were previously
+# hand-written in aggregate.jl + memory.jl with bodies textually identical to
+# what this loop produces. Folded into the loop to eliminate the duplication
+# and the implicit second copy of the shape set. The single source of truth
+# for valid shapes is `_MUX_SHAPES_NW` below; `_MUX_EXCH_STRATEGY` derives
+# from it.
+const _MUX_SHAPES_NW = [(2, 8), (4, 8), (8, 8), (2, 16), (4, 16), (2, 32)]
 
-    tag = _next_mux_tag!(ctx, "st", inst.ptr.name)
-    arr_sym = Symbol("__mux_store_arr_", tag)
-    idx_sym = Symbol("__mux_store_idx_", tag)
-    val_sym = Symbol("__mux_store_val_", tag)
-    res_sym = Symbol("__mux_store_res_", tag)
-
-    ctx.vw[arr_sym] = _wires_to_u64!(ctx, arr_wires)
-    ctx.vw[idx_sym] = _operand_to_u64!(ctx, idx_op)
-    ctx.vw[val_sym] = _operand_to_u64!(ctx, inst.val)
-
-    if block_label == Symbol("") || block_label == ctx.entry_label
-        call = IRCall(res_sym, soft_mux_store_4x8,
-                      [ssa(arr_sym), ssa(idx_sym), ssa(val_sym)], [64, 64, 64], 64)
-    else
-        pred_sym = _mux_store_pred_sym!(ctx, block_label, tag,
-                                        "_lower_store_via_mux_4x8!")
-        call = IRCall(res_sym, soft_mux_store_guarded_4x8,
-                      [ssa(arr_sym), ssa(idx_sym), ssa(val_sym), ssa(pred_sym)],
-                      [64, 64, 64, 64], 64)
-    end
-    lower_call!(ctx.gates, ctx.wa, ctx.vw, call; compact=ctx.compact_calls)
-
-    ctx.vw[alloca_dest] = ctx.vw[res_sym][1:32]
-    return nothing
-end
-
-function _lower_store_via_mux_8x8!(ctx::LoweringCtx, inst::IRStore,
-                                   alloca_dest::Symbol, idx_op::IROperand;
-                                   block_label::Symbol=Symbol(""))
-    inst.width == 8 ||
-        error("_lower_store_via_mux_8x8!: store width must be 8, got $(inst.width)")
-    arr_wires = ctx.vw[alloca_dest]
-    length(arr_wires) == 64 ||
-        error("_lower_store_via_mux_8x8!: expected 64-wire packed array")
-
-    tag = _next_mux_tag!(ctx, "st", inst.ptr.name)
-    arr_sym = Symbol("__mux_store_arr_", tag)
-    idx_sym = Symbol("__mux_store_idx_", tag)
-    val_sym = Symbol("__mux_store_val_", tag)
-    res_sym = Symbol("__mux_store_res_", tag)
-
-    ctx.vw[arr_sym] = _wires_to_u64!(ctx, arr_wires)
-    ctx.vw[idx_sym] = _operand_to_u64!(ctx, idx_op)
-    ctx.vw[val_sym] = _operand_to_u64!(ctx, inst.val)
-
-    if block_label == Symbol("") || block_label == ctx.entry_label
-        call = IRCall(res_sym, soft_mux_store_8x8,
-                      [ssa(arr_sym), ssa(idx_sym), ssa(val_sym)], [64, 64, 64], 64)
-    else
-        pred_sym = _mux_store_pred_sym!(ctx, block_label, tag,
-                                        "_lower_store_via_mux_8x8!")
-        call = IRCall(res_sym, soft_mux_store_guarded_8x8,
-                      [ssa(arr_sym), ssa(idx_sym), ssa(val_sym), ssa(pred_sym)],
-                      [64, 64, 64, 64], 64)
-    end
-    lower_call!(ctx.gates, ctx.wa, ctx.vw, call; compact=ctx.compact_calls)
-
-    ctx.vw[alloca_dest] = ctx.vw[res_sym]
-    return nothing
-end
-
-# M1 — Bennett-cc0 parametric MUX EXCH helpers.
-# Generated via @eval over the shape list. Each (N, W) pair produces a
-# _lower_load_via_mux_NxW! and a _lower_store_via_mux_NxW!, both following
-# the same structure as the hand-written (4,8)/(8,8) variants: validate
-# width + packed-array size, pack operands into UInt64, emit IRCall to the
-# matching soft_mux_*_NxW callee, slice the low N·W bits back into the
-# primal wire list.
-for (N, W) in [(2, 8), (2, 16), (4, 16), (2, 32)]
+for (N, W) in _MUX_SHAPES_NW
     @assert N * W <= 64 "shape ($N, $W) exceeds UInt64 packing"
     load_fn           = Symbol(:_lower_load_via_mux_, N, :x, W, :!)
     store_fn          = Symbol(:_lower_store_via_mux_, N, :x, W, :!)
@@ -584,44 +523,31 @@ for (N, W) in [(2, 8), (2, 16), (4, 16), (2, 32)]
     end
 end
 
-# ---- Bennett-tfo8 / U113: alloca-MUX strategy tables ---------------------
+# ---- Bennett-tfo8 / U113 + Bennett-lm3x / U56: alloca-MUX strategy tables ----
 #
-# Single source of truth for the (elem_w, n_elems) → :mux_exch_NxW shape
-# set and the strategy → load/store dispatch.  Before tfo8 the shape set
-# was duplicated as if/elseif chains in `_pick_alloca_strategy`,
-# `_lower_load_via_mux!`, and `_lower_store_single_origin!` — adding a
-# new shape required edits in all three or it would silently route to
-# `:unsupported`.
-#
-# The hand-written (4,8)/(8,8) load/store helpers and the @eval-generated
-# (2,8)/(2,16)/(4,16)/(2,32) helpers are unified at the dispatch level
-# here; the underlying duplication of their bodies is tracked separately
-# by Bennett-lm3x / U56.
+# Single source of truth for the (elem_w, n_elems) → :mux_exch_NxW shape set
+# and the strategy → load/store dispatch. Before tfo8 the shape set was
+# duplicated as if/elseif chains in `_pick_alloca_strategy`,
+# `_lower_load_via_mux!`, and `_lower_store_single_origin!` — adding a new
+# shape required edits in all three or it would silently route to
+# `:unsupported`. lm3x (2026-05-01) further unified the body-level
+# duplication: the hand-written (4,8)/(8,8) helpers were folded into the
+# @eval loop above, so all three tables and all 12 lowering functions now
+# derive from the single `_MUX_SHAPES_NW` list.
 const _MUX_EXCH_STRATEGY = Dict{Tuple{Int,Int}, Symbol}(
-    (8,  2) => :mux_exch_2x8,
-    (8,  4) => :mux_exch_4x8,
-    (8,  8) => :mux_exch_8x8,
-    (16, 2) => :mux_exch_2x16,
-    (16, 4) => :mux_exch_4x16,
-    (32, 2) => :mux_exch_2x32,
+    (W, N) => Symbol(:mux_exch_, N, :x, W) for (N, W) in _MUX_SHAPES_NW
 )
 
 const _MUX_EXCH_LOAD_DISPATCH = Dict{Symbol, Function}(
-    :mux_exch_2x8  => _lower_load_via_mux_2x8!,
-    :mux_exch_4x8  => _lower_load_via_mux_4x8!,
-    :mux_exch_8x8  => _lower_load_via_mux_8x8!,
-    :mux_exch_2x16 => _lower_load_via_mux_2x16!,
-    :mux_exch_4x16 => _lower_load_via_mux_4x16!,
-    :mux_exch_2x32 => _lower_load_via_mux_2x32!,
+    Symbol(:mux_exch_, N, :x, W) =>
+        getfield(@__MODULE__, Symbol(:_lower_load_via_mux_, N, :x, W, :!))
+    for (N, W) in _MUX_SHAPES_NW
 )
 
 const _MUX_EXCH_STORE_DISPATCH = Dict{Symbol, Function}(
-    :mux_exch_2x8  => _lower_store_via_mux_2x8!,
-    :mux_exch_4x8  => _lower_store_via_mux_4x8!,
-    :mux_exch_8x8  => _lower_store_via_mux_8x8!,
-    :mux_exch_2x16 => _lower_store_via_mux_2x16!,
-    :mux_exch_4x16 => _lower_store_via_mux_4x16!,
-    :mux_exch_2x32 => _lower_store_via_mux_2x32!,
+    Symbol(:mux_exch_, N, :x, W) =>
+        getfield(@__MODULE__, Symbol(:_lower_store_via_mux_, N, :x, W, :!))
+    for (N, W) in _MUX_SHAPES_NW
 )
 
 # ---- helpers for T1b.3 store/load dispatch ----
