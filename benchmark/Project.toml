@@ -1,0 +1,16 @@
+# Bennett-sa39 / U211 — benchmark-only deps. Activate with
+# `julia --project=benchmark`. The main Project.toml stays slim.
+#
+# This is a Julia ENVIRONMENT, not a package — no name/uuid/version.
+# Scripts in benchmark/ are run directly (`julia --project=benchmark
+# benchmark/timing_bench.jl`), not loaded as a package.
+[deps]
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+Bennett = "d4e5f6a7-b8c9-4d0e-a1b2-c3d4e5f6a7b8"
+
+[compat]
+BenchmarkTools = "1"
+julia = "1.10"
+
+[sources]
+Bennett = {path = ".."}
