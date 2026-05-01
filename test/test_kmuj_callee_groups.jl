@@ -41,19 +41,22 @@ using Bennett
     end
 
     @testset "total registered count matches expected" begin
-        # 2 + 5 + 2 + 4 + 10 + 5 + 6 + 12 + 6 = 52
+        # 2 + 5 + 2 + 4 + 10 + 5 + 6 + 22 + 11 = 67
         # (FP_CMP grew from 4 to 10 with Bennett-d77b / U132: 6 new
         # soft_fcmp_* primitives ord/uno/one/ueq/ult/ule completing the
         # LLVM fcmp predicate table.)
         # (FP_ROUND grew from 3 to 4 with Bennett-2hhx / U136: soft_round
         # roundToIntegralTiesToEven joining floor/ceil/trunc.)
+        # (MUX_EXCH grew from 12 to 22 + GUARDED from 6 to 11 with
+        # Bennett-nj6c / dnh phase 1a: 5 new shapes (3,8)/(5,8)/(6,8)/
+        # (7,8)/(3,16) close the N·W ≤ 64 lattice.)
         n_grouped = sum(length(g) for g in Bennett._CALLEE_GROUPS)
-        @test n_grouped == 52
+        @test n_grouped == 67
 
         # _known_callees may contain more if anything else (test fixtures,
-        # other modules) registered, but it must contain at LEAST the 52
+        # other modules) registered, but it must contain at LEAST the 67
         # we register from the groups.
-        @test length(Bennett._known_callees) >= 52
+        @test length(Bennett._known_callees) >= 67
     end
 
     @testset "group sizes match the documented partition" begin
@@ -64,7 +67,7 @@ using Bennett
         @test length(Bennett._CALLEES_FP_CMP)             == 10  # d77b: 4 → 10
         @test length(Bennett._CALLEES_FP_CONV)            == 5
         @test length(Bennett._CALLEES_FP_TRANS)           == 6
-        @test length(Bennett._CALLEES_MUX_EXCH)           == 12
-        @test length(Bennett._CALLEES_MUX_EXCH_GUARDED)   == 6
+        @test length(Bennett._CALLEES_MUX_EXCH)           == 22  # nj6c: 12 → 22
+        @test length(Bennett._CALLEES_MUX_EXCH_GUARDED)   == 11  # nj6c:  6 → 11
     end
 end

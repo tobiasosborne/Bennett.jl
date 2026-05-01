@@ -51,23 +51,36 @@ const _CALLEES_FP_TRANS = (
 )
 
 # Reversible mutable memory — MUX EXCH load/store (Bennett-cc0 M1, N·W ≤ 64).
-# Hand-written (4,8)/(8,8) plus @eval-generated (2,8)/(2,16)/(4,16)/(2,32).
+# Hand-written (4,8)/(8,8)/(2,8)/(2,16)/(4,16)/(2,32) plus
+# @eval-generated (3,8)/(5,8)/(6,8)/(7,8)/(3,16) — Bennett-nj6c filled the
+# remaining gaps in the N·W ≤ 64 lattice (2026-05-01, dnh phase 1a).
 const _CALLEES_MUX_EXCH = (
     soft_mux_load_2x8,  soft_mux_store_2x8,
+    soft_mux_load_3x8,  soft_mux_store_3x8,
     soft_mux_load_4x8,  soft_mux_store_4x8,
+    soft_mux_load_5x8,  soft_mux_store_5x8,
+    soft_mux_load_6x8,  soft_mux_store_6x8,
+    soft_mux_load_7x8,  soft_mux_store_7x8,
     soft_mux_load_8x8,  soft_mux_store_8x8,
     soft_mux_load_2x16, soft_mux_store_2x16,
+    soft_mux_load_3x16, soft_mux_store_3x16,
     soft_mux_load_4x16, soft_mux_store_4x16,
     soft_mux_load_2x32, soft_mux_store_2x32,
 )
 
 # Reversible mutable memory — path-predicate-guarded MUX stores
 # (Bennett-cc0 M2d / bucket C3) for stores in non-entry blocks.
+# Bennett-nj6c (2026-05-01) added (3,8)/(5,8)/(6,8)/(7,8)/(3,16).
 const _CALLEES_MUX_EXCH_GUARDED = (
     soft_mux_store_guarded_2x8,
+    soft_mux_store_guarded_3x8,
     soft_mux_store_guarded_4x8,
+    soft_mux_store_guarded_5x8,
+    soft_mux_store_guarded_6x8,
+    soft_mux_store_guarded_7x8,
     soft_mux_store_guarded_8x8,
     soft_mux_store_guarded_2x16,
+    soft_mux_store_guarded_3x16,
     soft_mux_store_guarded_4x16,
     soft_mux_store_guarded_2x32,
 )

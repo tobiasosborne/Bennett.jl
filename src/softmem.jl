@@ -275,7 +275,56 @@ end
 # Structure matches the corresponding unguarded `soft_mux_store_NxW`:
 # extract each slot via shift+mask, select with a pred-folded `ifelse`,
 # re-assemble via shift+OR. N·W ≤ 64 invariant per M1.
-for (N, W) in [(2, 8), (2, 16), (4, 16), (2, 32)]
+# Bennett-nj6c (Bennett-dnh phase 1a, 2026-05-01): all (N,W) with N·W ≤ 64,
+# N ∈ {3, 5, 6, 7}, W=8 plus (3, 16) — fills in the gaps the hand-written
+# (4,8)/(8,8)/(2,8)/(2,16)/(4,16)/(2,32) variants left in the shape lattice.
+# Generates load + store + store_guarded as a single parametric block per
+# shape. Body shape matches the M1 hand-written variants and the M2d guarded
+# loop below; gate counts will be regression-pinned in
+# test/test_gate_count_regression.jl alongside the existing baselines.
+for (N, W) in [(3, 8), (5, 8), (6, 8), (7, 8), (3, 16)]
+    @assert N * W <= 64 "shape ($N, $W) exceeds UInt64 packing (Bennett-nj6c)"
+    load_name  = Symbol(:soft_mux_load_,  N, :x, W)
+    store_name = Symbol(:soft_mux_store_, N, :x, W)
+    mask       = UInt64((UInt128(1) << W) - UInt128(1))
+
+    @eval begin
+        @inline function $load_name(arr::UInt64, idx::UInt64)::UInt64
+            m = $mask
+            slots = ntuple($N) do k
+                k0 = UInt64(k - 1)
+                (arr >> (Int(k0) * $W)) & m
+            end
+            # Branchless ifelse-chain MUX from index. ntuple+reduce here
+            # produces the same compiled IR as the explicit ifelse(idx==0,
+            # ifelse(idx==1, ...)) chain in the hand-written variants
+            # because Julia inlines ntuple at constant N.
+            sel = slots[$N]
+            for k in ($N - 1):-1:1
+                k0 = UInt64(k - 1)
+                sel = ifelse(idx == k0, slots[k], sel)
+            end
+            return sel
+        end
+
+        @inline function $store_name(arr::UInt64, idx::UInt64,
+                                     val::UInt64)::UInt64
+            m = $mask
+            v = val & m
+            slots = ntuple($N) do k
+                k0 = UInt64(k - 1)
+                ifelse(idx == k0, v, (arr >> (Int(k0) * $W)) & m)
+            end
+            return reduce(|, ntuple(k -> slots[k] << ((k - 1) * $W), $N))
+        end
+    end
+end
+
+for (N, W) in [(2, 8), (2, 16), (4, 16), (2, 32),
+               # Bennett-nj6c additions (2026-05-01): close the
+               # `:unsupported` arm at memory.jl:84-95 for the gap shapes
+               # in the N·W ≤ 64 lattice.
+               (3, 8), (5, 8), (6, 8), (7, 8), (3, 16)]
     @assert N * W <= 64 "shape ($N, $W) exceeds UInt64 packing"
     fn_name = Symbol(:soft_mux_store_guarded_, N, :x, W)
     mask    = UInt64((UInt128(1) << W) - UInt128(1))

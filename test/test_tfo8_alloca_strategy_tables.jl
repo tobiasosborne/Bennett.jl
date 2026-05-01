@@ -21,10 +21,13 @@ using Bennett
 
 @testset "Bennett-tfo8 / U113 — alloca strategy tables consistent" begin
 
-    @testset "_MUX_EXCH_STRATEGY covers all 6 shapes" begin
+    @testset "_MUX_EXCH_STRATEGY covers the N·W ≤ 64 lattice" begin
+        # Bennett-nj6c (2026-05-01, dnh phase 1a): extended from 6 hand-
+        # picked shapes to all (N,W) with N·W ≤ 64, N ∈ {2..8, 16, 32},
+        # W ∈ {8, 16, 32}. Stored as (W, N) per existing convention.
         expected_shapes = Set([
-            (8,  2), (8,  4), (8,  8),
-            (16, 2), (16, 4),
+            (8,  2), (8,  3), (8,  4), (8,  5), (8,  6), (8,  7), (8,  8),
+            (16, 2), (16, 3), (16, 4),
             (32, 2),
         ])
         @test Set(keys(Bennett._MUX_EXCH_STRATEGY)) == expected_shapes

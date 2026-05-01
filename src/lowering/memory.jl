@@ -443,7 +443,16 @@ end
 # and the implicit second copy of the shape set. The single source of truth
 # for valid shapes is `_MUX_SHAPES_NW` below; `_MUX_EXCH_STRATEGY` derives
 # from it.
-const _MUX_SHAPES_NW = [(2, 8), (4, 8), (8, 8), (2, 16), (4, 16), (2, 32)]
+const _MUX_SHAPES_NW = [(2, 8), (4, 8), (8, 8), (2, 16), (4, 16), (2, 32),
+                        # Bennett-nj6c (2026-05-01, dnh phase 1a): fill the
+                        # gaps in the N·W ≤ 64 lattice. Closes the
+                        # `:unsupported` arm at line 84-95 for these shapes;
+                        # parametric @eval loop above auto-generates the
+                        # `_lower_load_via_mux_NxW!` / `_lower_store_via_mux_NxW!`
+                        # helpers from this list, so adding shapes here is
+                        # sufficient on the lowering side. soft_mux_*_NxW
+                        # callees are registered in src/callees.jl.
+                        (3, 8), (5, 8), (6, 8), (7, 8), (3, 16)]
 
 for (N, W) in _MUX_SHAPES_NW
     @assert N * W <= 64 "shape ($N, $W) exceeds UInt64 packing"
