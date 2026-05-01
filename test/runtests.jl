@@ -73,6 +73,8 @@ include("test_pebbled_wire_reuse.jl")
 include("test_constant_fold.jl")
 include("test_var_gep.jl")
 include("test_float_intrinsics.jl")
+# Bennett-1pb: direct llvm.sqrt / llvm.exp / llvm.exp2 dispatch.
+include("test_1pb_llvm_transcendentals.jl")
 include("test_gate_count_regression.jl")
 include("test_negative.jl")
 include("test_soft_sitofp.jl")

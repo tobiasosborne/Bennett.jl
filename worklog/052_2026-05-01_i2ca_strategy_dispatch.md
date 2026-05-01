@@ -1,5 +1,89 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-05-01 (late evening) — Bennett-1pb close — direct llvm.sqrt / llvm.exp / llvm.exp2 dispatch
+
+**Shipped:** see git log for the next commit. `_handle_intrinsic` in
+`src/extract/instructions.jl` grew three new branches just before the
+final `return nothing` — `llvm.sqrt.*` → `IRCall(soft_fsqrt)`, `llvm.exp2.*`
+→ `IRCall(soft_exp2)`, `llvm.exp.*` → `IRCall(soft_exp)`. Width is gated
+to 64; f32/f16 fail loud per CLAUDE.md §13. New test file
+`test/test_1pb_llvm_transcendentals.jl` (44 asserts) plus three `.ll`
+fixtures under `test/fixtures/ll/1pb_*.ll`. Catalogue moves to
+**0 of 173 beads open** for the kv7b/i2ca epoch — Bennett-1pb was the
+first opcode-parity bead picked up after that epoch closed.
+
+**Why:** kv7b/i2ca closed 2026-05-01 evening; user's next directive was
+"LLVM IR parity with Enzyme." 1pb is the lowest-hanging fruit in that
+gap because the soft-float bodies (`soft_fsqrt`, `soft_exp`,
+`soft_exp2`) already exist as registered callees — the gap was purely
+the `_handle_intrinsic` dispatch line.
+
+**Gotchas / Lessons:**
+
+- **Julia frontend never produces `llvm.exp.f64`.** I expected
+  `@fastmath exp(x)` to emit it; turns out Julia routes that to
+  `j_exp_fast_NNN` (i.e. `Base.exp_fast`). There is no public
+  `Core.Intrinsics.exp_llvm`. The only end-to-end exercise of the
+  exp/exp2 dispatch is therefore the raw `.ll` ingest path
+  (`extract_parsed_ir_from_ll`) — which is exactly the
+  Bennett-xkv multi-language ingest route this dispatch will
+  serve. So 1pb is partly forward-looking. `Core.Intrinsics.sqrt_llvm`
+  DOES exist and DOES emit `llvm.sqrt.f64`, hence the sqrt path has
+  a Julia-source end-to-end test as well as the .ll fixture.
+- **`Base.llvmcall` opacity.** I tried `Base.llvmcall((module_str,
+  "entry"), Float64, Tuple{Float64}, x)` to inject `@llvm.exp.f64` at
+  the source level, but the inner `entry` function is kept as an
+  opaque `julia_..._u140` callee in the outer IR even with
+  `optimize=true`. Use `extract_parsed_ir_from_ll` on a `.ll`
+  fixture instead.
+- **Prefix-match order is load-bearing.** `llvm.exp2.*` must be
+  checked before `llvm.exp.*` because both share the `llvm.exp`
+  prefix. Same gotcha as the existing `llvm.minnum`/`llvm.minimum`
+  block above.
+- **Bitcasts are already free.** The cleanest way to drive the
+  intrinsic from a UInt64 entry point is
+  `f(x::UInt64) = reinterpret(UInt64, sqrt_intrinsic(reinterpret(Float64, x)))`.
+  Bennett's existing `LLVMBitCast` arm (line 805) emits
+  `IRCast(:trunc)` of equal width, which is wire aliasing — zero
+  gates. So an `llvm.sqrt.f64` extraction starts and ends with i64
+  wires, no special handling needed at the bennett/simulate layers.
+- **Forward reference works.** `soft_fsqrt` etc. are referenced inside
+  `_handle_intrinsic` even though the function is defined inside
+  `extract/instructions.jl` (included from `ir_extract.jl` at line 4
+  of `Bennett.jl`) — long before `using .SoftFloatLib` (line 24)
+  brings the names into scope. Julia resolves function-body name
+  references at call time, not definition time, so the deferred
+  lookup just works.
+
+**Rejected alternatives:**
+
+- Routing `llvm.sqrt.f64` through the existing fall-through registered-
+  callee path — i.e. registering `soft_fsqrt` under the name
+  `"llvm.sqrt.f64"` directly. Doesn't work because `_lookup_callee`
+  matches by Julia-mangled prefix (`julia_X_NNN` / `j_X_NNN`) or
+  exact match; a mangling-friendly hack would be more code than
+  the explicit dispatch and would surprise future readers grepping
+  for `llvm.sqrt`.
+- Adding three more entries to `_CALLEES_FP_*` groups under aliased
+  names. Same problem — the registry is keyed by Julia function
+  name, not LLVM intrinsic name.
+
+**Next agent starts here:** the same direct-dispatch pattern un-blocks
+several other "filed but deferred" P3 beads:
+
+- **Bennett-h6f** (`llvm.fma.f64` / `llvm.fmuladd.f64`) — `soft_fma`
+  exists. ~15 LOC duplicate of the sqrt block, plus operand
+  iteration over `ops[1..3]`.
+- **Bennett-1pb-followups** filed beads **Bennett-582** (log/log2/log10),
+  **Bennett-emv** (pow/powi), **Bennett-3mo** (sin/cos) all need NEW
+  soft-float bodies before they can wire — that's the actual work,
+  not the dispatch line.
+- **Bennett-hao** (memcpy/memmove/memset) currently benign-drops at
+  line 503-508 of `instructions.jl`; real lowering is a separate
+  beast (per-byte reversible copy loop unroll).
+
+Catalogue still tracks `25dm` blocked on `z2dj` (T5-P6).
+
 ## Session log — 2026-05-01 (evening) — Bennett-kv7b / U65 close (test-coverage epic)
 
 **Shipped:** see git log around the next commit. The remaining open kv7b

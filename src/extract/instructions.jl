@@ -281,6 +281,45 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             IRSelect(dest, ssa(cmp), x_op, y_op, w),
         ]
     end
+    # Bennett-1pb: direct dispatch for transcendental intrinsics. The Julia
+    # frontend normally routes these through SoftFloat dispatch
+    # (`Base.sqrt(::SoftFloat) = SoftFloat(soft_fsqrt(x.bits))`), so the IR
+    # call site is `@j_soft_fsqrt_NNN` rather than `@llvm.sqrt.f64`. But IR
+    # can still arrive at the extractor with raw `llvm.sqrt.f64` etc. when
+    # the user calls `Core.Intrinsics.sqrt_llvm` directly, uses `@fastmath`
+    # on a raw Float64, or — looking ahead to Bennett-xkv — feeds in
+    # `.ll`/`.bc` from C/Rust where no SoftFloat wrapper exists. The bit
+    # pattern of the f64 operand is treated as a 64-bit wire (LLVM bitcasts
+    # adjacent to the call site already turn raw double SSA into integer
+    # wires). Width-32/16 forms are rejected per CLAUDE.md §13 (Float32 not
+    # bit-exact; native f32 paths tracked in Bennett-e283).
+    #
+    # `llvm.exp2.*` is checked before `llvm.exp.*` because both share the
+    # `llvm.exp` prefix; the order is load-bearing.
+    if startswith(cname, "llvm.sqrt")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.sqrt: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-1pb)")
+        return IRCall(dest, soft_fsqrt, [_operand(ops[1], names)], [w], w)
+    end
+    if startswith(cname, "llvm.exp2")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.exp2: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-1pb)")
+        return IRCall(dest, soft_exp2, [_operand(ops[1], names)], [w], w)
+    end
+    if startswith(cname, "llvm.exp")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.exp: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-1pb)")
+        return IRCall(dest, soft_exp, [_operand(ops[1], names)], [w], w)
+    end
     return nothing
 end
 
