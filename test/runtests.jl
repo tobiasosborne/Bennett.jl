@@ -479,6 +479,9 @@ if get(ENV, "BENNETT_RESEARCH_TESTS", "0") != "0"
     include("test_persistent_hashcons.jl")
 end
 
+# Bennett-fidj / U217: liveness × :auto add dispatcher coverage.
+include("test_fidj_liveness_auto_dispatcher.jl")
+
 # Bennett-gk1h / U210: package hygiene gates (Aqua.jl + JET.jl).
 include("test_hygiene_aqua_jet.jl")
 
