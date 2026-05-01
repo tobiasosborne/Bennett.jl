@@ -145,20 +145,13 @@ variables. Each iteration:
   4. MUX-freeze header phis: keep current value on exit, take latch value
      on continue.
 """
+# Bennett-x2iw / U88: optional state bundled in `opts::BlockLoweringOpts`
+# (loop_headers field is consumed by `lower_loop!`; lower_block_insts!
+# ignores it). `block_order` stays positional — every real caller passes
+# the function-level Dict{Symbol,Int} from `lower()`.
 function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
-                     back_edges, K::Int, preds, branch_info;
-                     block_pred::Dict{Symbol,Vector{Int}}=Dict{Symbol,Vector{Int}}(),
-                     ssa_liveness::Dict{Symbol,Int}=Dict{Symbol,Int}(),
-                     inst_counter::Ref{Int}=Ref(0),
-                     gate_groups::Vector{GateGroup}=GateGroup[],
-                     compact_calls::Bool=false,
-                     globals::Dict{Symbol,Tuple{Vector{UInt64},Int}}=Dict{Symbol,Tuple{Vector{UInt64},Int}}(),
-                     add::Symbol=:auto, mul::Symbol=:auto,
-                     alloca_info::Dict{Symbol,Tuple{Int,Int}}=Dict{Symbol,Tuple{Int,Int}}(),
-                     ptr_provenance::Dict{Symbol,Vector{PtrOrigin}}=Dict{Symbol,Vector{PtrOrigin}}(),
-                     entry_label::Symbol=Symbol(""),
-                     block_order=Symbol[],
-                     loop_headers::Set{Symbol}=Set{Symbol}())
+                     back_edges, K::Int, preds, branch_info, block_order;
+                     opts::BlockLoweringOpts = BlockLoweringOpts())
     hlabel = header.label
 
     # Find which phi inputs are from the pre-header vs the back-edge (latch)
@@ -200,13 +193,13 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
     # Bennett-httg / U05: collect body blocks (all basic blocks between
     # header successors and the exit that are NOT the header itself).
     body_block_order = _collect_loop_body_blocks(header, block_map, exit_label,
-                                                 latch_labels, loop_headers, back_edges)
+                                                 latch_labels, opts.loop_headers, back_edges)
     @debug "lower_loop! body_block_order" hlabel body_block_order
 
     # Bennett-jepw: the function-level pass (src/lower.jl ~437) populates
     # block_pred[hlabel] before calling lower_loop!. We rely on this for
     # body-block predicate computation below. Verify the contract.
-    haskey(block_pred, hlabel) ||
+    haskey(opts.block_pred, hlabel) ||
         error("lower_loop!: block_pred[$hlabel] must be populated by the " *
               "function-level pass before lower_loop! is called " *
               "(Bennett-jepw contract)")
@@ -256,23 +249,23 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
         #   see the last iteration's view of body-block wires — useless
         #   to any consumer.
         iter_block_pred = Dict{Symbol,Vector{Int}}()
-        iter_block_pred[hlabel] = block_pred[hlabel]
+        iter_block_pred[hlabel] = opts.block_pred[hlabel]
         iter_branch_info = Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}()
         iter_preds = Dict{Symbol,Vector{Symbol}}()
 
         iter_ctx = LoweringCtx(gates, wa, vw, iter_preds, iter_branch_info,
                                block_order, iter_block_pred,
                                Dict{Symbol,Int}(), Ref(0),
-                               compact_calls,
-                               alloca_info, ptr_provenance, Ref(0),
-                               globals, :ripple, mul, entry_label)
+                               opts.compact_calls,
+                               opts.alloca_info, opts.ptr_provenance, Ref(0),
+                               opts.globals, :ripple, opts.mul, opts.entry_label)
 
         # (a1) Lower header's non-phi instructions through the canonical
         # dispatcher. `header_body_insts` is in source order (collected at
         # line 901); phis are filtered out and the terminator lives in
         # `header.terminator`, never in `header.instructions`.
         for inst in header_body_insts
-            inst_counter[] += 1
+            opts.inst_counter[] += 1
             _lower_inst!(iter_ctx, inst, hlabel)
         end
 
@@ -310,7 +303,7 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
                 end
 
                 for inst in bblock.instructions
-                    inst_counter[] += 1
+                    opts.inst_counter[] += 1
                     _lower_inst!(iter_ctx, inst, blabel)
                 end
 

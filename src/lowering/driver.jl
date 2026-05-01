@@ -120,6 +120,24 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
             end
         end
 
+        # Bennett-x2iw / U88: pre-build the per-block opts bundle. Reused
+        # across both lower_loop!/lower_block_insts! paths and across all
+        # blocks of this function (alloca/provenance dicts must persist).
+        block_opts = BlockLoweringOpts(
+            block_pred     = block_pred,
+            ssa_liveness   = ssa_liveness,
+            inst_counter   = inst_counter,
+            gate_groups    = gate_groups,
+            compact_calls  = compact_calls,
+            globals        = parsed.globals,
+            add            = add,
+            mul            = mul,
+            alloca_info    = alloca_info,
+            ptr_provenance = ptr_provenance,
+            entry_label    = order[1],
+            loop_headers   = loop_headers,
+        )
+
         if label in loop_headers
             # Unroll this loop (single group for entire loop body).
             # Bennett-httg / U05: thread the full lowering context so body-block
@@ -127,20 +145,15 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
             _ws = wa.next_wire
             _gs = length(gates) + 1
             lower_loop!(gates, wa, vw, block, block_map, back_edges,
-                        max_loop_iterations, preds, branch_info;
-                        block_pred, ssa_liveness, inst_counter, gate_groups,
-                        compact_calls, globals=parsed.globals, add, mul,
-                        alloca_info, ptr_provenance, entry_label=order[1],
-                        block_order, loop_headers)
+                        max_loop_iterations, preds, branch_info, block_order;
+                        opts = block_opts)
             if length(gates) >= _gs
                 push!(gate_groups, GateGroup(Symbol("__loop_", label),
                       _gs, length(gates), Int[], Symbol[], _ws, wa.next_wire - 1))
             end
         else
             lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_order;
-                               block_pred, ssa_liveness, inst_counter, gate_groups,
-                               compact_calls, globals=parsed.globals, add, mul,
-                               alloca_info, ptr_provenance, entry_label=order[1])
+                               opts = block_opts)
         end
 
         # Process terminator (for non-loop blocks AND after loop unrolling)
@@ -326,31 +339,21 @@ function _fold_constants(lr::LoweringResult)
                           lr.input_widths, lr.output_elem_widths)
 end
 
+# Bennett-x2iw / U88: optional state bundled in `opts::BlockLoweringOpts`.
+# Per-function caller-owned memory (alloca_info, ptr_provenance,
+# block_pred, gate_groups, inst_counter) lives in opts; every block call
+# in the same function shares one opts so allocas/provenance accumulate
+# across blocks. mux_counter stays block-local on the LoweringCtx —
+# synthetic SSA names embed inst.dest / inst.ptr.name as a globally-
+# unique hint, so per-block reset doesn't collide.
 function lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_order;
-                           block_pred::Dict{Symbol,Vector{Int}}=Dict{Symbol,Vector{Int}}(),
-                           ssa_liveness::Dict{Symbol,Int}=Dict{Symbol,Int}(),
-                           inst_counter::Ref{Int}=Ref(0),
-                           gate_groups::Vector{GateGroup}=GateGroup[],
-                           compact_calls::Bool=false,
-                           globals::Dict{Symbol,Tuple{Vector{UInt64},Int}}=Dict{Symbol,Tuple{Vector{UInt64},Int}}(),
-                           add::Symbol=:auto, mul::Symbol=:auto,
-                           # Bennett-cc0 M2a: caller-owned per-function memory state.
-                           # Defaults to fresh dicts for backward-compat with direct callers.
-                           # mux_counter stays block-local — synthetic SSA names embed the
-                           # globally-unique hint (inst.dest / inst.ptr.name) so cross-block
-                           # counter reset doesn't collide.
-                           alloca_info::Dict{Symbol,Tuple{Int,Int}}=Dict{Symbol,Tuple{Int,Int}}(),
-                           ptr_provenance::Dict{Symbol,Vector{PtrOrigin}}=Dict{Symbol,Vector{PtrOrigin}}(),
-                           # Bennett-cc0 M2c: entry-block label for conditional-store
-                           # guarding. Sentinel Symbol("") means "treat all as entry"
-                           # (backward-compat for direct callers).
-                           entry_label::Symbol=Symbol(""))
+                           opts::BlockLoweringOpts = BlockLoweringOpts())
     ctx = LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
-                      block_pred, ssa_liveness, inst_counter, compact_calls,
-                      alloca_info, ptr_provenance, Ref(0),
-                      globals, add, mul, entry_label)
+                      opts.block_pred, opts.ssa_liveness, opts.inst_counter,
+                      opts.compact_calls, opts.alloca_info, opts.ptr_provenance,
+                      Ref(0), opts.globals, opts.add, opts.mul, opts.entry_label)
     for inst in block.instructions
-        inst_counter[] += 1
+        opts.inst_counter[] += 1
         _ws = wa.next_wire
         _gs = length(gates) + 1
 
@@ -358,7 +361,7 @@ function lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_orde
 
         _ge = length(gates)
         if _ge >= _gs && hasproperty(inst, :dest)
-            push!(gate_groups, GateGroup(inst.dest, _gs, _ge,
+            push!(opts.gate_groups, GateGroup(inst.dest, _gs, _ge,
                   copy(get(vw, inst.dest, Int[])), _ssa_operands(inst),
                   _ws, wa.next_wire - 1))
         end

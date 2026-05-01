@@ -115,6 +115,40 @@ end
 # `LoweringCtx` constructors were removed. Both internal call sites
 # (`lower_block_insts!` ~717, `lower_loop!` ~1003) pass the full positional
 # argument list; the compat shims had no remaining callers.
+
+"""
+    BlockLoweringOpts
+
+Per-function lowering context bundle (Bennett-x2iw / U88). Threads the
+shared optional state through `lower_block_insts!` and `lower_loop!` so
+their kwarg surfaces stop bleeding 11 individually-passed dicts.
+
+Each field defaults to a fresh empty container (or sentinel) — so a bare
+`BlockLoweringOpts()` is the "trivial inputs, no globals, no alloca, all
+defaults" call. The fields whose default-empty form changes externally-
+visible behaviour are:
+
+- `entry_label = Symbol("")` — sentinel "treat all blocks as entry"
+  (disables Bennett-cc0 M2c per-block store gating). The real top-level
+  driver passes `order[1]`.
+- `add = :auto`, `mul = :auto` — strategy dispatchers.
+- `compact_calls = false` — emit each callee site as 1 boxed gate group.
+"""
+Base.@kwdef struct BlockLoweringOpts
+    block_pred::Dict{Symbol,Vector{Int}}             = Dict{Symbol,Vector{Int}}()
+    ssa_liveness::Dict{Symbol,Int}                    = Dict{Symbol,Int}()
+    inst_counter::Ref{Int}                            = Ref(0)
+    gate_groups::Vector{GateGroup}                    = GateGroup[]
+    compact_calls::Bool                               = false
+    globals::Dict{Symbol,Tuple{Vector{UInt64},Int}}    = Dict{Symbol,Tuple{Vector{UInt64},Int}}()
+    add::Symbol                                        = :auto
+    mul::Symbol                                        = :auto
+    alloca_info::Dict{Symbol,Tuple{Int,Int}}            = Dict{Symbol,Tuple{Int,Int}}()
+    ptr_provenance::Dict{Symbol,Vector{PtrOrigin}}      = Dict{Symbol,Vector{PtrOrigin}}()
+    entry_label::Symbol                                 = Symbol("")
+    loop_headers::Set{Symbol}                           = Set{Symbol}()
+end
+
 # Dispatched instruction lowering — Julia selects the method by inst type
 _lower_inst!(ctx::LoweringCtx, inst::IRPhi, label::Symbol) =
     lower_phi!(ctx.gates, ctx.wa, ctx.vw, inst, label, ctx.preds, ctx.branch_info, ctx.block_order;
