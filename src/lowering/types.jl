@@ -74,9 +74,14 @@ struct LoweringCtx
     gates::Vector{ReversibleGate}
     wa::WireAllocator
     vw::Dict{Symbol,Vector{Int}}
-    preds::Any    # Dict{Symbol,Vector{Symbol}} — typed Any to accept any dict shape from caller
-    branch_info::Any
-    block_order::Any
+    # Bennett-ehoa / U43: concretized from `::Any` 2026-05-01. Every
+    # caller already builds these as the documented dict shapes; the
+    # `::Any` was defensive (no caller exercised the looseness) and
+    # forced type-unstable dispatch on every `_lower_inst!` field
+    # access. Concrete types let Julia inline through ctx reads.
+    preds::Dict{Symbol,Vector{Symbol}}                          # block label → predecessor labels
+    branch_info::Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}  # block label → (cond_wires, true_label, false_label)
+    block_order::Dict{Symbol,Int}                                # block label → topological order index
     block_pred::Dict{Symbol,Vector{Int}}
     ssa_liveness::Dict{Symbol,Int}
     inst_counter::Ref{Int}
