@@ -170,10 +170,11 @@ end
                                Int8, Int8, Int8, Int8, Int8, Int8, Int8)
         gc = gate_count(c)
         @info "T5-P3d CF demo gate count" gates=gc
-        # Broad sanity bounds (regression anchor).  Measured on first GREEN run;
-        # actual value logged above via @info.
-        @test 100 < gc.total < 500_000
-        @test gc.Toffoli > 0
+        # Bennett-kv7b / U65 (#03 F11): bounds tightened from
+        # `100 < total < 500_000` (5000× span) to ±20 % around current
+        # measurement (2026-05-01: total=2880, Toffoli=308).
+        @test 2300 < gc.total < 3500
+        @test 240  < gc.Toffoli < 380
     end
 
 end

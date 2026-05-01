@@ -144,7 +144,9 @@ end
         @test verify_reversibility(c; n_tests=3)
         gc = gate_count(c)
         @info "T5-P4a soft_jenkins96 standalone gate count" total=gc.total Toffoli=gc.Toffoli
-        @test gc.total > 100
+        # Bennett-kv7b / U65 (#03 F11): added upper bound. ±20 % around
+        # 2026-05-01 measurement (total=6794).
+        @test 5400 < gc.total < 8200
     end
 
     # P4b soft_feistel32 standalone (winner-side) — extracted during U54

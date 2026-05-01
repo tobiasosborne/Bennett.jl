@@ -77,10 +77,12 @@ end
                                Int8, Int8, Int8, Int8, Int8, Int8, Int8)
         gc = gate_count(c)
         @info "T5-P3a stub demo gate count" gates=gc
-        # Sanity bounds.  Measured 2026-04-17: 436 total / 90 Toffoli at
-        # max_n=4.  Bounds are wide so naive optimisation tweaks don't
-        # spuriously trip the regression.
-        @test 100 < gc.total < 100_000
-        @test gc.Toffoli > 0
+        # Bennett-kv7b / U65 (#03 F11): bounds tightened from
+        # `100 < total < 100_000` (1000× span) to ±20 % around the current
+        # measurement (2026-05-01: total=404, Toffoli=90). Tight enough
+        # to catch 100×-class regressions, loose enough that a 5 %
+        # peephole improvement doesn't spuriously trip.
+        @test 320 < gc.total < 500
+        @test 70  < gc.Toffoli < 110
     end
 end

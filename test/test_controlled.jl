@@ -64,4 +64,65 @@
         end
         @test verify_reversibility(cc)
     end
+
+    # Bennett-kv7b / U65 (#05 F13): `controlled(c)` was previously
+    # exercised only on plain integer arithmetic. The soft-float and
+    # memory-backed lowering paths produce ParsedIR with phi-resolved
+    # MUX trees + Cuccaro-style in-place operations; lifting those
+    # under a control bit was a documented coverage gap. Pin both with
+    # exhaustive (soft-float) and corner-case (memory-backed) sweeps.
+
+    @testset "Controlled soft-float (soft_fneg)" begin
+        # soft_fneg is the lightest soft-float primitive — flips the
+        # IEEE 754 sign bit. Light enough for an exhaustive-on-corners
+        # sweep without blowing test time.
+        # Note: `simulate` returns Int64 (signedness-blind); reinterpret
+        # to UInt64 to match `soft_fneg`'s return type — same pattern as
+        # `test/test_float_circuit.jl`.
+        circuit = reversible_compile(soft_fneg, UInt64)
+        cc = controlled(circuit)
+
+        # IEEE 754 corners + a couple of "ordinary" doubles.
+        probes = Float64[1.0, -1.0, 0.0, -0.0, 3.14, -3.14, Inf, -Inf,
+                         floatmin(Float64), -floatmin(Float64),
+                         floatmax(Float64), -floatmax(Float64)]
+        for x in probes
+            x_bits = reinterpret(UInt64, x)
+            # control=true: must equal forward soft_fneg (after Int64→UInt64 reinterpret)
+            on_raw  = simulate(cc, true,  x_bits)
+            @test reinterpret(UInt64, Int64(on_raw)) == soft_fneg(x_bits)
+            # control=false: no work done; output is zero.
+            off_raw = simulate(cc, false, x_bits)
+            @test off_raw == 0
+        end
+        @test verify_reversibility(cc)
+    end
+
+    @testset "Controlled memory-backed (registered soft_* callee)" begin
+        # The catalogue (#05 F13) called for "memory-backed" composition.
+        # Var-indexed `Vector{UInt8}` allocas are not yet end-to-end
+        # lowerable in `reversible_compile` (blocked on Bennett-z2dj T5-P6
+        # `:persistent_tree` dispatcher), so the canonical "memory-
+        # backed" probe here is a function that calls `soft_fmul` (a
+        # registered soft-float callee whose lowering goes through the
+        # MUX-store / shadow-memory primitives in `src/softmem.jl`).
+        # `controlled(c)` must lift that callee-bridged circuit cleanly.
+        function fmul_then_neg(a_bits::UInt64, b_bits::UInt64)
+            return soft_fneg(soft_fmul(a_bits, b_bits))
+        end
+        circuit = reversible_compile(fmul_then_neg, UInt64, UInt64)
+        cc = controlled(circuit)
+
+        # Multiplicative IEEE 754 corner pairs.
+        probes = [(1.0, 1.0), (1.0, -1.0), (2.0, 0.5), (3.14, 2.0),
+                  (0.0, 0.0), (-0.0, 1.0), (Inf, 1.0), (1.0, Inf)]
+        for (a, b) in probes
+            a_bits = reinterpret(UInt64, a)
+            b_bits = reinterpret(UInt64, b)
+            on_raw  = simulate(cc, true,  (a_bits, b_bits))
+            @test reinterpret(UInt64, Int64(on_raw)) == fmul_then_neg(a_bits, b_bits)
+            @test simulate(cc, false, (a_bits, b_bits)) == 0
+        end
+        @test verify_reversibility(cc)
+    end
 end

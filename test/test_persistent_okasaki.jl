@@ -112,8 +112,10 @@ end
                                Int8, Int8, Int8, Int8, Int8, Int8, Int8)
         gc = gate_count(c)
         @info "T5-P3b Okasaki RBT demo gate count" total=gc.total Toffoli=gc.Toffoli NOT=gc.NOT CNOT=gc.CNOT wires=c.n_wires
-        # Sanity bounds only (wide — no regression enforcement per PRD §8)
-        @test gc.total > 100
+        # Bennett-kv7b / U65 (#03 F11): added upper bound. Was unbounded
+        # above; tightened to ±20 % around 2026-05-01 measurement
+        # (total=26386).
+        @test 21_000 < gc.total < 32_000
         @test gc.Toffoli > 0
     end
 

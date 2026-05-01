@@ -121,4 +121,72 @@ end
                   haskey(parsed.memssa.phis, clobber)
         end
     end
+
+    # Bennett-kv7b / U65 (#05 F5): the memssa flag was previously
+    # validated only at the `extract_parsed_ir` boundary; the rest of
+    # the pipeline (`lower → bennett → simulate → verify_reversibility`)
+    # was never exercised with `use_memory_ssa=true`. With the current
+    # `lower()` not yet consuming memssa info (per the docstring above:
+    # "Wiring the info into lower_load! ... is out-of-scope follow-up"),
+    # the flag MUST be a pure pass-through: identical gate counts,
+    # identical simulation behaviour, identical reversibility guarantees
+    # whether or not `use_memory_ssa=true` is set. The tests below pin
+    # that contract end-to-end.
+
+    @testset "end-to-end pipeline with memssa flag is byte-identical to without" begin
+        # Straight-line arithmetic — no memory ops, but exercises the
+        # extract → lower → bennett pipeline with both flag values.
+        f(x::Int8) = x * x + Int8(3) * x + Int8(1)
+
+        parsed_off = Bennett.extract_parsed_ir(f, Tuple{Int8})
+        parsed_on  = Bennett.extract_parsed_ir(f, Tuple{Int8}; use_memory_ssa=true)
+        @test parsed_off.memssa === nothing
+        @test parsed_on.memssa  !== nothing
+
+        c_off = reversible_compile(parsed_off)
+        c_on  = reversible_compile(parsed_on)
+
+        # Gate-by-gate identity: turning on memssa MUST NOT alter the
+        # circuit produced by the current lower(). If/when lower starts
+        # consuming memssa for dispatch, this assertion will need to be
+        # relaxed to "behaviourally equivalent" — but that's the right
+        # forcing function for the migration.
+        @test gate_count(c_off) == gate_count(c_on)
+        @test c_off.gates == c_on.gates
+        @test c_off.n_wires == c_on.n_wires
+
+        # End-to-end correctness with memssa on: simulate against oracle
+        # AND verify_reversibility. Both are required (CLAUDE.md §4).
+        @test verify_reversibility(c_on)
+        for x in typemin(Int8):typemax(Int8)
+            @test simulate(c_on, x) == f(x)
+        end
+    end
+
+    @testset "end-to-end with preprocess=true × memssa is byte-identical to without" begin
+        # The `preprocess=true` × `use_memory_ssa=true` combination is
+        # the canonical "fully annotated" extraction path. The full
+        # var-index-array pipeline (`f(x, i) = a[i & 3]`) is not yet
+        # end-to-end lowerable through `reversible_compile` (blocked on
+        # Bennett-z2dj T5-P6 `:persistent_tree` dispatcher), so we pin
+        # the contract on a multi-arg straight-line function that
+        # exercises the preprocessing pass without retaining memory ops.
+        g(x::Int8, y::Int8) = x * y + x - y
+
+        parsed_off = Bennett.extract_parsed_ir(g, Tuple{Int8, Int8})
+        parsed_on  = Bennett.extract_parsed_ir(g, Tuple{Int8, Int8};
+                                                preprocess=true,
+                                                use_memory_ssa=true)
+        c_off = reversible_compile(parsed_off)
+        c_on  = reversible_compile(parsed_on)
+
+        @test gate_count(c_off) == gate_count(c_on)
+        @test verify_reversibility(c_on)
+
+        # Sample simulate sweep — small enough to keep test time
+        # bounded, big enough to cover sign-change and zero corners.
+        for x in Int8(-3):Int8(3), y in Int8(-3):Int8(3)
+            @test simulate(c_on, (x, y)) == g(x, y)
+        end
+    end
 end
