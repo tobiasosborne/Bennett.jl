@@ -122,9 +122,12 @@ function knill_split_point(n::Int, s::Int)
 end
 
 """
-    pebbled_bennett(lr::LoweringResult; max_pebbles::Int=0) -> ReversibleCircuit
+    _pebbled_bennett_impl(lr::LoweringResult; max_pebbles::Int=0) -> ReversibleCircuit
 
 Bennett construction with Knill's pebbling strategy for space optimization.
+Reached via `bennett(lr; strategy=PebbledStrategy(max_pebbles))`
+(Bennett-i2ca / U55) or the `pebbled_bennett(lr; max_pebbles)` legacy
+alias.
 
 Instead of forward ALL → copy → reverse ALL (full Bennett, max space),
 uses recursive checkpointing to reduce the number of simultaneously live
@@ -132,11 +135,9 @@ intermediate wires.
 
 If max_pebbles <= 0, uses full Bennett (no optimization).
 """
-function pebbled_bennett(lr::LoweringResult; max_pebbles::Int=0)
+function _pebbled_bennett_impl(lr::LoweringResult; max_pebbles::Int=0)
+    copy_wires, total = _allocate_copy_wires(lr)
     n_out = length(lr.output_wires)
-    copy_start = lr.n_wires + 1
-    copy_wires = collect(copy_start:copy_start + n_out - 1)
-    total = lr.n_wires + n_out
 
     n = length(lr.gates)
 

@@ -49,11 +49,13 @@ function compute_wire_liveness(gates::Vector{ReversibleGate},
 end
 
 """
-    eager_bennett(lr::LoweringResult) -> ReversibleCircuit
+    _eager_bennett_impl(lr::LoweringResult) -> ReversibleCircuit
 
-Bennett construction with EAGER cleanup.
+Bennett construction with EAGER cleanup. Reached via
+`bennett(lr; strategy=EagerStrategy())` (Bennett-i2ca / U55) or the
+`eager_bennett(lr)` legacy alias.
 """
-function eager_bennett(lr::LoweringResult)
+function _eager_bennett_impl(lr::LoweringResult)
     gates = lr.gates
     N = length(gates)
     input_set  = Set(lr.input_wires)
@@ -88,14 +90,8 @@ function eager_bennett(lr::LoweringResult)
     end
 
     # Phase 2: CNOT copy outputs to fresh wires
-    n_out = length(lr.output_wires)
-    copy_start = lr.n_wires + 1
-    copy_wires = collect(copy_start:copy_start + n_out - 1)
-    total = lr.n_wires + n_out
-
-    for (j, w) in enumerate(lr.output_wires)
-        push!(result, CNOTGate(w, copy_wires[j]))
-    end
+    copy_wires, total = _allocate_copy_wires(lr)
+    _emit_copy_gates!(result, lr.output_wires, copy_wires)
 
     # Phase 3: Reverse remaining forward gates in reverse index order.
     # Skip gates targeting eagerly-cleaned wires.

@@ -47,6 +47,11 @@ include("pebble/pebbled_groups.jl")
 # dep dropped — 211 LOC unwired into any strategy dispatcher and the
 # replacement-with-modern-solver task lives in Bennett-fg2 (P2). Re-
 # introduce here when fg2 lands a Kissat/CaDiCaL backend.
+# Bennett-i2ca / U55 (2026-05-01): unify the 5 *_bennett aliases under
+# `bennett(lr; strategy=...)` via `abstract type BennettStrategy`. Loaded
+# AFTER bennett_transform.jl + every pebble/*.jl so the dispatch methods
+# can reach the renamed `_*_impl` bodies.
+include("bennett_strategies.jl")
 include("tabulate.jl")
 include("memssa.jl")
 include("feistel.jl")
@@ -90,6 +95,9 @@ export IROperand, SSAOperand, ConstOperand, OpaquePtrSentinel,
        OPAQUE_PTR_SENTINEL, POISON_LANE, ZERO_AGG, ssa, iconst
 export gate_count, ancilla_count, constant_wire_count, depth, t_count, t_depth, toffoli_depth, peak_live_wires, print_circuit, verify_reversibility
 export pebbled_bennett, eager_bennett, value_eager_bennett, pebbled_group_bennett, checkpoint_bennett
+# Bennett-i2ca / U55: strategy types for `bennett(lr; strategy=...)`.
+export BennettStrategy, DefaultStrategy, EagerStrategy, ValueEagerStrategy,
+       CheckpointStrategy, PebbledStrategy, PebbledGroupStrategy
 
 reversible_compile(f, types::Type...; kw...) = reversible_compile(f, Tuple{types...}; kw...)
 

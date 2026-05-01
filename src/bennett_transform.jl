@@ -15,6 +15,44 @@ function _build_circuit(all_gates::Vector{ReversibleGate}, total::Int,
 end
 
 """
+    _allocate_copy_wires(lr::LoweringResult) -> (Vector{Int}, Int)
+
+Allocate `length(lr.output_wires)` fresh wire indices appended after
+`lr.n_wires`. Returns `(copy_wires, total)` where
+`total = lr.n_wires + length(lr.output_wires)`. Bennett-i2ca / U55:
+shared helper used by `_bennett_default`, `_eager_bennett_impl`,
+`_value_eager_bennett_impl`, and `_pebbled_bennett_impl` to remove the
+duplicated 4-line allocation pattern. The pebbled-group / checkpoint
+strategies allocate copy wires through a `WireAllocator` instead and do
+not call this helper.
+"""
+@inline function _allocate_copy_wires(lr::LoweringResult)
+    n_out = length(lr.output_wires)
+    copy_start = lr.n_wires + 1
+    copy_wires = collect(copy_start:copy_start + n_out - 1)
+    return copy_wires, lr.n_wires + n_out
+end
+
+"""
+    _emit_copy_gates!(result, output_wires, copy_wires) -> result
+
+Append `length(output_wires)` CNOT gates to `result`, copying each
+`output_wires[i]` into `copy_wires[i]`. Bennett-i2ca / U55: shared
+helper. NOTE: `src/pebble/pebbled_groups.jl` defines a different
+`_emit_copy_gates!` (5-arg, takes `live_map::Dict{Symbol,ActivePebble}`)
+for checkpoint-replay output mapping; both methods coexist via Julia
+arity dispatch.
+"""
+@inline function _emit_copy_gates!(result::Vector{ReversibleGate},
+                                    output_wires::Vector{Int},
+                                    copy_wires::Vector{Int})
+    for (j, w) in enumerate(output_wires)
+        push!(result, CNOTGate(w, copy_wires[j]))
+    end
+    return result
+end
+
+"""
 Build the canonical U03 probe battery for a self_reversing contract check:
 four fixed deterministic input bit-vectors (all-zero, all-one, walking-1 on
 the first input wire, walking-1 on the last input wire). Coverage rationale:
@@ -78,7 +116,8 @@ function _validate_self_reversing!(lr::LoweringResult)
 end
 
 """
-    bennett(lr::LoweringResult) -> ReversibleCircuit
+    bennett(lr::LoweringResult; strategy::BennettStrategy=DefaultStrategy())
+    bennett(lr::LoweringResult, strategy::BennettStrategy)
 
 Bennett's 1973 construction: forward + copy-out + uncompute.
 
@@ -89,6 +128,22 @@ made reversible at the cost of additional auxiliary memory by recording
 intermediate results, copying out the final answer, and then running
 the forward computation in reverse to clear the record.  The whole
 codebase is named after this paper.
+
+# Strategy dispatch (Bennett-i2ca / U55)
+
+The `strategy` argument selects an alternate construction; concrete
+subtypes of `BennettStrategy` are defined in `src/bennett_strategies.jl`:
+
+- `DefaultStrategy` — canonical forward + CNOT-copy + reverse (this body).
+- `EagerStrategy` — gate-level dead-end EAGER cleanup.
+- `ValueEagerStrategy` — group-level value EAGER + Kahn topological reverse.
+- `CheckpointStrategy` — per-group checkpoint-and-free.
+- `PebbledStrategy(max_pebbles)` — Knill 1995 gate-level recursive pebbling.
+- `PebbledGroupStrategy(max_pebbles)` — group-level pebbling with wire reuse.
+
+The legacy aliases (`eager_bennett`, `value_eager_bennett`,
+`pebbled_bennett`, `pebbled_group_bennett`, `checkpoint_bennett`) are
+retained as thin forwarders in `bennett_strategies.jl`.
 
 # Pre-reversed primitives (`self_reversing=true`)
 
@@ -101,10 +156,12 @@ on the primary output wires WITHOUT any wrap. Examples:
 - `lower_mul_qcla_tree!` — Sun-Borissov polylogarithmic-depth
   multiplier, src/mul_qcla_tree.jl.
 
-For these, this function short-circuits to forward-only emission — no
-copy-out, no reverse pass — typically halving the gate count and saving
-`n_out` ancillae. The U03 contract probe (`_validate_self_reversing!`,
-Bennett-egu6) catches forged self_reversing claims at compile time.
+For these, the default-strategy path short-circuits to forward-only
+emission — no copy-out, no reverse pass — typically halving the gate
+count and saving `n_out` ancillae. The U03 contract probe
+(`_validate_self_reversing!`, Bennett-egu6) catches forged
+self_reversing claims at compile time. The non-default strategies do NOT
+inspect `lr.self_reversing` (existing behaviour preserved).
 
 Construction sites that produce a self-reversing `lr` MUST set the flag
 explicitly via the 8-arg `LoweringResult` constructor (the 6-arg + 7-arg
@@ -120,7 +177,7 @@ For downstream users (e.g. Sturm.jl) who construct a guaranteed-self-
 reversing primitive AND want to assert that contract loud, see
 [`bennett_direct`](@ref).
 """
-function bennett(lr::LoweringResult)
+function _bennett_default(lr::LoweringResult)
     # P1: self-reversing primitives (e.g. Sun-Borissov multiplier, QROM
     # tabulate) already end with ancillae clean and the result in
     # lr.output_wires. Skip the copy-out + reverse pass — it would just
@@ -131,26 +188,20 @@ function bennett(lr::LoweringResult)
         _validate_self_reversing!(lr)
         # Bennett-nj5r / U200: pass lr.gates directly. ReversibleCircuit
         # stores the array but does not mutate it; no caller mutates
-        # lr.gates after bennett() returns (verified across src/eager.jl,
-        # src/value_eager.jl, src/pebbling.jl, etc.). Skipping the
-        # defensive copy saves O(n_gates) allocation on every
+        # lr.gates after bennett() returns (verified across src/pebble/*).
+        # Skipping the defensive copy saves O(n_gates) allocation on every
         # self_reversing circuit (lower_tabulate, mul_qcla_tree).
         return _build_circuit(lr.gates, lr.n_wires, lr.input_wires,
                               lr.output_wires, lr)
     end
 
-    n_out = length(lr.output_wires)
-    copy_start = lr.n_wires + 1
-    copy_wires = collect(copy_start:copy_start + n_out - 1)
-    total = lr.n_wires + n_out
+    copy_wires, total = _allocate_copy_wires(lr)
 
     all_gates = ReversibleGate[]
-    sizehint!(all_gates, 2 * length(lr.gates) + n_out)
+    sizehint!(all_gates, 2 * length(lr.gates) + length(lr.output_wires))
 
     append!(all_gates, lr.gates)
-    for (i, w) in enumerate(lr.output_wires)
-        push!(all_gates, CNOTGate(w, copy_wires[i]))
-    end
+    _emit_copy_gates!(all_gates, lr.output_wires, copy_wires)
     for i in length(lr.gates):-1:1
         push!(all_gates, lr.gates[i])
     end

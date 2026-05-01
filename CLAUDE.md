@@ -92,7 +92,7 @@ Bennett.jl/                         # Project root. PRDs and CLAUDE.md live alon
   Bennett-Memory-PRD.md             # reversible mutable memory plan
   Bennett-Memory-T5-PRD.md          # T5 persistent-DS workstream
 
-  src/                              # 30 included src/*.jl + softfloat/ (17) + persistent/ (10)
+  src/                              # 31 included src/*.jl + softfloat/ (17) + persistent/ (10)
     Bennett.jl                      # module: 3 reversible_compile overloads (Tuple / ParsedIR / Float64), SoftFloat dispatch, callee registry
 
     # ---- IR extraction & representation ----
@@ -107,6 +107,8 @@ Bennett.jl/                         # Project root. PRDs and CLAUDE.md live alon
     # ---- Gate primitives & Bennett construction ----
     gates.jl                        # NOTGate, CNOTGate, ToffoliGate; ReversibleCircuit (with wire-partition-validation invariant — Bennett-6azb / U58)
     bennett_transform.jl            # bennett(lr): forward + CNOT-copy + reverse; self-reversing short-circuit (Bennett-egu6 / U03)
+                                    # Bennett-i2ca / U55: body renamed `_bennett_default(lr)`, reached via DefaultStrategy. Helpers `_allocate_copy_wires` / `_emit_copy_gates!` shared with eager / value_eager / pebbled.
+    bennett_strategies.jl           # Bennett-i2ca / U55 (2026-05-01): `abstract type BennettStrategy` + 6 concrete subtypes (DefaultStrategy, EagerStrategy, ValueEagerStrategy, CheckpointStrategy, PebbledStrategy(max_pebbles), PebbledGroupStrategy(max_pebbles)) + `bennett(lr; strategy=...)` dispatch + 5 legacy aliases as zero-overhead forwarders.
     controlled.jl                   # ControlledCircuit: lifts a circuit to take an explicit control bit
 
     # ---- Simulation & metrics ----
@@ -122,11 +124,11 @@ Bennett.jl/                         # Project root. PRDs and CLAUDE.md live alon
     parallel_adder_tree.jl          # binary tree of QCLA adders; self-cleaning via _AdderRecord replay
     divider.jl                      # soft_udiv / soft_urem (registered as callees)
 
-    # ---- Bennett strategy variants ----
-    pebbling.jl                     # Knill 1995 (Theorem 2.1) — pebbled_bennett
-    pebbled_groups.jl               # group-level pebbling with wire reuse + checkpoint_bennett
-    eager.jl                        # PRS15 EAGER cleanup (gate-level)
-    value_eager.jl                  # PRS15 Algorithm 2 value-level EAGER
+    # ---- Bennett strategy variants (Bennett-i2ca / U55: bodies renamed `_*_impl`, reached via BennettStrategy dispatch in bennett_strategies.jl) ----
+    pebbling.jl                     # Knill 1995 (Theorem 2.1) — `_pebbled_bennett_impl` ← PebbledStrategy
+    pebbled_groups.jl               # group-level pebbling with wire reuse + `_checkpoint_bennett_impl` ← CheckpointStrategy / PebbledGroupStrategy
+    eager.jl                        # PRS15 EAGER cleanup (gate-level) — `_eager_bennett_impl` ← EagerStrategy
+    value_eager.jl                  # PRS15 Algorithm 2 value-level EAGER — `_value_eager_bennett_impl` ← ValueEagerStrategy
     # Bennett-u2yp / U149 (2026-05-01): sat_pebbling.jl + PicoSAT dep dropped — was 211 LOC unwired into any strategy dispatcher; modern-SAT-solver replacement tracked in Bennett-fg2 (P2).
     dep_dag.jl                      # gate dependency graph extraction
 

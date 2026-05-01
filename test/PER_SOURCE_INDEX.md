@@ -18,6 +18,7 @@ yet, create it (use `test/test_bennett.jl` / `test/test_lower.jl` /
 | `src/Bennett.jl`                  | `test/test_bennett.jl`                | Module entrypoint, kwarg validation, CompileOptions |
 | `src/adder.jl`                    | `test/test_two_args.jl`               | Cuccaro / ripple lowering covered by add-dispatcher tests |
 | `src/bennett_transform.jl`        | `test/test_egu6_*.jl`, `test/test_cvnb_*.jl` | bennett(lr) + self_reversing |
+| `src/bennett_strategies.jl`       | `test/test_bennett_strategy.jl`       | Bennett-i2ca / U55 — `BennettStrategy` dispatch parity |
 | `src/callees.jl`                  | (every test using soft_*)             | Registration loop — exercised universally |
 | `src/compose.jl`                  | `test/test_compose.jl`                | (create as needed) |
 | `src/controlled.jl`               | `test/test_controlled.jl`             | ✓ exists |

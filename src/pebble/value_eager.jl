@@ -16,9 +16,11 @@ with space constraints", Algorithm 2.
 """
 
 """
-    value_eager_bennett(lr::LoweringResult) -> ReversibleCircuit
+    _value_eager_bennett_impl(lr::LoweringResult) -> ReversibleCircuit
 
-Bennett construction with PRS15 value-level EAGER cleanup.
+Bennett construction with PRS15 value-level EAGER cleanup. Reached via
+`bennett(lr; strategy=ValueEagerStrategy())` (Bennett-i2ca / U55) or the
+`value_eager_bennett(lr)` legacy alias.
 
 Phase 1: Forward gates with eager cleanup of dead-end values (zero consumers).
 Phase 2: CNOT copy outputs to fresh wires.
@@ -26,7 +28,7 @@ Phase 3: Uncompute remaining values in reverse topological order of the DAG.
 
 Falls back to full Bennett if gate_groups is empty.
 """
-function value_eager_bennett(lr::LoweringResult)
+function _value_eager_bennett_impl(lr::LoweringResult)
     groups = lr.gate_groups
     if isempty(groups)
         return bennett(lr)
@@ -95,14 +97,8 @@ function value_eager_bennett(lr::LoweringResult)
     end
 
     # --- Phase 2: CNOT copy outputs to fresh wires ---
-    n_out = length(lr.output_wires)
-    copy_start = lr.n_wires + 1
-    copy_wires = collect(copy_start:copy_start + n_out - 1)
-    total = lr.n_wires + n_out
-
-    for (j, w) in enumerate(lr.output_wires)
-        push!(result, CNOTGate(w, copy_wires[j]))
-    end
+    copy_wires, total = _allocate_copy_wires(lr)
+    _emit_copy_gates!(result, lr.output_wires, copy_wires)
 
     # --- Phase 3: Reverse remaining values in reverse topological order ---
     # Release implicit consumer for output groups

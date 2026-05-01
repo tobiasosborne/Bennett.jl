@@ -58,6 +58,8 @@ include("test_ancilla_reuse.jl")
 include("test_dep_dag.jl")
 include("test_pebbling.jl")
 include("test_eager_bennett.jl")
+# Bennett-i2ca / U55: strategy dispatch parity tests.
+include("test_bennett_strategy.jl")
 include("test_switch.jl")
 include("test_rev_memory.jl")
 # Bennett-u2yp / U149: test_sat_pebbling.jl removed alongside src/pebble/sat_pebbling.jl

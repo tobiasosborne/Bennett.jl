@@ -211,9 +211,11 @@ end
 # ---- public entry point ----
 
 """
-    pebbled_group_bennett(lr::LoweringResult; max_pebbles::Int=0) -> ReversibleCircuit
+    _pebbled_group_bennett_impl(lr::LoweringResult; max_pebbles::Int=0) -> ReversibleCircuit
 
 Bennett construction with Knill's pebbling and wire reuse at the GateGroup level.
+Reached via `bennett(lr; strategy=PebbledGroupStrategy(max_pebbles))`
+(Bennett-i2ca / U55) or the `pebbled_group_bennett` legacy alias.
 
 Each GateGroup is a pebble unit. After un-pebbling a group, its wires are freed
 back to the allocator. Subsequent groups get recycled wire indices.
@@ -270,7 +272,7 @@ the non-pebbled path (uses `wire_start`/`wire_end` info for fine-grained
 checkpoints) or the explicit pebbling scheduler below when `max_pebbles`
 is bounded and groups permit.
 """
-function pebbled_group_bennett(lr::LoweringResult; max_pebbles::Int=0)
+function _pebbled_group_bennett_impl(lr::LoweringResult; max_pebbles::Int=0)
     groups = lr.gate_groups
     if isempty(groups)
         return bennett(lr)
@@ -295,9 +297,11 @@ function pebbled_group_bennett(lr::LoweringResult; max_pebbles::Int=0)
         return bennett(lr)
     end
 
-    # Use checkpoint_bennett when wire ranges are available (preferred path)
+    # Use checkpoint_bennett when wire ranges are available (preferred path).
+    # Bennett-i2ca / U55: call the renamed impl directly so we don't depend
+    # on bennett_strategies.jl loading (forward-reference) — same effect.
     if all(g -> g.wire_start > 0, groups)
-        return checkpoint_bennett(lr)
+        return _checkpoint_bennett_impl(lr)
     end
 
     n_groups = length(groups)
@@ -344,9 +348,11 @@ end
 # ---- checkpoint-based Bennett construction ----
 
 """
-    checkpoint_bennett(lr::LoweringResult) -> ReversibleCircuit
+    _checkpoint_bennett_impl(lr::LoweringResult) -> ReversibleCircuit
 
 Bennett construction with per-group checkpointing for wire reduction.
+Reached via `bennett(lr; strategy=CheckpointStrategy())` (Bennett-i2ca /
+U55) or the `checkpoint_bennett` legacy alias.
 
 For each gate group: forward (compute), CNOT-copy result to checkpoint wires,
 then reverse (freeing internal wires). Only checkpoint wires (= result size)
@@ -357,7 +363,7 @@ For SHA-256: ~2400 wires instead of ~5900 (full Bennett).
 
 Requires lr.gate_groups with wire_start/wire_end populated (from lower()).
 """
-function checkpoint_bennett(lr::LoweringResult)
+function _checkpoint_bennett_impl(lr::LoweringResult)
     groups = lr.gate_groups
     isempty(groups) && return bennett(lr)
     # Bennett-prtp / U04: branching CFGs (≥2 `__pred_*` groups) confuse
