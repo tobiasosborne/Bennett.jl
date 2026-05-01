@@ -155,7 +155,7 @@ cost. Supported: `:ammr` (k=1, default), `:nc_7t` (k=3).
 """
 function t_depth(c::ReversibleCircuit; decomp::Symbol=:ammr)
     haskey(_T_LAYERS_PER_TOFFOLI, decomp) ||
-        error("unknown Toffoli decomposition :$decomp; supported: $(sort(collect(keys(_T_LAYERS_PER_TOFFOLI))))")
+        throw(ArgumentError("unknown Toffoli decomposition :$decomp; supported: $(sort(collect(keys(_T_LAYERS_PER_TOFFOLI))))"))
     return _T_LAYERS_PER_TOFFOLI[decomp] * toffoli_depth(c)
 end
 

@@ -220,8 +220,8 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function)
             end
         end
 
-        terminator === nothing && error(
-            "ir_extract.jl: block in @$(LLVM.name(func)):%$label has no terminator")
+        terminator === nothing && throw(AssertionError(
+            "ir_extract.jl: block in @$(LLVM.name(func)):%$label has no terminator"))
         push!(blocks, IRBasicBlock(label, insts, terminator))
     end
 

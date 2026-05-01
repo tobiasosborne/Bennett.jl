@@ -60,9 +60,9 @@ function _detect_sret(func::LLVM.Function)::Union{Nothing, SretInfo}
         attr == C_NULL && continue
         fname = LLVM.name(func)
         if found !== nothing
-            error("ir_extract.jl: function @$fname has multiple sret parameters " *
+            throw(AssertionError("ir_extract.jl: function @$fname has multiple sret parameters " *
                   "(LangRef forbids this); found at parameter indices " *
-                  "$(found.param_index) and $i")
+                  "$(found.param_index) and $i"))
         end
         ty = LLVM.LLVMType(LLVM.API.LLVMGetTypeAttributeValue(attr))
         ty isa LLVM.ArrayType || error(
@@ -351,9 +351,9 @@ function _collect_sret_writes(func::LLVM.Function, sret_info::SretInfo,
     # Every slot must be written before ret void
     fname = LLVM.name(func)
     for k in 0:(n - 1)
-        haskey(slot_values, k) || error(
+        haskey(slot_values, k) || throw(AssertionError(
             "ir_extract.jl: sret slot $k in @$fname is never written; every " *
-            "element of the aggregate return must be stored before ret void")
+            "element of the aggregate return must be stored before ret void"))
     end
 
     return SretWrites(slot_values, suppressed, pending_vec, pending_val_refs)
@@ -383,16 +383,16 @@ function _resolve_pending_vec_for_val!(sret_writes,
     store_ref === nothing && return nothing
 
     first_slot, n_lanes = sret_writes.pending_vec[store_ref]
-    haskey(lanes, produced_ref) || error(
+    haskey(lanes, produced_ref) || throw(AssertionError(
         "ir_extract.jl: pending sret vector store's stored value " *
         "$(produced_ref) was not registered in the vector-lane table " *
         "during pass 2. The producer of the <N x iM> value is an " *
         "instruction whose vector output isn't decomposed by " *
-        "_convert_vector_instruction.")
+        "_convert_vector_instruction."))
     per_lane = lanes[produced_ref]
-    length(per_lane) == n_lanes || error(
+    length(per_lane) == n_lanes || throw(DimensionMismatch(
         "ir_extract.jl: pending sret vector store expected $n_lanes lanes " *
-        "but got $(length(per_lane)) from the vector-lane table")
+        "but got $(length(per_lane)) from the vector-lane table"))
     for lane in 0:(n_lanes - 1)
         sret_writes.slot_values[first_slot + lane] = per_lane[lane + 1]
     end
@@ -412,10 +412,10 @@ skip swallowed it).
 function _assert_no_pending_vec_stores!(sret_writes)
     isempty(sret_writes.pending_vec) && return nothing
     refs = collect(keys(sret_writes.pending_vec))
-    error("ir_extract.jl: $(length(refs)) pending sret vector store(s) " *
+    throw(AssertionError("ir_extract.jl: $(length(refs)) pending sret vector store(s) " *
           "remain unresolved at ret void. This means the producer of the " *
           "stored vector value wasn't processed in pass 2 (likely skipped " *
-          "by _convert_instruction's cc0.3 catch-block).")
+          "by _convert_instruction's cc0.3 catch-block)."))
 end
 
 """

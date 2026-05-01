@@ -189,7 +189,7 @@ skips the copy+uncompute wrap — QROM is already self-clean.
 function lower_tabulate(f, arg_types::Type{<:Tuple},
                         input_widths::Vector{Int}; out_width::Int)
     1 <= out_width <= 64 ||
-        error("tabulate: out_width must be in 1..64, got $out_width")
+        throw(ArgumentError("tabulate: out_width must be in 1..64, got $out_width"))
 
     total_in = sum(input_widths)
     L = 1 << total_in

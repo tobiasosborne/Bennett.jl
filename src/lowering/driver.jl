@@ -3,9 +3,9 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
                add::Symbol=:auto, mul::Symbol=:auto,
                target::Symbol=:gate_count)
     add in (:auto, :ripple, :cuccaro, :qcla) ||
-        error("lower: unknown add strategy :$add; supported: :auto, :ripple, :cuccaro, :qcla")
+        throw(ArgumentError("lower: unknown add strategy :$add; supported: :auto, :ripple, :cuccaro, :qcla"))
     mul in (:auto, :shift_add, :qcla_tree) ||
-        error("lower: unknown mul strategy :$mul; supported: :auto, :shift_add, :qcla_tree (Bennett-tbm6: :karatsuba removed 2026-04-27)")
+        throw(ArgumentError("lower: unknown mul strategy :$mul; supported: :auto, :shift_add, :qcla_tree (Bennett-tbm6: :karatsuba removed 2026-04-27)"))
     # Bennett-4fri / U30: `target` selects the objective the `:auto`
     # dispatchers optimise for. `:gate_count` (default) preserves the
     # pre-U30 choices; `:depth` switches `mul=:auto` to `qcla_tree`
@@ -52,8 +52,8 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
 
     # If there are loops, we need max_loop_iterations
     if !isempty(back_edges) && max_loop_iterations <= 0
-        error("lower: loop detected in LLVM IR but max_loop_iterations not specified. " *
-              "Pass max_loop_iterations=N to reversible_compile.")
+        throw(ArgumentError("lower: loop detected in LLVM IR but max_loop_iterations not specified. " *
+              "Pass max_loop_iterations=N to reversible_compile."))
     end
 
     # Build loop info for each header

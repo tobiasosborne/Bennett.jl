@@ -70,7 +70,7 @@ function topo_sort(blocks::Vector{IRBasicBlock};
         end
     end
     length(result) == length(blocks) ||
-        error("lower: cannot topologically sort blocks even after removing back-edges")
+        throw(AssertionError("lower: cannot topologically sort blocks even after removing back-edges"))
     return result
 end
 
@@ -171,8 +171,8 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
                 blk in pre_header_preds || push!(pre_header_preds, blk)
             end
         end
-        pre_op === nothing && error("lower_loop!: phi $(inst.dest) has no pre-header incoming")
-        latch_op === nothing && error("lower_loop!: phi $(inst.dest) has no latch incoming")
+        pre_op === nothing && throw(AssertionError("lower_loop!: phi $(inst.dest) has no pre-header incoming"))
+        latch_op === nothing && throw(AssertionError("lower_loop!: phi $(inst.dest) has no latch incoming"))
         push!(phi_info, (inst.dest, inst.width, pre_op[1], latch_op[1]))
     end
 
@@ -185,7 +185,7 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
 
     term = header.terminator
     (term isa IRBranch && term.cond !== nothing) ||
-        error("lower_loop!: loop header $hlabel must end with conditional branch, got: $(typeof(term))")
+        throw(AssertionError("lower_loop!: loop header $hlabel must end with conditional branch, got: $(typeof(term))"))
 
     exit_on_true = !(term.true_label == hlabel || term.true_label in latch_labels)
     exit_label = exit_on_true ? term.true_label : term.false_label
@@ -200,9 +200,9 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
     # block_pred[hlabel] before calling lower_loop!. We rely on this for
     # body-block predicate computation below. Verify the contract.
     haskey(opts.block_pred, hlabel) ||
-        error("lower_loop!: block_pred[$hlabel] must be populated by the " *
+        throw(AssertionError("lower_loop!: block_pred[$hlabel] must be populated by the " *
               "function-level pass before lower_loop! is called " *
-              "(Bennett-jepw contract)")
+              "(Bennett-jepw contract)"))
 
     # Seed header phis from pre-header values (iter 1).
     for (dest, width, pre_val, _) in phi_info

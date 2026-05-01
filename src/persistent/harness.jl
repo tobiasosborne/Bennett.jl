@@ -59,7 +59,7 @@ function verify_pmap_correctness(impl::PersistentMapImpl;
     for (k, expected) in pairs(ref)
         got = impl.pmap_get(state, k)
         got == expected ||
-            error("verify_pmap_correctness($(impl.name)): get($k) = $got, expected $expected")
+            throw(AssertionError("verify_pmap_correctness($(impl.name)): get($k) = $got, expected $expected"))
     end
 
     # Overwrite check (if room)
@@ -70,7 +70,7 @@ function verify_pmap_correctness(impl::PersistentMapImpl;
         state2 = impl.pmap_set(state, k, new_v)
         got = impl.pmap_get(state2, k)
         got == new_v ||
-            error("verify_pmap_correctness($(impl.name)): overwrite get($k) = $got, expected $new_v")
+            throw(AssertionError("verify_pmap_correctness($(impl.name)): overwrite get($k) = $got, expected $new_v"))
     end
 
     # Empty-key lookup: pick a K value not yet inserted
@@ -85,7 +85,7 @@ function verify_pmap_correctness(impl::PersistentMapImpl;
     if candidate !== nothing
         got = impl.pmap_get(state, candidate)
         got == zero(V) ||
-            error("verify_pmap_correctness($(impl.name)): get($candidate) on missing key = $got, expected $(zero(V))")
+            throw(AssertionError("verify_pmap_correctness($(impl.name)): get($candidate) on missing key = $got, expected $(zero(V))"))
     end
 
     return true
@@ -126,20 +126,20 @@ function verify_pmap_persistence_invariant(impl::PersistentMapImpl)
 
     got_old = impl.pmap_get(s1, k)
     got_old == v_old ||
-        error("verify_pmap_persistence_invariant($(impl.name)): old snapshot ",
+        throw(AssertionError(string("verify_pmap_persistence_invariant($(impl.name)): old snapshot ",
               "mutated by subsequent pmap_set — got $got_old, expected $v_old. ",
-              "Impl is not persistent.")
+              "Impl is not persistent.")))
 
     got_new = impl.pmap_get(s2, k)
     got_new == v_new ||
-        error("verify_pmap_persistence_invariant($(impl.name)): new snapshot ",
-              "lookup wrong — got $got_new, expected $v_new.")
+        throw(AssertionError(string("verify_pmap_persistence_invariant($(impl.name)): new snapshot ",
+              "lookup wrong — got $got_new, expected $v_new.")))
 
     got_empty = impl.pmap_get(s0, k)
     got_empty == zero(V) ||
-        error("verify_pmap_persistence_invariant($(impl.name)): empty snapshot ",
+        throw(AssertionError(string("verify_pmap_persistence_invariant($(impl.name)): empty snapshot ",
               "lookup leaked — got $got_empty, expected $(zero(V)). ",
-              "Impl is mutating pmap_new()'s state.")
+              "Impl is mutating pmap_new()'s state.")))
 
     return true
 end

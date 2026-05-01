@@ -20,7 +20,7 @@ function _pick_add_strategy(user_choice::Symbol, W::Int, op2_dead::Bool, livenes
     user_choice === :ripple  && return :ripple
     user_choice === :cuccaro && return :cuccaro
     user_choice === :qcla    && return :qcla
-    user_choice === :auto || error("_pick_add_strategy: unknown choice :$user_choice")
+    user_choice === :auto || throw(ArgumentError("_pick_add_strategy: unknown choice :$user_choice"))
     return :ripple
 end
 
@@ -50,7 +50,7 @@ function _pick_mul_strategy(user_choice::Symbol, W::Int;
                             target::Symbol=:gate_count)
     user_choice === :shift_add && return :shift_add
     user_choice === :qcla_tree && return :qcla_tree
-    user_choice === :auto || error("_pick_mul_strategy: unknown choice :$user_choice (supported: :auto, :shift_add, :qcla_tree)")
+    user_choice === :auto || throw(ArgumentError("_pick_mul_strategy: unknown choice :$user_choice (supported: :auto, :shift_add, :qcla_tree)"))
     target === :depth && return :qcla_tree
     return :shift_add
 end
@@ -223,7 +223,7 @@ function lower_binop!(gates, wa, vw, inst::IRBinOp;
         elseif inst.op == :xor; lower_xor!(gates, wa, a, b, W)
         elseif inst.op in (:udiv, :urem, :sdiv, :srem)
             lower_divrem!(gates, wa, vw, inst, a, b, W)
-        else error("lower_binop!: unknown binop :$(inst.op) (supported: $_IR_BINOP_OPS)")
+        else throw(ArgumentError("lower_binop!: unknown binop :$(inst.op) (supported: $_IR_BINOP_OPS)"))
         end
     end
 
@@ -383,7 +383,7 @@ function lower_icmp!(gates, wa, vw, inst::IRICmp)
     elseif p == :sgt;      lower_slt!(gates, wa, b, a, W)
     elseif p == :sle;      lower_not1!(gates, wa, lower_slt!(gates, wa, b, a, W))
     elseif p == :sge;      lower_not1!(gates, wa, lower_slt!(gates, wa, a, b, W))
-    else error("lower_icmp!: unknown predicate :$p (supported: $_IR_ICMP_PREDS)")
+    else throw(ArgumentError("lower_icmp!: unknown predicate :$p (supported: $_IR_ICMP_PREDS)"))
     end
     vw[inst.dest] = result
 end
@@ -451,15 +451,15 @@ function lower_select!(gates, wa, vw, inst::IRSelect; ctx::Union{Nothing,Lowerin
     # routing: merge origins from both sides, guarded by cond / NOT(cond).
     if inst.width == 0
         ctx === nothing &&
-            error("lower_select!: ptr-select %$(inst.dest) requires ctx for ptr_provenance threading")
+            throw(AssertionError("lower_select!: ptr-select %$(inst.dest) requires ctx for ptr_provenance threading"))
         inst.op1 isa SSAOperand ||
-            error("lower_select!: ptr-select %$(inst.dest) true-side is non-SSA ($(inst.op1))")
+            throw(AssertionError("lower_select!: ptr-select %$(inst.dest) true-side is non-SSA ($(inst.op1))"))
         inst.op2 isa SSAOperand ||
-            error("lower_select!: ptr-select %$(inst.dest) false-side is non-SSA ($(inst.op2))")
+            throw(AssertionError("lower_select!: ptr-select %$(inst.dest) false-side is non-SSA ($(inst.op2))"))
         haskey(ctx.ptr_provenance, inst.op1.name) ||
-            error("lower_select!: ptr-select %$(inst.dest) true-side %$(inst.op1.name) has no provenance")
+            throw(AssertionError("lower_select!: ptr-select %$(inst.dest) true-side %$(inst.op1.name) has no provenance"))
         haskey(ctx.ptr_provenance, inst.op2.name) ||
-            error("lower_select!: ptr-select %$(inst.dest) false-side %$(inst.op2.name) has no provenance")
+            throw(AssertionError("lower_select!: ptr-select %$(inst.dest) false-side %$(inst.op2.name) has no provenance"))
 
         cond = resolve!(gates, wa, vw, inst.cond, 1)
         not_cond = _not_wire!(gates, wa, cond)
@@ -526,7 +526,7 @@ function lower_cast!(gates, wa, vw, inst::IRCast)
         # Pinned by `test/test_gboa_dirty_bit_hygiene.jl`.
         for i in 1:T; push!(gates, CNOTGate(src[i], r[i])); end
     else
-        error("lower_cast!: unknown cast op :$(inst.op) (supported: $_IR_CAST_OPS)")
+        throw(ArgumentError("lower_cast!: unknown cast op :$(inst.op) (supported: $_IR_CAST_OPS)"))
     end
 
     vw[inst.dest] = r

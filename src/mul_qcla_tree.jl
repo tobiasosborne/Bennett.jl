@@ -27,9 +27,9 @@ else back to zero.
 """
 function lower_mul_qcla_tree!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                               a::Vector{Int}, b::Vector{Int}, W::Int)
-    W >= 1 || error("lower_mul_qcla_tree!: W must be >= 1, got $W")
-    length(a) == W || error("lower_mul_qcla_tree!: |a|=$(length(a)) != W=$W")
-    length(b) == W || error("lower_mul_qcla_tree!: |b|=$(length(b)) != W=$W")
+    W >= 1 || throw(ArgumentError("lower_mul_qcla_tree!: W must be >= 1, got $W"))
+    length(a) == W || throw(DimensionMismatch("lower_mul_qcla_tree!: |a|=$(length(a)) != W=$W"))
+    length(b) == W || throw(DimensionMismatch("lower_mul_qcla_tree!: |b|=$(length(b)) != W=$W"))
 
     # Step 1: fast_copy x → W copies (including source).
     s1_start = length(gates) + 1

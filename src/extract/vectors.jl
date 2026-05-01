@@ -67,18 +67,18 @@ function _resolve_vec_lanes(val::LLVM.Value,
     if haskey(lanes, val.ref)
         got = lanes[val.ref]
         length(got) == n_expected ||
-            error("ir_extract.jl: vector lane-count mismatch on $(string(val)): " *
-                  "expected $n_expected, got $(length(got))")
+            throw(DimensionMismatch("ir_extract.jl: vector lane-count mismatch on $(string(val)): " *
+                  "expected $n_expected, got $(length(got))"))
         return got
     end
     vt = LLVM.value_type(val)
     vt isa LLVM.VectorType ||
-        error("ir_extract.jl: _resolve_vec_lanes on non-vector: " *
-              "$(string(val)) :: $vt")
+        throw(AssertionError("ir_extract.jl: _resolve_vec_lanes on non-vector: " *
+              "$(string(val)) :: $vt"))
     got_n = Int(LLVM.length(vt))
     got_n == n_expected ||
-        error("ir_extract.jl: vector lane-count mismatch: expected $n_expected, " *
-              "got $got_n on $(string(val))")
+        throw(DimensionMismatch("ir_extract.jl: vector lane-count mismatch: expected $n_expected, " *
+              "got $got_n on $(string(val))"))
     # Path B: ConstantDataVector.
     if val isa LLVM.ConstantDataVector
         out = Vector{IROperand}(undef, got_n)

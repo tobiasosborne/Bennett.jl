@@ -16,9 +16,9 @@ Postcondition: `target[k] = y_i_copies[k] ∧ x_copy[k]` for each bit k.
 function emit_conditional_copy!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                                 y_i_copies::Vector{Int}, x_copy::Vector{Int},
                                 target::Vector{Int}, W::Int)
-    length(y_i_copies) == W || error("emit_conditional_copy!: y_i_copies has $(length(y_i_copies)) wires, expected W=$W")
-    length(x_copy)     == W || error("emit_conditional_copy!: x_copy has $(length(x_copy)) wires, expected W=$W")
-    length(target)     == W || error("emit_conditional_copy!: target has $(length(target)) wires, expected W=$W")
+    length(y_i_copies) == W || throw(DimensionMismatch("emit_conditional_copy!: y_i_copies has $(length(y_i_copies)) wires, expected W=$W"))
+    length(x_copy)     == W || throw(DimensionMismatch("emit_conditional_copy!: x_copy has $(length(x_copy)) wires, expected W=$W"))
+    length(target)     == W || throw(DimensionMismatch("emit_conditional_copy!: target has $(length(target)) wires, expected W=$W"))
     for k in 1:W
         push!(gates, ToffoliGate(y_i_copies[k], x_copy[k], target[k]))
     end
@@ -46,9 +46,9 @@ function emit_partial_products!(gates::Vector{ReversibleGate}, wa::WireAllocator
                                 y_bit_copies::Vector{Vector{Int}},
                                 x_copies::Vector{Vector{Int}}, W::Int)
     length(y_bit_copies) == W ||
-        error("emit_partial_products!: expected $W y_bit_copies entries, got $(length(y_bit_copies))")
+        throw(DimensionMismatch("emit_partial_products!: expected $W y_bit_copies entries, got $(length(y_bit_copies))"))
     length(x_copies) == W ||
-        error("emit_partial_products!: expected $W x_copies entries, got $(length(x_copies))")
+        throw(DimensionMismatch("emit_partial_products!: expected $W x_copies entries, got $(length(x_copies))"))
     alpha = Vector{Vector{Int}}()
     for i in 1:W
         pp = allocate!(wa, W)

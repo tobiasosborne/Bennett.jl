@@ -81,29 +81,29 @@ struct ReversibleCircuit
         anc_set = Set(ancilla_wires)
 
         bad_in_anc = intersect(in_set, anc_set)
-        isempty(bad_in_anc) || error(
+        isempty(bad_in_anc) || throw(AssertionError(
             "ReversibleCircuit: ancilla wires $(sort!(collect(bad_in_anc))) " *
             "overlap input wires — the ancilla-zero check in `simulate` " *
-            "would fire on input values")
+            "would fire on input values"))
 
         bad_out_anc = intersect(out_set, anc_set)
-        isempty(bad_out_anc) || error(
+        isempty(bad_out_anc) || throw(AssertionError(
             "ReversibleCircuit: ancilla wires $(sort!(collect(bad_out_anc))) " *
             "overlap output wires — the ancilla-zero check in `simulate` " *
-            "would depend on f(x)")
+            "would depend on f(x)"))
 
         covered = union(in_set, out_set, anc_set)
         expected = Set(1:n_wires)
         missing_wires = setdiff(expected, covered)
-        isempty(missing_wires) || error(
+        isempty(missing_wires) || throw(AssertionError(
             "ReversibleCircuit: wires $(sort!(collect(missing_wires))) are " *
             "not classified as input, output, or ancilla " *
-            "(n_wires=$n_wires)")
+            "(n_wires=$n_wires)"))
 
         stray = setdiff(covered, expected)
-        isempty(stray) || error(
+        isempty(stray) || throw(AssertionError(
             "ReversibleCircuit: wire indices $(sort!(collect(stray))) exceed " *
-            "n_wires=$n_wires")
+            "n_wires=$n_wires"))
 
         return new(n_wires, gates, input_wires, output_wires, ancilla_wires,
                    input_widths, output_elem_widths)

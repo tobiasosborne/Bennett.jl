@@ -59,11 +59,11 @@ at levels 1..D-1) return to zero.
 function emit_parallel_adder_tree!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                                    pp::Vector{Vector{Int}}, W::Int;
                                    reuse_pool::Vector{Int}=Int[])
-    W >= 1 || error("emit_parallel_adder_tree!: W must be >= 1, got $W")
+    W >= 1 || throw(ArgumentError("emit_parallel_adder_tree!: W must be >= 1, got $W"))
     length(pp) == W ||
-        error("emit_parallel_adder_tree!: expected $W partial products, got $(length(pp))")
+        throw(DimensionMismatch("emit_parallel_adder_tree!: expected $W partial products, got $(length(pp))"))
     all(p -> length(p) == W, pp) ||
-        error("emit_parallel_adder_tree!: every partial product must have W=$W wires")
+        throw(DimensionMismatch("emit_parallel_adder_tree!: every partial product must have W=$W wires"))
 
     # Trivial: W == 1 — result is just pp[1] padded to 2 wires.
     if W == 1
@@ -132,7 +132,7 @@ function emit_parallel_adder_tree!(gates::Vector{ReversibleGate}, wa::WireAlloca
     end
 
     length(current) == 1 ||
-        error("emit_parallel_adder_tree!: expected 1 root after $D levels, got $(length(current))")
+        throw(AssertionError("emit_parallel_adder_tree!: expected 1 root after $D levels, got $(length(current))"))
     root = current[1]
 
     # Copy the root's low 2W bits to a fresh output register BEFORE uncomputing.

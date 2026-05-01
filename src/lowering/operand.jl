@@ -2,7 +2,7 @@
 
 function resolve!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                   var_wires::Dict{Symbol,Vector{Int}}, op::SSAOperand, width::Int)
-    haskey(var_wires, op.name) || error("resolve!: undefined SSA variable: %$(op.name)")
+    haskey(var_wires, op.name) || throw(AssertionError("resolve!: undefined SSA variable: %$(op.name)"))
     wires = var_wires[op.name]
     # Bennett-cklf / U128: pre-fix the SSA path silently discarded the
     # caller's `width` arg — `wires` was returned regardless of length

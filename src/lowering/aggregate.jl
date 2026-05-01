@@ -197,7 +197,7 @@ function lower_ptr_offset!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                            alloca_info::Union{Nothing,Dict{Symbol,Tuple{Int,Int}}}=nothing)
     # The base operand should be a flat wire array (from ptr param)
     if !haskey(vw, inst.base.name)
-        error("lower_var_gep!: GEP base $(inst.base.name) not found in variable wires")
+        throw(AssertionError("lower_var_gep!: GEP base $(inst.base.name) not found in variable wires"))
     end
     base_wires = vw[inst.base.name]
     # PtrOffset just records a view into the base array at byte offset
@@ -254,7 +254,7 @@ function lower_var_gep!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     if globals !== nothing && haskey(globals, inst.base.name)
         data, gw = globals[inst.base.name]
         gw == inst.elem_width ||
-            error("lower_var_gep!: elem_width=$(inst.elem_width) disagrees with global $(inst.base.name) elem_width=$gw")
+            throw(DimensionMismatch("lower_var_gep!: elem_width=$(inst.elem_width) disagrees with global $(inst.base.name) elem_width=$gw"))
         vw[inst.dest] = _emit_qrom_from_gep!(gates, wa, vw, data, inst.index, inst.elem_width)
         return
     end
@@ -280,11 +280,11 @@ function lower_var_gep!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     end
 
     haskey(vw, inst.base.name) ||
-        error("lower_var_gep!: base $(inst.base.name) not found in variable wires")
+        throw(AssertionError("lower_var_gep!: base $(inst.base.name) not found in variable wires"))
     base_wires = vw[inst.base.name]
     W = inst.elem_width
     N = length(base_wires) ÷ W
-    N >= 1 || error("lower_var_gep!: base has $(length(base_wires)) wires but elem is $W bits")
+    N >= 1 || throw(DimensionMismatch("lower_var_gep!: base has $(length(base_wires)) wires but elem is $W bits"))
 
     # Resolve index — may be wider than needed (e.g., i64 for a 4-element array)
     idx_wires = resolve!(gates, wa, vw, inst.index, 0)
@@ -325,7 +325,7 @@ function lower_load!(ctx::LoweringCtx, inst::IRLoad)
     if inst.ptr isa SSAOperand && haskey(ctx.ptr_provenance, inst.ptr.name)
         origins = ctx.ptr_provenance[inst.ptr.name]
         isempty(origins) &&
-            error("lower_load!: empty origin set for ptr %$(inst.ptr.name)")
+            throw(AssertionError("lower_load!: empty origin set for ptr %$(inst.ptr.name)"))
         if length(origins) == 1
             _lower_load_via_mux!(ctx, inst, origins[1])
         else
@@ -354,18 +354,18 @@ function _lower_load_multi_origin!(ctx::LoweringCtx, inst::IRLoad,
     for o in origins
         info = get(ctx.alloca_info, o.alloca_dest, nothing)
         info === nothing &&
-            error("_lower_load_multi_origin!: unknown alloca %$(o.alloca_dest)")
+            throw(AssertionError("_lower_load_multi_origin!: unknown alloca %$(o.alloca_dest)"))
         elem_w, n = info
         W == elem_w ||
-            error("_lower_load_multi_origin!: load width=$W vs origin $(o.alloca_dest) elem_width=$elem_w")
+            throw(DimensionMismatch("_lower_load_multi_origin!: load width=$W vs origin $(o.alloca_dest) elem_width=$elem_w"))
         o.idx_op isa ConstOperand ||
             error("_lower_load_multi_origin!: multi-origin ptr with dynamic idx is NYI")
         0 <= o.idx_op.value < n ||
-            error("_lower_load_multi_origin!: idx=$(o.idx_op.value) out of range [0, $n)")
+            throw(ArgumentError("_lower_load_multi_origin!: idx=$(o.idx_op.value) out of range [0, $n)"))
 
         arr_wires = ctx.vw[o.alloca_dest]
         length(arr_wires) == elem_w * n ||
-            error("_lower_load_multi_origin!: primal has $(length(arr_wires)) wires, expected $(elem_w*n)")
+            throw(DimensionMismatch("_lower_load_multi_origin!: primal has $(length(arr_wires)) wires, expected $(elem_w*n)"))
 
         primal_slot = arr_wires[o.idx_op.value * elem_w + 1 : (o.idx_op.value + 1) * elem_w]
         for i in 1:W
@@ -400,13 +400,13 @@ function _lower_load_via_shadow!(ctx::LoweringCtx, inst::IRLoad,
                                   idx_op::IROperand)
     elem_w, n = info
     inst.width == elem_w ||
-        error("_lower_load_via_shadow!: load width=$(inst.width) doesn't match elem_width=$elem_w")
+        throw(DimensionMismatch("_lower_load_via_shadow!: load width=$(inst.width) doesn't match elem_width=$elem_w"))
     0 <= idx_op.value < n ||
-        error("_lower_load_via_shadow!: idx=$(idx_op.value) out of range [0, $n)")
+        throw(ArgumentError("_lower_load_via_shadow!: idx=$(idx_op.value) out of range [0, $n)"))
 
     arr_wires = ctx.vw[alloca_dest]
     length(arr_wires) == elem_w * n ||
-        error("_lower_load_via_shadow!: primal has $(length(arr_wires)) wires, expected $(elem_w*n)")
+        throw(DimensionMismatch("_lower_load_via_shadow!: primal has $(length(arr_wires)) wires, expected $(elem_w*n)"))
 
     primal_slot = arr_wires[idx_op.value * elem_w + 1 : (idx_op.value + 1) * elem_w]
     ctx.vw[inst.dest] = emit_shadow_load!(ctx.gates, ctx.wa, primal_slot, elem_w)
@@ -432,7 +432,7 @@ function _lower_load_legacy!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     src_wires = vw[inst.ptr.name]
     W = inst.width
     if length(src_wires) < W
-        error("_lower_load_legacy!: load of $W bits from $(inst.ptr.name) but only $(length(src_wires)) wires available")
+        throw(DimensionMismatch("_lower_load_legacy!: load of $W bits from $(inst.ptr.name) but only $(length(src_wires)) wires available"))
     end
     result = allocate!(wa, W)
     for i in 1:W

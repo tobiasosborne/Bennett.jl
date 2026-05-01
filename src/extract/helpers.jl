@@ -33,9 +33,9 @@ function _get_deref_bytes(func::LLVM.Function, param::LLVM.Argument)
         idx += 1
         p.ref == param.ref && @goto found_param
     end
-    error("_get_deref_bytes: parameter $(LLVM.name(param)) is not in " *
+    throw(AssertionError("_get_deref_bytes: parameter $(LLVM.name(param)) is not in " *
           "func=@$(LLVM.name(func)) parameter list (caller-side miswiring; " *
-          "Bennett-zyjn / U94)")
+          "Bennett-zyjn / U94)"))
     @label found_param
     # Check parameter attributes for dereferenceable(N)
     try
@@ -62,11 +62,11 @@ function _get_deref_bytes(func::LLVM.Function, param::LLVM.Argument)
     # an LLVM.jl format mismatch — fail loud rather than silently returning 0.
     lp = findfirst('(', defline)
     rp = findlast(')', defline)
-    (lp === nothing || rp === nothing || lp >= rp) && error(
+    (lp === nothing || rp === nothing || lp >= rp) && throw(AssertionError(
         "_get_deref_bytes: malformed `define` line for func=@$(LLVM.name(func)); " *
         "could not locate the parameter list `(...)`. " *
         "LLVM.jl `string(func)` may have changed format. (Bennett-zyjn / U94)\n  " *
-        "defline: $defline")
+        "defline: $defline"))
     param_list = defline[lp+1:rp-1]
     # Split on top-level commas. Paren nesting within a slot (e.g.
     # `sret([2 x i64])`, `dereferenceable(16)`) must not split the slot.

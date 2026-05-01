@@ -42,15 +42,15 @@ function emit_feistel!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                        rounds::Int=4,
                        rotations::Vector{Int}=Int[])
     length(key_wires) == W ||
-        error("emit_feistel!: key_wires has $(length(key_wires)) wires, W=$W")
-    W >= 2 || error("emit_feistel!: W must be ≥ 2 (got $W)")
-    rounds >= 1 || error("emit_feistel!: rounds must be ≥ 1")
+        throw(DimensionMismatch("emit_feistel!: key_wires has $(length(key_wires)) wires, W=$W"))
+    W >= 2 || throw(ArgumentError("emit_feistel!: W must be ≥ 2 (got $W)"))
+    rounds >= 1 || throw(ArgumentError("emit_feistel!: rounds must be ≥ 1"))
 
     if isempty(rotations)
         rotations = Int[(2*i - 1) for i in 1:rounds]
     end
     length(rotations) == rounds ||
-        error("emit_feistel!: rotations has $(length(rotations)) entries, expected $rounds")
+        throw(DimensionMismatch("emit_feistel!: rotations has $(length(rotations)) entries, expected $rounds"))
 
     # Copy input onto fresh output wires. Feistel runs on the copy; original is preserved.
     out = allocate!(wa, W)
@@ -65,7 +65,7 @@ function emit_feistel!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     L_wires = out[1:L_half]
     R_wires = out[L_half+1:end]
     length(R_wires) == R_half ||
-        error("internal: R_wires length ($(length(R_wires))) != R_half ($R_half)")
+        throw(AssertionError("internal: R_wires length ($(length(R_wires))) != R_half ($R_half)"))
 
     # Feistel rounds: (L, R) → (R, L ⊕ F(R))
     for (r, rot) in enumerate(rotations)

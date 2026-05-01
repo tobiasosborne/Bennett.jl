@@ -64,9 +64,9 @@ struct IRBinOp <: IRInst
     width::Int
     function IRBinOp(dest::Symbol, op::Symbol, op1::IROperand, op2::IROperand, width::Int)
         op in _IR_BINOP_OPS ||
-            error("IRBinOp: op=:$op not in $_IR_BINOP_OPS (dest=$dest)")
+            throw(ArgumentError("IRBinOp: op=:$op not in $_IR_BINOP_OPS (dest=$dest)"))
         width >= 1 ||
-            error("IRBinOp: width=$width must be >= 1 (dest=$dest, op=:$op)")
+            throw(ArgumentError("IRBinOp: width=$width must be >= 1 (dest=$dest, op=:$op)"))
         new(dest, op, op1, op2, width)
     end
 end
@@ -79,9 +79,9 @@ struct IRICmp <: IRInst
     width::Int         # width of operands (result is always i1)
     function IRICmp(dest::Symbol, predicate::Symbol, op1::IROperand, op2::IROperand, width::Int)
         predicate in _IR_ICMP_PREDS ||
-            error("IRICmp: predicate=:$predicate not in $_IR_ICMP_PREDS (dest=$dest)")
+            throw(ArgumentError("IRICmp: predicate=:$predicate not in $_IR_ICMP_PREDS (dest=$dest)"))
         width >= 1 ||
-            error("IRICmp: width=$width must be >= 1 (dest=$dest, predicate=:$predicate)")
+            throw(ArgumentError("IRICmp: width=$width must be >= 1 (dest=$dest, predicate=:$predicate)"))
         new(dest, predicate, op1, op2, width)
     end
 end
@@ -96,8 +96,8 @@ struct IRSelect <: IRInst
                        # as wires (routing lives in ptr_provenance).
     function IRSelect(dest::Symbol, cond::IROperand, op1::IROperand, op2::IROperand, width::Int)
         width >= 0 ||
-            error("IRSelect: width=$width must be >= 0 (dest=$dest); " *
-                  "use 0 only for pointer-typed selects")
+            throw(ArgumentError("IRSelect: width=$width must be >= 0 (dest=$dest); " *
+                  "use 0 only for pointer-typed selects"))
         new(dest, cond, op1, op2, width)
     end
 end
@@ -107,7 +107,7 @@ struct IRRet <: IRInst
     width::Int
     function IRRet(op::IROperand, width::Int)
         width >= 1 ||
-            error("IRRet: width=$width must be >= 1")
+            throw(ArgumentError("IRRet: width=$width must be >= 1"))
         new(op, width)
     end
 end
@@ -132,11 +132,11 @@ struct IRCast <: IRInst
     function IRCast(dest::Symbol, op::Symbol, operand::IROperand,
                     from_width::Int, to_width::Int)
         op in _IR_CAST_OPS ||
-            error("IRCast: op=:$op not in $_IR_CAST_OPS (dest=$dest)")
+            throw(ArgumentError("IRCast: op=:$op not in $_IR_CAST_OPS (dest=$dest)"))
         from_width >= 1 ||
-            error("IRCast: from_width=$from_width must be >= 1 (dest=$dest, op=:$op)")
+            throw(ArgumentError("IRCast: from_width=$from_width must be >= 1 (dest=$dest, op=:$op)"))
         to_width >= 1 ||
-            error("IRCast: to_width=$to_width must be >= 1 (dest=$dest, op=:$op)")
+            throw(ArgumentError("IRCast: to_width=$to_width must be >= 1 (dest=$dest, op=:$op)"))
         new(dest, op, operand, from_width, to_width)
     end
 end
@@ -160,7 +160,7 @@ struct IRLoad <: IRInst
     width::Int          # load width in bits
     function IRLoad(dest::Symbol, ptr::IROperand, width::Int)
         width >= 1 ||
-            error("IRLoad: width=$width must be >= 1 (dest=$dest)")
+            throw(ArgumentError("IRLoad: width=$width must be >= 1 (dest=$dest)"))
         new(dest, ptr, width)
     end
 end
@@ -175,7 +175,7 @@ struct IRStore <: IRInst
     width::Int          # stored value width in bits (i1-aware via narrow guard)
     function IRStore(ptr::IROperand, val::IROperand, width::Int)
         width >= 1 ||
-            error("IRStore: width=$width must be >= 1")
+            throw(ArgumentError("IRStore: width=$width must be >= 1"))
         new(ptr, val, width)
     end
 end
@@ -190,7 +190,7 @@ struct IRAlloca <: IRInst
     n_elems::IROperand   # :const for static, :ssa for dynamic
     function IRAlloca(dest::Symbol, elem_width::Int, n_elems::IROperand)
         elem_width >= 1 ||
-            error("IRAlloca: elem_width=$elem_width must be >= 1 (dest=$dest)")
+            throw(ArgumentError("IRAlloca: elem_width=$elem_width must be >= 1 (dest=$dest)"))
         new(dest, elem_width, n_elems)
     end
 end
@@ -217,8 +217,8 @@ struct IRCall <: IRInst
                     args::AbstractVector{<:IROperand},
                     arg_widths::Vector{Int}, ret_width::Int)
         length(args) == length(arg_widths) ||
-            error("IRCall: length(args)=$(length(args)) != length(arg_widths)=$(length(arg_widths)) " *
-                  "(dest=$dest, callee=$(nameof(callee)))")
+            throw(DimensionMismatch("IRCall: length(args)=$(length(args)) != length(arg_widths)=$(length(arg_widths)) " *
+                  "(dest=$dest, callee=$(nameof(callee)))"))
         # Bennett-2yky / U130 investigation: a tighter upper bound (e.g.
         # `<= 64` per Bennett-zmw3 / U111) was tested and reverted —
         # NTuple aggregate returns (e.g. NTuple{9,UInt64} ⇒ 576 bits)
@@ -227,10 +227,10 @@ struct IRCall <: IRInst
         # IRCall arg widths derived from `_iwidth` / aggregate
         # `_type_width`. Lower bounds + length match suffice here.
         ret_width >= 1 ||
-            error("IRCall: ret_width=$ret_width must be >= 1 (dest=$dest, callee=$(nameof(callee)))")
+            throw(ArgumentError("IRCall: ret_width=$ret_width must be >= 1 (dest=$dest, callee=$(nameof(callee)))"))
         for (i, w) in enumerate(arg_widths)
             w >= 1 ||
-                error("IRCall: arg_widths[$i]=$w must be >= 1 (dest=$dest, callee=$(nameof(callee)))")
+                throw(ArgumentError("IRCall: arg_widths[$i]=$w must be >= 1 (dest=$dest, callee=$(nameof(callee)))"))
         end
         new(dest, callee, convert(Vector{IROperand}, args), arg_widths, ret_width)
     end
@@ -267,10 +267,10 @@ struct IRPhi <: IRInst
     function IRPhi(dest::Symbol, width::Int,
                    incoming::AbstractVector{<:Tuple{<:IROperand, Symbol}})
         width >= 0 ||
-            error("IRPhi: width=$width must be >= 0 (dest=$dest); " *
-                  "use 0 only for pointer-typed phis")
+            throw(ArgumentError("IRPhi: width=$width must be >= 0 (dest=$dest); " *
+                  "use 0 only for pointer-typed phis"))
         isempty(incoming) &&
-            error("IRPhi: incoming is empty (dest=$dest); a phi with no predecessors is malformed")
+            throw(ArgumentError("IRPhi: incoming is empty (dest=$dest); a phi with no predecessors is malformed"))
         new(dest, width, convert(Vector{Tuple{IROperand, Symbol}}, incoming))
     end
 end

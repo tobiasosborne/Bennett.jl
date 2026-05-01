@@ -16,8 +16,8 @@ function lower_alloca!(ctx::LoweringCtx, inst::IRAlloca)
               "(got $(typeof(inst.n_elems))); " *
               "T3b.3 shadow memory handles static-sized allocas only.")
     n = inst.n_elems.value
-    n >= 1 || error("lower_alloca!: non-positive n_elems=$n")
-    inst.elem_width >= 1 || error("lower_alloca!: non-positive elem_width=$(inst.elem_width)")
+    n >= 1 || throw(ArgumentError("lower_alloca!: non-positive n_elems=$n"))
+    inst.elem_width >= 1 || throw(ArgumentError("lower_alloca!: non-positive elem_width=$(inst.elem_width)"))
 
     total_bits = inst.elem_width * n
     wires = allocate!(ctx.wa, total_bits)       # zero by invariant
@@ -47,13 +47,13 @@ case the caller should supply the predicate explicitly.
 """
 function _entry_predicate_wire(ctx::LoweringCtx)
     ctx.entry_label == Symbol("") &&
-        error("_entry_predicate_wire: ctx has sentinel entry_label; direct " *
+        throw(AssertionError("_entry_predicate_wire: ctx has sentinel entry_label; direct " *
               "lower_block_insts! callers must either set entry_label or " *
-              "bypass ptr_provenance usage")
+              "bypass ptr_provenance usage"))
     pw = get(ctx.block_pred, ctx.entry_label, Int[])
     length(pw) == 1 ||
-        error("_entry_predicate_wire: expected single-wire predicate for " *
-              "entry block $(ctx.entry_label), got $(length(pw)) wires")
+        throw(AssertionError("_entry_predicate_wire: expected single-wire predicate for " *
+              "entry block $(ctx.entry_label), got $(length(pw)) wires"))
     return pw[1]
 end
 
@@ -110,11 +110,11 @@ function lower_store!(ctx::LoweringCtx, inst::IRStore, block_label::Symbol=Symbo
         error("lower_store!: store to a constant pointer is not supported")
 
     haskey(ctx.ptr_provenance, inst.ptr.name) ||
-        error("lower_store!: no provenance for ptr %$(inst.ptr.name); " *
-              "store must target an alloca or GEP thereof")
+        throw(AssertionError("lower_store!: no provenance for ptr %$(inst.ptr.name); " *
+              "store must target an alloca or GEP thereof"))
     origins = ctx.ptr_provenance[inst.ptr.name]
     isempty(origins) &&
-        error("lower_store!: empty origin set for ptr %$(inst.ptr.name)")
+        throw(AssertionError("lower_store!: empty origin set for ptr %$(inst.ptr.name)"))
 
     # Bennett-cc0 M2b: single-origin fast path preserves every BENCHMARKS.md
     # baseline. Multi-origin (pointer phi/select) fans out to N guarded shadow
@@ -135,7 +135,7 @@ function lower_store!(ctx::LoweringCtx, inst::IRStore, block_label::Symbol=Symbo
     for o in origins
         info = get(ctx.alloca_info, o.alloca_dest, nothing)
         info === nothing &&
-            error("lower_store!: multi-origin ptr references unknown alloca %$(o.alloca_dest)")
+            throw(AssertionError("lower_store!: multi-origin ptr references unknown alloca %$(o.alloca_dest)"))
         strategy = _pick_alloca_strategy(info, o.idx_op)
         strategy == :shadow ||
             error("lower_store!: multi-origin ptr with dynamic idx (origin=$(o.alloca_dest), " *
@@ -154,7 +154,7 @@ function _lower_store_single_origin!(ctx::LoweringCtx, inst::IRStore,
     idx_op = origin.idx_op
     info = get(ctx.alloca_info, alloca_dest, nothing)
     info === nothing &&
-        error("lower_store!: provenance points to unknown alloca %$alloca_dest")
+        throw(AssertionError("lower_store!: provenance points to unknown alloca %$alloca_dest"))
 
     strategy = _pick_alloca_strategy(info, idx_op)
 
@@ -186,15 +186,15 @@ function _emit_store_via_shadow_guarded!(ctx::LoweringCtx, inst::IRStore,
                                          val_wires::Vector{Int})
     elem_w, n = info
     inst.width == elem_w ||
-        error("_emit_store_via_shadow_guarded!: store width=$(inst.width) doesn't match alloca elem_width=$elem_w")
+        throw(DimensionMismatch("_emit_store_via_shadow_guarded!: store width=$(inst.width) doesn't match alloca elem_width=$elem_w"))
     idx_op isa ConstOperand ||
         error("_emit_store_via_shadow_guarded!: non-const idx not supported in multi-origin path")
     0 <= idx_op.value < n ||
-        error("_emit_store_via_shadow_guarded!: idx=$(idx_op.value) out of range [0, $n)")
+        throw(ArgumentError("_emit_store_via_shadow_guarded!: idx=$(idx_op.value) out of range [0, $n)"))
 
     arr_wires = ctx.vw[alloca_dest]
     length(arr_wires) == elem_w * n ||
-        error("_emit_store_via_shadow_guarded!: primal has $(length(arr_wires)) wires, expected $(elem_w*n)")
+        throw(DimensionMismatch("_emit_store_via_shadow_guarded!: primal has $(length(arr_wires)) wires, expected $(elem_w*n)"))
 
     primal_slot = arr_wires[idx_op.value * elem_w + 1 : (idx_op.value + 1) * elem_w]
     tape = allocate!(ctx.wa, elem_w)
@@ -219,13 +219,13 @@ function _lower_store_via_shadow!(ctx::LoweringCtx, inst::IRStore,
                                   idx_op::IROperand, block_label::Symbol=Symbol(""))
     elem_w, n = info
     inst.width == elem_w ||
-        error("_lower_store_via_shadow!: store width=$(inst.width) doesn't match alloca elem_width=$elem_w")
+        throw(DimensionMismatch("_lower_store_via_shadow!: store width=$(inst.width) doesn't match alloca elem_width=$elem_w"))
     0 <= idx_op.value < n ||
-        error("_lower_store_via_shadow!: idx=$(idx_op.value) out of range [0, $n)")
+        throw(ArgumentError("_lower_store_via_shadow!: idx=$(idx_op.value) out of range [0, $n)"))
 
     arr_wires = ctx.vw[alloca_dest]
     length(arr_wires) == elem_w * n ||
-        error("_lower_store_via_shadow!: primal has $(length(arr_wires)) wires, expected $(elem_w*n)")
+        throw(DimensionMismatch("_lower_store_via_shadow!: primal has $(length(arr_wires)) wires, expected $(elem_w*n)"))
 
     primal_slot = arr_wires[idx_op.value * elem_w + 1 : (idx_op.value + 1) * elem_w]
     tape = allocate!(ctx.wa, elem_w)
@@ -240,7 +240,7 @@ function _lower_store_via_shadow!(ctx::LoweringCtx, inst::IRStore,
     else
         pred_wires = get(ctx.block_pred, block_label, Int[])
         length(pred_wires) == 1 ||
-            error("_lower_store_via_shadow!: expected single-wire predicate for block $block_label, got $(length(pred_wires)) wires")
+            throw(AssertionError("_lower_store_via_shadow!: expected single-wire predicate for block $block_label, got $(length(pred_wires)) wires"))
         emit_shadow_store_guarded!(ctx.gates, ctx.wa, primal_slot, tape, val_wires, elem_w, pred_wires[1])
     end
     return nothing
@@ -286,9 +286,9 @@ AND-reduce them into a single output wire via Toffoli tree. Total cost:
 """
 function _emit_idx_eq_const!(ctx::LoweringCtx, idx_wires::Vector{Int},
                              idx_bits::Int, k::Int)::Int
-    idx_bits >= 1 || error("_emit_idx_eq_const!: idx_bits must be >= 1, got $idx_bits")
+    idx_bits >= 1 || throw(ArgumentError("_emit_idx_eq_const!: idx_bits must be >= 1, got $idx_bits"))
     length(idx_wires) >= idx_bits ||
-        error("_emit_idx_eq_const!: idx_wires has $(length(idx_wires)) < idx_bits=$idx_bits")
+        throw(DimensionMismatch("_emit_idx_eq_const!: idx_wires has $(length(idx_wires)) < idx_bits=$idx_bits"))
 
     # Build one bit-match wire per idx bit. If k's bit is 1: use idx_wires[i]
     # directly. If 0: use NOT(idx_wires[i]) on a fresh wire.
@@ -337,10 +337,10 @@ function _lower_store_via_shadow_checkpoint!(ctx::LoweringCtx, inst::IRStore,
                                              idx_op::IROperand, block_label::Symbol)
     elem_w, n = info
     inst.width == elem_w ||
-        error("_lower_store_via_shadow_checkpoint!: store width=$(inst.width) doesn't match alloca elem_width=$elem_w")
+        throw(DimensionMismatch("_lower_store_via_shadow_checkpoint!: store width=$(inst.width) doesn't match alloca elem_width=$elem_w"))
     arr_wires = ctx.vw[alloca_dest]
     length(arr_wires) == elem_w * n ||
-        error("_lower_store_via_shadow_checkpoint!: primal has $(length(arr_wires)) wires, expected $(elem_w*n)")
+        throw(DimensionMismatch("_lower_store_via_shadow_checkpoint!: primal has $(length(arr_wires)) wires, expected $(elem_w*n)"))
 
     val_wires = resolve!(ctx.gates, ctx.wa, ctx.vw, inst.val, elem_w)
     # resolve! with width=0 returns the existing SSA wires (may be wider than
@@ -349,7 +349,7 @@ function _lower_store_via_shadow_checkpoint!(ctx::LoweringCtx, inst::IRStore,
     idx_wires = resolve!(ctx.gates, ctx.wa, ctx.vw, idx_op, 0)
     idx_bits = max(1, ceil(Int, log2(n)))
     length(idx_wires) >= idx_bits ||
-        error("_lower_store_via_shadow_checkpoint!: idx SSA has $(length(idx_wires)) wires, need at least $idx_bits")
+        throw(DimensionMismatch("_lower_store_via_shadow_checkpoint!: idx SSA has $(length(idx_wires)) wires, need at least $idx_bits"))
 
     # Determine the block guard. Entry-block stores (or the sentinel
     # Symbol("")) skip the block-pred AND — the eq_wire itself is the guard.
@@ -359,7 +359,7 @@ function _lower_store_via_shadow_checkpoint!(ctx::LoweringCtx, inst::IRStore,
     block_pred_wire = if use_block_guard
         pw = get(ctx.block_pred, block_label, Int[])
         length(pw) == 1 ||
-            error("_lower_store_via_shadow_checkpoint!: expected single-wire predicate for block $block_label, got $(length(pw)) wires")
+            throw(AssertionError("_lower_store_via_shadow_checkpoint!: expected single-wire predicate for block $block_label, got $(length(pw)) wires"))
         pw[1]
     else
         0  # unused
@@ -400,15 +400,15 @@ function _lower_load_via_shadow_checkpoint!(ctx::LoweringCtx, inst::IRLoad,
     elem_w, n = info
     W = inst.width
     W == elem_w ||
-        error("_lower_load_via_shadow_checkpoint!: load width=$W doesn't match alloca elem_width=$elem_w")
+        throw(DimensionMismatch("_lower_load_via_shadow_checkpoint!: load width=$W doesn't match alloca elem_width=$elem_w"))
     arr_wires = ctx.vw[alloca_dest]
     length(arr_wires) == elem_w * n ||
-        error("_lower_load_via_shadow_checkpoint!: primal has $(length(arr_wires)) wires, expected $(elem_w*n)")
+        throw(DimensionMismatch("_lower_load_via_shadow_checkpoint!: primal has $(length(arr_wires)) wires, expected $(elem_w*n)"))
 
     idx_wires = resolve!(ctx.gates, ctx.wa, ctx.vw, idx_op, 0)
     idx_bits = max(1, ceil(Int, log2(n)))
     length(idx_wires) >= idx_bits ||
-        error("_lower_load_via_shadow_checkpoint!: idx SSA has $(length(idx_wires)) wires, need at least $idx_bits")
+        throw(DimensionMismatch("_lower_load_via_shadow_checkpoint!: idx SSA has $(length(idx_wires)) wires, need at least $idx_bits"))
 
     result = allocate!(ctx.wa, W)  # zero by WireAllocator invariant
     for k in 0:(n - 1)
@@ -460,11 +460,11 @@ for (N, W) in _MUX_SHAPES_NW
                           alloca_dest::Symbol, info::Tuple{Int,Int},
                           idx_op::IROperand)
             inst.width == $W ||
-                error($("_lower_load_via_mux_$(name_tag)!: load width must be $W, got "), inst.width)
+                throw(DimensionMismatch(string($("_lower_load_via_mux_$(name_tag)!: load width must be $W, got "), inst.width)))
             arr_wires = ctx.vw[alloca_dest]
             length(arr_wires) == $packed_bits ||
-                error($("_lower_load_via_mux_$(name_tag)!: expected $(packed_bits)-wire packed array at alloca "),
-                      alloca_dest, "; got ", length(arr_wires))
+                throw(DimensionMismatch(string($("_lower_load_via_mux_$(name_tag)!: expected $(packed_bits)-wire packed array at alloca "),
+                      alloca_dest, "; got ", length(arr_wires))))
 
             tag = _next_mux_tag!(ctx, "ld", inst.dest)
             arr_sym = Symbol("__mux_load_arr_", tag)
@@ -490,10 +490,10 @@ for (N, W) in _MUX_SHAPES_NW
                            alloca_dest::Symbol, idx_op::IROperand;
                            block_label::Symbol=Symbol(""))
             inst.width == $W ||
-                error($("_lower_store_via_mux_$(name_tag)!: store width must be $W, got "), inst.width)
+                throw(DimensionMismatch(string($("_lower_store_via_mux_$(name_tag)!: store width must be $W, got "), inst.width)))
             arr_wires = ctx.vw[alloca_dest]
             length(arr_wires) == $packed_bits ||
-                error($("_lower_store_via_mux_$(name_tag)!: expected $(packed_bits)-wire packed array"))
+                throw(DimensionMismatch($("_lower_store_via_mux_$(name_tag)!: expected $(packed_bits)-wire packed array")))
 
             tag = _next_mux_tag!(ctx, "st", inst.ptr.name)
             arr_sym = Symbol("__mux_store_arr_", tag)
@@ -566,8 +566,8 @@ function _mux_store_pred_sym!(ctx::LoweringCtx, block_label::Symbol, tag::String
                               callee_name::AbstractString)::Symbol
     pred_wires = get(ctx.block_pred, block_label, Int[])
     length(pred_wires) == 1 ||
-        error(callee_name, ": expected single-wire predicate for block ",
-              block_label, ", got ", length(pred_wires), " wires")
+        throw(AssertionError(string(callee_name, ": expected single-wire predicate for block ",
+              block_label, ", got ", length(pred_wires), " wires")))
     pred_sym = Symbol("__mux_store_pred_", tag)
     pw64 = allocate!(ctx.wa, 64)
     push!(ctx.gates, CNOTGate(pred_wires[1], pw64[1]))  # promote 1→64 via low bit
@@ -580,7 +580,7 @@ end
 # untouched so they can still be read elsewhere.
 function _wires_to_u64!(ctx::LoweringCtx, src::Vector{Int})
     length(src) <= 64 ||
-        error("_wires_to_u64!: source has $(length(src)) wires > 64")
+        throw(DimensionMismatch("_wires_to_u64!: source has $(length(src)) wires > 64"))
     dst = allocate!(ctx.wa, 64)
     for i in eachindex(src)
         push!(ctx.gates, CNOTGate(src[i], dst[i]))
@@ -602,7 +602,7 @@ function _operand_to_u64!(ctx::LoweringCtx, op::IROperand)
         return dst
     else
         haskey(ctx.vw, op.name) ||
-            error("_operand_to_u64!: undefined SSA %$(op.name)")
+            throw(AssertionError("_operand_to_u64!: undefined SSA %$(op.name)"))
         return _wires_to_u64!(ctx, ctx.vw[op.name])
     end
 end

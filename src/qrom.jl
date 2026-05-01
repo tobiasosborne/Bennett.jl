@@ -42,16 +42,16 @@ References:
 function emit_qrom!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                     data::Vector{UInt64}, idx_wires::Vector{Int}, W::Int)
     L = length(data)
-    L >= 1 || error("emit_qrom!: data must have ≥ 1 entry")
-    1 <= W <= 64 || error("emit_qrom!: W must be in 1..64, got $W")
+    L >= 1 || throw(ArgumentError("emit_qrom!: data must have ≥ 1 entry"))
+    1 <= W <= 64 || throw(ArgumentError("emit_qrom!: W must be in 1..64, got $W"))
     n = L == 1 ? 0 : (Int(log2(L)))
-    L == 1 << n || error("emit_qrom!: L must be a power of two, got L=$L")
-    length(idx_wires) == n || error("emit_qrom!: idx_wires must have $n wires for L=$L, got $(length(idx_wires))")
+    L == 1 << n || throw(ArgumentError("emit_qrom!: L must be a power of two, got L=$L"))
+    length(idx_wires) == n || throw(DimensionMismatch("emit_qrom!: idx_wires must have $n wires for L=$L, got $(length(idx_wires))"))
 
     # Bit-width guard: data words must fit in W bits
     mask = W == 64 ? typemax(UInt64) : (UInt64(1) << W) - UInt64(1)
     for (i, d) in enumerate(data)
-        (d & ~mask) == 0 || error("emit_qrom!: data[$i] = $(repr(d)) exceeds W=$W bits")
+        (d & ~mask) == 0 || throw(ArgumentError("emit_qrom!: data[$i] = $(repr(d)) exceeds W=$W bits"))
     end
 
     data_out = allocate!(wa, W)
@@ -144,7 +144,7 @@ function _emit_qrom_from_gep!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                               vw::Dict{Symbol,Vector{Int}},
                               data::Vector{UInt64}, idx_op::IROperand, W::Int)
     L = length(data)
-    L >= 1 || error("_emit_qrom_from_gep!: empty const table")
+    L >= 1 || throw(ArgumentError("_emit_qrom_from_gep!: empty const table"))
 
     # Case 1 — compile-time-constant index: materialize `data[idx]` directly.
     # Zero gates for the lookup itself (just NOTs to set the output bits);

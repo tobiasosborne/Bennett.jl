@@ -19,8 +19,8 @@ Used in the Sun-Borissov multiplier to create `n` parallel copies of `|x>` and
 """
 function emit_fast_copy!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                          src::Vector{Int}, n_copies::Int, W::Int)
-    n_copies >= 1 || error("emit_fast_copy!: n_copies must be >= 1, got $n_copies")
-    length(src) == W || error("emit_fast_copy!: src has $(length(src)) wires but W=$W")
+    n_copies >= 1 || throw(ArgumentError("emit_fast_copy!: n_copies must be >= 1, got $n_copies"))
+    length(src) == W || throw(DimensionMismatch("emit_fast_copy!: src has $(length(src)) wires but W=$W"))
 
     populated = Vector{Vector{Int}}([src])
     while length(populated) < n_copies

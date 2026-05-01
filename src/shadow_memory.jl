@@ -38,9 +38,9 @@ invariant to allocate a fresh slot per store).
 function emit_shadow_store!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                             primal::Vector{Int}, tape_slot::Vector{Int},
                             val::Vector{Int}, W::Int)
-    length(primal)    == W || error("emit_shadow_store!: primal has $(length(primal)) wires, W=$W")
-    length(tape_slot) == W || error("emit_shadow_store!: tape_slot has $(length(tape_slot)) wires, W=$W")
-    length(val)       == W || error("emit_shadow_store!: val has $(length(val)) wires, W=$W")
+    length(primal)    == W || throw(DimensionMismatch("emit_shadow_store!: primal has $(length(primal)) wires, W=$W"))
+    length(tape_slot) == W || throw(DimensionMismatch("emit_shadow_store!: tape_slot has $(length(tape_slot)) wires, W=$W"))
+    length(val)       == W || throw(DimensionMismatch("emit_shadow_store!: val has $(length(val)) wires, W=$W"))
 
     for i in 1:W
         push!(gates, CNOTGate(primal[i], tape_slot[i]))
@@ -66,7 +66,7 @@ Bennett's reverse undoes it naturally.
 """
 function emit_shadow_load!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                            primal::Vector{Int}, W::Int)
-    length(primal) == W || error("emit_shadow_load!: primal has $(length(primal)) wires, W=$W")
+    length(primal) == W || throw(DimensionMismatch("emit_shadow_load!: primal has $(length(primal)) wires, W=$W"))
     out = allocate!(wa, W)
     for i in 1:W
         push!(gates, CNOTGate(primal[i], out[i]))

@@ -68,11 +68,11 @@ function controlled(circuit::ReversibleCircuit)
     # before allocating ctrl_wire / anc_wire.
     if !isempty(circuit.gates)
         max_inner = maximum(_gate_max_wire, circuit.gates)
-        max_inner <= circuit.n_wires || error(
+        max_inner <= circuit.n_wires || throw(AssertionError(
             "controlled: inner circuit references wire $max_inner > " *
             "n_wires=$(circuit.n_wires). The controlled-circuit construction " *
             "allocates ctrl_wire at n_wires+1, which would collide. " *
-            "(Bennett-pksz / U98)")
+            "(Bennett-pksz / U98)"))
     end
 
     has_toff = any(g -> g isa ToffoliGate, circuit.gates)

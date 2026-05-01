@@ -40,9 +40,9 @@ See `docs/design/qcla_consensus.md` for the full design rationale.
 """
 function lower_add_qcla!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                          a::Vector{Int}, b::Vector{Int}, W::Int)
-    W >= 1 || error("lower_add_qcla!: W must be >= 1, got $W")
-    length(a) == W || error("lower_add_qcla!: |a|=$(length(a)) != W=$W")
-    length(b) == W || error("lower_add_qcla!: |b|=$(length(b)) != W=$W")
+    W >= 1 || throw(ArgumentError("lower_add_qcla!: W must be >= 1, got $W"))
+    length(a) == W || throw(DimensionMismatch("lower_add_qcla!: |a|=$(length(a)) != W=$W"))
+    length(b) == W || throw(DimensionMismatch("lower_add_qcla!: |b|=$(length(b)) != W=$W"))
 
     T = W >= 2 ? floor(Int, log2(W)) : 0      # highest P level used = T - 1
     popW = count_ones(W)
