@@ -232,6 +232,26 @@ bd close <id>         # Complete work
 - Run `bd prime` for detailed command reference and session close protocol
 - Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
 
+### Dolt-cache commit hygiene (Bennett-58rl / U214)
+
+`bd close <id>` mutates `.beads/embeddeddolt/beads/.dolt/...` (the
+embedded dolt store) which appears in `git status` as ~5–10 modified
+binary files plus a handful of new objects under
+`git-remote-cache/.../objects/`. **Bundle these into the same commit
+as the source change that closed the bead** — never make a separate
+`git commit -m "bd: sync dolt cache"`. Two reasons:
+
+1. The dolt cache is downstream of the bead-close action; separating
+   them just doubles the commit count without adding information.
+2. Pre-2026-04-22, the project had ~120 "bd: sync dolt cache" commits
+   (~27 % of history). U214 flagged this as log pollution; the
+   bundled-commit convention has eliminated it (last 60+ commits at
+   the time of close: zero standalone dolt-cache commits).
+
+If `git status` shows ONLY `.beads/...` modifications and no source
+changes, you probably forgot to actually do the work — investigate
+before committing.
+
 ## Session Completion
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
