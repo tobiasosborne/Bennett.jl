@@ -182,6 +182,7 @@ Captures via `print<memoryssa>` pass-output parsing. Informs future lowering dec
 
 - **Int8/16/32/64**: gate count scales linearly (2× per width doubling)
 - **Float64**: full IEEE 754 via branchless soft-float (bit-exact with hardware on add/sub/mul/div/neg/cmp/fptosi/sitofp across 1.2M random raw-bit pairs including all subnormal, NaN, Inf, signed-zero, and overflow regions)
+- **Float32**: IEEE 754 conversion only. `Float32` is **NOT** a directly supported `reversible_compile` argument type; mixed-precision LLVM IR that contains f32 arithmetic is lowered by widening to f64 (`soft_fpext`), computing in f64, and truncating back (`soft_fptrunc`) — this double-rounds and is **NOT bit-exact** against hardware f32 arithmetic. Native 24-bit-mantissa f32 paths (`soft_f32_fadd`, …) are tracked in `Bennett-3rph` as future work.
 - **Tuple return**: `(new_a, new_e) = sha256_round(a, ..., w)`
 - **NTuple input**: pointer parameters handled via static memory flattening
 - **Ref**: scalar mutable state via shadow memory

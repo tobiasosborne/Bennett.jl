@@ -14,6 +14,27 @@ the next.
 
 Both are fully branchless — all paths computed unconditionally, selected
 via `ifelse`.
+
+# Float32 arithmetic deviation (Bennett-3rph / U137)
+
+There are no native f32 arithmetic primitives — `soft_f32_fadd`, etc.
+do not exist. When LLVM IR contains an f32 `fadd` / `fsub` / `fmul` /
+`fdiv`, the lowering emits the round-trip `soft_fpext → soft_fXXX (f64)
+→ soft_fptrunc` instead. This **double-rounds**: hardware f32
+arithmetic rounds once at the f32 mantissa boundary; this lowering
+rounds twice (once at the implicit f64 result, again at the explicit
+fptrunc). The two results match for the vast majority of inputs but
+diverge on sticky-bit-edge cases.
+
+Consequence: the `bit-exact-vs-Julia-native` contract documented for
+Float64 (and asserted by `test/test_softfloat.jl`, ~1.2M random pairs)
+**does NOT extend to f32 arithmetic.** `reversible_compile(f, Float32)`
+is rejected at the validation step; only mixed-precision IR that
+arrives via Float64 entry can contain f32 ops, and consumers of those
+ops are expected to treat them as approximate (≤ 1-ulp double-rounding
+deviation in the worst case).
+
+Native 24-bit-mantissa f32 primitives are tracked as future work.
 """
 
 """
