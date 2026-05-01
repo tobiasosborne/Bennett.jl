@@ -358,18 +358,39 @@ function _lower_load_multi_origin!(ctx::LoweringCtx, inst::IRLoad,
         elem_w, n = info
         W == elem_w ||
             throw(DimensionMismatch("_lower_load_multi_origin!: load width=$W vs origin $(o.alloca_dest) elem_width=$elem_w"))
-        o.idx_op isa ConstOperand ||
-            error("_lower_load_multi_origin!: multi-origin ptr with dynamic idx is NYI")
-        0 <= o.idx_op.value < n ||
-            throw(ArgumentError("_lower_load_multi_origin!: idx=$(o.idx_op.value) out of range [0, $n)"))
 
-        arr_wires = ctx.vw[o.alloca_dest]
-        length(arr_wires) == elem_w * n ||
-            throw(DimensionMismatch("_lower_load_multi_origin!: primal has $(length(arr_wires)) wires, expected $(elem_w*n)"))
-
-        primal_slot = arr_wires[o.idx_op.value * elem_w + 1 : (o.idx_op.value + 1) * elem_w]
-        for i in 1:W
-            push!(ctx.gates, ToffoliGate(o.predicate_wire, primal_slot[i], result[i]))
+        if o.idx_op isa ConstOperand
+            # Const-idx origin: existing M2b path. Direct Toffoli of the
+            # known slot into result, gated by the origin's predicate.
+            0 <= o.idx_op.value < n ||
+                throw(ArgumentError("_lower_load_multi_origin!: idx=$(o.idx_op.value) out of range [0, $n)"))
+            arr_wires = ctx.vw[o.alloca_dest]
+            length(arr_wires) == elem_w * n ||
+                throw(DimensionMismatch("_lower_load_multi_origin!: primal has $(length(arr_wires)) wires, expected $(elem_w*n)"))
+            primal_slot = arr_wires[o.idx_op.value * elem_w + 1 : (o.idx_op.value + 1) * elem_w]
+            for i in 1:W
+                push!(ctx.gates, ToffoliGate(o.predicate_wire, primal_slot[i], result[i]))
+            end
+        else
+            # Bennett-cb9y (2026-05-01, dnh phase 1b): runtime-idx origin.
+            # Synthesise an IRLoad with a fresh dest, route through the
+            # single-origin dispatcher (`_lower_load_via_mux!`) which
+            # allocates a fresh W-wire group via the soft_mux_load_NxW
+            # callee, then Toffoli-merge those wires into `result` gated
+            # by the origin's predicate. The synthetic load's ptr is a
+            # dummy — `_lower_load_via_mux!` only reads `dest` and `width`
+            # from the instruction. Bennett's reverse pass uncomputes the
+            # synthetic load's ancillae symmetrically.
+            synth_dest = Symbol("__cb9y_load_", o.alloca_dest, "_",
+                                _next_mux_tag!(ctx, "mo", o.alloca_dest))
+            synth_inst = IRLoad(synth_dest, ssa(o.alloca_dest), W)
+            _lower_load_via_mux!(ctx, synth_inst, o)
+            value_wires = ctx.vw[synth_dest]
+            length(value_wires) == W ||
+                throw(AssertionError("_lower_load_multi_origin!: synthetic load produced $(length(value_wires)) wires, expected $W"))
+            for i in 1:W
+                push!(ctx.gates, ToffoliGate(o.predicate_wire, value_wires[i], result[i]))
+            end
         end
     end
     ctx.vw[inst.dest] = result

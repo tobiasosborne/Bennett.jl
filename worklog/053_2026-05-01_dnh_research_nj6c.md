@@ -1,5 +1,107 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-05-01 (late evening, post-nj6c) — Bennett-cb9y + Bennett-dnh close — multi-origin × runtime-idx walls closed → OPCODE PARITY for runtime-indexed memory
+
+**Shipped:** see git log for the next commit. Closed both `:NYI` walls
+identified in the dnh research:
+
+- `src/lowering/memory.jl:141` (multi-origin store with dynamic idx) →
+  multi-origin loop now dispatches on strategy. `:shadow` (existing
+  M2b path), `:shadow_checkpoint` (new, via `extern_pred_wire` kwarg
+  threaded through `_lower_store_via_shadow_checkpoint!`), or
+  `:mux_exch_NxW` (new, via `extern_pred_wire` threaded through the
+  @eval-generated `_lower_store_via_mux_NxW!`). Per-origin
+  `predicate_wire` from `ptr_provenance` is the guard.
+
+- `src/lowering/aggregate.jl:362` (multi-origin load with dynamic idx)
+  → for runtime-idx origins, synthesise a fresh-dest `IRLoad`, route
+  through `_lower_load_via_mux!` (which dispatches MUX-EXCH or
+  shadow_checkpoint per shape), then `Toffoli(predicate_wire,
+  value[i], result[i])` merges the loaded value into the multi-origin
+  result. Bennett's reverse pass uncomputes the synthetic load's
+  ancillae symmetrically.
+
+New helper `_mux_store_pred_sym_from_wire!` in memory.jl factors out
+the predicate→u64 promotion (CNOT into bit 0 of fresh 64-wire block)
+from `_mux_store_pred_sym!` so callers with raw wires (multi-origin)
+and callers with block labels (single-origin non-entry) share the
+same code path.
+
+**With cb9y closed, Bennett-dnh closes too.** OPCODE PARITY for
+runtime-indexed memory: every `load` / `store` / `getelementptr` at a
+runtime SSA index compiles, single-origin OR multi-origin, on shapes
+ranging from (2,8) packed to (8,16) shadow-checkpoint. Bennett's LLVM
+memory-opcode coverage matches Enzyme's (modulo correctly-hard-stop
+atomics and EH per CLAUDE.md/auto-memory rules).
+
+**Why:** The user named "LLVM IR parity with Enzyme" as the post-
+catalogue goal and dnh as the most-difficult remaining bead. The
+research sweep determined dnh was actually engineering (not research)
+and split it into two phases. Both phases shipped same day.
+
+**Gotchas / Lessons:**
+
+- **Synthetic IRLoad as a primitive recompose tool.** For multi-origin
+  dynamic-idx LOAD I needed to "compute the per-origin selected value
+  into fresh wires." Direct-call into the @eval-generated body would
+  bypass the strategy dispatch (loses :shadow_checkpoint coverage).
+  Cleanest pattern: synthesise an `IRLoad(synth_dest, dummy_ptr, W)`
+  and call `_lower_load_via_mux!(ctx, synth_inst, origin)`. The
+  function reads only `dest` and `width` from the instruction (not
+  `ptr`), so the dummy is fine. After the call, `ctx.vw[synth_dest]`
+  holds W wires with the loaded value. This pattern composes
+  arbitrary single-origin lowering paths into multi-origin
+  fan-outs without duplicating their bodies.
+- **`extern_pred_wire` kwarg pattern.** Three places now accept this
+  kwarg (the @eval store body, `_lower_store_via_shadow_checkpoint!`,
+  and the per-call helpers). Priority: `extern_pred_wire` >
+  `block_label` > entry-block-unguarded. The priority order matters:
+  multi-origin context overrides block context (because the per-
+  origin predicate is structurally tighter than the block predicate).
+- **`_mux_store_pred_sym_from_wire!` is a tiny refactor with leverage.**
+  The 1→64 CNOT promotion was duplicated implicitly between
+  `_mux_store_pred_sym!` (block-derived) and what I'd have inlined in
+  the multi-origin loop. Factoring into a shared helper made the
+  multi-origin loop a one-liner per origin and kept the block-
+  derived call site byte-identical.
+
+**Rejected alternatives:**
+
+- For multi-origin LOAD, computing the per-origin value via "Toffoli3"
+  (3-control X gate). Bennett doesn't have C3-X as a primitive; would
+  require an explicit AND-of-predicates ancilla. The synthetic-IRLoad
+  approach reuses existing infrastructure with zero new gate types.
+- Per-origin per-slot (k) explicit MUX in the multi-origin loop —
+  i.e. iterate origins × slots and emit `Toffoli(predicate AND
+  idx_eq_k, primal[k][i], result[i])`. Would duplicate
+  `_lower_load_via_shadow_checkpoint!`'s body inline. Worse: harder
+  to keep in sync with the single-origin path. Synthetic-IRLoad wins.
+- Closing dnh without the (8,16) shadow_checkpoint test case. Would
+  leave `:shadow_checkpoint multi-origin is a future bead` as a
+  documented gap. Decided that "OPCODE PARITY" should mean *every*
+  shape works, including N·W > 64 multi-origin, so I extended
+  `_lower_store_via_shadow_checkpoint!` with `extern_pred_wire` too.
+
+**Catalogue at session end:**
+
+- Bennett-dnh: **closed** (re-scoped + both opcode phases shipped)
+- Bennett-nj6c: closed (phase 1a)
+- Bennett-cb9y: closed (phase 1b)
+- Bennett-8guh (P2): open, IRSwap primitive (3+1 architectural)
+- Bennett-6c6f (P3): open, QROAM cost win
+
+Bennett-25dm (the remaining open `[bug]`, blocked on `z2dj` T5-P6)
+unchanged. The catalogue's last opcode-coverage gap from Enzyme's
+perspective is now closed.
+
+**Next agent starts here:** **Bennett-8guh** (IRSwap primitive) is the
+right next pickup if you want a 3+1 architectural unification — it'd
+collapse the synthetic-IRLoad pattern from cb9y into a first-class IR
+node and is the substrate for Bennett-6c6f QROAM. Otherwise pick up
+**Bennett-h6f** (`llvm.fma.f64` direct dispatch — `soft_fma` already
+exists, just wiring) for a quick mechanical follow-up to Bennett-1pb
+on the intrinsic dispatch axis.
+
 ## Session log — 2026-05-01 (late evening) — Bennett-nj6c close — runtime-idx MUX-EXCH on extended shapes
 
 **Shipped:** see git log for the next commit. `_MUX_SHAPES_NW` extended

@@ -77,6 +77,8 @@ include("test_float_intrinsics.jl")
 include("test_1pb_llvm_transcendentals.jl")
 # Bennett-nj6c (Bennett-dnh phase 1a): runtime-idx MUX-EXCH on extended shapes.
 include("test_nj6c_extended_mux_shapes.jl")
+# Bennett-cb9y (Bennett-dnh phase 1b): multi-origin ptr × runtime idx.
+include("test_cb9y_multi_origin_runtime_idx.jl")
 include("test_gate_count_regression.jl")
 include("test_negative.jl")
 include("test_soft_sitofp.jl")

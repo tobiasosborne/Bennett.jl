@@ -137,11 +137,35 @@ function lower_store!(ctx::LoweringCtx, inst::IRStore, block_label::Symbol=Symbo
         info === nothing &&
             throw(AssertionError("lower_store!: multi-origin ptr references unknown alloca %$(o.alloca_dest)"))
         strategy = _pick_alloca_strategy(info, o.idx_op)
-        strategy == :shadow ||
-            error("lower_store!: multi-origin ptr with dynamic idx (origin=$(o.alloca_dest), " *
-                  "strategy=$strategy) is NYI; file follow-up bd issue for multi-origin MUX EXCH")
-        _emit_store_via_shadow_guarded!(ctx, inst, o.alloca_dest, info, o.idx_op,
-                                        o.predicate_wire, val_wires)
+        if strategy == :shadow
+            # Const-idx origin: existing M2b path. Single-slot guarded shadow
+            # store keyed on the origin's path predicate.
+            _emit_store_via_shadow_guarded!(ctx, inst, o.alloca_dest, info, o.idx_op,
+                                            o.predicate_wire, val_wires)
+        elseif strategy == :shadow_checkpoint
+            # Bennett-cb9y (2026-05-01, dnh phase 1b): N·W > 64 multi-origin
+            # runtime-idx. The shadow-checkpoint helper accepts an
+            # `extern_pred_wire` that is AND'd with each per-slot eq_wire,
+            # gating the whole fan-out by the origin's path predicate.
+            _lower_store_via_shadow_checkpoint!(ctx, inst, o.alloca_dest, info,
+                                                o.idx_op, Symbol("");
+                                                extern_pred_wire=o.predicate_wire)
+        else
+            # Bennett-cb9y (2026-05-01, dnh phase 1b): MUX-EXCH multi-origin
+            # runtime-idx. Dispatch to the @eval-generated
+            # `_lower_store_via_mux_NxW!` with the per-origin predicate as
+            # `extern_pred_wire`. The callee uses `soft_mux_store_guarded_NxW`,
+            # which folds the predicate into every per-slot ifelse cond — when
+            # the origin's predicate is 0, the entire MUX-EXCH op is a no-op.
+            # Mutual exclusion of origin predicates is guaranteed by the
+            # producer (ptr-phi/select).
+            fn = get(_MUX_EXCH_STORE_DISPATCH, strategy, nothing)
+            fn === nothing &&
+                error("lower_store!: multi-origin ptr with strategy=$strategy " *
+                      "is NYI for origin=$(o.alloca_dest); file a bd issue")
+            fn(ctx, inst, o.alloca_dest, o.idx_op;
+               extern_pred_wire=o.predicate_wire)
+        end
     end
     return nothing
 end
@@ -332,9 +356,16 @@ Per-slot cost: 1 idx-eq AND-tree (≤ idx_bits - 1 Toffolis, plus NOTs),
 optional 1 Toffoli to AND with block_pred, and 3W Toffolis for the
 guarded shadow store itself.
 """
+# Bennett-cb9y (2026-05-01, dnh phase 1b): added `extern_pred_wire` kwarg
+# for the multi-origin × runtime-idx path on N·W > 64 shapes. When set,
+# overrides `block_label` and is AND'd with each per-slot eq_wire — the
+# multi-origin store loop in `lower_store!` passes `o.predicate_wire`
+# here so the entire shadow-checkpoint fan-out is gated by the origin's
+# path predicate.
 function _lower_store_via_shadow_checkpoint!(ctx::LoweringCtx, inst::IRStore,
                                              alloca_dest::Symbol, info::Tuple{Int,Int},
-                                             idx_op::IROperand, block_label::Symbol)
+                                             idx_op::IROperand, block_label::Symbol;
+                                             extern_pred_wire::Union{Nothing,Int}=nothing)
     elem_w, n = info
     inst.width == elem_w ||
         throw(DimensionMismatch("_lower_store_via_shadow_checkpoint!: store width=$(inst.width) doesn't match alloca elem_width=$elem_w"))
@@ -351,24 +382,23 @@ function _lower_store_via_shadow_checkpoint!(ctx::LoweringCtx, inst::IRStore,
     length(idx_wires) >= idx_bits ||
         throw(DimensionMismatch("_lower_store_via_shadow_checkpoint!: idx SSA has $(length(idx_wires)) wires, need at least $idx_bits"))
 
-    # Determine the block guard. Entry-block stores (or the sentinel
-    # Symbol("")) skip the block-pred AND — the eq_wire itself is the guard.
-    # Non-entry blocks AND the block's 1-wire path predicate with each
-    # per-slot eq_wire.
-    use_block_guard = !(block_label == Symbol("") || block_label == ctx.entry_label)
-    block_pred_wire = if use_block_guard
+    # Determine the outer guard. Priority: extern_pred_wire (multi-origin
+    # path) > block_label (single-origin non-entry) > none (entry block).
+    use_outer_guard, outer_pred_wire = if extern_pred_wire !== nothing
+        (true, extern_pred_wire)
+    elseif !(block_label == Symbol("") || block_label == ctx.entry_label)
         pw = get(ctx.block_pred, block_label, Int[])
         length(pw) == 1 ||
             throw(AssertionError("_lower_store_via_shadow_checkpoint!: expected single-wire predicate for block $block_label, got $(length(pw)) wires"))
-        pw[1]
+        (true, pw[1])
     else
-        0  # unused
+        (false, 0)
     end
 
     for k in 0:(n - 1)
         eq_wire = _emit_idx_eq_const!(ctx, idx_wires, idx_bits, k)
-        guard_w = if use_block_guard
-            _and_wire!(ctx.gates, ctx.wa, [block_pred_wire], [eq_wire])[1]
+        guard_w = if use_outer_guard
+            _and_wire!(ctx.gates, ctx.wa, [outer_pred_wire], [eq_wire])[1]
         else
             eq_wire
         end
@@ -495,9 +525,22 @@ for (N, W) in _MUX_SHAPES_NW
         # (4,8)/(8,8) helpers. Entry-block → unguarded callee, byte-identical to
         # pre-M2d. Any other block → guarded callee with block-predicate folded
         # into the per-slot ifelse cond.
+        # Bennett-cc0 M2d: same block_label-dispatch pattern as the hand-
+        # written (4,8)/(8,8) helpers. Entry-block → unguarded callee,
+        # byte-identical to pre-M2d. Any other block → guarded callee
+        # with block-predicate folded into the per-slot ifelse cond.
+        #
+        # Bennett-cb9y (2026-05-01, dnh phase 1b): added `extern_pred_wire`
+        # kwarg for the multi-origin × runtime-idx case. When supplied,
+        # bypasses the block_label dispatch and uses the caller-provided
+        # wire (typically a per-origin path predicate) as the guard. The
+        # multi-origin store loop in `lower_store!` passes
+        # `o.predicate_wire` here so each origin's contribution fires only
+        # when its alloca was selected at runtime.
         function $store_fn(ctx::LoweringCtx, inst::IRStore,
                            alloca_dest::Symbol, idx_op::IROperand;
-                           block_label::Symbol=Symbol(""))
+                           block_label::Symbol=Symbol(""),
+                           extern_pred_wire::Union{Nothing,Int}=nothing)
             inst.width == $W ||
                 throw(DimensionMismatch(string($("_lower_store_via_mux_$(name_tag)!: store width must be $W, got "), inst.width)))
             arr_wires = ctx.vw[alloca_dest]
@@ -514,7 +557,12 @@ for (N, W) in _MUX_SHAPES_NW
             ctx.vw[idx_sym] = _operand_to_u64!(ctx, idx_op)
             ctx.vw[val_sym] = _operand_to_u64!(ctx, inst.val)
 
-            if block_label == Symbol("") || block_label == ctx.entry_label
+            if extern_pred_wire !== nothing
+                pred_sym = _mux_store_pred_sym_from_wire!(ctx, extern_pred_wire, tag)
+                call = IRCall(res_sym, $soft_store_guard,
+                              [ssa(arr_sym), ssa(idx_sym), ssa(val_sym), ssa(pred_sym)],
+                              [64, 64, 64, 64], 64)
+            elseif block_label == Symbol("") || block_label == ctx.entry_label
                 call = IRCall(res_sym, $soft_store,
                               [ssa(arr_sym), ssa(idx_sym), ssa(val_sym)], [64, 64, 64], 64)
             else
@@ -577,9 +625,19 @@ function _mux_store_pred_sym!(ctx::LoweringCtx, block_label::Symbol, tag::String
     length(pred_wires) == 1 ||
         throw(AssertionError(string(callee_name, ": expected single-wire predicate for block ",
               block_label, ", got ", length(pred_wires), " wires")))
+    return _mux_store_pred_sym_from_wire!(ctx, pred_wires[1], tag)
+end
+
+# Bennett-cb9y / U—: variant of `_mux_store_pred_sym!` that takes the
+# predicate wire directly instead of looking it up by block label. Used by
+# the multi-origin × runtime-idx store path, where each origin already
+# carries its own `predicate_wire` from `ptr_provenance`. Identical 1→64
+# promotion via CNOT into the low bit of a fresh 64-wire block.
+function _mux_store_pred_sym_from_wire!(ctx::LoweringCtx, pred_wire::Int,
+                                        tag::String)::Symbol
     pred_sym = Symbol("__mux_store_pred_", tag)
     pw64 = allocate!(ctx.wa, 64)
-    push!(ctx.gates, CNOTGate(pred_wires[1], pw64[1]))  # promote 1→64 via low bit
+    push!(ctx.gates, CNOTGate(pred_wire, pw64[1]))
     ctx.vw[pred_sym] = pw64
     return pred_sym
 end
