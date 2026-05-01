@@ -26,14 +26,14 @@ using Bennett: IRBasicBlock, IRBranch, IRRet, IROperand, _expand_switches
         bad_block = IRBasicBlock(:_sw_top_1,
                                  Bennett.IRInst[],
                                  IRRet(iconst(0), 8))
-        @test_throws ErrorException _expand_switches([bad_block])
+        @test_throws AssertionError _expand_switches([bad_block])
     end
 
     @testset "T2: _expand_switches errors on `_sw_cmp_` prefix too" begin
         bad_block = IRBasicBlock(:_sw_cmp_foo_3,
                                  Bennett.IRInst[],
                                  IRRet(iconst(0), 8))
-        @test_throws ErrorException _expand_switches([bad_block])
+        @test_throws AssertionError _expand_switches([bad_block])
     end
 
     @testset "T3: _expand_switches errors on `:__unreachable__` block" begin
@@ -42,7 +42,7 @@ using Bennett: IRBasicBlock, IRBranch, IRRet, IROperand, _expand_switches
         bad_block = IRBasicBlock(:__unreachable__,
                                  Bennett.IRInst[],
                                  IRRet(iconst(0), 8))
-        @test_throws ErrorException _expand_switches([bad_block])
+        @test_throws AssertionError _expand_switches([bad_block])
     end
 
     @testset "T4: regression — non-conflicting labels still work" begin

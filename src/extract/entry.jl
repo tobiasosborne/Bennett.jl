@@ -125,8 +125,8 @@ function extract_parsed_ir_from_ll(path::AbstractString;
                                     preprocess::Bool=false,
                                     passes::Vector{String}=String[],
                                     use_memory_ssa::Bool=false)
-    isfile(path) || error(
-        "ir_extract.jl: extract_parsed_ir_from_ll: file not found: $path")
+    isfile(path) || throw(ArgumentError(
+        "ir_extract.jl: extract_parsed_ir_from_ll: file not found: $path"))
 
     ir_string = read(path, String)
 
@@ -175,8 +175,8 @@ function extract_parsed_ir_from_bc(path::AbstractString;
                                     entry_function::AbstractString,
                                     preprocess::Bool=false,
                                     passes::Vector{String}=String[])
-    isfile(path) || error(
-        "ir_extract.jl: extract_parsed_ir_from_bc: file not found: $path")
+    isfile(path) || throw(ArgumentError(
+        "ir_extract.jl: extract_parsed_ir_from_bc: file not found: $path"))
 
     effective_passes = String[]
     if preprocess

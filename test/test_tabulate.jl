@@ -114,14 +114,14 @@ using Bennett: ToffoliGate
 
     @testset "unknown strategy errors" begin
         f(x::Int8) = x + Int8(1)
-        @test_throws ErrorException reversible_compile(f, Int8; strategy=:nope)
+        @test_throws ArgumentError reversible_compile(f, Int8; strategy=:nope)
     end
 
     @testset "non-integer arg type rejects :tabulate explicitly" begin
         # Float64 path: bit_width doesn't apply, 2^64 table is absurd.
         # Explicit :tabulate should error clearly.
         f(x::Float64) = x + 1.0
-        @test_throws ErrorException reversible_compile(f, Float64; strategy=:tabulate)
+        @test_throws ArgumentError reversible_compile(f, Float64; strategy=:tabulate)
     end
 
     @testset "identity at W=3 (8 inputs)" begin

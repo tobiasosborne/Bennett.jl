@@ -312,6 +312,26 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "(Bennett-1pb)")
         return IRCall(dest, soft_exp2, [_operand(ops[1], names)], [w], w)
     end
+    # Bennett-h6f: fused multiply-add. `soft_fma` is a bit-exact IEEE 754
+    # binary64 FMA (single rounding via 106-bit intermediate product;
+    # Bennett-0xx3, 2026-04-16). `llvm.fmuladd` is allowed by LangRef to
+    # be split into fmul+fadd by the lowerer, but Bennett deliberately
+    # routes both `fma` and `fmuladd` to `soft_fma` — the alternative
+    # would mean fmuladd produces a different last-ulp answer than fma
+    # on the same inputs, which is a class of "silent disagreement" bug
+    # CLAUDE.md §1 (fail loud) + §13 (bit-exact f64) explicitly avoid.
+    if startswith(cname, "llvm.fma") || startswith(cname, "llvm.fmuladd")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.fma/fmuladd: only f64 supported (got width=$w); native " *
+            "f32/f16 paths are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-h6f)")
+        return IRCall(dest, soft_fma,
+                      [_operand(ops[1], names),
+                       _operand(ops[2], names),
+                       _operand(ops[3], names)],
+                      [w, w, w], w)
+    end
     if startswith(cname, "llvm.exp")
         w = _iwidth(ops[1])
         w == 64 || _ir_error(inst,
@@ -481,6 +501,31 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
     # unreachable — dead code
     if opc == LLVM.API.LLVMUnreachable
         return IRBranch(nothing, :__unreachable__, nothing)
+    end
+
+    # Bennett-4eu: indirectbr is a Bennett hard stop, like atomicrmw /
+    # invoke / landingpad. The static-CFG model that Bennett's phi
+    # resolution and loop unrolling depend on requires block targets
+    # known at compile time. `indirectbr` defers target resolution to
+    # runtime via a block-address pointer — incompatible with Bennett's
+    # discipline. A future implementation could lower the *constant*
+    # special case (computed goto whose address is a phi/select over
+    # blockaddress(@f, %bb) constants) by tracking block-address IDs
+    # through pointer ops and emitting cascaded conditional branches,
+    # but that's a substantial workstream and no Julia / C / Rust
+    # idiom Bennett currently targets emits indirectbr (Julia never;
+    # `goto *ptr` in C is a GCC extension uncommon in numerical code;
+    # Rust never). Fail loud here rather than the generic
+    # unsupported-opcode error so the user gets actionable context.
+    if opc == LLVM.API.LLVMIndirectBr
+        _ir_error(inst,
+            "indirectbr (computed goto) is not supported. Bennett's " *
+            "static-CFG model requires compile-time-known branch " *
+            "targets — phi resolution, loop unrolling, and the Bennett " *
+            "construction itself depend on it. If you reached this " *
+            "from C `goto *ptr` or similar, restructure the source as " *
+            "a switch over an explicit integer dispatch index. " *
+            "(Bennett-4eu hard stop)")
     end
 
     # call instructions: handle known LLVM intrinsics, skip the rest

@@ -76,10 +76,10 @@ function reversible_compile(f::F, float_types::Type{Float64}...;
     _reject_unknown_kwargs("Float64 overload", _FLOAT64_OVERLOAD_KWARGS,
                            _FLOAT64_OVERLOAD_CROSS_REJECT, kwargs)
     strategy in (:auto, :expression) ||
-        error("reversible_compile: strategy=:$strategy not supported for Float64 " *
-              "(2^64 table would be absurd); use :auto or :expression")
+        throw(ArgumentError("reversible_compile: strategy=:$strategy not supported for Float64 " *
+              "(2^64 table would be absurd); use :auto or :expression"))
     N = length(float_types)
-    N >= 1 || error("Need at least one Float64 argument type")
+    N >= 1 || throw(ArgumentError("Need at least one Float64 argument type"))
 
     # Use @inline at the call site to force Julia to inline f through the SoftFloat
     # dispatch chain. Without this, Julia emits struct-passing ABI (alloca + store +
@@ -99,7 +99,7 @@ function reversible_compile(f::F, float_types::Type{Float64}...;
         return reversible_compile(w, UInt64, UInt64, UInt64; optimize, max_loop_iterations,
                                   compact_calls, add, mul, fold_constants, target)
     else
-        error("Float64 compile supports up to 3 arguments (got $N)")
+        throw(ArgumentError("Float64 compile supports up to 3 arguments (got $N)"))
     end
 end
 

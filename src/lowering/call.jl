@@ -11,29 +11,29 @@ function _callee_arg_types(inst::IRCall)::Type{<:Tuple}
     ms = methods(inst.callee)
     fname = nameof(inst.callee)
     if isempty(ms)
-        error("lower_call!: callee `$(fname)` has no methods (cannot derive " *
+        throw(AssertionError("lower_call!: callee `$(fname)` has no methods (cannot derive " *
               "arg types). Ensure the callee is a Julia Function registered " *
-              "via register_callee!. (Bennett-atf4)")
+              "via register_callee!. (Bennett-atf4)"))
     end
     if length(ms) != 1
         sigs = join(["  $(m.sig)" for m in ms], "\n")
-        error("lower_call!: callee `$(fname)` has $(length(ms)) methods; " *
+        throw(AssertionError("lower_call!: callee `$(fname)` has $(length(ms)) methods; " *
               "gate-level inlining requires exactly one concrete method " *
-              "(Bennett-atf4 MVP). Candidates:\n$sigs")
+              "(Bennett-atf4 MVP). Candidates:\n$sigs"))
     end
     m = first(ms)
     params = m.sig.parameters  # (typeof(callee), arg1, arg2, ...)
     if !isempty(params) && Base.isvarargtype(params[end])
-        error("lower_call!: callee `$(fname)` has a Vararg method signature " *
+        throw(AssertionError("lower_call!: callee `$(fname)` has a Vararg method signature " *
               "$(m.sig); gate-level inlining requires fixed arity " *
-              "(Bennett-atf4 MVP).")
+              "(Bennett-atf4 MVP)."))
     end
     arity = length(params) - 1
     if arity != length(inst.args)
-        error("lower_call!: callee `$(fname)` method arity = $arity but " *
+        throw(AssertionError("lower_call!: callee `$(fname)` method arity = $arity but " *
               "IRCall supplies $(length(inst.args)) arg(s). " *
               "Method signature: $(m.sig). This is caller-side miswiring " *
-              "— check the IRCall emitter. (Bennett-atf4)")
+              "— check the IRCall emitter. (Bennett-atf4)"))
     end
     return Tuple{params[2:end]...}
 end
@@ -45,20 +45,20 @@ end
 function _assert_arg_widths_match(inst::IRCall, arg_types::Type{<:Tuple})::Nothing
     fname = nameof(inst.callee)
     params = arg_types.parameters
-    length(params) == length(inst.arg_widths) || error(
+    length(params) == length(inst.arg_widths) || throw(DimensionMismatch(
         "lower_call!: arg_widths length mismatch for callee `$(fname)`: " *
         "method has $(length(params)) params, IRCall supplies " *
-        "$(length(inst.arg_widths)) width(s). (Bennett-atf4)")
+        "$(length(inst.arg_widths)) width(s). (Bennett-atf4)"))
     for (i, T) in enumerate(params)
         expected = sizeof(T) * 8
         actual = inst.arg_widths[i]
-        expected == actual || error(
+        expected == actual || throw(DimensionMismatch(
             "lower_call!: arg width mismatch for callee `$(fname)` " *
             "arg #$i (type $T): expected $expected bits (from method " *
             "signature), got $actual bits (from IRCall.arg_widths). " *
             "This is an IRCall-emitter bug — the caller computed widths " *
             "inconsistent with the callee's Julia method signature. " *
-            "(Bennett-atf4)")
+            "(Bennett-atf4)"))
     end
     return nothing
 end

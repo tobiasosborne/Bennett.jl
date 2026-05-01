@@ -37,7 +37,7 @@ using Bennett: WireAllocator, ReversibleGate, IRPhi, IROperand,
         preds = Dict{Symbol,Vector{Symbol}}()
         block_order = Dict{Symbol,Int}(:BlockA => 1, :BlockB => 2,
                                        :PhiBlock => 3)
-        @test_throws ErrorException lower_phi!(gates, wa, vw, phi, :PhiBlock,
+        @test_throws DimensionMismatch lower_phi!(gates, wa, vw, phi, :PhiBlock,
                                                preds, branch_info, block_order;
                                                block_pred=block_pred)
     end
@@ -56,7 +56,7 @@ using Bennett: WireAllocator, ReversibleGate, IRPhi, IROperand,
         block_pred = Dict{Symbol,Vector{Int}}()
         block_pred[:BlockA] = allocate!(wa, 1)
         block_pred[:BlockB] = allocate!(wa, 1)
-        @test_throws ErrorException lower_phi!(gates, wa, vw, phi, :PhiBlock,
+        @test_throws DimensionMismatch lower_phi!(gates, wa, vw, phi, :PhiBlock,
                                                Dict{Symbol,Vector{Symbol}}(),
                                                Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}(),
                                                Dict{Symbol,Int}();

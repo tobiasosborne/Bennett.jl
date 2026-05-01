@@ -89,14 +89,14 @@ using Bennett
             gates = Bennett.ReversibleGate[]
             wa = Bennett.WireAllocator()
             a = Bennett.allocate!(wa, W)
-            @test_throws ErrorException Bennett.lower_shl!(gates,  wa, a, W + 1, W)
-            @test_throws ErrorException Bennett.lower_lshr!(gates, wa, a, W + 1, W)
-            @test_throws ErrorException Bennett.lower_ashr!(gates, wa, a, W + 1, W)
+            @test_throws ArgumentError Bennett.lower_shl!(gates,  wa, a, W + 1, W)
+            @test_throws ArgumentError Bennett.lower_lshr!(gates, wa, a, W + 1, W)
+            @test_throws ArgumentError Bennett.lower_ashr!(gates, wa, a, W + 1, W)
             # Negative k also rejected (would silently iterate over invalid
             # wire indices in the pre-fix code).
-            @test_throws ErrorException Bennett.lower_shl!(gates,  wa, a, -1, W)
-            @test_throws ErrorException Bennett.lower_lshr!(gates, wa, a, -1, W)
-            @test_throws ErrorException Bennett.lower_ashr!(gates, wa, a, -1, W)
+            @test_throws ArgumentError Bennett.lower_shl!(gates,  wa, a, -1, W)
+            @test_throws ArgumentError Bennett.lower_lshr!(gates, wa, a, -1, W)
+            @test_throws ArgumentError Bennett.lower_ashr!(gates, wa, a, -1, W)
         end
     end
 
@@ -120,8 +120,8 @@ using Bennett
         wa = Bennett.WireAllocator()
         vw = Dict{Symbol, Vector{Int}}()
         op = Bennett.iconst(42)
-        @test_throws ErrorException Bennett.resolve!(gates, wa, vw, op, 0)
-        @test_throws ErrorException Bennett.resolve!(gates, wa, vw, op, 65)
+        @test_throws ArgumentError Bennett.resolve!(gates, wa, vw, op, 0)
+        @test_throws ArgumentError Bennett.resolve!(gates, wa, vw, op, 65)
     end
 
     @testset "Julia frontend shift end-to-end (must keep working)" begin

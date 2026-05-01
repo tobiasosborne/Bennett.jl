@@ -27,7 +27,7 @@ using Bennett: WireAllocator, ReversibleGate, IROperand, OpaquePtrSentinel,
         gates = ReversibleGate[]
         wa = WireAllocator()
         vw = Dict{Symbol,Vector{Int}}()
-        @test_throws ErrorException resolve!(gates, wa, vw, OPAQUE_PTR_SENTINEL, 8)
+        @test_throws AssertionError resolve!(gates, wa, vw, OPAQUE_PTR_SENTINEL, 8)
     end
 
     @testset "T2: resolve! on a hand-built OpaquePtrSentinel also raises" begin
@@ -37,7 +37,7 @@ using Bennett: WireAllocator, ReversibleGate, IROperand, OpaquePtrSentinel,
         gates = ReversibleGate[]
         wa = WireAllocator()
         vw = Dict{Symbol,Vector{Int}}()
-        @test_throws ErrorException resolve!(gates, wa, vw, op, 8)
+        @test_throws AssertionError resolve!(gates, wa, vw, op, 8)
     end
 
     @testset "T3: regression — ordinary ConstOperand still resolves" begin

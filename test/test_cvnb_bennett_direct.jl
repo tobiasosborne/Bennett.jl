@@ -62,7 +62,7 @@ using Bennett: LoweringResult, GateGroup, bennett, bennett_direct,
         gates = ReversibleGate[NOTGate(3)]
         lr_forged = LoweringResult(gates, 3, [1], [2], [1], [1],
                                    GateGroup[], true)   # FORGED
-        @test_throws ErrorException bennett_direct(lr_forged)
+        @test_throws ArgumentError bennett_direct(lr_forged)
     end
 
     # =========================================================================

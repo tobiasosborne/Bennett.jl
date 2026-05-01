@@ -1,5 +1,119 @@
 # Bennett.jl Work Log
 
+## Session log — 2026-05-01 (late late evening) — Tier A grind: Bennett-h6f + Bennett-4eu + Bennett-imz7 closed
+
+**Shipped:** three-bead Tier A grind in one session. See git log for the
+commit; the diffs are mechanical.
+
+- **Bennett-h6f** — `llvm.fma.f64` / `llvm.fmuladd.f64` direct dispatch
+  in `_handle_intrinsic` → `IRCall(soft_fma, ...)`. `soft_fma` already
+  existed (Bennett-0xx3, 2026-04-16). Both intrinsics route to soft_fma
+  (single-rounding, bit-exact vs `Base.fma`) — the alternative
+  (fmuladd → fmul+fadd split per LangRef permission) would produce a
+  different last-ulp answer than fma on the same inputs, which CLAUDE.md
+  §1+§13 explicitly forbid. New test file (14 asserts) + 2 `.ll`
+  fixtures (`h6f_fma_f64.ll`, `h6f_fmuladd_f64.ll`).
+
+- **Bennett-4eu** — `indirectbr` declared a Bennett hard stop. The
+  bead text already noted "no Julia function produces this"; C `goto
+  *ptr` is a GCC extension uncommon in numerical code; Rust doesn't
+  emit it. The static-CFG model that phi resolution + loop unrolling
+  depend on requires compile-time-known branch targets. Implemented
+  as a precise fail-loud error in `_convert_instruction` with an
+  actionable message (was a generic "unsupported opcode" error
+  before). Same philosophical category as atomicrmw / invoke /
+  landingpad / fence. New test (2 asserts) + 1 `.ll` fixture
+  exercising blockaddress + indirectbr.
+
+- **Bennett-imz7** — vpch follow-up sweep. ~24 source sites tightened
+  from generic `error()` to typed exceptions
+  (`ArgumentError` / `DimensionMismatch` / `AssertionError`) across 8
+  files. Matching `@test_throws ErrorException` in 9 test files
+  updated to the specific exception class. The classification:
+  caller-supplied bad input → `ArgumentError`; internal compiler
+  invariant → `AssertionError`; wire-length / shape mismatch →
+  `DimensionMismatch`.
+
+**Why:** post-dnh-close the user named "deal with tier A stuff. grind
+it out" — quick wins in the same opcode-coverage axis. Tier A was
+{h6f, 4eu, imz7}: each shippable in one session.
+
+**Gotchas / Lessons:**
+
+- **The "deferred under stale conditions" pattern.** Bennett-h6f was
+  marked deferred 2026-04-11 with rationale "Option B requires new
+  soft_fma (~100 lines)." Two days later soft_fma shipped under
+  Bennett-0xx3, but h6f's deferred status didn't get re-evaluated for
+  ~3 weeks. Filed similar lesson in chunk 053's dnh entry — beads
+  with conditional-defer text need a follow-up note when the
+  condition lifts. Pre-empt this for the future: I'm now adding a
+  `bd remember` note about the pattern.
+- **`indirectbr` is genuinely a static-CFG break.** I considered
+  implementing a partial version that handles `phi(blockaddress(@f,
+  %A), blockaddress(@f, %B))` patterns by lowering as cascaded
+  conditional branches. Rejected because: (a) Bennett's IR types
+  don't currently include a "block address" notion — adding one
+  ripples through extract/lowering/IR types; (b) for raw .ll sources
+  that use indirectbr in computed-jump tables (the realistic case),
+  the address comes from a load-from-memory pattern that requires
+  block-address tracking through pointer ops — substantial
+  workstream. (c) "no Julia function produces this" means there's no
+  workload demand. Hard-stop with a precise message is the right
+  pragmatic answer.
+- **`AssertionError` and `ArgumentError` both have `.msg`.** Tests
+  that assert on `err.msg` work after switching from `ErrorException`
+  to either. Same for `sprint(showerror, e)`. So the migration was
+  mostly mechanical — just change the type assertion.
+- **The benign-skip filter in module_walk.jl is robust to the
+  migration.** The filter at line 198 checks for "ir_extract.jl:" /
+  "Bennett-" prefix in the message to identify Bennett-authored
+  errors and let them propagate. My new throws still produce those
+  prefixes, so the filter correctly distinguishes them from LLVM.jl's
+  own "Unknown value kind" / "LLVMGlobalAlias" pass-throughs.
+
+**Rejected alternatives:**
+
+- For h6f, splitting `llvm.fmuladd` into fmul+fadd per LangRef
+  permission. The split is allowed but produces a different rounding
+  result than fma. CLAUDE.md §13's bit-exact contract argues for
+  single-rounding (soft_fma) on both. The user can opt out via
+  `@fastmath` (which uses `j_*` callees instead of LLVM intrinsics)
+  if they want the faster, less-accurate variant.
+- For 4eu, attempting partial `indirectbr` lowering. See gotcha
+  above — substantial workstream gated on a workload that doesn't
+  exist.
+- For imz7, leaving the `@test_throws ErrorException` assertions as-is.
+  Resisted: the whole point of Bennett-vpch (U45) was tightening error
+  classes for predictable error handling; leaving the test side
+  generic defeats the purpose.
+
+**Catalogue at session end:** Three more closes brings the open-
+opcode/intrinsic-coverage tail to:
+
+- `Bennett-3mo` (P3) — `llvm.sin/cos`, biggest remaining body
+- `Bennett-582` (P3) — `llvm.log/log2/log10`
+- `Bennett-emv` (P3) — `llvm.pow/powi` (composes from log+exp)
+- `Bennett-hao` (P3) — `llvm.memcpy/memmove/memset` real lowering
+- `Bennett-vb2` (P3) — vector ops
+- `Bennett-pg5` (P3) — `llvm.vector.reduce.*`
+- `Bennett-tfx` (deferred) — `frem`
+- `Bennett-36m` (deferred) — `with.overflow` arithmetic
+- `Bennett-g4g` (deferred) — saturating arithmetic
+
+The Tier A "quick wins" frontier is now empty. Remaining intrinsic
+work is medium (hao/vb2/pg5) or large (3mo/582/emv).
+
+**Next agent starts here:** **Bennett-hao** is probably the right next
+grind — `llvm.memcpy/memmove/memset` real lowering. Currently
+benign-drop, which is a correctness gap not a fail-loud one (silent
+drop of a memcpy means the destination is whatever zero-init left it
+as). ~150 LOC of per-byte reversible copy loop.
+
+Alternatively **Bennett-3mo (sin/cos)** is the largest soft-float body
+remaining and the most-requested Julia primitive missing — multi-
+session work but unlocks `Base.sin/cos/tan` for all users. Cody-Waite
+range reduction + Payne-Hanek for large arguments + polynomial.
+
 ## Session log — 2026-05-01 (late evening, post-nj6c) — Bennett-cb9y + Bennett-dnh close — multi-origin × runtime-idx walls closed → OPCODE PARITY for runtime-indexed memory
 
 **Shipped:** see git log for the next commit. Closed both `:NYI` walls

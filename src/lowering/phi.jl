@@ -49,9 +49,9 @@ function _compute_block_pred!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     # "exactly one fires" guarantee that resolve_phi_predicated! relies on
     # (CLAUDE.md "Phi Resolution and Control Flow — CORRECTNESS RISK").
     length(unique(pred_list)) == length(pred_list) ||
-        error("_compute_block_pred!: block $label has duplicate predecessors " *
+        throw(AssertionError("_compute_block_pred!: block $label has duplicate predecessors " *
               "$(pred_list); each predecessor must appear at most once " *
-              "(Bennett-p94b)")
+              "(Bennett-p94b)"))
 
     contributions = Vector{Int}[]
     for p in pred_list
@@ -60,8 +60,8 @@ function _compute_block_pred!(gates::Vector{ReversibleGate}, wa::WireAllocator,
         # A multi-bit value would have only bit 0 consumed by the AND/OR
         # contribution chain — silent corruption.
         length(block_pred[p]) == 1 ||
-            error("_compute_block_pred!: block_pred[$p] has " *
-                  "$(length(block_pred[p])) wires; expected 1 (Bennett-p94b)")
+            throw(AssertionError("_compute_block_pred!: block_pred[$p] has " *
+                  "$(length(block_pred[p])) wires; expected 1 (Bennett-p94b)"))
         if haskey(branch_info, p)
             (cw, tlabel, flabel) = branch_info[p]
             if tlabel == label
@@ -115,8 +115,8 @@ function _edge_predicate!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     # SINGLE-bit wire — `_and_wire!` / `_not_wire!` both index `[1]`, so
     # a wider value would silently use only bit 0.
     length(block_pred[src_block]) == 1 ||
-        error("_edge_predicate!: block_pred[$src_block] has " *
-              "$(length(block_pred[src_block])) wires; expected 1 (Bennett-p94b)")
+        throw(AssertionError("_edge_predicate!: block_pred[$src_block] has " *
+              "$(length(block_pred[src_block])) wires; expected 1 (Bennett-p94b)"))
     if haskey(branch_info, src_block)
         (cw, tlabel, flabel) = branch_info[src_block]
         if tlabel == phi_block
@@ -180,7 +180,7 @@ function lower_phi!(gates, wa, vw, inst::IRPhi, phi_block::Symbol,
         merged = PtrOrigin[]
         for (val, src_block) in inst.incoming
             val isa SSAOperand ||
-                error("lower_phi!: ptr-phi %$(inst.dest) incoming from non-SSA operand $(val)")
+                throw(ArgumentError("lower_phi!: ptr-phi %$(inst.dest) incoming from non-SSA operand $(val)"))
             haskey(ptr_provenance, val.name) ||
                 throw(AssertionError("lower_phi!: ptr-phi %$(inst.dest) incoming %$(val.name) has no provenance"))
             edge_pred = _edge_predicate!(gates, wa, src_block, phi_block,
@@ -193,8 +193,8 @@ function lower_phi!(gates, wa, vw, inst::IRPhi, phi_block::Symbol,
         isempty(merged) &&
             throw(AssertionError("lower_phi!: ptr-phi %$(inst.dest) produced empty origin set"))
         length(merged) <= 8 ||
-            error("lower_phi!: ptr-phi %$(inst.dest) fan-out $(length(merged)) > 8 " *
-                  "exceeds M2b budget; file a bd issue")
+            throw(ArgumentError("lower_phi!: ptr-phi %$(inst.dest) fan-out $(length(merged)) > 8 " *
+                  "exceeds M2b budget; file a bd issue"))
         ptr_provenance[inst.dest] = merged
         return  # no vw[inst.dest] — pointers don't materialize as wires
     end
@@ -207,9 +207,9 @@ function lower_phi!(gates, wa, vw, inst::IRPhi, phi_block::Symbol,
     # here and breaks downstream MUX-chain construction.
     for (k, (wires, blk)) in enumerate(incoming)
         length(wires) == inst.width ||
-            error("lower_phi!: incoming #$k from block $blk has " *
+            throw(DimensionMismatch("lower_phi!: incoming #$k from block $blk has " *
                   "width=$(length(wires)) but phi %$(inst.dest) " *
-                  "declares width=$(inst.width) (Bennett-fq8n)")
+                  "declares width=$(inst.width) (Bennett-fq8n)"))
     end
     isempty(block_pred) && throw(AssertionError("lower_phi!: block_pred is empty during phi resolution for $(inst.dest) — path predicates must be computed before phi lowering"))
     vw[inst.dest] = resolve_phi_predicated!(gates, wa, incoming, block_pred, inst.width;

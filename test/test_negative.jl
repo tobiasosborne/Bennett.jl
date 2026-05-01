@@ -24,7 +24,7 @@ using Bennett
 
     @testset "Float64 with too many arguments" begin
         f4(a, b, c, d) = a + b + c + d
-        @test_throws ErrorException reversible_compile(f4, Float64, Float64, Float64, Float64)
+        @test_throws ArgumentError reversible_compile(f4, Float64, Float64, Float64, Float64)
     end
 
     @testset "Single-input simulate with multi-input circuit" begin

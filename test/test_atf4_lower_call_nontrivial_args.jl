@@ -96,7 +96,7 @@ using Bennett: _callee_arg_types, _assert_arg_widths_match
         catch ex
             ex
         end
-        @test e isa ErrorException
+        @test e isa DimensionMismatch
         msg = sprint(showerror, e)
         @test occursin("arg width mismatch", msg)
         @test occursin("#2", msg)
@@ -117,7 +117,7 @@ using Bennett: _callee_arg_types, _assert_arg_widths_match
         catch ex
             ex
         end
-        @test e isa ErrorException
+        @test e isa AssertionError
         @test occursin("Vararg", sprint(showerror, e))
     end
 
@@ -134,7 +134,7 @@ using Bennett: _callee_arg_types, _assert_arg_widths_match
         catch ex
             ex
         end
-        @test e isa ErrorException
+        @test e isa AssertionError
         msg = sprint(showerror, e)
         @test occursin("2 methods", msg)
     end
@@ -156,7 +156,7 @@ using Bennett: _callee_arg_types, _assert_arg_widths_match
         catch ex
             ex
         end
-        @test e isa ErrorException
+        @test e isa AssertionError
         msg = sprint(showerror, e)
         @test occursin("arity", msg)
         @test occursin("3", msg)

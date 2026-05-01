@@ -12,9 +12,9 @@ function _find_entry_function(mod::LLVM.Module,
                 return f
             end
         end
-        error("ir_extract.jl: no julia_* function found in LLVM module (the " *
+        throw(ArgumentError("ir_extract.jl: no julia_* function found in LLVM module (the " *
               "extractor expects code_llvm(...; dump_module=true) output with " *
-              "at least one non-declaration `julia_` or `j_` function)")
+              "at least one non-declaration `julia_` or `j_` function)"))
     end
 
     matches = LLVM.Function[]
@@ -25,17 +25,17 @@ function _find_entry_function(mod::LLVM.Module,
         names = [LLVM.name(f) for f in LLVM.functions(mod)]
         candidate_blurb = isempty(names) ? "(module has no functions)" :
             "candidates: " * join(names, ", ")
-        error("ir_extract.jl: entry function `$entry_function` not found in " *
-              "module. $candidate_blurb")
+        throw(ArgumentError("ir_extract.jl: entry function `$entry_function` not found in " *
+              "module. $candidate_blurb"))
     end
     if length(matches) > 1
-        error("ir_extract.jl: entry function `$entry_function` matches " *
-              "$(length(matches)) functions in the module (expected 1)")
+        throw(ArgumentError("ir_extract.jl: entry function `$entry_function` matches " *
+              "$(length(matches)) functions in the module (expected 1)"))
     end
     f = matches[1]
     isempty(LLVM.blocks(f)) &&
-        error("ir_extract.jl: entry function `$entry_function` is a " *
-              "declaration (has no body); provide a module that defines it")
+        throw(ArgumentError("ir_extract.jl: entry function `$entry_function` is a " *
+              "declaration (has no body); provide a module that defines it"))
     return f
 end
 
@@ -322,13 +322,13 @@ function _expand_switches(blocks::Vector{IRBasicBlock})
     for b in blocks
         s = String(b.label)
         startswith(s, "_sw_") &&
-            error("_expand_switches: input block label :$(b.label) collides " *
+            throw(AssertionError("_expand_switches: input block label :$(b.label) collides " *
                   "with the reserved synthetic-block prefix `_sw_*`. " *
-                  "Likely a re-run on already-expanded blocks (Bennett-t3j0 / U83).")
+                  "Likely a re-run on already-expanded blocks (Bennett-t3j0 / U83)."))
         b.label === :__unreachable__ &&
-            error("_expand_switches: input block named :__unreachable__ " *
+            throw(AssertionError("_expand_switches: input block named :__unreachable__ " *
                   "collides with the reserved unreachable-target sentinel " *
-                  "(Bennett-t3j0 / U83).")
+                  "(Bennett-t3j0 / U83)."))
     end
 
     result = IRBasicBlock[]

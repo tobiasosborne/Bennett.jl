@@ -75,6 +75,10 @@ include("test_var_gep.jl")
 include("test_float_intrinsics.jl")
 # Bennett-1pb: direct llvm.sqrt / llvm.exp / llvm.exp2 dispatch.
 include("test_1pb_llvm_transcendentals.jl")
+# Bennett-h6f: direct llvm.fma / llvm.fmuladd dispatch.
+include("test_h6f_llvm_fma_dispatch.jl")
+# Bennett-4eu: indirectbr fail-loud hard stop.
+include("test_4eu_indirectbr_reject.jl")
 # Bennett-nj6c (Bennett-dnh phase 1a): runtime-idx MUX-EXCH on extended shapes.
 include("test_nj6c_extended_mux_shapes.jl")
 # Bennett-cb9y (Bennett-dnh phase 1b): multi-origin ptr × runtime idx.

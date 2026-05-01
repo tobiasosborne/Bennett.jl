@@ -274,14 +274,15 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     end
 
     strategy in (:auto, :tabulate, :expression) ||
-        error("reversible_compile: unknown strategy :$strategy; " *
-              "supported: :auto, :tabulate, :expression")
+        throw(ArgumentError("reversible_compile: unknown strategy :$strategy; " *
+              "supported: :auto, :tabulate, :expression"))
 
     # Explicit tabulate: evaluate f classically on all 2^W inputs and emit as
     # a QROM lookup. Skip IR extraction entirely.
     if strategy === :tabulate
         ok, reason = _tabulate_applicable(arg_types, bit_width)
-        ok || error("reversible_compile: strategy=:tabulate not applicable — $reason")
+        ok || throw(ArgumentError(
+            "reversible_compile: strategy=:tabulate not applicable — $reason"))
         widths = _tabulate_input_widths(arg_types, bit_width)
         out_width = bit_width > 0 ? bit_width : sizeof(arg_types.parameters[1]) * 8
         lr = lower_tabulate(f, arg_types, widths; out_width)

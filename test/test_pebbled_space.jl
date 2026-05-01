@@ -61,7 +61,7 @@ using Bennett
 
         # One fewer than minimum should error
         if s_min > 1
-            @test_throws ErrorException pebbled_bennett(lr; max_pebbles=1)
+            @test_throws ArgumentError pebbled_bennett(lr; max_pebbles=1)
         end
     end
 end

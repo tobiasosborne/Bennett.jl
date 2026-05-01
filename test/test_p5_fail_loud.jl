@@ -14,7 +14,7 @@ const P5_LL_FIXTURE = joinpath(@__DIR__, "fixtures", "ll", "p5a_add3.ll")
         catch e
             err = e
         end
-        @test err isa ErrorException
+        @test err isa ArgumentError
         @test occursin("file not found", sprint(showerror, err))
     end
 
@@ -26,7 +26,7 @@ const P5_LL_FIXTURE = joinpath(@__DIR__, "fixtures", "ll", "p5a_add3.ll")
         catch e
             err = e
         end
-        @test err isa ErrorException
+        @test err isa ArgumentError
         @test occursin("file not found", sprint(showerror, err))
     end
 
@@ -38,7 +38,7 @@ const P5_LL_FIXTURE = joinpath(@__DIR__, "fixtures", "ll", "p5a_add3.ll")
         catch e
             err = e
         end
-        @test err isa ErrorException
+        @test err isa ArgumentError
         msg = sprint(showerror, err)
         @test occursin("not found", msg)
         @test occursin("foo", msg)   # hints at the real function name
@@ -56,7 +56,7 @@ const P5_LL_FIXTURE = joinpath(@__DIR__, "fixtures", "ll", "p5a_add3.ll")
             catch e
                 err = e
             end
-            @test err isa ErrorException
+            @test err isa ArgumentError
             @test occursin("declaration", sprint(showerror, err))
         finally
             rm(path; force=true)

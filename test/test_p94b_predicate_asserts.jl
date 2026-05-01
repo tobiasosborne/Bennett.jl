@@ -34,7 +34,7 @@ using Bennett: WireAllocator, ReversibleGate, _compute_block_pred!,
         # :B has TWO incoming from :A — structurally invalid.
         preds = Dict{Symbol,Vector{Symbol}}(:B => [:A, :A])
         branch_info = Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}()
-        @test_throws ErrorException _compute_block_pred!(gates, wa, :B,
+        @test_throws AssertionError _compute_block_pred!(gates, wa, :B,
                                                          preds, branch_info,
                                                          block_pred)
     end
@@ -46,7 +46,7 @@ using Bennett: WireAllocator, ReversibleGate, _compute_block_pred!,
         block_pred = Dict{Symbol,Vector{Int}}()
         block_pred[:A] = allocate!(wa, 2)
         branch_info = Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}()
-        @test_throws ErrorException _edge_predicate!(gates, wa, :A, :B,
+        @test_throws AssertionError _edge_predicate!(gates, wa, :A, :B,
                                                      block_pred, branch_info)
     end
 
@@ -57,7 +57,7 @@ using Bennett: WireAllocator, ReversibleGate, _compute_block_pred!,
         block_pred[:A] = allocate!(wa, 3)  # 3-bit "predicate" — invalid
         preds = Dict{Symbol,Vector{Symbol}}(:B => [:A])
         branch_info = Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}()
-        @test_throws ErrorException _compute_block_pred!(gates, wa, :B,
+        @test_throws AssertionError _compute_block_pred!(gates, wa, :B,
                                                          preds, branch_info,
                                                          block_pred)
     end

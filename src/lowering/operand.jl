@@ -12,9 +12,9 @@ function resolve!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     # width and the caller passes 0 by convention (cf. lower_phi!,
     # lower_select! handling).
     if width != 0 && length(wires) != width
-        error("resolve!: SSA operand %$(op.name) has length(wires)=$(length(wires)) " *
+        throw(DimensionMismatch("resolve!: SSA operand %$(op.name) has length(wires)=$(length(wires)) " *
               "but caller advertised width=$width — width contract violated " *
-              "(Bennett-cklf / U128)")
+              "(Bennett-cklf / U128)"))
     end
     return wires
 end
@@ -24,9 +24,9 @@ function resolve!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     # Bennett-zmw3 / U111: width must be in [1, 64]. Wider widths
     # need a different storage strategy (multi-UInt64 limbs); the IR
     # parser already rejects them but pin the contract here.
-    1 <= width <= 64 || error(
+    1 <= width <= 64 || throw(ArgumentError(
         "resolve!: width=$width out of supported range [1, 64] " *
-        "(Bennett-zmw3 / U111)")
+        "(Bennett-zmw3 / U111)"))
     wires = allocate!(wa, width)
     # Bennett-zmw3 / U111: previously `op.value & ((1 << width) - 1)`,
     # which at width=64 gave the right answer ONLY because Julia's
@@ -49,12 +49,12 @@ end
 # Symbol pun.
 function resolve!(::Vector{ReversibleGate}, ::WireAllocator,
                   ::Dict{Symbol,Vector{Int}}, ::OpaquePtrSentinel, ::Int)
-    error("resolve!: opaque pointer sentinel reached lowering — the " *
+    throw(AssertionError("resolve!: opaque pointer sentinel reached lowering — the " *
           "extractor produced an OPAQUE_PTR_SENTINEL for an unresolvable " *
           "pointer value (likely a GlobalAlias chain that didn't resolve, " *
           "or a ConstantExpr with sub-operands the extractor couldn't " *
           "wrap). Compilation cannot proceed without a concrete pointer " *
-          "(Bennett-ibz5 / U96).")
+          "(Bennett-ibz5 / U96)."))
 end
 
 # Catch-all for any other IROperand subtype (PoisonLaneSentinel,
@@ -64,10 +64,10 @@ end
 # constant. Fail loud per CLAUDE.md §1 (Bennett-v958 / U68).
 function resolve!(::Vector{ReversibleGate}, ::WireAllocator,
                   ::Dict{Symbol,Vector{Int}}, op::IROperand, ::Int)
-    error("resolve!: $(typeof(op)) reached lowering — this operand kind " *
+    throw(AssertionError("resolve!: $(typeof(op)) reached lowering — this operand kind " *
           "is an extractor-internal placeholder and must be consumed by " *
           "its specialised lowering path before resolve! sees it " *
-          "(Bennett-v958 / U68).")
+          "(Bennett-v958 / U68)."))
 end
 
 # ==== SSA-level liveness analysis ====

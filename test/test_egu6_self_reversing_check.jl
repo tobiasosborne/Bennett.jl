@@ -36,7 +36,7 @@ using Bennett: ReversibleGate, NOTGate, CNOTGate, ToffoliGate, GateGroup,
         gates = ReversibleGate[NOTGate(3)]
         lr = LoweringResult(gates, 3, [1], [2], [1], [1],
                             GateGroup[], true)
-        @test_throws ErrorException bennett(lr)
+        @test_throws ArgumentError bennett(lr)
     end
 
     @testset "T2: error message identifies the violating invariant" begin
@@ -48,7 +48,7 @@ using Bennett: ReversibleGate, NOTGate, CNOTGate, ToffoliGate, GateGroup,
         catch e
             e
         end
-        @test err isa ErrorException
+        @test err isa ArgumentError
         @test occursin("self_reversing", err.msg)
         @test occursin("ancilla", err.msg) || occursin("wire 3", err.msg)
     end
@@ -60,7 +60,7 @@ using Bennett: ReversibleGate, NOTGate, CNOTGate, ToffoliGate, GateGroup,
         gates = ReversibleGate[NOTGate(1)]
         lr = LoweringResult(gates, 2, [1], [2], [1], [1],
                             GateGroup[], true)
-        @test_throws ErrorException bennett(lr)
+        @test_throws ArgumentError bennett(lr)
     end
 
     @testset "T4: real lower_tabulate QROM primitive still compiles (positive)" begin

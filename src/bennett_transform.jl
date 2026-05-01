@@ -105,11 +105,11 @@ function _validate_self_reversing!(lr::LoweringResult)
         end
 
         for w in ancilla_set
-            bits[w] && error("bennett(): self_reversing=true contract violated — ancilla wire $w is 1 after forward pass under probe '$name' (n_wires=$(lr.n_wires), n_gates=$(length(lr.gates))). Fix the producer or drop the self_reversing flag.")
+            bits[w] && throw(ArgumentError("bennett(): self_reversing=true contract violated — ancilla wire $w is 1 after forward pass under probe '$name' (n_wires=$(lr.n_wires), n_gates=$(length(lr.gates))). Fix the producer or drop the self_reversing flag."))
         end
         for (k, w) in pairs(lr.input_wires)
             bits[w] == snapshot[k] ||
-                error("bennett(): self_reversing=true contract violated — input wire $w changed from $(snapshot[k]) to $(bits[w]) under probe '$name' (n_wires=$(lr.n_wires), n_gates=$(length(lr.gates))). Fix the producer or drop the self_reversing flag.")
+                throw(ArgumentError("bennett(): self_reversing=true contract violated — input wire $w changed from $(snapshot[k]) to $(bits[w]) under probe '$name' (n_wires=$(lr.n_wires), n_gates=$(length(lr.gates))). Fix the producer or drop the self_reversing flag."))
         end
     end
     return nothing

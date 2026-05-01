@@ -265,9 +265,9 @@ end
 # emit a bare shift with `k >= W`. We accept `k == W` (returns zero for
 # shl/lshr; sign-extension for ashr) and `0 <= k < W` (the normal range).
 # Negative `k` would silently iterate over invalid wire indices; reject loud.
-@inline _check_const_shift(k::Int, W::Int) = (0 <= k <= W) || error(
+@inline _check_const_shift(k::Int, W::Int) = (0 <= k <= W) || throw(ArgumentError(
     "lower_shl!/lshr!/ashr!: constant shift k=$k out of [0, W] for W=$W " *
-    "(Bennett-zmw3 / U111)")
+    "(Bennett-zmw3 / U111)"))
 
 function lower_shl!(g, wa, a, k, W)
     _check_const_shift(k, W)
@@ -474,8 +474,8 @@ function lower_select!(gates, wa, vw, inst::IRSelect; ctx::Union{Nothing,Lowerin
             push!(merged, PtrOrigin(o.alloca_dest, o.idx_op, combined[1]))
         end
         length(merged) <= 8 ||
-            error("lower_select!: ptr-select %$(inst.dest) fan-out $(length(merged)) > 8 " *
-                  "exceeds M2b budget; file a bd issue")
+            throw(ArgumentError("lower_select!: ptr-select %$(inst.dest) fan-out $(length(merged)) > 8 " *
+                  "exceeds M2b budget; file a bd issue"))
         ctx.ptr_provenance[inst.dest] = merged
         return  # no vw[inst.dest] — pointers don't materialize as wires
     end
