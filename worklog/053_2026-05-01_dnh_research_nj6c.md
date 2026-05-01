@@ -1,5 +1,47 @@
 # Bennett.jl Work Log
 
+## Session close — 2026-05-01 — opcode-parity grind, 7 beads closed in one day
+
+**Scoreboard for the day** (commits in reverse chronological order):
+
+| Commit  | Bead(s)                | Type                       | Test delta                |
+|---------|------------------------|----------------------------|---------------------------|
+| c07ccbc | h6f, 4eu, imz7         | intrinsic + hard-stop + sweep | +16 asserts + ~24 retypes |
+| a11dc43 | cb9y, **dnh**          | multi-origin × runtime-idx | +77 asserts               |
+| 841e29b | nj6c                   | extended MUX shapes        | +129 asserts              |
+| f6a9b0e | 1pb                    | llvm.sqrt/exp/exp2 dispatch | +44 asserts               |
+
+**Headline:** **Bennett-dnh closed** — the bead identified earlier the
+day as "the most difficult open issue to reach Enzyme parity" — re-
+scoped from RESEARCH to engineering after a six-agent research sweep,
+then shipped via two phases (nj6c + cb9y). Opcode parity for runtime-
+indexed memory access is now achieved: every `load` / `store` /
+`getelementptr` at runtime SSA index compiles, single-origin OR multi-
+origin, on all alloca shapes Bennett supports.
+
+**Bonus:** Tier A "quick wins" frontier emptied. h6f un-deferred
+(soft_fma already existed), 4eu declared a hard stop with precise
+fail-loud, imz7 ~24 typed-exception sites swept.
+
+**Pkg.test post-push:** 487,167 pass / 0 fail / 3 known-broken.
+
+**Open opcode/intrinsic gaps remaining:**
+
+- Medium: hao (memcpy/memmove/memset real lowering), vb2 (vector ops),
+  pg5 (vector.reduce)
+- Large: 3mo (sin/cos), 582 (log) → emv (pow chain)
+- Architectural: 8guh (IRSwap, P2, 3+1) — would unify the synthetic-
+  IRLoad pattern from cb9y; substrate for 6c6f QROAM cost win
+
+**Next agent starts here:** **Bennett-hao** is probably the right next
+pickup — currently benign-drops `llvm.memcpy/memmove/memset`, which
+is a *correctness* gap not just a dispatch gap (silent drop of memcpy
+means destination is whatever zero-init left it as). ~150 LOC of
+per-byte reversible copy loop. Alternatively **Bennett-3mo (sin/cos)**
+is the largest remaining soft-float body and the most-requested Julia
+primitive missing — multi-session, but unlocks `Base.sin/cos/tan` end
+to end.
+
 ## Session log — 2026-05-01 (late late evening) — Tier A grind: Bennett-h6f + Bennett-4eu + Bennett-imz7 closed
 
 **Shipped:** three-bead Tier A grind in one session. See git log for the
