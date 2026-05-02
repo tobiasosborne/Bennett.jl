@@ -39,6 +39,11 @@ end
 @inline Base.sqrt(x::SoftFloat) = SoftFloat(soft_fsqrt(x.bits))
 @inline Base.exp(x::SoftFloat) = SoftFloat(soft_exp_julia(x.bits))
 @inline Base.exp2(x::SoftFloat) = SoftFloat(soft_exp2_julia(x.bits))
+# Bennett-jexo / Path A: ^(SoftFloat, SoftFloat) → soft_pow_julia
+# (bit-exact vs Base.:^), distinct from LLVM `llvm.pow.f64` direct
+# dispatch which keeps using `soft_pow` (musl-tracking) for raw .ll/.bc
+# ingest from non-Julia frontends.
+@inline Base.:^(a::SoftFloat, b::SoftFloat) = SoftFloat(soft_pow_julia(a.bits, b.bits))
 
 """
     reversible_compile(f, ::Type{Float64}; ...) -> ReversibleCircuit

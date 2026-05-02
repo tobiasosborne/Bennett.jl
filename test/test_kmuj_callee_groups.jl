@@ -41,7 +41,7 @@ using Bennett
     end
 
     @testset "total registered count matches expected" begin
-        # 2 + 5 + 2 + 4 + 10 + 5 + 11 + 22 + 11 = 72
+        # 2 + 5 + 2 + 4 + 10 + 5 + 12 + 22 + 11 = 73
         # (FP_CMP grew from 4 to 10 with Bennett-d77b / U132: 6 new
         # soft_fcmp_* primitives ord/uno/one/ueq/ult/ule completing the
         # LLVM fcmp predicate table.)
@@ -50,15 +50,16 @@ using Bennett
         # (MUX_EXCH grew from 12 to 22 + GUARDED from 6 to 11 with
         # Bennett-nj6c / dnh phase 1a: 5 new shapes (3,8)/(5,8)/(6,8)/
         # (7,8)/(3,16) close the N·W ≤ 64 lattice.)
-        # (FP_TRANS grew from 6 to 9 with Bennett-582 (log family) then to
-        # 11 with Bennett-emv (soft_pow + soft_powi).)
+        # (FP_TRANS grew from 6 to 9 with Bennett-582 (log family), to
+        # 11 with Bennett-emv (soft_pow + soft_powi), then to 12 with
+        # Bennett-jexo (soft_pow_julia: bit-exact vs Base.:^).)
         n_grouped = sum(length(g) for g in Bennett._CALLEE_GROUPS)
-        @test n_grouped == 72
+        @test n_grouped == 73
 
         # _known_callees may contain more if anything else (test fixtures,
-        # other modules) registered, but it must contain at LEAST the 72
+        # other modules) registered, but it must contain at LEAST the 73
         # we register from the groups.
-        @test length(Bennett._known_callees) >= 72
+        @test length(Bennett._known_callees) >= 73
     end
 
     @testset "group sizes match the documented partition" begin
@@ -68,7 +69,7 @@ using Bennett
         @test length(Bennett._CALLEES_FP_ROUND)           == 4   # 2hhx: 3 → 4
         @test length(Bennett._CALLEES_FP_CMP)             == 10  # d77b: 4 → 10
         @test length(Bennett._CALLEES_FP_CONV)            == 5
-        @test length(Bennett._CALLEES_FP_TRANS)           == 11  # 582: 6→9 (log family); emv: 9→11 (pow + powi)
+        @test length(Bennett._CALLEES_FP_TRANS)           == 12  # 582: 6→9 (log family); emv: 9→11 (pow+powi); jexo: 11→12 (soft_pow_julia)
         @test length(Bennett._CALLEES_MUX_EXCH)           == 22  # nj6c: 12 → 22
         @test length(Bennett._CALLEES_MUX_EXCH_GUARDED)   == 11  # nj6c:  6 → 11
     end

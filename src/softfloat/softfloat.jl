@@ -25,6 +25,7 @@ include("fexp.jl")
 include("fexp_julia.jl")
 include("flog.jl")
 include("fpow.jl")
+include("fpow_julia.jl")
 include("fpconv.jl")
 include("fptosi.jl")
 include("fptoui.jl")
@@ -44,6 +45,6 @@ export soft_fadd, soft_fsub, soft_fmul, soft_fma, soft_fdiv, soft_fsqrt,
        soft_exp, soft_exp2, soft_exp_fast, soft_exp2_fast,
        soft_exp_julia, soft_exp2_julia,
        soft_log, soft_log2, soft_log10,
-       soft_pow, soft_powi
+       soft_pow, soft_powi, soft_pow_julia
 
 end # module SoftFloatLib
