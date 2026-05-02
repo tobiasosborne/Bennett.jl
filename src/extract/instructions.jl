@@ -340,6 +340,39 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "(Bennett-1pb)")
         return IRCall(dest, soft_exp, [_operand(ops[1], names)], [w], w)
     end
+    # Bennett-582: direct dispatch for the LLVM logarithm intrinsic family.
+    # Like the exp dispatch above, the Julia frontend normally routes log
+    # through SoftFloat (`Base.log(::SoftFloat) = SoftFloat(soft_log_julia(x.bits))`
+    # — when wired). Raw `llvm.log.f64` arrives via @fastmath, Core.Intrinsics,
+    # or .ll/.bc ingest (Bennett-xkv multi-language path).
+    #
+    # Order is load-bearing: `llvm.log10.*` and `llvm.log2.*` must be checked
+    # BEFORE `llvm.log.*` because `startswith("llvm.log")` matches all three.
+    # f64 only — f32 rejected per CLAUDE.md §13 (Bennett-3rph / U137).
+    if startswith(cname, "llvm.log10")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.log10: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-582)")
+        return IRCall(dest, soft_log10, [_operand(ops[1], names)], [w], w)
+    end
+    if startswith(cname, "llvm.log2")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.log2: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-582)")
+        return IRCall(dest, soft_log2, [_operand(ops[1], names)], [w], w)
+    end
+    if startswith(cname, "llvm.log")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.log: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-582)")
+        return IRCall(dest, soft_log, [_operand(ops[1], names)], [w], w)
+    end
     return nothing
 end
 

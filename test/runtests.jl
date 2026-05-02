@@ -34,6 +34,7 @@ include("test_softfdiv.jl")
 include("test_softfsqrt.jl")
 include("test_softfexp.jl")
 include("test_softfexp_julia.jl")
+include("test_softflog.jl")
 include("test_softfconv.jl")
 include("test_float_circuit.jl")
 include("test_float_poly.jl")
@@ -75,6 +76,8 @@ include("test_var_gep.jl")
 include("test_float_intrinsics.jl")
 # Bennett-1pb: direct llvm.sqrt / llvm.exp / llvm.exp2 dispatch.
 include("test_1pb_llvm_transcendentals.jl")
+# Bennett-582: direct llvm.log / llvm.log2 / llvm.log10 dispatch.
+include("test_582_llvm_log_dispatch.jl")
 # Bennett-h6f: direct llvm.fma / llvm.fmuladd dispatch.
 include("test_h6f_llvm_fma_dispatch.jl")
 # Bennett-4eu: indirectbr fail-loud hard stop.
