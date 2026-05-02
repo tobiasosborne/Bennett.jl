@@ -76,7 +76,7 @@ export PersistentMapImpl, AbstractPersistentMap, verify_pmap_correctness, verify
 # Bennett-uoem / U54: soft_jenkins96 + soft_jenkins_int8 relocated to
 # src/persistent/research/hashcons_jenkins.jl (2026-04-25).
 export soft_feistel32, soft_feistel_int8
-export soft_fadd, soft_fsub, soft_fmul, soft_fma, soft_fdiv, soft_fsqrt, soft_fneg, soft_fcmp_olt, soft_fcmp_oeq, soft_fcmp_ole, soft_fcmp_une, soft_fptosi, soft_fptoui, soft_sitofp, soft_fpext, soft_fptrunc, soft_exp, soft_exp2, soft_exp_fast, soft_exp2_fast, soft_exp_julia, soft_exp2_julia, soft_log, soft_log2, soft_log10
+export soft_fadd, soft_fsub, soft_fmul, soft_fma, soft_fdiv, soft_fsqrt, soft_fneg, soft_fcmp_olt, soft_fcmp_oeq, soft_fcmp_ole, soft_fcmp_une, soft_fptosi, soft_fptoui, soft_sitofp, soft_fpext, soft_fptrunc, soft_exp, soft_exp2, soft_exp_fast, soft_exp2_fast, soft_exp_julia, soft_exp2_julia, soft_log, soft_log2, soft_log10, soft_pow, soft_powi
 export ReversibleCircuit, ControlledCircuit, controlled, compose
 # Bennett-qcse / U51: gate primitives documented public in docs/src/api.md
 # (lines 188/192/196/211) — exporting so the documented constructors and

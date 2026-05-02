@@ -373,6 +373,36 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "(Bennett-582)")
         return IRCall(dest, soft_log, [_operand(ops[1], names)], [w], w)
     end
+    # Bennett-emv: direct dispatch for llvm.pow / llvm.powi.
+    # `llvm.powi.f64.i32` has a different signature than llvm.pow — base is
+    # f64, exponent is i32 — so it routes to soft_powi (binary squaring),
+    # not soft_pow. Order is load-bearing again: `llvm.powi.*` checked
+    # before `llvm.pow.*` because both share the `llvm.pow` prefix.
+    if startswith(cname, "llvm.powi")
+        w_base = _iwidth(ops[1])
+        w_exp  = _iwidth(ops[2])
+        w_base == 64 || _ir_error(inst,
+            "llvm.powi: only f64 base supported (got width=$w_base); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-emv)")
+        w_exp == 32 || _ir_error(inst,
+            "llvm.powi: only i32 exponent supported (got width=$w_exp); " *
+            "Bennett supports the standard `llvm.powi.f64.i32` form. " *
+            "(Bennett-emv)")
+        return IRCall(dest, soft_powi,
+                      [_operand(ops[1], names), _operand(ops[2], names)],
+                      [w_base, w_exp], w_base)
+    end
+    if startswith(cname, "llvm.pow")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.pow: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-emv)")
+        return IRCall(dest, soft_pow,
+                      [_operand(ops[1], names), _operand(ops[2], names)],
+                      [w, w], w)
+    end
     return nothing
 end
 
