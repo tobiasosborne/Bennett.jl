@@ -38,6 +38,7 @@ include("test_softflog.jl")
 include("test_softfpow.jl")
 include("test_softfpow_julia.jl")
 include("test_jexo_pow_accuracy_contract.jl")
+include("test_softfsin.jl")
 include("test_softfconv.jl")
 include("test_float_circuit.jl")
 include("test_float_poly.jl")
@@ -83,6 +84,8 @@ include("test_1pb_llvm_transcendentals.jl")
 include("test_582_llvm_log_dispatch.jl")
 # Bennett-emv: direct llvm.pow / llvm.powi dispatch.
 include("test_emv_llvm_pow_dispatch.jl")
+# Bennett-3mo: direct llvm.sin / llvm.cos dispatch.
+include("test_3mo_llvm_sincos_dispatch.jl")
 # Bennett-h6f: direct llvm.fma / llvm.fmuladd dispatch.
 include("test_h6f_llvm_fma_dispatch.jl")
 # Bennett-4eu: indirectbr fail-loud hard stop.

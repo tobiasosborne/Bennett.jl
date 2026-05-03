@@ -403,6 +403,26 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
                       [_operand(ops[1], names), _operand(ops[2], names)],
                       [w, w], w)
     end
+    # Bennett-3mo: direct dispatch for the LLVM trigonometric intrinsics.
+    # `soft_sin` / `soft_cos` are full-Payne-Hanek ports of musl `sin.c` /
+    # `cos.c` / `__rem_pio2_large.c`, ≤2 ULP vs `Base.sin` / `Base.cos`
+    # across the full Float64 input range. f32 rejected per §13.
+    if startswith(cname, "llvm.sin")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.sin: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-3mo)")
+        return IRCall(dest, soft_sin, [_operand(ops[1], names)], [w], w)
+    end
+    if startswith(cname, "llvm.cos")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.cos: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-3mo)")
+        return IRCall(dest, soft_cos, [_operand(ops[1], names)], [w], w)
+    end
     return nothing
 end
 
