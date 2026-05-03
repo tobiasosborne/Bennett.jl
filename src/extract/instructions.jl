@@ -191,6 +191,246 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
     return out
 end
 
+# ---- Bennett-9nwt (Bennett-hao Phase 2) memset helpers ----
+
+"""
+    _alloca_is_fresh(alloca_ref, memset_inst) -> Bool
+
+Conservative intra-block freshness check (Bennett-9nwt, option γ).
+Returns `true` iff, walking forward through the basic block from the
+alloca instruction to (but not including) `memset_inst`, no intervening
+instruction writes through a pointer that traces back to `alloca_ref`.
+
+Returns `false` (conservative non-fresh) when:
+  - `alloca_ref` is in a different basic block from `memset_inst`
+    (cross-block freshness needs dominance analysis we don't have)
+  - any `Store` between alloca and memset has a pointer operand whose
+    `_alloca_root_ref` chain reaches `alloca_ref`
+  - any `Store` whose pointer operand has no resolvable alloca root
+    (pointer phi/select/parameter — we can't prove non-aliasing, so
+    treat as a possible write to `alloca_ref`)
+  - any `Call` to `llvm.memcpy.*` / `llvm.memset.*` / `llvm.memmove.*`
+    whose dst arg traces back to `alloca_ref`
+  - any `Call` to a non-benign function with `alloca_ref`'s pointer
+    (or a GEP thereof) appearing in any argument position
+
+This is the predicate-12 gate for the c≠0 path in
+`_handle_memset_arm`. The c==0 path takes a separate fast-track that
+preserves pre-9nwt benign-allowlist behaviour for unaudited Julia
+frontend code paths (acknowledged §1 hazard for c=0 non-fresh; tracked
+under Bennett-8bys-uncompute).
+"""
+function _alloca_is_fresh(alloca_ref::_LLVMRef, memset_inst::LLVM.Instruction)::Bool
+    alloca_inst = LLVM.Instruction(alloca_ref)
+    LLVM.parent(alloca_inst) === LLVM.parent(memset_inst) || return false
+
+    seen_alloca = false
+    for inst in LLVM.instructions(LLVM.parent(memset_inst))
+        if !seen_alloca
+            inst === alloca_inst && (seen_alloca = true)
+            continue
+        end
+        inst === memset_inst && return true
+        opc = LLVM.opcode(inst)
+
+        if opc == LLVM.API.LLVMStore
+            ptr_v = LLVM.operands(inst)[2]
+            root = _alloca_root_ref(ptr_v)
+            root === nothing && return false      # opaque ptr — assume aliases
+            root === alloca_ref && return false   # writes our slot
+            continue
+        end
+
+        if opc == LLVM.API.LLVMCall
+            call_ops = LLVM.operands(inst)
+            n_call_ops = length(call_ops)
+            n_call_ops >= 1 || continue
+            cname = try LLVM.name(call_ops[n_call_ops]) catch; "" end
+            if startswith(cname, "llvm.memcpy.") ||
+               startswith(cname, "llvm.memset.") ||
+               startswith(cname, "llvm.memmove.")
+                root = _alloca_root_ref(call_ops[1])
+                root === alloca_ref && return false
+                continue
+            end
+            # Pure / annotation intrinsics with no memory effect: skip.
+            if startswith(cname, "llvm.lifetime.") ||
+               startswith(cname, "llvm.dbg.") ||
+               startswith(cname, "llvm.assume") ||
+               startswith(cname, "llvm.experimental.noalias.scope.decl") ||
+               startswith(cname, "llvm.invariant.")
+                continue
+            end
+            # Unknown call: if any arg traces to our alloca, conservatively reject.
+            for i in 1:(n_call_ops - 1)
+                root = _alloca_root_ref(call_ops[i])
+                root === alloca_ref && return false
+            end
+            continue
+        end
+        # Loads, GEPs, arithmetic, casts: pure with respect to memory writes.
+    end
+    return false
+end
+
+"""
+    _handle_memset_arm(cname, inst, names, counter, ops) -> Vector{IRInst}
+
+Bennett-9nwt Phase 2: const-c const-N memset on alloca-i8-backed
+destination. Two green cases:
+
+  - Case A (c == 0, any dst): silent drop (`IRInst[]`). Preserves
+    pre-9nwt benign-allowlist behaviour for Julia GC-frame zeroing
+    patterns. NO alloca/freshness check on this path; tightening would
+    risk regressing unaudited Julia frontend output. Acknowledged §1
+    hazard for c=0 on non-fresh dst — tracked under
+    Bennett-8bys-uncompute.
+
+  - Case C (c != 0, fresh alloca-i8 dst): emit N byte-granular
+    `IRPtrOffset + IRStore(ConstOperand(c), 8)` pairs.
+
+All other shapes fail loud naming Bennett-8bys (catch-all) or
+Bennett-8bys-uncompute (non-fresh dst with c≠0).
+
+Predicate cascade (earliest mismatch → most actionable error):
+
+  1. addrspace 0 — `llvm.memset.p0.*` or `llvm.memset.inline.p0.*`
+  2. operand count >= 5 (4 args + callee)
+  3. isvolatile (4th op) is `i1` ConstantInt 0
+  4. fill byte c (2nd op) is ConstantInt
+  5. byte count N (3rd op) is ConstantInt
+  6. N >= 0
+  7. N == 0 → return `IRInst[]` (LangRef no-op)
+  8. c == 0 → return `IRInst[]` (case A — preserve broad tolerance)
+  9. dst is named SSA in `names`
+ 10. dst is not a global variable
+ 11. dst alloca-rooted via `_alloca_root_ref`
+ 12. alloca elem_w == 8
+ 13. dst alloca is fresh per `_alloca_is_fresh` (option γ)
+"""
+function _handle_memset_arm(cname::AbstractString, inst::LLVM.Instruction,
+                            names::Dict{_LLVMRef, Symbol}, counter::Ref{Int}, ops)
+    # Predicate 1: addrspace 0 (accept both `memset.p0.` and `memset.inline.p0.`).
+    is_p0 = startswith(cname, "llvm.memset.p0.") ||
+            startswith(cname, "llvm.memset.inline.p0.")
+    is_p0 || _ir_error(inst,
+        "$(cname): memset with non-default pointer address space is not " *
+        "supported. Bennett.jl's wire model is single-address-space; " *
+        "cross-space writes need explicit lowering. Tracked in " *
+        "Bennett-8bys. (Bennett-9nwt Phase 2 — addrspace 0 only)")
+
+    n_ops = length(ops)
+    n_ops >= 5 || _ir_error(inst,
+        "$(cname): malformed memset call (expected 4 args + callee, got " *
+        "$(n_ops - 1) args). (Bennett-9nwt Phase 2)")
+
+    dst_v = ops[1]
+    c_v   = ops[2]
+    n_v   = ops[3]
+    vol_v = ops[4]
+
+    # Predicate 3: isvolatile must be a ConstantInt with value 0.
+    vol_v isa LLVM.ConstantInt || _ir_error(inst,
+        "$(cname): isvolatile arg is not an i1 immarg constant " *
+        "(value=$(string(vol_v))). LangRef requires an immarg here; " *
+        "malformed IR. (Bennett-9nwt Phase 2)")
+    _const_int_as_int(vol_v) == 0 || _ir_error(inst,
+        "$(cname): volatile memset is not supported. Bennett.jl's " *
+        "reversible model has no observable side-effect ordering for " *
+        "memory; volatile semantics cannot be honoured. Recompile " *
+        "without the volatile attribute, or wait on Bennett-8bys " *
+        "(catch-all). (Bennett-9nwt Phase 2)")
+
+    # Predicate 4: fill byte must be a ConstantInt.
+    c_v isa LLVM.ConstantInt || _ir_error(inst,
+        "$(cname): memset with non-constant fill byte is not supported. " *
+        "Variable c needs runtime broadcasting that the byte-granular " *
+        "IRStore-of-ConstOperand path cannot express. Tracked in " *
+        "Bennett-8bys. (Bennett-9nwt Phase 2 — const-c only)")
+
+    # Predicate 5: byte count must be a ConstantInt.
+    n_v isa LLVM.ConstantInt || _ir_error(inst,
+        "$(cname): memset with non-constant byte count is not supported. " *
+        "Variable-size memset requires runtime-bounded loop unrolling, " *
+        "same gap as variable-size memcpy. Tracked in Bennett-8bys. " *
+        "(Bennett-9nwt Phase 2 — const-N only)")
+    N = _const_int_as_int(n_v)
+    N >= 0 || _ir_error(inst,
+        "$(cname): negative byte count $N (corrupt IR; LLVM treats the " *
+        "size argument as unsigned i64 but the C API returns Int64). " *
+        "(Bennett-9nwt Phase 2)")
+
+    # Predicate 7: N == 0 is a legal no-op regardless of c, dst, freshness.
+    N == 0 && return IRInst[]
+
+    # Predicate 8: c == 0 → case A. Silent drop, preserves pre-9nwt benign
+    # behaviour. Intentionally NO alloca / freshness check here —
+    # tightening risks regressing unaudited Julia frontend output, and the
+    # benign-list it replaces also did no such check. The c=0 non-fresh
+    # silent miscompile is an acknowledged hazard tracked in
+    # Bennett-8bys-uncompute.
+    c_int = _const_int_as_int(c_v) & 0xFF
+    c_int == 0 && return IRInst[]
+
+    # ---- c != 0 path: requires alloca-i8-backed fresh dst ----
+
+    # Predicate 9: dst SSA must be in the names table.
+    haskey(names, dst_v.ref) || _ir_error(inst,
+        "$(cname): memset dst pointer is not a named SSA value. " *
+        "(Bennett-9nwt Phase 2)")
+
+    # Predicate 10: globals out of scope.
+    if LLVM.API.LLVMIsAGlobalVariable(dst_v.ref) != C_NULL
+        _ir_error(inst,
+            "$(cname): memset of a global-variable destination is not " *
+            "yet supported. Constant-target memset against a global " *
+            "would mutate read-only data. Tracked in Bennett-8bys " *
+            "(catch-all, sub-case: \"Global-pointer memset\"). " *
+            "(Bennett-9nwt Phase 2 — alloca-backed dst only)")
+    end
+
+    # Predicate 11: dst must trace to an alloca (direct or const-offset GEP).
+    dst_root = _alloca_root_ref(dst_v)
+    dst_root === nothing && _ir_error(inst,
+        "$(cname): memset dst operand is not alloca-backed (or " *
+        "alloca-backed via a const-offset GEP). Bennett's pointer- " *
+        "provenance model only covers alloca and GEP-of-alloca; pointer " *
+        "phi/select/parameter sources fan out to multiple origins which " *
+        "Bennett-9nwt does not yet handle. Tracked in Bennett-8bys. " *
+        "(Bennett-9nwt Phase 2)")
+
+    # Predicate 12: alloca element width must be 8 bits.
+    dst_ew = _alloca_elem_width_bits(dst_root)
+    dst_ew == 8 || _ir_error(inst,
+        "$(cname): memset dst alloca has element width " *
+        "$(dst_ew == 0 ? "non-integer" : string(dst_ew)) bits; " *
+        "Bennett-9nwt Phase 2 supports byte-granularity (`alloca i8, " *
+        "i32 N`) only. Wider-element allocas need a wider shadow-store " *
+        "path in src/lowering/memory.jl, same gap as memcpy on " *
+        "alloca-i64. Tracked in Bennett-8bys. (Bennett-9nwt Phase 2)")
+
+    # Predicate 13: freshness (intra-block sweep). Non-fresh dst would
+    # XOR-overlay c onto existing data instead of cleanly setting it,
+    # producing wrong results that `verify_reversibility` doesn't catch.
+    _alloca_is_fresh(dst_root, inst) || _ir_error(inst,
+        "$(cname): memset dst alloca has prior IR-visible writes within " *
+        "this basic block (non-fresh dst). Reversibility forbids " *
+        "destructive overwrite without first uncomputing the existing " *
+        "slot bits via CNOT-uncompute. Tracked in " *
+        "Bennett-8bys-uncompute. (Bennett-9nwt Phase 2 — fresh-dst only)")
+
+    # Case C expansion: N byte-granular IRPtrOffset+IRStore pairs at width=8.
+    dst_op = ssa(names[dst_v.ref])
+    out = IRInst[]
+    sizehint!(out, 2 * N)
+    for k in 0:(N - 1)
+        dst_off = _auto_name(counter)
+        push!(out, IRPtrOffset(dst_off, dst_op, k))
+        push!(out, IRStore(ssa(dst_off), iconst(c_int), 8))
+    end
+    return out
+end
+
 # Bennett-tzrs / U41 (first-cut, 2026-04-27): the LLVM-intrinsic prefix
 # dispatch was lifted out of `_convert_instruction`'s 836-line body into
 # this helper. Order of `if startswith(cname, "...")` branches is LOAD-
@@ -641,6 +881,13 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     if startswith(cname, "llvm.memcpy")
         return _handle_memcpy_arm(cname, inst, names, counter, ops)
     end
+    # Bennett-hao Phase 2 (Bennett-9nwt): const-c const-N memset on
+    # alloca-i8-backed dst lowers to byte-granular IRPtrOffset+IRStore
+    # pairs with ConstOperand(c) at width=8. c=0 takes a separate
+    # silent-drop fast path that preserves pre-9nwt benign behaviour.
+    if startswith(cname, "llvm.memset")
+        return _handle_memset_arm(cname, inst, names, counter, ops)
+    end
     if startswith(cname, "llvm.cos")
         w = _iwidth(ops[1])
         w == 64 || _ir_error(inst,
@@ -891,15 +1138,11 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             "llvm.invariant.start",
             "llvm.invariant.end",
             "llvm.sideeffect",
-            # llvm.memset appears in Julia IR for GC-frame zeroing etc.;
-            # reversible pipeline treats allocations separately.
-            # Bennett-hao Phase 2 (Bennett-9nwt) will fold proper c=0/c≠0
-            # handling into the pipeline; until then silent-drop remains
-            # correct for the only Julia-frontend use (memset(0) on fresh
-            # ancillae from GC-frame zeroing). Raw .ll/.bc with memset(c≠0)
-            # falls into the benign path here too — that's a known-bug
-            # tracked in Bennett-9nwt.
-            "llvm.memset",
+            # llvm.memset is now handled explicitly by `_handle_memset_arm`
+            # above (Bennett-9nwt). The c=0 case takes a fast-path silent
+            # drop that matches the previous benign-list behaviour for
+            # Julia GC-frame zeroing; c≠0 cases lower to byte-granular
+            # IRStore-of-ConstOperand. NOT in this list anymore.
             # `llvm.trap` is Julia's unreachable-code marker (produced by
             # type-conservative codegen for branches the compiler can't
             # prove dead). Same unreachability argument as `j_throw_*`:

@@ -93,6 +93,10 @@ include("test_lqif_memcpy_memmove_reject.jl")
 # Bennett-37mt (Bennett-hao Phase 1): const-size memcpy lowering for
 # alloca-i8-backed pointers (byte-granular IRPtrOffset+IRLoad+IRStore).
 include("test_37mt_memcpy_const_aligned.jl")
+# Bennett-9nwt (Bennett-hao Phase 2): const-c const-N memset lowering
+# for alloca-i8-backed dst (byte-granular IRStore-of-ConstOperand).
+# Replaces benign-allowlist silent-drop with explicit case discrimination.
+include("test_9nwt_memset_const.jl")
 # Bennett-h6f: direct llvm.fma / llvm.fmuladd dispatch.
 include("test_h6f_llvm_fma_dispatch.jl")
 # Bennett-4eu: indirectbr fail-loud hard stop.
@@ -208,7 +212,8 @@ include("test_plb7_irvargep_elem_width.jl")
 include("test_4mmt_atomic_volatile_load_store.jl")
 # Bennett-5oyt / U15 — unregistered/inline-asm calls reject loud (was
 # silent drop, leaving dest SSA undefined). Benign-intrinsic allowlist
-# keeps llvm.lifetime/trap/memset/etc. correctness-neutral.
+# keeps llvm.lifetime/trap/etc. correctness-neutral. (memset graduated
+# out of the allowlist via Bennett-9nwt — handled explicitly now.)
 include("test_5oyt_unregistered_callee.jl")
 # Bennett-qal5 / U16 — multi-index GEPs and GEPs on unsupported bases
 # reject loud (was silent drop, leaving dest SSA undefined). Full

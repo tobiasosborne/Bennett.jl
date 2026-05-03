@@ -13,10 +13,11 @@
 # Per-shape green-path coverage for memcpy lives in
 # `test/test_37mt_memcpy_const_aligned.jl`.
 #
-# llvm.memset stays in the benign list pending Bennett-9nwt (Phase 2)
-# because its only Julia-frontend use is memset(0) on fresh ancillae,
-# which is a no-op. Raw .ll/.bc memset(c≠0) is a known gap tracked in
-# Bennett-9nwt.
+# llvm.memset is handled by Bennett-9nwt's `_handle_memset_arm` (see
+# test/test_9nwt_memset_const.jl). c=0 takes a fast-path silent drop
+# (preserves pre-9nwt behaviour for Julia GC-frame zeroing); c≠0 lowers
+# to byte-granular IRStore-of-ConstOperand on fresh alloca-i8 dst, with
+# fail-loud reject for non-fresh / wider-element / non-alloca cases.
 
 using Test
 using Bennett
