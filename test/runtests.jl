@@ -39,6 +39,7 @@ include("test_softfpow.jl")
 include("test_softfpow_julia.jl")
 include("test_jexo_pow_accuracy_contract.jl")
 include("test_softfsin.jl")
+include("test_softftan.jl")
 include("test_softfconv.jl")
 include("test_float_circuit.jl")
 include("test_float_poly.jl")
@@ -86,6 +87,8 @@ include("test_582_llvm_log_dispatch.jl")
 include("test_emv_llvm_pow_dispatch.jl")
 # Bennett-3mo: direct llvm.sin / llvm.cos dispatch.
 include("test_3mo_llvm_sincos_dispatch.jl")
+# Bennett-s1zl: direct llvm.tan dispatch (Tier C1 trig completion).
+include("test_s1zl_llvm_tan_dispatch.jl")
 # Bennett-lqif (Bennett-hao Phase 0): llvm.memcpy / memmove fail-loud
 # residue (post-37mt: alloca-i64 + memmove). Per-shape green-path
 # coverage is in test_37mt_memcpy_const_aligned.jl.

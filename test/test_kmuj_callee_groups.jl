@@ -41,7 +41,7 @@ using Bennett
     end
 
     @testset "total registered count matches expected" begin
-        # 2 + 5 + 2 + 4 + 10 + 5 + 12 + 22 + 11 = 73
+        # 2 + 5 + 2 + 4 + 10 + 5 + 15 + 22 + 11 = 76
         # (FP_CMP grew from 4 to 10 with Bennett-d77b / U132: 6 new
         # soft_fcmp_* primitives ord/uno/one/ueq/ult/ule completing the
         # LLVM fcmp predicate table.)
@@ -53,14 +53,16 @@ using Bennett
         # (FP_TRANS grew from 6 to 9 with Bennett-582 (log family), to
         # 11 with Bennett-emv (soft_pow + soft_powi), then to 12 with
         # Bennett-jexo (soft_pow_julia: bit-exact vs Base.:^), then to
-        # 14 with Bennett-3mo (soft_sin + soft_cos: musl + Payne-Hanek).)
+        # 14 with Bennett-3mo (soft_sin + soft_cos: musl + Payne-Hanek),
+        # then to 15 with Bennett-s1zl (soft_tan: musl __tan + rem_pio2,
+        # first close in Tier C1 trig completion).)
         n_grouped = sum(length(g) for g in Bennett._CALLEE_GROUPS)
-        @test n_grouped == 75
+        @test n_grouped == 76
 
         # _known_callees may contain more if anything else (test fixtures,
-        # other modules) registered, but it must contain at LEAST the 75
+        # other modules) registered, but it must contain at LEAST the 76
         # we register from the groups.
-        @test length(Bennett._known_callees) >= 75
+        @test length(Bennett._known_callees) >= 76
     end
 
     @testset "group sizes match the documented partition" begin
@@ -70,7 +72,7 @@ using Bennett
         @test length(Bennett._CALLEES_FP_ROUND)           == 4   # 2hhx: 3 → 4
         @test length(Bennett._CALLEES_FP_CMP)             == 10  # d77b: 4 → 10
         @test length(Bennett._CALLEES_FP_CONV)            == 5
-        @test length(Bennett._CALLEES_FP_TRANS)           == 14  # 582: 6→9 (log family); emv: 9→11 (pow+powi); jexo: 11→12 (soft_pow_julia); 3mo: 12→14 (soft_sin, soft_cos)
+        @test length(Bennett._CALLEES_FP_TRANS)           == 15  # 582: 6→9 (log family); emv: 9→11 (pow+powi); jexo: 11→12 (soft_pow_julia); 3mo: 12→14 (soft_sin, soft_cos); s1zl: 14→15 (soft_tan)
         @test length(Bennett._CALLEES_MUX_EXCH)           == 22  # nj6c: 12 → 22
         @test length(Bennett._CALLEES_MUX_EXCH_GUARDED)   == 11  # nj6c:  6 → 11
     end

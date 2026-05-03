@@ -50,7 +50,7 @@ const _CALLEES_FP_TRANS = (
     soft_exp_julia, soft_exp2_julia,
     soft_log, soft_log2, soft_log10,
     soft_pow, soft_powi, soft_pow_julia,
-    soft_sin, soft_cos,
+    soft_sin, soft_cos, soft_tan,
 )
 
 # Reversible mutable memory — MUX EXCH load/store (Bennett-cc0 M1, N·W ≤ 64).

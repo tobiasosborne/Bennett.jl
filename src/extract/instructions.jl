@@ -913,6 +913,18 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "(Bennett-3mo)")
         return IRCall(dest, soft_cos, [_operand(ops[1], names)], [w], w)
     end
+    # Bennett-s1zl: `llvm.tan.f64` → `soft_tan` (musl __tan port reusing
+    # the rem_pio2 infrastructure; ≤2 ULP vs `Base.tan` across the full
+    # Float64 range). f32 rejected per §13. First close in Tier C1 trig
+    # completion (Bennett-Enzyme-Parity-NorthStar.md §C1).
+    if startswith(cname, "llvm.tan")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.tan: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-s1zl)")
+        return IRCall(dest, soft_tan, [_operand(ops[1], names)], [w], w)
+    end
     return nothing
 end
 

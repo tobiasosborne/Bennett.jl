@@ -67,6 +67,7 @@ breadth*, not structural redesign.
   - `llvm.log.f64`, `llvm.log2.f64`, `llvm.log10.f64` (582)
   - `llvm.pow.f64`, `llvm.powi.f64.i32` (emv / jexo)
   - `llvm.sin.f64`, `llvm.cos.f64` (3mo, 2026-05-03)
+  - `llvm.tan.f64` (s1zl, 2026-05-04) — first close in Tier C1 (below)
 - **Hard stops match Enzyme's:** atomic non-fadd ops, `cmpxchg`, `invoke`,
   `landingpad`, `resume`, `catchpad/switch`, `indirectbr`, `callbr`,
   inline asm, `llvm.coro.*`, scalable vectors.
@@ -96,15 +97,17 @@ Each is a candidate workstream; none is filed as a bead yet because the
 broader strategy isn't pinned.
 
 #### C1 — Trig completion
-- `tan`, `asin`, `acos`, `atan`, `atan2`
-- `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`
+- `tan` — **closed** (Bennett-s1zl, 2026-05-04). musl `__tan` port reusing
+  `_rp_rem_pio2` infrastructure from `fsin.jl`; max ULP = 1 on a 500k
+  random sweep across 5 magnitude buckets up to 1e22.
+- `asin`, `acos`, `atan`, `atan2` — open
+- `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh` — open
 
   Enzyme: TableGen via `IntrPattern` (LLVM ≥19) + C-library `CallPattern`.
-  Bennett: zero coverage. This is the closest match to recently-shipped
-  work (3mo / 582 / emv / jexo), so the playbook is well-rehearsed:
-  port a vetted reference (musl / Arm Optimized Routines / Julia stdlib),
-  ship per-bead regression tests with random sweep + subnormal-output
-  testset (per CLAUDE.md §13).
+  Bennett: 1 of 11 done. The playbook is well-rehearsed (3mo / 582 / emv
+  / jexo / s1zl): port a vetted reference (musl / Arm Optimized Routines
+  / Julia stdlib), ship per-bead regression tests with random sweep +
+  subnormal-output testset (per CLAUDE.md §13).
 
 #### C2 — Other transcendentals
 - `expm1`, `log1p`, `cbrt`, `hypot`, `exp10`, `ldexp`, `frexp`, `scalbn`,
