@@ -1,5 +1,196 @@
 # ---- instruction conversion ----
 
+# ---- Bennett-37mt (Bennett-hao Phase 1) memcpy helpers ----
+
+"""
+    _alloca_root_ref(val, depth=0) -> Union{Nothing, _LLVMRef}
+
+Walk the producer chain from a pointer SSA value back to its underlying
+`alloca` instruction. Returns the alloca's LLVM ref, or `nothing` if the
+chain doesn't bottom out in an alloca (e.g. function parameter, global,
+ptr-phi, ptr-select).
+
+Recursion bound at depth 8 to defend against pathological IR (LLVM
+doesn't usually nest GEPs > 2 in practice).
+
+Used by `_handle_memcpy_arm` to (a) check both pointers are
+alloca-backed and (b) detect the same-alloca case (memmove dressed as
+memcpy).
+"""
+function _alloca_root_ref(val::LLVM.Value, depth::Int=0)::Union{Nothing, _LLVMRef}
+    depth > 8 && return nothing
+    val.ref == C_NULL && return nothing
+    if LLVM.API.LLVMIsAAllocaInst(val.ref) != C_NULL
+        return val.ref
+    end
+    if val isa LLVM.Instruction && LLVM.opcode(val) == LLVM.API.LLVMGetElementPtr
+        gep_ops = LLVM.operands(val)
+        length(gep_ops) >= 1 || return nothing
+        return _alloca_root_ref(gep_ops[1], depth + 1)
+    end
+    return nothing
+end
+
+"""
+    _alloca_elem_width_bits(alloca_ref) -> Int
+
+Returns the alloca's element width in bits, or 0 if the allocated type
+isn't `iN` (e.g. `[N x i8]` ArrayType, struct, pointer). Used to gate
+Phase 1 to `alloca i8` shapes.
+"""
+function _alloca_elem_width_bits(alloca_ref::_LLVMRef)::Int
+    elem_ty = LLVM.LLVMType(LLVM.API.LLVMGetAllocatedType(alloca_ref))
+    elem_ty isa LLVM.IntegerType || return 0
+    return LLVM.width(elem_ty)
+end
+
+"""
+    _handle_memcpy_arm(cname, inst, names, counter, ops) -> Vector{IRInst}
+
+Bennett-37mt Phase 1: const-size memcpy between two distinct
+`alloca i8`-backed pointer ranges, lowered as N byte-granular chunks
+(IRPtrOffset src + IRPtrOffset dst + IRLoad width=8 + IRStore width=8).
+Out-of-scope shapes fail loud with a precise message naming the
+appropriate downstream bead (`Bennett-8bys` for the catch-all,
+`Bennett-haod` for global-variable source pointers).
+
+Predicates checked, in order, so the earliest mismatch produces the
+most actionable error:
+
+  1. addrspace 0 only (cname must be `llvm.memcpy.p0.p0.*`)
+  2. `isvolatile == false`
+  3. N is a `ConstantInt` (≥ 0)
+  4. N == 0 → return `IRInst[]` (legal no-op)
+  5. neither operand is a global variable
+  6. both operands trace to an alloca (direct or via const-offset GEP)
+  7. distinct alloca roots (rejects `memcpy(p, p, N)` self-copy)
+  8. both alloca's element width is 8 bits
+"""
+function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
+                            names::Dict{_LLVMRef, Symbol}, counter::Ref{Int}, ops)
+    # Predicate 1: addrspace 0 on both pointers (encoded in the intrinsic name).
+    startswith(cname, "llvm.memcpy.p0.p0.") || _ir_error(inst,
+        "$(cname): memcpy with non-default pointer address space is not " *
+        "supported. Bennett.jl's wire model is single-address-space; " *
+        "cross-space copies need explicit lowering. Tracked in " *
+        "Bennett-8bys. (Bennett-37mt Phase 1 — addrspace 0 only)")
+
+    n_ops = length(ops)
+    n_ops >= 5 || _ir_error(inst,
+        "$(cname): malformed memcpy call (expected 4 args + callee, got " *
+        "$(n_ops - 1) args). (Bennett-37mt Phase 1)")
+
+    dst_v = ops[1]
+    src_v = ops[2]
+    n_v   = ops[3]
+    vol_v = ops[4]
+
+    # Predicate 2: isvolatile must be a ConstantInt with value 0.
+    vol_v isa LLVM.ConstantInt || _ir_error(inst,
+        "$(cname): isvolatile arg is not an i1 immarg constant " *
+        "(value=$(string(vol_v))). LangRef requires an immarg here; " *
+        "malformed IR. (Bennett-37mt Phase 1)")
+    _const_int_as_int(vol_v) == 0 || _ir_error(inst,
+        "$(cname): volatile memcpy is not supported. Bennett.jl's " *
+        "reversible model has no observable side-effect ordering for " *
+        "memory; volatile semantics cannot be honoured. Recompile " *
+        "without the volatile attribute, or wait on Bennett-8bys " *
+        "(catch-all). (Bennett-37mt Phase 1)")
+
+    # Predicate 3: byte count must be a ConstantInt.
+    n_v isa LLVM.ConstantInt || _ir_error(inst,
+        "$(cname): memcpy with non-constant byte count is not supported. " *
+        "Variable-size memcpy requires runtime-bounded loop unrolling. " *
+        "Tracked in Bennett-8bys (Phase 3: variable-size). " *
+        "(Bennett-37mt Phase 1 — const-N only)")
+    N = _const_int_as_int(n_v)
+    N >= 0 || _ir_error(inst,
+        "$(cname): negative byte count $N (corrupt IR; LLVM treats the " *
+        "size argument as unsigned i64 but the C API returns Int64). " *
+        "(Bennett-37mt Phase 1)")
+
+    # Predicate 4: N == 0 is a legal no-op.
+    N == 0 && return IRInst[]
+
+    # Predicate 5: globals out of scope. The Bennett-8bys catch-all
+    # explicitly enumerates "Global-pointer src memcpy" as a sub-case
+    # (see its description). The bead body for 37mt mentions a
+    # placeholder "haod" sub-bead, but it was never filed; users should
+    # track this under 8bys.
+    if LLVM.API.LLVMIsAGlobalVariable(dst_v.ref) != C_NULL ||
+       LLVM.API.LLVMIsAGlobalVariable(src_v.ref) != C_NULL
+        which = LLVM.API.LLVMIsAGlobalVariable(dst_v.ref) != C_NULL ? "dst" : "src"
+        _ir_error(inst,
+            "$(cname): memcpy with a global-variable pointer ($(which) " *
+            "operand) is not yet supported. Constant-source memcpy needs " *
+            "QROM-style fan-out for the read side. Tracked in Bennett-8bys " *
+            "(catch-all, sub-case: \"Global-pointer src memcpy\"). " *
+            "(Bennett-37mt Phase 1 — alloca-backed pointers only)")
+    end
+
+    # Predicate 6: both pointers must trace back to an alloca.
+    dst_root = _alloca_root_ref(dst_v)
+    src_root = _alloca_root_ref(src_v)
+    dst_root === nothing && _ir_error(inst,
+        "$(cname): memcpy dst operand is not alloca-backed (or " *
+        "alloca-backed via a const-offset GEP). Bennett's pointer- " *
+        "provenance model only covers alloca and GEP-of-alloca; pointer " *
+        "phi/select/parameter sources fan out to multiple origins which " *
+        "Bennett-37mt does not yet handle. Tracked in Bennett-8bys. " *
+        "(Bennett-37mt Phase 1)")
+    src_root === nothing && _ir_error(inst,
+        "$(cname): memcpy src operand is not alloca-backed (or " *
+        "alloca-backed via a const-offset GEP). Same restriction as " *
+        "the dst case; tracked in Bennett-8bys. (Bennett-37mt Phase 1)")
+
+    # Predicate 7: src and dst must be distinct allocas (memmove semantics).
+    dst_root === src_root && _ir_error(inst,
+        "$(cname): memcpy with src and dst rooted at the same alloca is " *
+        "semantically memmove (overlapping or in-place copy). " *
+        "Reversibility forbids destructive in-place overwrite. Tracked " *
+        "in Bennett-8bys. (Bennett-37mt Phase 1 — distinct allocas only)")
+
+    # Predicate 8: both allocas must have element width 8 bits.
+    dst_ew = _alloca_elem_width_bits(dst_root)
+    src_ew = _alloca_elem_width_bits(src_root)
+    if dst_ew != 8 || src_ew != 8
+        _ir_error(inst,
+            "$(cname): memcpy operand alloca has element width " *
+            "(dst=$(dst_ew == 0 ? "non-integer" : string(dst_ew)) bits, " *
+            "src=$(src_ew == 0 ? "non-integer" : string(src_ew)) bits); " *
+            "Bennett-37mt Phase 1 supports byte-granularity (`alloca i8, " *
+            "i32 N`) only. Wider-element allocas need extended " *
+            "ptr_provenance propagation in src/lowering/aggregate.jl " *
+            "(currently `ew == 8 || continue` at line 227) and a wider " *
+            "shadow-store path in src/lowering/memory.jl. Tracked in " *
+            "Bennett-8bys. (Bennett-37mt Phase 1)")
+    end
+
+    # Operand resolution: both operand SSA names must be in the table.
+    haskey(names, dst_v.ref) || _ir_error(inst,
+        "$(cname): memcpy dst pointer is not a named SSA value. " *
+        "(Bennett-37mt Phase 1)")
+    haskey(names, src_v.ref) || _ir_error(inst,
+        "$(cname): memcpy src pointer is not a named SSA value. " *
+        "(Bennett-37mt Phase 1)")
+    dst_op = ssa(names[dst_v.ref])
+    src_op = ssa(names[src_v.ref])
+
+    # Expansion: N byte-granular IRPtrOffset+IRPtrOffset+IRLoad+IRStore quads.
+    out = IRInst[]
+    sizehint!(out, 4 * N)
+    for k in 0:(N - 1)
+        src_off = _auto_name(counter)
+        dst_off = _auto_name(counter)
+        tmp     = _auto_name(counter)
+        push!(out, IRPtrOffset(src_off, src_op, k))
+        push!(out, IRPtrOffset(dst_off, dst_op, k))
+        push!(out, IRLoad(tmp, ssa(src_off), 8))
+        push!(out, IRStore(ssa(dst_off), ssa(tmp), 8))
+    end
+    return out
+end
+
 # Bennett-tzrs / U41 (first-cut, 2026-04-27): the LLVM-intrinsic prefix
 # dispatch was lifted out of `_convert_instruction`'s 836-line body into
 # this helper. Order of `if startswith(cname, "...")` branches is LOAD-
@@ -415,30 +606,40 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "(Bennett-3mo)")
         return IRCall(dest, soft_sin, [_operand(ops[1], names)], [w], w)
     end
-    # Bennett-hao Phase 0 (Bennett-lqif): fail loud on llvm.memcpy /
-    # llvm.memmove. Previously these were silent-dropped via the benign
-    # prefixes list (Bennett-uyf9's sret memcpy is canonicalised upstream
-    # by auto-SROA before the IR walker sees the call, so by this point
-    # any remaining memcpy/memmove is non-sret and dropping it is a
-    # CORRECTNESS bug per CLAUDE.md §1). Julia frontend code does not
-    # emit memcpy after Julia's own SROA passes; raw .ll/.bc ingest
-    # (Bennett-xkv multi-language vision) routinely DOES (60 sites in
-    # build/t5_tr2_hashmap.ll alone) and silent-drop produces garbage
-    # output. Proper lowering is tracked in:
-    #   Bennett-37mt (Phase 1: const-size word-aligned memcpy)
-    #   Bennett-9nwt (Phase 2: proper memset)
-    #   Bennett-8bys (Phase 3: byte-granularity / variable-size / overlap)
-    if startswith(cname, "llvm.memcpy") || startswith(cname, "llvm.memmove")
-        op_name = startswith(cname, "llvm.memcpy") ? "memcpy" : "memmove"
+    # Bennett-hao Phase 1 (Bennett-37mt): const-size memcpy between two
+    # distinct alloca-i8-backed pointer ranges lowers to byte-granular
+    # IRPtrOffset+IRPtrOffset+IRLoad+IRStore quads. Out-of-scope shapes
+    # fall through to a precise fail-loud naming Bennett-8bys (catch-all
+    # for byte-granularity / variable-size / overlap / wider-elem-w
+    # allocas) or Bennett-haod (deferred sub-bead for global-variable
+    # source pointers). memmove ALWAYS fails loud → 8bys (overlap is
+    # unreachable in the reversible model regardless of pointer
+    # disjointness). The Phase 0 (Bennett-lqif) blanket fail-loud is
+    # superseded by this arm.
+    #
+    # Why byte-granular chunks (rather than the bead's "(N/8) at 64-bit
+    # granularity" wording): the existing `lower_ptr_offset!`
+    # (src/lowering/aggregate.jl:227) only propagates ptr_provenance for
+    # `ew == 8`, and `_lower_store_via_shadow!` requires
+    # `inst.width == elem_w`. The single-Phase-1 chunk shape that lands
+    # cleanly through the existing memory.jl pipeline is therefore
+    # `alloca i8` + width=8 IRLoad/IRStore. Wider-element allocas and
+    # 64-bit chunks are deferred to 8bys (which is also where memory.jl
+    # itself can grow multi-byte spans). With byte-granular chunks the
+    # bead's "N is multiple of 8 bytes" wording becomes moot — any
+    # positive N works.
+    if startswith(cname, "llvm.memmove")
         _ir_error(inst,
-            "$(cname): bulk memory intrinsic is not yet lowered to " *
-            "reversible gates. Julia frontend code does not emit $(op_name) " *
-            "after SROA; this error indicates raw .ll/.bc ingest with " *
-            "$(op_name) calls (Bennett-xkv multi-language path). Proper " *
-            "lowering is tracked in Bennett-37mt (const-size word-aligned), " *
-            "Bennett-9nwt (memset), and Bennett-8bys (byte-granularity / " *
-            "variable-size / memmove overlap). Bennett-hao is the parent " *
-            "epic. (Bennett-lqif Phase 0 — silent-drop → fail-loud)")
+            "$(cname): memmove is not yet lowered to reversible gates. " *
+            "Memmove permits src/dst overlap and reversibility forbids " *
+            "destructive in-place overwrite, so static disjointness is " *
+            "required and Bennett.jl has no alias analysis to prove it. " *
+            "Tracked in Bennett-8bys (Phase 3: byte-granularity / " *
+            "variable-size / overlap / memmove). " *
+            "(Bennett-37mt Phase 1 — memmove deferred to Bennett-8bys)")
+    end
+    if startswith(cname, "llvm.memcpy")
+        return _handle_memcpy_arm(cname, inst, names, counter, ops)
     end
     if startswith(cname, "llvm.cos")
         w = _iwidth(ops[1])
