@@ -35,13 +35,30 @@ end
     _alloca_elem_width_bits(alloca_ref) -> Int
 
 Returns the alloca's element width in bits, or 0 if the allocated type
-isn't `iN` (e.g. `[N x i8]` ArrayType, struct, pointer). Used to gate
-Phase 1 to `alloca i8` shapes.
+is not a Bennett-supported integer-or-byte-array shape (struct, ptr,
+nested array, wider-element ArrayType).
+
+Supported shapes (Bennett-munq, 2026-05-03):
+  - `iN` IntegerType — returns N.
+  - `[K x i8]` ArrayType wrapping i8 — returns 8 (matches the Rust
+    frontend's canonical `alloca [K x i8]` shape; pre-munq this
+    returned 0 and gated Phase 1/2 off the t5 corpus entirely).
+
+Wider ArrayType inner widths (`[K x i16]`, `[K x i64]`) and nested
+ArrayType (`[K x [M x i8]]`) return 0 and are deferred to
+Bennett-ixiz / future follow-ups.
 """
 function _alloca_elem_width_bits(alloca_ref::_LLVMRef)::Int
     elem_ty = LLVM.LLVMType(LLVM.API.LLVMGetAllocatedType(alloca_ref))
-    elem_ty isa LLVM.IntegerType || return 0
-    return LLVM.width(elem_ty)
+    if elem_ty isa LLVM.IntegerType
+        return LLVM.width(elem_ty)
+    end
+    if elem_ty isa LLVM.ArrayType
+        inner = LLVM.eltype(elem_ty)
+        inner isa LLVM.IntegerType && LLVM.width(inner) == 8 || return 0
+        return 8
+    end
+    return 0
 end
 
 """
@@ -1498,6 +1515,19 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
     # lowering currently rejects :ssa).
     if opc == LLVM.API.LLVMAlloca
         elem_ty = LLVM.LLVMType(LLVM.API.LLVMGetAllocatedType(inst.ref))
+        # Bennett-munq (2026-05-03): accept `[K x i8]` ArrayType allocas
+        # in addition to `iN` IntegerType. Maps `alloca [K x i8]` to
+        # `IRAlloca(dest, elem_w=8, n_elems=K)` — same downstream shape
+        # as `alloca i8, i32 K`, which the existing memory pipeline
+        # already supports. Other ArrayType inner widths (`[K x i16]`,
+        # etc.) and nested ArrayType (`[K x [M x i8]]`) still return
+        # nothing and are deferred to Bennett-ixiz / future follow-ups.
+        if elem_ty isa LLVM.ArrayType
+            inner = LLVM.eltype(elem_ty)
+            inner isa LLVM.IntegerType && LLVM.width(inner) == 8 || return nothing
+            n_arr = LLVM.length(elem_ty)
+            return IRAlloca(dest, 8, iconst(n_arr))
+        end
         elem_ty isa LLVM.IntegerType || return nothing
         elem_w = LLVM.width(elem_ty)
         ops = LLVM.operands(inst)

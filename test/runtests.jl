@@ -97,6 +97,10 @@ include("test_37mt_memcpy_const_aligned.jl")
 # for alloca-i8-backed dst (byte-granular IRStore-of-ConstOperand).
 # Replaces benign-allowlist silent-drop with explicit case discrimination.
 include("test_9nwt_memset_const.jl")
+# Bennett-munq (Bennett-8bys sub-bead 1): extract `[N x i8]` ArrayType
+# allocas as IRAlloca(elem_w=8, n_elems=N). Unblocks t5_tr2_hashmap.ll
+# corpus for the existing 37mt/9nwt paths.
+include("test_munq_arr_i8_alloca.jl")
 # Bennett-h6f: direct llvm.fma / llvm.fmuladd dispatch.
 include("test_h6f_llvm_fma_dispatch.jl")
 # Bennett-4eu: indirectbr fail-loud hard stop.
