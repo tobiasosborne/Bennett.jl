@@ -415,6 +415,31 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "(Bennett-3mo)")
         return IRCall(dest, soft_sin, [_operand(ops[1], names)], [w], w)
     end
+    # Bennett-hao Phase 0 (Bennett-lqif): fail loud on llvm.memcpy /
+    # llvm.memmove. Previously these were silent-dropped via the benign
+    # prefixes list (Bennett-uyf9's sret memcpy is canonicalised upstream
+    # by auto-SROA before the IR walker sees the call, so by this point
+    # any remaining memcpy/memmove is non-sret and dropping it is a
+    # CORRECTNESS bug per CLAUDE.md §1). Julia frontend code does not
+    # emit memcpy after Julia's own SROA passes; raw .ll/.bc ingest
+    # (Bennett-xkv multi-language vision) routinely DOES (60 sites in
+    # build/t5_tr2_hashmap.ll alone) and silent-drop produces garbage
+    # output. Proper lowering is tracked in:
+    #   Bennett-37mt (Phase 1: const-size word-aligned memcpy)
+    #   Bennett-9nwt (Phase 2: proper memset)
+    #   Bennett-8bys (Phase 3: byte-granularity / variable-size / overlap)
+    if startswith(cname, "llvm.memcpy") || startswith(cname, "llvm.memmove")
+        op_name = startswith(cname, "llvm.memcpy") ? "memcpy" : "memmove"
+        _ir_error(inst,
+            "$(cname): bulk memory intrinsic is not yet lowered to " *
+            "reversible gates. Julia frontend code does not emit $(op_name) " *
+            "after SROA; this error indicates raw .ll/.bc ingest with " *
+            "$(op_name) calls (Bennett-xkv multi-language path). Proper " *
+            "lowering is tracked in Bennett-37mt (const-size word-aligned), " *
+            "Bennett-9nwt (memset), and Bennett-8bys (byte-granularity / " *
+            "variable-size / memmove overlap). Bennett-hao is the parent " *
+            "epic. (Bennett-lqif Phase 0 — silent-drop → fail-loud)")
+    end
     if startswith(cname, "llvm.cos")
         w = _iwidth(ops[1])
         w == 64 || _ir_error(inst,
@@ -667,12 +692,13 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             "llvm.sideeffect",
             # llvm.memset appears in Julia IR for GC-frame zeroing etc.;
             # reversible pipeline treats allocations separately.
+            # Bennett-hao Phase 2 (Bennett-9nwt) will fold proper c=0/c≠0
+            # handling into the pipeline; until then silent-drop remains
+            # correct for the only Julia-frontend use (memset(0) on fresh
+            # ancillae from GC-frame zeroing). Raw .ll/.bc with memset(c≠0)
+            # falls into the benign path here too — that's a known-bug
+            # tracked in Bennett-9nwt.
             "llvm.memset",
-            # llvm.memcpy's sret-specific path is handled upstream via
-            # auto-SROA (Bennett-uyf9 / γ); non-sret forms are rare in
-            # our corpus and route through the same benign-drop gate.
-            "llvm.memcpy",
-            "llvm.memmove",
             # `llvm.trap` is Julia's unreachable-code marker (produced by
             # type-conservative codegen for branches the compiler can't
             # prove dead). Same unreachability argument as `j_throw_*`:

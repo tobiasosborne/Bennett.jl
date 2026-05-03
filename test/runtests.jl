@@ -86,6 +86,8 @@ include("test_582_llvm_log_dispatch.jl")
 include("test_emv_llvm_pow_dispatch.jl")
 # Bennett-3mo: direct llvm.sin / llvm.cos dispatch.
 include("test_3mo_llvm_sincos_dispatch.jl")
+# Bennett-lqif (Bennett-hao Phase 0): llvm.memcpy / memmove fail-loud.
+include("test_lqif_memcpy_memmove_reject.jl")
 # Bennett-h6f: direct llvm.fma / llvm.fmuladd dispatch.
 include("test_h6f_llvm_fma_dispatch.jl")
 # Bennett-4eu: indirectbr fail-loud hard stop.
