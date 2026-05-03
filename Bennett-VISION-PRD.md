@@ -367,7 +367,79 @@ controlled-SWAP multiplexer. O(N) gates per access.
 
 ---
 
-## 9. Non-Goals
+## 9. Far Horizon — Sustainable AI via Thermally-Reversible Inference
+
+A v∞ aspiration, not a roadmap item. Captured here so that future agents
+understand the deepest motivation behind the advanced-arithmetic
+workstream and don't mistake it for incidental polish.
+
+**The premise.** Landauer's bound says erasing one bit dissipates
+`kT·ln(2)` ≈ 2.85 zJ at 300 K. Modern CMOS switching events burn ~10⁻¹⁵ J
+per gate — roughly six orders of magnitude above the Landauer floor.
+At rack and grid scale, this margin is what makes contemporary AI
+training thermally hostile. A fully thermodynamically-reversible
+substrate has no such floor on internal computation; it pays Landauer
+only on the bits that genuinely leave the system as output.
+
+**Why Bennett is the right front end.** A thermally-reversible NN
+substrate, when it exists, will need a compiler that can take
+arbitrary numerical Julia/C/Rust and produce reversible-by-construction
+gate networks. That is exactly what Bennett.jl does. The advanced-
+arithmetic primitives currently being built (parallel adder tree,
+Sun-Borissov polylog multiplier, QCLA chain) are precisely the
+matmul-heavy primitives a reversible inference engine needs.
+Composition into `reversible_dot` / `reversible_gemm` from those
+primitives is mechanical once the chain finishes.
+
+**Distinction from memory-reversible NNs.** This is *not* the RevNet /
+reversible-RNN line of work, which is a software trick on irreversible
+silicon to avoid storing activations during backprop. Those save DRAM
+and run on GPUs today. Bennett's interest is in the *thermodynamic*
+sense: every gate information-preserving, every reverse pass an
+honest run-the-circuit-backward.
+
+**The structural insight.** Backprop is reverse-mode autodiff;
+Bennett's construction is reverse-mode uncompute. Both compute an
+adjoint of the forward pass, but on different categories. In a
+thermally-reversible NN, training one step is *literally* the forward
+circuit applied, then the same circuit run in reverse with seeded
+gradients in the output register. The thermal cost is bounded by
+the entropy of the parameter update, not by total gate count.
+Enzyme cannot reach this angle because it assumes irreversible target
+hardware; Bennett's reverse construction is structurally the same
+operation that thermal reversibility requires.
+
+**Why this is not a current priority.**
+
+1. **No substrate.** Production thermally-reversible silicon does not
+   exist at NN scale. Adiabatic CMOS, superconducting reversible
+   logic (Likharev, Frank/Sandia) are decades from general
+   availability. Until then, the gates we emit run on conventional
+   irreversible hardware that pays the full thermal cost regardless
+   of the gate's logical reversibility.
+2. **The CMOS-to-Landauer gap is too wide for direct interest *yet*.**
+   Six orders of magnitude is the opportunity, not the deliverable;
+   capturing it requires the substrate to actually exist.
+3. **Bennett's nearer-term consumers** (Sturm.jl quantum control,
+   QSVT/QSP oracles, reversible memory primitives) are scalar-shaped,
+   not matrix-shaped. BLAS is out of scope per §9; reversible NNs
+   would re-open that scope.
+
+**What this changes about current work: nothing.** The path to this
+v∞ goes directly through the work already happening on advanced
+arithmetic and intrinsic coverage. No parallel track exists; no
+shortcut is available. Every closure on trig / hyperbolic / special
+function coverage, every QCLA polish, every adder-tree optimization
+is on the critical path. The most productive thing is to keep
+shipping the current backlog while knowing the goalpost is taller
+than v1.0 implies.
+
+If thermally-reversible substrates emerge before Bennett.jl reaches
+v1.0, this section becomes a roadmap. Until then, it is a compass.
+
+---
+
+## 10. Non-Goals
 
 - **Not a general-purpose quantum compiler.** Bennett.jl compiles classical
   functions to reversible circuits. Quantum algorithms (superposition,
@@ -384,7 +456,7 @@ controlled-SWAP multiplexer. O(N) gates per access.
 
 ---
 
-## 10. Key References
+## 11. Key References
 
 All papers downloaded to `docs/literature/` with claims verified against text.
 

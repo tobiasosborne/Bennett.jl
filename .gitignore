@@ -15,6 +15,10 @@ scripts/sources/
 # of LLVM frontends.  Not part of Bennett.jl's source.
 gpucompiler/
 
+# Third-party reference checkouts for Enzyme parity / coverage scans.
+# Cloned ad-hoc; not part of Bennett.jl's source.
+external/
+
 # Bennett-4nvl / U212 — large auto-generated benchmark artifact (1.2MB,
 # 17,815 LOC). Regenerated on demand by benchmark/codegen_sweep_impls.jl;
 # benchmark/sweep_cell.jl + benchmark/regression_check.jl auto-regen
