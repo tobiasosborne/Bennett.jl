@@ -68,7 +68,8 @@ breadth*, not structural redesign.
   - `llvm.pow.f64`, `llvm.powi.f64.i32` (emv / jexo)
   - `llvm.sin.f64`, `llvm.cos.f64` (3mo, 2026-05-03)
   - `llvm.tan.f64` (s1zl, 2026-05-04), `llvm.atan.f64` (qpke, 2026-05-04),
-    `llvm.asin.f64` (ckvj, 2026-05-04) — Tier C1.1 / C1.2 / C1.3 (below)
+    `llvm.asin.f64` (ckvj, 2026-05-04), `llvm.acos.f64` (bd7f, 2026-05-05)
+    — Tier C1.1 / C1.2 / C1.3 / C1.4 (below)
 - **Hard stops match Enzyme's:** atomic non-fadd ops, `cmpxchg`, `invoke`,
   `landingpad`, `resume`, `catchpad/switch`, `indirectbr`, `callbr`,
   inline asm, `llvm.coro.*`, scalable vectors.
@@ -111,14 +112,21 @@ broader strategy isn't pinned.
   rational `R(z)` and constants are module-private, **shared with
   `soft_acos`** (Bennett-bd7f) per CLAUDE.md §12. ≤2 ULP vs `Base.asin`
   on 100k random samples × 3 seeds across all four input regimes.
-- `acos`, `atan2` — open
+- `acos` — **closed** (Bennett-bd7f, 2026-05-05). Branchless port of musl
+  `acos.c` reusing `_asin_R(z)` plus the 10 polynomial coefficients +
+  `pio2_hi`/`pio2_lo` from `fasin.jl` (Bennett-ckvj) per CLAUDE.md §12.
+  Four-regime branchless dispatch (tiny / small / pos-large / neg-large).
+  ≤2 ULP vs `Base.acos` on 100k random × 3 seeds; subnormal-output proven
+  absent per §13 (acos's range [0, π] never reaches the subnormal regime
+  for any representable f64 input).
+- `atan2` — open
 - `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh` — open
 
   Enzyme: TableGen via `IntrPattern` (LLVM ≥19) + C-library `CallPattern`.
-  Bennett: 3 of 11 done. The playbook is well-rehearsed (3mo / 582 / emv
-  / jexo / s1zl / qpke / ckvj): port a vetted reference (musl / Arm
-  Optimized Routines / Julia stdlib), ship per-bead regression tests with
-  random sweep + subnormal-output testset (per CLAUDE.md §13).
+  Bennett: 4 of 11 done. The playbook is well-rehearsed (3mo / 582 / emv
+  / jexo / s1zl / qpke / ckvj / bd7f): port a vetted reference (musl /
+  Arm Optimized Routines / Julia stdlib), ship per-bead regression tests
+  with random sweep + subnormal-output testset (per CLAUDE.md §13).
 
 #### C2 — Other transcendentals
 - `expm1`, `log1p`, `cbrt`, `hypot`, `exp10`, `ldexp`, `frexp`, `scalbn`,

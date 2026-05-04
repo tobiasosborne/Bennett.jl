@@ -42,6 +42,7 @@ include("test_softfsin.jl")
 include("test_softftan.jl")
 include("test_softfatan.jl")
 include("test_softfasin.jl")
+include("test_softfacos.jl")
 include("test_softfconv.jl")
 include("test_float_circuit.jl")
 include("test_float_poly.jl")
@@ -94,6 +95,8 @@ include("test_s1zl_llvm_tan_dispatch.jl")
 # Bennett-qpke: direct llvm.atan dispatch (Tier C1.2 — atan, no rem_pio2).
 include("test_qpke_llvm_atan_dispatch.jl")
 include("test_ckvj_llvm_asin_dispatch.jl")
+# Bennett-bd7f: direct llvm.acos dispatch (Tier C1.4 — reuses _asin_R from fasin.jl).
+include("test_bd7f_llvm_acos_dispatch.jl")
 # Bennett-lqif (Bennett-hao Phase 0): llvm.memcpy / memmove fail-loud
 # residue (post-37mt: alloca-i64 + memmove). Per-shape green-path
 # coverage is in test_37mt_memcpy_const_aligned.jl.

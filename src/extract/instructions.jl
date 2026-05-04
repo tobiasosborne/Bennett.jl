@@ -949,6 +949,18 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "(Bennett-ckvj)")
         return IRCall(dest, soft_asin, [_operand(ops[1], names)], [w], w)
     end
+    # Bennett-bd7f: `llvm.acos.f64` → `soft_acos` (musl acos.c branchless
+    # port; reuses `_asin_R(z)` helper from fasin.jl per CLAUDE.md §12).
+    # ≤2 ULP vs `Base.acos` across [-1, 1]. f32 rejected per §13.
+    # Tier C1.4 in the Enzyme parity north-star.
+    if startswith(cname, "llvm.acos")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.acos: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-bd7f)")
+        return IRCall(dest, soft_acos, [_operand(ops[1], names)], [w], w)
+    end
     return nothing
 end
 

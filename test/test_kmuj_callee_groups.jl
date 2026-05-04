@@ -58,14 +58,16 @@ using Bennett
         # first close in Tier C1 trig completion), then to 16 with
         # Bennett-qpke (soft_atan: musl s_atan branchless port,
         # Tier C1.2), then to 17 with Bennett-ckvj (soft_asin: musl
-        # e_asin.c branchless port + shared _asin_R helper, Tier C1.3).)
+        # e_asin.c branchless port + shared _asin_R helper, Tier C1.3),
+        # then to 18 with Bennett-bd7f (soft_acos: musl acos.c branchless
+        # port reusing the same _asin_R helper, Tier C1.4).)
         n_grouped = sum(length(g) for g in Bennett._CALLEE_GROUPS)
-        @test n_grouped == 78
+        @test n_grouped == 79
 
         # _known_callees may contain more if anything else (test fixtures,
-        # other modules) registered, but it must contain at LEAST the 78
+        # other modules) registered, but it must contain at LEAST the 79
         # we register from the groups.
-        @test length(Bennett._known_callees) >= 78
+        @test length(Bennett._known_callees) >= 79
     end
 
     @testset "group sizes match the documented partition" begin
@@ -75,7 +77,7 @@ using Bennett
         @test length(Bennett._CALLEES_FP_ROUND)           == 4   # 2hhx: 3 → 4
         @test length(Bennett._CALLEES_FP_CMP)             == 10  # d77b: 4 → 10
         @test length(Bennett._CALLEES_FP_CONV)            == 5
-        @test length(Bennett._CALLEES_FP_TRANS)           == 17  # 582: 6→9 (log family); emv: 9→11 (pow+powi); jexo: 11→12 (soft_pow_julia); 3mo: 12→14 (soft_sin, soft_cos); s1zl: 14→15 (soft_tan); qpke: 15→16 (soft_atan); ckvj: 16→17 (soft_asin)
+        @test length(Bennett._CALLEES_FP_TRANS)           == 18  # 582: 6→9 (log family); emv: 9→11 (pow+powi); jexo: 11→12 (soft_pow_julia); 3mo: 12→14 (soft_sin, soft_cos); s1zl: 14→15 (soft_tan); qpke: 15→16 (soft_atan); ckvj: 16→17 (soft_asin); bd7f: 17→18 (soft_acos)
         @test length(Bennett._CALLEES_MUX_EXCH)           == 22  # nj6c: 12 → 22
         @test length(Bennett._CALLEES_MUX_EXCH_GUARDED)   == 11  # nj6c:  6 → 11
     end

@@ -1,3 +1,145 @@
+## Session log — 2026-05-05 — Bennett-bd7f / Tier C1.4 — `soft_acos` + `llvm.acos` dispatch
+
+**Shipped:** see git log around the bd7f close commit. Fourth close in
+Tier C1 of the Enzyme parity north-star, follow-on to Bennett-ckvj
+(`soft_asin`) shipped 2026-05-04 hours earlier. Same session
+spanning midnight UTC.
+
+`soft_acos` is a faithful branchless port of musl `e_acos.c`
+(FreeBSD/SunPro 1993, BSD-licensed). **REUSES** the rational `_asin_R(z)`
+helper plus the 10 polynomial coefficients (`pS0..pS5`, `qS1..qS4`)
+plus `pio2_hi`/`pio2_lo` defined module-private in `fasin.jl`. Both
+files live inside `module SoftFloatLib`, so the helper and constants
+are visible by name without `import` / `using` — CLAUDE.md §12 (no
+duplicated lowering) extends naturally to softfloat. `llvm.acos.f64`
+dispatches directly to `soft_acos` in `src/extract/instructions.jl`,
+mirroring the ckvj arm. f32 rejected per CLAUDE.md §13.
+`_CALLEES_FP_TRANS` extended 17 → 18.
+
+**Empirical accuracy:** 100 primitive tests + N dispatch tests all
+green. 100k random samples × 3 seeds across all four in-domain regimes
+(tiny / small / pos-large / neg-large) ⇒ max ULP ≤ 2, zero fails.
+1075-input subnormal-INPUT binade sweep ⇒ max ULP ≤ 1 (tiny override
+bit-exact). 52-input near-1 sweep (x = 1 - 2^-k for k = 1..52) ⇒ max
+ULP ≤ 2. **Subnormal-output proven absent** by the test (per §13
+contract): acos's range is [0, π] and the smallest reachable non-zero
+output is `acos(1 - 2^-52) ≈ 2^-25.5`, normal not subnormal — both
+binade sweeps assert `subnormal_outputs == 0`.
+
+**Mode:** direct grind. ~120 LOC primitive port + 8 mechanical wires
+(softfloat.jl include + outer + inner export, Bennett.jl outer export,
+callees.jl registration, instructions.jl dispatch arm, kmuj counts,
+runtests.jl × 2). 3+1 deviation under the Bennett-munq / qpke / ckvj
+precedent: dispatcher arm is mechanical; the substantive port is
+transcribed from a vetted reference (musl).
+
+**Algorithm:** musl `acos.c`'s 4-regime branchless dispatch:
+
+- `|x| ≤ 2^-57`        → return π/2 bit-exact (tiny override)
+- `2^-57 < |x| < 0.5`  → `acos(x) = π/2 - (x - (pio2_lo - x·R(x²)))`
+- `x ≤ -0.5`           → `2·(π/2 - (s + (R(z)·s - pio2_lo)))`
+                          with `z = (1+x)/2`, `s = √z`
+- `x ≥  0.5`           → `2·(df + (R(z)·s + c))`
+                          with `z = (1-x)/2`, `s = √z`,
+                          `df = high32(s)`, `c = (z - df²)/(s + df)`
+
+Specials: `x = 1 → 0` bit-exact; `x = -1 → π` bit-exact (= 2·pio2_hi
+exactly at f64); `|x| > 1 → QNAN`; NaN propagates with quiet bit.
+
+Branchless realisation: ALL 4 regimes computed; ifelse-cascade selects
+by sign + magnitude flags. Single `_asin_R(z)` call on ifelse-selected
+input (`x²` for small path, `z = (1-|x|)/2` for general).
+
+**Gotchas / Lessons:**
+
+1. **z formula unifies across pos-large and neg-large.** musl's C code
+   writes `z = (1+x)*0.5` for x ≤ -0.5 and `z = (1-x)*0.5` for x ≥ 0.5
+   — different sign of x in the formula. But both equal `(1-|x|)/2`
+   because `1+x = 1-|x|` when x is negative and `1-x = 1-|x|` when x
+   is positive. Bennett-branchless uses the unified `z = (1-|x|)/2`,
+   simplifying the cascade. Same `s = √z` and `R(z)·s` reused across
+   neg/pos sub-paths; only the final composition differs (subtract-
+   from-π/2 vs add-df).
+
+2. **`acos(±0) = π/2`, NOT `±0`** (unlike asin). The tiny override
+   (`|x| ≤ 2^-57 → π/2`) catches both `+0.0` and `-0.0` because both
+   have `ix_hi = 0` ≤ `0x3c600000`. Test asserts bit-exact `==
+   reinterpret(UInt64, π/2)` for both signs. Different from
+   `soft_asin` where ±0 is sign-preserved via `result = ifelse(is_tiny,
+   a, ...)`. Lesson: each transcendental's tiny path has its own
+   semantic — don't copy the asin pattern blindly.
+
+3. **`x = 1` triggers 0/0 division at `c = (z - df²)/(s + df)`.** At
+   x=1: z=0, s=0, df=0, so c=0/0=NaN. Path D's result_pos becomes NaN.
+   The eq1 override (last-but-one before NaN propagation) replaces with
+   `0` bit-exact. Same override-masks-dead-path pattern as ckvj's
+   `x=1` for asin. Verified by tracing each input through the cascade
+   before commit.
+
+4. **`acos` has no subnormal-output regime — §13 contract met by
+   demonstrating absence.** acos's range [0, π] means the only way to
+   get a subnormal output is acos(x) close to 0, which requires x
+   close to 1. The smallest representable f64 less than 1 is `1 -
+   2^-52`, giving `acos(1 - 2^-52) ≈ √(2 · 2^-52) = 2^-25.5` which is
+   firmly normal. The §13 "subnormal-output sweep" testset documents
+   this and asserts `subnormal_outputs == 0` across both the input-
+   binade lattice (2^-1075..2^-1) AND the near-1 sweep. Pattern: when
+   a transcendental's range bounds away from 0, the §13 contract is
+   met by *demonstrated absence* of subnormal outputs across all
+   regimes that could in principle produce one.
+
+5. **`Base.acos` THROWS DomainError for |x|>1, same as `Base.asin`.**
+   Random-sweep test split: in-domain assertions vs OOB-NaN-only
+   assertion (no `Base.acos` oracle). Same handling as ckvj's asin
+   sweep. Pattern firmly established for inverse trig with bounded
+   domain.
+
+**Rejected alternatives:**
+
+- **Independently inline `_acos_R` in facos.jl** (no helper sharing):
+  duplicates 10 polynomial coefficients + the rational composition.
+  Violates CLAUDE.md §12. Rejected. The shared module-private helper
+  in fasin.jl is the right shape.
+- **CORE-MATH 1-ULP correctly-rounded acos**: same trade-off as
+  asin/atan/tan — ~400 LOC vs musl's ~80, marginal accuracy gain on
+  Bennett's empirical 2-ULP contract. Not pursued.
+- **Three-regime dispatch** (collapse pos-large + neg-large into one
+  via abs+sign-flip): would simplify the branchless cascade but
+  requires more multiplications by ±1 (the result composition
+  `2·(df+w)` vs `2·(π/2-(s+w))` differs structurally, not just by
+  sign). Kept the four-regime split for clarity.
+
+**Next agent — Tier C1 remaining (7 of 11):**
+
+1. **`atan2`** — 2-arg variant; quadrant dispatch around `atan(y/x)`.
+   File separately because the 2-arg dispatch needs its own LLVM
+   ingest path. **VERIFY first whether LLVM ingests as
+   `llvm.atan2.f64` intrinsic or as a libm `atan2()` call** — LLVM
+   ≤17 doesn't ship `llvm.atan2.*` so it likely arrives as
+   `call double @atan2(double, double)`. Different ingest path
+   than the unary intrinsic family.
+
+2. **`tanh`** — needs `soft_exp` (already done in `fexp.jl`); use
+   `tanh(x) = (e^{2x} - 1) / (e^{2x} + 1)` with the `|x| > 20 → ±1`
+   cutoff. ~150 LOC.
+
+3. **`sinh` / `cosh`** — need `soft_exp` plus careful overflow
+   handling. Common form-of-`expm1`-trick for sinh near zero —
+   possibly defer sinh until expm1 (Tier C2) is available.
+
+4. **`asinh` / `acosh` / `atanh`** — reduce to logs.
+   `asinh(x) = log(x + √(x² + 1))`,
+   `acosh(x) = log(x + √(x² - 1))`,
+   `atanh(x) = 0.5·log((1+x)/(1-x))`.
+   Need `soft_log` (done) and `soft_fsqrt` (done). Watch for
+   cancellation in `atanh` near 0.
+
+After C1: Tier C2 starts with `expm1` (precision-critical, can't be
+faked via `exp(x) - 1`) and `log1p` (same). Both have well-known musl
+ports.
+
+---
+
 ## Session log — 2026-05-04 — Bennett-ckvj / Tier C1.3 — `soft_asin` + `llvm.asin` dispatch
 
 **Shipped:** see git log around the ckvj close commit. Third close in
