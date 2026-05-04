@@ -937,6 +937,18 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "(Bennett-qpke)")
         return IRCall(dest, soft_atan, [_operand(ops[1], names)], [w], w)
     end
+    # Bennett-ckvj: `llvm.asin.f64` → `soft_asin` (musl asin.c branchless
+    # port, ≤2 ULP vs `Base.asin` across [-1, 1]). Shares the rational
+    # `_asin_R(z)` helper with `soft_acos` (Bennett-bd7f). f32 rejected
+    # per §13. Tier C1.3 in the Enzyme parity north-star.
+    if startswith(cname, "llvm.asin")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.asin: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-ckvj)")
+        return IRCall(dest, soft_asin, [_operand(ops[1], names)], [w], w)
+    end
     return nothing
 end
 

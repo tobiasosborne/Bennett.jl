@@ -67,7 +67,8 @@ breadth*, not structural redesign.
   - `llvm.log.f64`, `llvm.log2.f64`, `llvm.log10.f64` (582)
   - `llvm.pow.f64`, `llvm.powi.f64.i32` (emv / jexo)
   - `llvm.sin.f64`, `llvm.cos.f64` (3mo, 2026-05-03)
-  - `llvm.tan.f64` (s1zl, 2026-05-04) — first close in Tier C1 (below)
+  - `llvm.tan.f64` (s1zl, 2026-05-04), `llvm.atan.f64` (qpke, 2026-05-04),
+    `llvm.asin.f64` (ckvj, 2026-05-04) — Tier C1.1 / C1.2 / C1.3 (below)
 - **Hard stops match Enzyme's:** atomic non-fadd ops, `cmpxchg`, `invoke`,
   `landingpad`, `resume`, `catchpad/switch`, `indirectbr`, `callbr`,
   inline asm, `llvm.coro.*`, scalable vectors.
@@ -100,14 +101,24 @@ broader strategy isn't pinned.
 - `tan` — **closed** (Bennett-s1zl, 2026-05-04). musl `__tan` port reusing
   `_rp_rem_pio2` infrastructure from `fsin.jl`; max ULP = 1 on a 500k
   random sweep across 5 magnitude buckets up to 1e22.
-- `asin`, `acos`, `atan`, `atan2` — open
+- `atan` — **closed** (Bennett-qpke, 2026-05-04). Self-contained branchless
+  port of musl `atan.c` — bounded-range rational reductions, no Cody-Waite
+  / Payne-Hanek dependency. Max ULP ≤ 2 on a 500k random sweep + 1076-input
+  subnormal binade sweep at 0 ULP.
+- `asin` — **closed** (Bennett-ckvj, 2026-05-04). Branchless port of musl
+  `e_asin.c` (FreeBSD/Sun 1993). Single ifelse-selected `_asin_R(z)` call
+  per invocation (SLP-vectorisation guard per qpke gotcha #1); the
+  rational `R(z)` and constants are module-private, **shared with
+  `soft_acos`** (Bennett-bd7f) per CLAUDE.md §12. ≤2 ULP vs `Base.asin`
+  on 100k random samples × 3 seeds across all four input regimes.
+- `acos`, `atan2` — open
 - `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh` — open
 
   Enzyme: TableGen via `IntrPattern` (LLVM ≥19) + C-library `CallPattern`.
-  Bennett: 1 of 11 done. The playbook is well-rehearsed (3mo / 582 / emv
-  / jexo / s1zl): port a vetted reference (musl / Arm Optimized Routines
-  / Julia stdlib), ship per-bead regression tests with random sweep +
-  subnormal-output testset (per CLAUDE.md §13).
+  Bennett: 3 of 11 done. The playbook is well-rehearsed (3mo / 582 / emv
+  / jexo / s1zl / qpke / ckvj): port a vetted reference (musl / Arm
+  Optimized Routines / Julia stdlib), ship per-bead regression tests with
+  random sweep + subnormal-output testset (per CLAUDE.md §13).
 
 #### C2 — Other transcendentals
 - `expm1`, `log1p`, `cbrt`, `hypot`, `exp10`, `ldexp`, `frexp`, `scalbn`,

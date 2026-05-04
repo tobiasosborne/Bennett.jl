@@ -3,7 +3,7 @@
   "remotes": {
     "origin": {
       "name": "origin",
-      "url": "git+ssh://git@github.com/tobiasosborne/Bennett.jl.git",
+      "url": "git+https://github.com/tobiasosborne/Bennett.jl.git",
       "fetch_specs": [
         "refs/heads/*:refs/remotes/origin/*"
       ],
