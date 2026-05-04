@@ -925,6 +925,18 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "(Bennett-s1zl)")
         return IRCall(dest, soft_tan, [_operand(ops[1], names)], [w], w)
     end
+    # Bennett-qpke: `llvm.atan.f64` → `soft_atan` (musl atan.c branchless
+    # port, ≤2 ULP vs `Base.atan` across the full Float64 range). Self-
+    # contained — no dependency on `_rp_rem_pio2`. f32 rejected per §13.
+    # Tier C1.2 in the Enzyme parity north-star.
+    if startswith(cname, "llvm.atan")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.atan: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-qpke)")
+        return IRCall(dest, soft_atan, [_operand(ops[1], names)], [w], w)
+    end
     return nothing
 end
 
