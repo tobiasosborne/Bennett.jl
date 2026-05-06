@@ -207,19 +207,34 @@ broader strategy isn't pinned.
   exact (0 ULP across 1074 binades × ±). Higher gate cost than
   m2bv/ky5n/bybh (~5-7M gates expected due to the K=30 polynomial)
   but accuracy budget met.
-- `acosh`, `atanh` — open
+- `acosh` — **closed** (Bennett-eq9p, 2026-05-06). Four-regime branchless
+  port adapting Julia stdlib `Base.acosh(::Float64)`. Domain-restricted:
+  `acosh(x < 1) = NaN` (Julia stdlib throws DomainError; Bennett can't
+  throw in branchless model — IEEE 754-2019 NaN is the standard
+  alternative). Reformulation `acosh(x) = sqrt(2(x-1)) · kernel(2(x-1))`
+  factors out the essential singularity at x=1; smooth `kernel` evaluated
+  via K=15 Taylor in z=2(x-1). Polynomial covers `1 ≤ x ≤ 1.3` (chosen
+  to give the medium arm safety margin against soft-float rounding
+  accumulation, which pushes the medium formula to 3 ULP for x just past
+  the boundary). Three valid regimes: `1 ≤ x ≤ 1.3` polynomial /
+  `1.3 < x < 2^28` `log(x + sqrt(x²-1))` / `x ≥ 2^28` `log(x) + ln(2)`.
+  ONE soft_log call via regime-selected arg, ONE soft_fsqrt for medium,
+  ONE soft_fsqrt for polynomial. ≤2 ULP vs `Base.acosh` on 300k random
+  × 3 seeds; §13 contract DIFFERENT (domain-restricted): `soft_acosh(any
+  subnormal) = NaN`. 3+1 protocol skipped per §2 surgical-extension
+  exception.
+- `atanh` — open
 
   Enzyme: TableGen via `IntrPattern` (LLVM ≥19) + C-library `CallPattern`.
-  Bennett: 9 of 11 done. The playbook is well-rehearsed (3mo / 582 / emv
-  / jexo / s1zl / qpke / ckvj / bd7f / 7goc / m2bv / ky5n / bybh / sfx9):
-  port a vetted reference (musl / Arm Optimized Routines / Julia
-  stdlib), ship per-bead regression tests with random sweep + subnormal-
-  output testset (per CLAUDE.md §13). **Note**: a future Bennett-
-  `soft_log1p` bead would let the small-|x| asinh/atanh regimes use the
-  natural log1p formula at far lower polynomial degree (~K=8 vs K=30) —
-  same scope-creep / future-work pattern as `soft_expm1` for the
-  hyperbolic ports. Filing as part of acosh/atanh sequence may be the
-  right time.
+  Bennett: 10 of 11 done. The playbook is well-rehearsed (3mo / 582 /
+  emv / jexo / s1zl / qpke / ckvj / bd7f / 7goc / m2bv / ky5n / bybh /
+  sfx9 / eq9p): port a vetted reference (musl / Arm Optimized Routines /
+  Julia stdlib), ship per-bead regression tests with random sweep +
+  subnormal-output testset (per CLAUDE.md §13). **Note**: a future
+  Bennett-`soft_log1p` bead would let the small-|x| asinh/atanh regimes
+  use the natural log1p formula at far lower polynomial degree (~K=8
+  vs K=15-30) — same scope-creep / future-work pattern as `soft_expm1`
+  for the hyperbolic ports.
 
 #### C2 — Other transcendentals
 - `expm1`, `log1p`, `cbrt`, `hypot`, `exp10`, `ldexp`, `frexp`, `scalbn`,
