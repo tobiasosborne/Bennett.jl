@@ -1,3 +1,120 @@
+## Session log — 2026-05-07 — Bennett-o7cy / Tier C2.2 — `soft_expm1` + `llvm.expm1` + libm `@expm1` dispatch (symmetric to log1p)
+
+**Shipped:** see git log around the o7cy close commit. **Second C2
+transcendental close**, symmetric counterpart to Bennett-0ulc
+(`soft_log1p`).
+
+**Why symmetric/high-leverage:** expm1(x) = exp(x) - 1 with the
+same precision-loss issue at small x. Adding it now means future
+cleanup beads can simplify the existing tanh/sinh/cosh
+implementations (Bennett-m2bv/ky5n/bybh) by rewriting their small-|x|
+arms to use expm1 directly instead of the wide-polynomial sidesteps.
+Just like log1p enables cleanup of asinh/acosh/atanh.
+
+**Algorithm (3+1 skipped per §2 exception).** Three regimes — the
+mechanical mirror of log1p's two-regime structure plus a polynomial
+arm:
+
+* Tiny |x| < 2^-54 → return x bit-exactly (same threshold derivation
+  as log1p; subnormal preserved).
+* Polynomial |x| ≤ 0.5: K=15 Taylor `x · (c1 + x·(c2 + … + x·c15))`
+  where `c_k = 1/k!` (exact rationals — no BigFloat regression
+  needed). K=15 covers ≤1 ULP empirically; K=10 was 975 ULP at
+  |x|=0.3, so the wider K is necessary.
+* Medium |x| > 0.5: `exp(x) - 1` directly (no cancellation since
+  `exp(0.5) = 1.65` and `exp(-0.5) = 0.607` both well-clear of 1).
+  Handles ±Inf, NaN, large negative → -1, large positive → +Inf
+  via natural propagation through `soft_exp_fast`.
+
+`soft_exp_fast` choice over `soft_exp`: FTZ-on-output is correct
+semantics for expm1 because `exp(x) - 1` for x ∈ (-745, -708) gives
+`subnormal - 1 = -1` to ULP regardless of whether the subnormal
+flushed to 0. Saves ~1.4M gates.
+
+**Drive-by fix to instructions.jl: tightened `llvm.exp.` and
+`llvm.exp2.` prefixes** with trailing-`.` discipline per Bennett-7goc.
+Pre-fix, the `llvm.exp` arm at line 783 silently swallowed
+`llvm.expm1.f64` (`startswith("llvm.expm1.f64", "llvm.exp") = true`).
+Same class of bug as the Bennett-0ulc / log family fix earlier in the
+session. **Both bugs in one session — this is now an entrenched
+discipline issue**: every prefix-match `startswith` against an LLVM
+intrinsic family must include a trailing `.` AT THE TIME OF
+INSERTION, not retrofitted after the next sibling intrinsic gets
+added. Filing as a future hardening task: a Bennett-aqua-style lint
+that scans `instructions.jl` for `startswith(cname, "llvm.…")`
+without trailing `.` would prevent this from happening a third time.
+
+**Results.**
+
+* `src/softfloat/fexpm1.jl` (~125 LOC) — three-regime branchless
+  port. Module-private constants: 15 polynomial coefficients
+  (`_EXPM1_C1..C15`, exact rationals) + 3 thresholds. Single
+  `soft_exp_fast` call.
+* `_CALLEES_FP_TRANS` extended **26 → 27**.
+* `src/extract/instructions.jl` gains 3 dispatch arms (intrinsic +
+  libm + libm-f32-reject) AND tightens the `llvm.exp.` and
+  `llvm.exp2.` prefixes (drive-by).
+* `test/test_softfexpm1.jl` (10 testsets, **7117 assertions**, 1.2s):
+  smoke / specials (incl. large-neg → -1, large-pos → +Inf) /
+  poly↔medium boundary / **§13 subnormal-INPUT bit-exact across all
+  1074 binades × ±** / tiny-normal range bit-exact / poly fine sweep
+  / medium fine sweep / 100k random × 3 seeds × 5 buckets / callee
+  registered.
+* `test/test_o7cy_llvm_expm1_dispatch.jl` (7 testsets) + 4 fixture
+  `.ll` files. Includes regression-guard `llvm.exp.f64` → `soft_exp`
+  (using existing `1pb_exp_f64.ll`).
+
+**Validation.**
+
+* Smoke: max 1 ULP across 22+ representative inputs spanning all
+  regimes.
+* §13 binade sweep: 0 ULP across 104 subnormals (preserved
+  bit-exactly via tiny regime).
+* 300k random sweep × 3 seeds × 5 buckets — max 2 ULP, 0 failures.
+* `@code_llvm` SLP-vectorisation check — clean.
+
+**Gotchas / Lessons:**
+
+1. **Same prefix-bug class as log1p.** Two prefix-bug fixes in one
+   session, both of the same form (an existing `llvm.exp`-prefix
+   intrinsic silently swallowed a sibling intrinsic name with a
+   common prefix). The CLAUDE.md / north-star convention is now:
+   **every `startswith(cname, "llvm.<name>")` arm MUST include a
+   trailing `.` from the moment of insertion**. Retrofit-after-the-
+   fact discipline has failed twice (originally with `llvm.atan`
+   pre-7goc, then in this session with `llvm.log` and `llvm.exp`).
+2. **K=15 is the minimum for ≤1 ULP at |x|=0.5.** K=10 gave 975
+   ULP, K=12 gave 12 ULP, K=13 gave 12 ULP, K=15 gave 1 ULP. The
+   step from K=13 to K=15 is a step from "almost good" to "actually
+   good" — empirical sweep at multiple K values is mandatory.
+3. **`exp(x) - 1` works for |x| > 0.5 across the full range** —
+   including ±Inf, NaN, and the -1 saturation regime for very
+   negative x. No special-case overrides needed beyond the final
+   NaN cascade. This is structurally simpler than log1p's
+   precision-recovery formula.
+
+**Rejected alternatives:**
+
+* **Single-regime polynomial.** Taylor for expm1 has infinite
+  convergence radius BUT slow convergence: at |x|=10, x^15/15! ≈
+  1e15 / 1.3e12 ≈ 769, which dominates ULP wildly. Polynomial only
+  works for |x| ≤ ~1 with reasonable K.
+* **Use of soft_exp instead of soft_exp_fast.** No accuracy benefit
+  for expm1 (FTZ region's true result rounds to -1 anyway). Saves
+  ~1.4M gates.
+
+**Next agent starts here:** Continue C2 grind. Possible pickups:
+- `cbrt` (C2.3) — cube root via Newton-Raphson; ~100 LOC. Uses
+  soft_fmul + bit-manipulation for initial estimate.
+- `hypot` (C2.4) — `sqrt(x²+y²)` avoiding overflow; needs careful
+  scaling. Two-input transcendental like atan2.
+- Cleanup beads: rewrite asinh/acosh/atanh small-|x| polynomial
+  regimes using soft_log1p; rewrite tanh/sinh/cosh small-|x|
+  polynomial regimes using soft_expm1.
+- `soft_log1p` lint: instructions.jl trailing-`.` discipline check.
+
+---
+
 ## Session log — 2026-05-07 — Bennett-0ulc / Tier C2.1 — `soft_log1p` + `llvm.log1p` + libm `@log1p` dispatch (high-leverage primitive)
 
 **Shipped:** see git log around the 0ulc close commit. **First C2

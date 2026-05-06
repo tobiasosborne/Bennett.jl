@@ -58,6 +58,8 @@ include("test_softfacosh.jl")
 include("test_softfatanh.jl")
 # Bennett-0ulc: soft_log1p primitive (Tier C2.1 — high-leverage; simplifies asinh/acosh/atanh poly regimes).
 include("test_softflog1p.jl")
+# Bennett-o7cy: soft_expm1 primitive (Tier C2.2 — symmetric to log1p; future cleanup target for tanh/sinh/cosh).
+include("test_softfexpm1.jl")
 include("test_softfconv.jl")
 include("test_float_circuit.jl")
 include("test_float_poly.jl")
@@ -128,6 +130,8 @@ include("test_eq9p_llvm_acosh_dispatch.jl")
 include("test_g82n_llvm_atanh_dispatch.jl")
 # Bennett-0ulc: direct llvm.log1p + libm @log1p dispatch (Tier C2.1).
 include("test_0ulc_llvm_log1p_dispatch.jl")
+# Bennett-o7cy: direct llvm.expm1 + libm @expm1 dispatch (Tier C2.2).
+include("test_o7cy_llvm_expm1_dispatch.jl")
 # Bennett-lqif (Bennett-hao Phase 0): llvm.memcpy / memmove fail-loud
 # residue (post-37mt: alloca-i64 + memmove). Per-shape green-path
 # coverage is in test_37mt_memcpy_const_aligned.jl.

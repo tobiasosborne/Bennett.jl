@@ -249,7 +249,17 @@ the ≤2 ULP target.
   -Inf, log1p(x<-1) = NaN, log1p(+Inf) = +Inf, log1p(NaN) = NaN.
   **High-leverage**: future cleanup of asinh/acosh/atanh polynomial
   regimes (K=15-30 → K=8) becomes possible now.
-- `expm1`, `cbrt`, `hypot`, `exp10`, `ldexp`, `frexp`, `scalbn`,
+- `expm1` — **closed** (Bennett-o7cy, 2026-05-07). Three-regime
+  branchless port. Tiny |x| < 2^-54 → x bit-exact (subnormal preserved).
+  K=15 Taylor in x for |x| ≤ 0.5. `exp(x) - 1` for |x| > 0.5 (no
+  cancellation since exp clear of 1). ONE soft_exp_fast call. ≤2 ULP
+  on 300k random × 3 seeds. Special: expm1(±0)=±0, expm1(+Inf)=+Inf,
+  expm1(-Inf)=-1, expm1(NaN)=NaN, large negative → -1. Drive-by
+  fix: tightened `llvm.exp.` and `llvm.exp2.` prefixes per the
+  Bennett-7goc trailing-`.` discipline (pre-fix `llvm.exp` arm
+  silently swallowed `llvm.expm1.f64` — same class as the log1p
+  dispatch bug fixed in Bennett-0ulc).
+- `cbrt`, `hypot`, `exp10`, `ldexp`, `frexp`, `scalbn`,
   `modf`, `fmod`, `remainder`, `fdim`, `sinpi`, `cospi`, `sinc` — open
 
   Enzyme: TableGen (~30 entries). Several of these (e.g. `expm1`,

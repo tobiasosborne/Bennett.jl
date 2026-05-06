@@ -752,7 +752,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "(Bennett-1pb)")
         return IRCall(dest, soft_fsqrt, [_operand(ops[1], names)], [w], w)
     end
-    if startswith(cname, "llvm.exp2")
+    if startswith(cname, "llvm.exp2.")
         w = _iwidth(ops[1])
         w == 64 || _ir_error(inst,
             "llvm.exp2: only f64 supported (got width=$w); native " *
@@ -780,7 +780,11 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
                        _operand(ops[3], names)],
                       [w, w, w], w)
     end
-    if startswith(cname, "llvm.exp")
+    # Trailing `.` per Bennett-7goc / 0ulc discipline: prevents
+    # `startswith("llvm.exp")` from silently swallowing
+    # `llvm.expm1.f64` (which is dispatched in a separate arm
+    # below at the C2 transcendental section per Bennett-o7cy).
+    if startswith(cname, "llvm.exp.")
         w = _iwidth(ops[1])
         w == 64 || _ir_error(inst,
             "llvm.exp: only f64 supported (got width=$w); native " *
@@ -1149,6 +1153,32 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
         _ir_error(inst,
             "@log1pf (libm): f32 transcendentals are not bit-exact " *
             "(CLAUDE.md §13). (Bennett-0ulc)")
+    end
+    # Bennett-o7cy: `llvm.expm1.f64` → `soft_expm1`. Tier C2.2 — second
+    # C2 transcendental, symmetric to log1p (Bennett-0ulc). expm1(x) =
+    # exp(x) - 1 accurate for small x. Three-regime branchless: tiny
+    # (|x|<2^-54) → x; polynomial (|x|≤0.5) K=15 Taylor; medium (|x|>0.5)
+    # → exp(x)-1 directly. f32 rejected per §13.
+    if startswith(cname, "llvm.expm1.")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.expm1: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-o7cy)")
+        return IRCall(dest, soft_expm1, [_operand(ops[1], names)], [w], w)
+    end
+    if cname == "expm1"
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "@expm1 (libm): only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-o7cy)")
+        return IRCall(dest, soft_expm1, [_operand(ops[1], names)], [w], w)
+    end
+    if cname == "expm1f"
+        _ir_error(inst,
+            "@expm1f (libm): f32 transcendentals are not bit-exact " *
+            "(CLAUDE.md §13). (Bennett-o7cy)")
     end
     # Bennett-7goc: `llvm.atan2.f64` → `soft_atan2` (musl atan2.c port
     # built on soft_atan; ≤2 ULP vs `Base.atan(y, x)`). Tier C1.5 in the
