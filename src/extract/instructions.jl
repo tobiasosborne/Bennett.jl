@@ -797,7 +797,14 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     # Order is load-bearing: `llvm.log10.*` and `llvm.log2.*` must be checked
     # BEFORE `llvm.log.*` because `startswith("llvm.log")` matches all three.
     # f64 only — f32 rejected per CLAUDE.md §13 (Bennett-3rph / U137).
-    if startswith(cname, "llvm.log10")
+    #
+    # Trailing `.` discipline (Bennett-7goc): each prefix has a trailing
+    # `.` so it doesn't accidentally swallow another intrinsic with a
+    # longer name. Pre-Bennett-0ulc the `llvm.log` arm was untightened
+    # and silently swallowed `llvm.log1p.f64` — same class of bug as
+    # the pre-7goc `llvm.atan` swallowing `llvm.atan2.f64`. Tightened
+    # all three log-family prefixes here.
+    if startswith(cname, "llvm.log10.")
         w = _iwidth(ops[1])
         w == 64 || _ir_error(inst,
             "llvm.log10: only f64 supported (got width=$w); native " *
@@ -805,7 +812,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "(Bennett-582)")
         return IRCall(dest, soft_log10, [_operand(ops[1], names)], [w], w)
     end
-    if startswith(cname, "llvm.log2")
+    if startswith(cname, "llvm.log2.")
         w = _iwidth(ops[1])
         w == 64 || _ir_error(inst,
             "llvm.log2: only f64 supported (got width=$w); native " *
@@ -813,7 +820,20 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "(Bennett-582)")
         return IRCall(dest, soft_log2, [_operand(ops[1], names)], [w], w)
     end
-    if startswith(cname, "llvm.log")
+    # Bennett-0ulc: `llvm.log1p.f64` → `soft_log1p`. MUST come before
+    # the `llvm.log.` arm because position-9 of `llvm.log1p.f64` is `1`,
+    # not `.`. With the trailing-`.` discipline applied to `llvm.log.`,
+    # ordering is no longer strictly required — but kept for clarity
+    # and to mirror the trig family's discipline.
+    if startswith(cname, "llvm.log1p.")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.log1p: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-0ulc)")
+        return IRCall(dest, soft_log1p, [_operand(ops[1], names)], [w], w)
+    end
+    if startswith(cname, "llvm.log.")
         w = _iwidth(ops[1])
         w == 64 || _ir_error(inst,
             "llvm.log: only f64 supported (got width=$w); native " *
@@ -1113,6 +1133,22 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
         _ir_error(inst,
             "@atanhf (libm): f32 transcendentals are not bit-exact " *
             "(CLAUDE.md §13). (Bennett-g82n)")
+    end
+    # Bennett-0ulc: libm `@log1p` external call. The intrinsic
+    # `llvm.log1p.f64` arm is up at line 824 (placed beside the
+    # `llvm.log` family for the trailing-`.` ordering rationale).
+    if cname == "log1p"
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "@log1p (libm): only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-0ulc)")
+        return IRCall(dest, soft_log1p, [_operand(ops[1], names)], [w], w)
+    end
+    if cname == "log1pf"
+        _ir_error(inst,
+            "@log1pf (libm): f32 transcendentals are not bit-exact " *
+            "(CLAUDE.md §13). (Bennett-0ulc)")
     end
     # Bennett-7goc: `llvm.atan2.f64` → `soft_atan2` (musl atan2.c port
     # built on soft_atan; ≤2 ULP vs `Base.atan(y, x)`). Tier C1.5 in the

@@ -241,8 +241,16 @@ isn't required for correctness — the existing implementations meet
 the ≤2 ULP target.
 
 #### C2 — Other transcendentals
-- `expm1`, `log1p`, `cbrt`, `hypot`, `exp10`, `ldexp`, `frexp`, `scalbn`,
-  `modf`, `fmod`, `remainder`, `fdim`, `sinpi`, `cospi`, `sinc`
+- `log1p` — **closed** (Bennett-0ulc, 2026-05-06). Two-regime
+  branchless port adapting Julia stdlib's precision-recovery formula
+  `log1p(x) = log(1+x) + (x - ((1+x)-1))/(1+x)`. Tiny |x| < 2^-54
+  returns x bit-exactly (subnormal-input preserved per §13). ≤2 ULP
+  vs `Base.log1p` on 300k random × 3 seeds. Special: log1p(-1) =
+  -Inf, log1p(x<-1) = NaN, log1p(+Inf) = +Inf, log1p(NaN) = NaN.
+  **High-leverage**: future cleanup of asinh/acosh/atanh polynomial
+  regimes (K=15-30 → K=8) becomes possible now.
+- `expm1`, `cbrt`, `hypot`, `exp10`, `ldexp`, `frexp`, `scalbn`,
+  `modf`, `fmod`, `remainder`, `fdim`, `sinpi`, `cospi`, `sinc` — open
 
   Enzyme: TableGen (~30 entries). Several of these (e.g. `expm1`,
   `log1p`) are *first-class numerically*: rolling them yourself via

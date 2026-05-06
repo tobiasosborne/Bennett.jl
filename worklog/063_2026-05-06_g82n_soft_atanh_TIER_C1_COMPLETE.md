@@ -1,3 +1,108 @@
+## Session log — 2026-05-07 — Bennett-0ulc / Tier C2.1 — `soft_log1p` + `llvm.log1p` + libm `@log1p` dispatch (high-leverage primitive)
+
+**Shipped:** see git log around the 0ulc close commit. **First C2
+transcendental close** following the Tier C1 hyperbolic completion
+earlier in the session.
+
+**Why high-leverage:** the asinh (sfx9), acosh (eq9p), atanh (g82n)
+beads I shipped earlier today all sidestep the missing `soft_log1p`
+via wide polynomial regimes (K=15-30) — that gate-cost overhead was
+explicitly documented as scope-creep / future-work in each of those
+worklog entries. Shipping `soft_log1p` now means future cleanup beads
+can replace those wide polynomials with the natural log1p formula at
+much lower polynomial degree (~K=8).
+
+**Algorithm decision (3+1 skipped per §2 exception).** The Julia-
+stdlib precision-recovery formula is a well-known reformulation:
+
+  log1p(x) = log(1+x) + (x - ((1+x) - 1))/(1+x)
+
+The correction term `(x - ((1+x)-1))/(1+x)` recovers the bits of
+precision lost when `1+x` rounds for small |x|. Direct REPL
+validation: 0 ULP at every sample point in `[-0.99, 10] step 1e-3`.
+
+**Tiny regime threshold — empirical correction.** Initial draft used
+2^-26 based on a flawed analysis (claimed `x²/2 < ½ULP(x)` for that
+range, but the algebra was wrong). Smoke test exposed it: at x=1e-9
+≈ 2^-30, my soft_log1p returned x exactly (since 1e-9 < 2^-26) but
+Base.log1p(1e-9) = 9.9999999995e-10 — off by **2.4 million ULPs**.
+
+Re-derivation: log1p(x) - x ≈ -x²/2. For this to be < ½ULP(x) =
+x · 2^-53, we need x²/2 < x · 2^-53, i.e. x < 2^-52. Set threshold
+at 2^-54 for ~2 bits margin. Re-validated: 300k random × 3 seeds,
+max 1 ULP, 0 fails. Subnormal binade sweep: 0 ULP across all 1074
+binades (one 1 ULP mismatch at the 2^-52 boundary, expected and
+within budget).
+
+**General lesson:** ULP-bit analysis is treacherous. When the
+relevant quantity is `f(x) - x` near zero, the correct comparison is
+`f(x) - x` vs `½ULP(result)`, not `½ULP(input)`. For log1p,
+result ≈ x (so ULP at result = ULP at x), but if a future
+transcendental has different scaling, this analysis must be redone.
+The cheap belt-and-braces is empirical sweep with a fine-grained
+binade test.
+
+**Results.**
+
+* `src/softfloat/flog1p.jl` (~115 LOC) — two-regime branchless port:
+  tiny (|x| < 2^-54) → x bit-exact; medium → precision-recovery
+  formula. Special-case overrides for x=-1 (-Inf), x<-1 (NaN),
+  x=+Inf (+Inf), x=NaN (NaN with quiet bit).
+* Module-private constants: 5 (tiny threshold, ±1 bits, -Inf bits,
+  NaN bits).
+* `_CALLEES_FP_TRANS` extended **25 → 26**.
+* `src/extract/instructions.jl` gains 3 dispatch arms (intrinsic +
+  libm + libm-f32-reject).
+* `test/test_softflog1p.jl` (10 testsets, **13,096 assertions**,
+  1.8s): smoke / specials / **§13 subnormal-INPUT bit-exact across
+  all 1074 binades × ±** / tiny-normal range bit-exact / regime
+  boundary at 2^-54 / medium fine sweep / 100k random × 3 seeds × 5
+  buckets / callee registered.
+* `test/test_0ulc_llvm_log1p_dispatch.jl` (7 testsets) + 4 fixture
+  `.ll` files. Includes regression-guard `llvm.log.f64` → `soft_log`.
+
+**Validation.**
+
+* Smoke: max 1 ULP across 17+ representative inputs.
+* §13 binade sweep: 0 ULP across all subnormal inputs (preserved
+  bit-exactly via tiny regime).
+* 300k random sweep × 3 seeds × 5 magnitude buckets — max 1 ULP, 0
+  failures across all seeds.
+* `@code_llvm` SLP-vectorisation check — clean.
+
+**Gotchas / Lessons:**
+
+1. **ULP analysis is treacherous (see above).** Empirical sweep is
+   the truth oracle.
+2. **Julia's `log1p(x<-1)` throws DomainError**, same as atanh. Test
+   sweeps need a wrapper.
+3. **+Inf input must be special-cased.** Raw formula at x=+Inf:
+   `1+Inf = Inf`, `log(Inf) = Inf`, `(Inf - (Inf - 1))/Inf = NaN/Inf
+   = NaN`, `result = Inf + NaN = NaN`. Wrong — should be +Inf.
+   Override required.
+4. **x = -1 must also be special-cased.** Raw formula at x=-1:
+   `1+(-1) = 0`, `log(0) = -Inf`, `(0-1) - (-1) = 0`, correction =
+   `0/0 = NaN`, result = `-Inf + NaN = NaN`. Wrong — should be -Inf.
+5. **Future cleanup work** (NOT done in this bead, just enabled):
+   asinh K=30 → K=8 polynomial; acosh K=15 → smaller; atanh K=25 →
+   K=8. Each of those primitives could be re-implemented to use
+   `soft_log1p` directly in the small-|x| regime, replacing their
+   wide polynomial cost. Estimate ~3-4M gates saved per primitive
+   per call. **File as separate cleanup beads** when picking that up.
+
+**Next agent starts here:** continue C2 grind. Possible pickups:
+- `expm1` (Tier C2.2) — symmetric counterpart to log1p; would benefit
+  C1 hyperbolics (tanh/sinh/cosh/asinh/acosh/atanh) the same way
+  log1p benefits asinh/acosh/atanh (gate cost reduction in their
+  small-|x| polynomial regimes).
+- `cbrt` (C2.3) — cube root via Newton-Raphson; ~100 LOC, simpler
+  than log1p.
+- `hypot` (C2.4) — sqrt(x²+y²) avoiding overflow.
+- Cleanup beads: simplify asinh/acosh/atanh polynomial regimes
+  using the now-available `soft_log1p`.
+
+---
+
 ## Session log — 2026-05-06 — Bennett-g82n / Tier C1.11 — `soft_atanh` + `llvm.atanh` + libm `@atanh` dispatch — **TIER C1 COMPLETE 11/11**
 
 **Shipped:** see git log around the g82n close commit. **FINAL

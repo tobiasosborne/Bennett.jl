@@ -56,6 +56,8 @@ include("test_softfasinh.jl")
 include("test_softfacosh.jl")
 # Bennett-g82n: soft_atanh primitive (Tier C1.11 — FINAL hyperbolic, completes Tier C1 11/11).
 include("test_softfatanh.jl")
+# Bennett-0ulc: soft_log1p primitive (Tier C2.1 — high-leverage; simplifies asinh/acosh/atanh poly regimes).
+include("test_softflog1p.jl")
 include("test_softfconv.jl")
 include("test_float_circuit.jl")
 include("test_float_poly.jl")
@@ -124,6 +126,8 @@ include("test_sfx9_llvm_asinh_dispatch.jl")
 include("test_eq9p_llvm_acosh_dispatch.jl")
 # Bennett-g82n: direct llvm.atanh + libm @atanh dispatch (Tier C1.11 — FINAL hyperbolic).
 include("test_g82n_llvm_atanh_dispatch.jl")
+# Bennett-0ulc: direct llvm.log1p + libm @log1p dispatch (Tier C2.1).
+include("test_0ulc_llvm_log1p_dispatch.jl")
 # Bennett-lqif (Bennett-hao Phase 0): llvm.memcpy / memmove fail-loud
 # residue (post-37mt: alloca-i64 + memmove). Per-shape green-path
 # coverage is in test_37mt_memcpy_const_aligned.jl.
