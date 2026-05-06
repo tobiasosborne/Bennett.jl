@@ -50,6 +50,8 @@ include("test_softftanh.jl")
 include("test_softfsinh.jl")
 # Bennett-bybh: soft_cosh primitive (Tier C1.8 hyperbolic completion).
 include("test_softfcosh.jl")
+# Bennett-sfx9: soft_asinh primitive (Tier C1.9 hyperbolic completion).
+include("test_softfasinh.jl")
 include("test_softfconv.jl")
 include("test_float_circuit.jl")
 include("test_float_poly.jl")
@@ -112,6 +114,8 @@ include("test_m2bv_llvm_tanh_dispatch.jl")
 include("test_ky5n_llvm_sinh_dispatch.jl")
 # Bennett-bybh: direct llvm.cosh + libm @cosh dispatch (Tier C1.8 — third hyperbolic).
 include("test_bybh_llvm_cosh_dispatch.jl")
+# Bennett-sfx9: direct llvm.asinh + libm @asinh dispatch (Tier C1.9 — fourth hyperbolic).
+include("test_sfx9_llvm_asinh_dispatch.jl")
 # Bennett-lqif (Bennett-hao Phase 0): llvm.memcpy / memmove fail-loud
 # residue (post-37mt: alloca-i64 + memmove). Per-shape green-path
 # coverage is in test_37mt_memcpy_const_aligned.jl.

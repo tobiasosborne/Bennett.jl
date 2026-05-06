@@ -1036,6 +1036,34 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "@coshf (libm): f32 transcendentals are not bit-exact " *
             "(CLAUDE.md §13). (Bennett-bybh)")
     end
+    # Bennett-sfx9: `llvm.asinh.f64` → `soft_asinh` (regime-split port
+    # adapting Julia stdlib `Base.asinh` with `log1p` substituted by an
+    # extended polynomial regime since Bennett.jl lacks `soft_log1p`).
+    # ≤2 ULP vs `Base.asinh`; subnormal-input bit-exact via the
+    # polynomial branch. f32 rejected per §13. Tier C1.9 — fourth
+    # hyperbolic close.
+    if startswith(cname, "llvm.asinh.")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.asinh: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-sfx9)")
+        return IRCall(dest, soft_asinh, [_operand(ops[1], names)], [w], w)
+    end
+    # Bennett-sfx9: libm-style `@asinh(double)` external call.
+    if cname == "asinh"
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "@asinh (libm): only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-sfx9)")
+        return IRCall(dest, soft_asinh, [_operand(ops[1], names)], [w], w)
+    end
+    if cname == "asinhf"
+        _ir_error(inst,
+            "@asinhf (libm): f32 transcendentals are not bit-exact " *
+            "(CLAUDE.md §13). (Bennett-sfx9)")
+    end
     # Bennett-7goc: `llvm.atan2.f64` → `soft_atan2` (musl atan2.c port
     # built on soft_atan; ≤2 ULP vs `Base.atan(y, x)`). Tier C1.5 in the
     # Enzyme parity north-star. MUST come before the `llvm.atan.` arm:
