@@ -149,13 +149,36 @@ broader strategy isn't pinned.
   `s_tanh.c` couldn't be ported verbatim because Bennett.jl lacks
   `soft_expm1`; the Julia-stdlib polynomial-in-x² substitution
   sidesteps that gap.
-- `sinh`, `cosh`, `asinh`, `acosh`, `atanh` — open
+- `sinh` — **closed** (Bennett-ky5n, 2026-05-06). Three-regime branchless
+  port adapting Julia stdlib `Base.sinh(::Float64)` (julia 1.12
+  base/special/hyperbolic.jl:58-80): degree-8 polynomial in z=x² for
+  `|x| ≤ 1.0` (coefficients verbatim from `Base.sinh_kernel`),
+  `(E - 1/E)/2` with `E = exp(|x|)` for `1 < |x| < 709`, and
+  `(0.5·E)·E` with `E = exp(|x|/2)` for `|x| ≥ 709`. **ONE
+  `soft_exp_fast` call total** via regime-selected argument
+  (`arg = ifelse(is_huge, |x|/2, |x|)`); shared between medium and
+  huge formulas. Unlike Proposer B's initial `(E²-1/E²)/2` unified
+  form (which had 5 chained fmul ops giving 3-4 ULP at |x|≈1.4),
+  the synthesised regime split with `(E - 1/E)/2` for medium has
+  only 3 ops after exp, hitting ≤2 ULP comfortably. ≤2 ULP vs
+  `Base.sinh` on 100k random × 3 seeds × 5 magnitude buckets
+  (poly / mid / large / near-overflow / overflow); §13 subnormal-
+  input bit-exact (0 ULP across all 1074 binades × both signs)
+  via the polynomial branch's algebra (`x²` underflows → 0,
+  `kernel(0) = 1`, `x · 1 ≡ x`). Drive-by finding: `soft_exp_fast`
+  has a small NaN-producing bug for inputs in `(~709.78, ~709.79)` —
+  worked around by setting Bennett-ky5n's huge threshold conservatively
+  at `709.0` (rather than Julia stdlib's `nextfloat(709.7822265633562)`).
+  CRITICAL ORDERING in the huge arm: `(0.5·E)·E` not `(E·E)·0.5` —
+  delays overflow until `|x| ≈ 1419` so true-finite results in
+  `|x| ∈ [710, 710.475]` match Base.sinh.
+- `cosh`, `asinh`, `acosh`, `atanh` — open
 
   Enzyme: TableGen via `IntrPattern` (LLVM ≥19) + C-library `CallPattern`.
-  Bennett: 6 of 11 done. The playbook is well-rehearsed (3mo / 582 / emv
-  / jexo / s1zl / qpke / ckvj / bd7f / 7goc / m2bv): port a vetted
-  reference (musl / Arm Optimized Routines / Julia stdlib), ship per-
-  bead regression tests with random sweep + subnormal-output testset
+  Bennett: 7 of 11 done. The playbook is well-rehearsed (3mo / 582 / emv
+  / jexo / s1zl / qpke / ckvj / bd7f / 7goc / m2bv / ky5n): port a
+  vetted reference (musl / Arm Optimized Routines / Julia stdlib), ship
+  per-bead regression tests with random sweep + subnormal-output testset
   (per CLAUDE.md §13).
 
 #### C2 — Other transcendentals

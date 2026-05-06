@@ -966,6 +966,43 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "@tanhf (libm): f32 transcendentals are not bit-exact " *
             "(CLAUDE.md §13). (Bennett-m2bv)")
     end
+    # Bennett-ky5n: `llvm.sinh.f64` → `soft_sinh` (regime-split port
+    # adapting Julia stdlib `Base.sinh` to use ONE soft_exp_fast call
+    # via the unified exp-form `(0.5·E·E - 0.5/(E·E))` with `E = exp(|x|/2)`,
+    # plus a degree-8 polynomial in z=x² for `|x| ≤ 1.0` (Julia stdlib
+    # minimax coefficients). ≤2 ULP vs `Base.sinh`; subnormal-input
+    # preserved bit-exactly via the polynomial branch (CLAUDE.md §13).
+    # f32 rejected per §13. Tier C1.7 — second hyperbolic close after
+    # Bennett-m2bv (tanh).
+    # Defence-in-depth placement: the trailing `.` on `llvm.sin.` already
+    # prevents `startswith("llvm.sinh.f64", "llvm.sin.")` from matching
+    # (position 8 is `h`, not `.`), so order between sin and sinh arms
+    # is semantically free — placed here to group with hyperbolics.
+    if startswith(cname, "llvm.sinh.")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.sinh: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-ky5n)")
+        return IRCall(dest, soft_sinh, [_operand(ops[1], names)], [w], w)
+    end
+    # Bennett-ky5n: libm-style `@sinh(double)` external call — what
+    # clang/rustc emit when the math intrinsic is disabled or LLVM <18.
+    # Same lowering as the intrinsic form. f32 variant `@sinhf` rejected
+    # per §13.
+    if cname == "sinh"
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "@sinh (libm): only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-ky5n)")
+        return IRCall(dest, soft_sinh, [_operand(ops[1], names)], [w], w)
+    end
+    if cname == "sinhf"
+        _ir_error(inst,
+            "@sinhf (libm): f32 transcendentals are not bit-exact " *
+            "(CLAUDE.md §13). (Bennett-ky5n)")
+    end
     # Bennett-7goc: `llvm.atan2.f64` → `soft_atan2` (musl atan2.c port
     # built on soft_atan; ≤2 ULP vs `Base.atan(y, x)`). Tier C1.5 in the
     # Enzyme parity north-star. MUST come before the `llvm.atan.` arm:
