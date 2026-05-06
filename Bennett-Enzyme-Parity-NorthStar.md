@@ -223,18 +223,22 @@ broader strategy isn't pinned.
   × 3 seeds; §13 contract DIFFERENT (domain-restricted): `soft_acosh(any
   subnormal) = NaN`. 3+1 protocol skipped per §2 surgical-extension
   exception.
-- `atanh` — open
+- `atanh` — **closed** (Bennett-g82n, 2026-05-06). Three-regime branchless
+  port. Domain `|x| ≤ 1`; `atanh(±1) = ±Inf` via natural log
+  propagation; `atanh(|x|>1) = NaN`. K=25 polynomial in z=x² for
+  `|x| ≤ 0.5` (exact rational coefficients `c_k = 1/(2k+1)`); medium
+  formula `0.5·log((1+|x|)/(1-|x|))` for `0.5 < |x| ≤ 1`. ODD function
+  — work on `|x|`, OR sign at end. ONE soft_log call, ONE soft_fdiv.
+  ≤2 ULP vs `Base.atanh` on 300k random × 3 seeds; §13 subnormal-INPUT
+  bit-exact (0 ULP across 1074 binades × ±). 3+1 protocol skipped per
+  §2 surgical-extension exception.
 
-  Enzyme: TableGen via `IntrPattern` (LLVM ≥19) + C-library `CallPattern`.
-  Bennett: 10 of 11 done. The playbook is well-rehearsed (3mo / 582 /
-  emv / jexo / s1zl / qpke / ckvj / bd7f / 7goc / m2bv / ky5n / bybh /
-  sfx9 / eq9p): port a vetted reference (musl / Arm Optimized Routines /
-  Julia stdlib), ship per-bead regression tests with random sweep +
-  subnormal-output testset (per CLAUDE.md §13). **Note**: a future
-  Bennett-`soft_log1p` bead would let the small-|x| asinh/atanh regimes
-  use the natural log1p formula at far lower polynomial degree (~K=8
-  vs K=15-30) — same scope-creep / future-work pattern as `soft_expm1`
-  for the hyperbolic ports.
+**Tier C1 = 11 of 11 COMPLETE.** Trig (tan, atan, asin, acos, atan2,
+sin, cos) + hyperbolic (tanh, sinh, cosh, asinh, acosh, atanh).
+Future work: a `soft_log1p` sibling primitive would simplify the
+asinh/acosh/atanh internal polynomial regimes (K=15-30 → K=8) but
+isn't required for correctness — the existing implementations meet
+the ≤2 ULP target.
 
 #### C2 — Other transcendentals
 - `expm1`, `log1p`, `cbrt`, `hypot`, `exp10`, `ldexp`, `frexp`, `scalbn`,

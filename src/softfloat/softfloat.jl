@@ -37,6 +37,7 @@ include("fsinh.jl")
 include("fcosh.jl")
 include("fasinh.jl")
 include("facosh.jl")
+include("fatanh.jl")
 include("fpconv.jl")
 include("fptosi.jl")
 include("fptoui.jl")
@@ -59,6 +60,6 @@ export soft_fadd, soft_fsub, soft_fmul, soft_fma, soft_fdiv, soft_fsqrt,
        soft_pow, soft_powi, soft_pow_julia,
        soft_sin, soft_cos, soft_tan,
        soft_atan, soft_atan2, soft_asin, soft_acos,
-       soft_tanh, soft_sinh, soft_cosh, soft_asinh, soft_acosh
+       soft_tanh, soft_sinh, soft_cosh, soft_asinh, soft_acosh, soft_atanh
 
 end # module SoftFloatLib

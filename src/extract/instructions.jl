@@ -1089,6 +1089,31 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "@acoshf (libm): f32 transcendentals are not bit-exact " *
             "(CLAUDE.md §13). (Bennett-eq9p)")
     end
+    # Bennett-g82n: `llvm.atanh.f64` → `soft_atanh`. Domain |x| ≤ 1
+    # (|x| > 1 → NaN). atanh is ODD. Three regimes: domain / K=25
+    # polynomial / log-formula. ONE soft_log + ONE soft_fdiv.
+    # Tier C1.11 — FINAL hyperbolic, completes Tier C1 11/11.
+    if startswith(cname, "llvm.atanh.")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.atanh: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-g82n)")
+        return IRCall(dest, soft_atanh, [_operand(ops[1], names)], [w], w)
+    end
+    if cname == "atanh"
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "@atanh (libm): only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-g82n)")
+        return IRCall(dest, soft_atanh, [_operand(ops[1], names)], [w], w)
+    end
+    if cname == "atanhf"
+        _ir_error(inst,
+            "@atanhf (libm): f32 transcendentals are not bit-exact " *
+            "(CLAUDE.md §13). (Bennett-g82n)")
+    end
     # Bennett-7goc: `llvm.atan2.f64` → `soft_atan2` (musl atan2.c port
     # built on soft_atan; ≤2 ULP vs `Base.atan(y, x)`). Tier C1.5 in the
     # Enzyme parity north-star. MUST come before the `llvm.atan.` arm:
