@@ -134,14 +134,29 @@ broader strategy isn't pinned.
   `llvm.atan2.f64` against the `llvm.atan` arm and dropped the second
   operand (~5/8 quadrants returned `atan(y)` not `atan2(y, x)`). Same
   class of bug pre-empted for sinh/cosh/tanh/asinh/acosh/atanh.
-- `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh` — open
+- `tanh` — **closed** (Bennett-m2bv, 2026-05-06). Branchless port of
+  Julia stdlib `Base.tanh(::Float64)` (julia 1.12 base/special/
+  hyperbolic.jl:128-159) — three regimes: degree-10 minimax polynomial
+  in x² for `|x| ≤ 0.5` (coefficients verbatim from
+  `Base.tanh_kernel`), `1 - 2/(exp(2|x|)+1)` for `0.5 < |x| < 22`,
+  `±1` saturation for `|x| ≥ 22`. ONE `soft_exp_fast` call total
+  (FTZ branch unreachable since exp arg is non-negative — saves
+  ~1.4M gates vs `soft_exp`). ≤2 ULP vs `Base.tanh` on a 100k random
+  sweep × 3 seeds × 4 magnitude buckets; subnormal-input preserved
+  bit-exactly via the polynomial branch (`x²` underflows → 0,
+  `tanh_kernel(0) = 1`, `x · 1 ≡ x`) — 0 ULP across all 1074
+  subnormal binades × both signs (verified). Drive-by note: `musl`
+  `s_tanh.c` couldn't be ported verbatim because Bennett.jl lacks
+  `soft_expm1`; the Julia-stdlib polynomial-in-x² substitution
+  sidesteps that gap.
+- `sinh`, `cosh`, `asinh`, `acosh`, `atanh` — open
 
   Enzyme: TableGen via `IntrPattern` (LLVM ≥19) + C-library `CallPattern`.
-  Bennett: 5 of 11 done. The playbook is well-rehearsed (3mo / 582 / emv
-  / jexo / s1zl / qpke / ckvj / bd7f / 7goc): port a vetted reference
-  (musl / Arm Optimized Routines / Julia stdlib), ship per-bead
-  regression tests with random sweep + subnormal-output testset (per
-  CLAUDE.md §13).
+  Bennett: 6 of 11 done. The playbook is well-rehearsed (3mo / 582 / emv
+  / jexo / s1zl / qpke / ckvj / bd7f / 7goc / m2bv): port a vetted
+  reference (musl / Arm Optimized Routines / Julia stdlib), ship per-
+  bead regression tests with random sweep + subnormal-output testset
+  (per CLAUDE.md §13).
 
 #### C2 — Other transcendentals
 - `expm1`, `log1p`, `cbrt`, `hypot`, `exp10`, `ldexp`, `frexp`, `scalbn`,

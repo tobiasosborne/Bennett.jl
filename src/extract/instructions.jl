@@ -931,6 +931,41 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "(Bennett-s1zl)")
         return IRCall(dest, soft_tan, [_operand(ops[1], names)], [w], w)
     end
+    # Bennett-m2bv: `llvm.tanh.f64` → `soft_tanh` (regime-split port of
+    # Julia stdlib `Base.tanh`: degree-10 polynomial in x² for |x| ≤ 0.5,
+    # `1 - 2/(exp(2|x|)+1)` for medium |x|, ±1 saturation for |x| ≥ 22.
+    # ONE soft_exp_fast call total. ≤2 ULP vs `Base.tanh` across the full
+    # Float64 range; subnormal-input preserved bit-exactly via the
+    # polynomial branch (CLAUDE.md §13). f32 rejected per §13.
+    # Tier C1.6 in the Enzyme parity north-star — first hyperbolic close.
+    # MUST come AFTER the `llvm.tan.` arm even though the trailing `.`
+    # already prevents `startswith("llvm.tan.")` from matching
+    # `"llvm.tanh.f64"` (defence-in-depth against future prefix relaxation).
+    if startswith(cname, "llvm.tanh.")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.tanh: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-m2bv)")
+        return IRCall(dest, soft_tanh, [_operand(ops[1], names)], [w], w)
+    end
+    # Bennett-m2bv: libm-style `@tanh(double)` external call — what
+    # clang/rustc emit when the math intrinsic is disabled or LLVM <18.
+    # Same lowering as the intrinsic form. f32 variant `@tanhf` rejected
+    # per §13.
+    if cname == "tanh"
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "@tanh (libm): only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-m2bv)")
+        return IRCall(dest, soft_tanh, [_operand(ops[1], names)], [w], w)
+    end
+    if cname == "tanhf"
+        _ir_error(inst,
+            "@tanhf (libm): f32 transcendentals are not bit-exact " *
+            "(CLAUDE.md §13). (Bennett-m2bv)")
+    end
     # Bennett-7goc: `llvm.atan2.f64` → `soft_atan2` (musl atan2.c port
     # built on soft_atan; ≤2 ULP vs `Base.atan(y, x)`). Tier C1.5 in the
     # Enzyme parity north-star. MUST come before the `llvm.atan.` arm:
