@@ -41,6 +41,7 @@ include("test_jexo_pow_accuracy_contract.jl")
 include("test_softfsin.jl")
 include("test_softftan.jl")
 include("test_softfatan.jl")
+include("test_softfatan2.jl")
 include("test_softfasin.jl")
 include("test_softfacos.jl")
 include("test_softfconv.jl")
@@ -97,6 +98,8 @@ include("test_qpke_llvm_atan_dispatch.jl")
 include("test_ckvj_llvm_asin_dispatch.jl")
 # Bennett-bd7f: direct llvm.acos dispatch (Tier C1.4 — reuses _asin_R from fasin.jl).
 include("test_bd7f_llvm_acos_dispatch.jl")
+# Bennett-7goc: direct llvm.atan2 + libm @atan2 dispatch (Tier C1.5).
+include("test_7goc_llvm_atan2_dispatch.jl")
 # Bennett-lqif (Bennett-hao Phase 0): llvm.memcpy / memmove fail-loud
 # residue (post-37mt: alloca-i64 + memmove). Per-shape green-path
 # coverage is in test_37mt_memcpy_const_aligned.jl.

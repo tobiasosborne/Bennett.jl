@@ -69,7 +69,8 @@ breadth*, not structural redesign.
   - `llvm.sin.f64`, `llvm.cos.f64` (3mo, 2026-05-03)
   - `llvm.tan.f64` (s1zl, 2026-05-04), `llvm.atan.f64` (qpke, 2026-05-04),
     `llvm.asin.f64` (ckvj, 2026-05-04), `llvm.acos.f64` (bd7f, 2026-05-05)
-    — Tier C1.1 / C1.2 / C1.3 / C1.4 (below)
+    `llvm.atan2.f64` (7goc, 2026-05-06)
+    — Tier C1.1 / C1.2 / C1.3 / C1.4 / C1.5 (below)
 - **Hard stops match Enzyme's:** atomic non-fadd ops, `cmpxchg`, `invoke`,
   `landingpad`, `resume`, `catchpad/switch`, `indirectbr`, `callbr`,
   inline asm, `llvm.coro.*`, scalable vectors.
@@ -119,14 +120,28 @@ broader strategy isn't pinned.
   ≤2 ULP vs `Base.acos` on 100k random × 3 seeds; subnormal-output proven
   absent per §13 (acos's range [0, π] never reaches the subnormal regime
   for any representable f64 input).
-- `atan2` — open
+- `atan2` — **closed** (Bennett-7goc, 2026-05-06). Faithful port of musl
+  `atan2.c`. Built on `soft_atan` (Bennett-qpke) per CLAUDE.md §12 —
+  ONE soft_fdiv + ONE soft_atan call, the rest is XOR / ifelse / one
+  fsub for quadrant offset. ≤2 ULP vs `Base.atan(y, x)` on 100k random
+  × 3 seeds across 4 magnitude buckets × 4 quadrants. All special cases
+  (axis points, ±0/±0, ±Inf/finite, ±Inf/±Inf, NaN propagation) bit-
+  exact. **Two LLVM-ingest paths**: `llvm.atan2.f64` intrinsic AND libm
+  `@atan2` external call (the latter for older LLVM <18 / `-fno-builtin`
+  C/Rust outputs). Drive-by fix to the same instructions.jl block:
+  tightened `llvm.{sin,cos,tan,atan,asin,acos}` prefixes with trailing
+  `.` to prevent the silent miscompile that previously matched
+  `llvm.atan2.f64` against the `llvm.atan` arm and dropped the second
+  operand (~5/8 quadrants returned `atan(y)` not `atan2(y, x)`). Same
+  class of bug pre-empted for sinh/cosh/tanh/asinh/acosh/atanh.
 - `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh` — open
 
   Enzyme: TableGen via `IntrPattern` (LLVM ≥19) + C-library `CallPattern`.
-  Bennett: 4 of 11 done. The playbook is well-rehearsed (3mo / 582 / emv
-  / jexo / s1zl / qpke / ckvj / bd7f): port a vetted reference (musl /
-  Arm Optimized Routines / Julia stdlib), ship per-bead regression tests
-  with random sweep + subnormal-output testset (per CLAUDE.md §13).
+  Bennett: 5 of 11 done. The playbook is well-rehearsed (3mo / 582 / emv
+  / jexo / s1zl / qpke / ckvj / bd7f / 7goc): port a vetted reference
+  (musl / Arm Optimized Routines / Julia stdlib), ship per-bead
+  regression tests with random sweep + subnormal-output testset (per
+  CLAUDE.md §13).
 
 #### C2 — Other transcendentals
 - `expm1`, `log1p`, `cbrt`, `hypot`, `exp10`, `ldexp`, `frexp`, `scalbn`,

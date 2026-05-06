@@ -855,7 +855,13 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     # `soft_sin` / `soft_cos` are full-Payne-Hanek ports of musl `sin.c` /
     # `cos.c` / `__rem_pio2_large.c`, ≤2 ULP vs `Base.sin` / `Base.cos`
     # across the full Float64 input range. f32 rejected per §13.
-    if startswith(cname, "llvm.sin")
+    # Trailing `.` in the prefix is load-bearing: it prevents
+    # `startswith("llvm.sin")` from matching `"llvm.sinh.f64"` (which we
+    # don't support yet) and accidentally dispatching to soft_sin.
+    # Same fix applied to cos/tan/atan/asin/acos below — see Bennett-7goc
+    # for the silent-miscompile root cause (`startswith("llvm.atan")`
+    # matched `"llvm.atan2.f64"` and dropped the second operand).
+    if startswith(cname, "llvm.sin.")
         w = _iwidth(ops[1])
         w == 64 || _ir_error(inst,
             "llvm.sin: only f64 supported (got width=$w); native " *
@@ -905,7 +911,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     if startswith(cname, "llvm.memset")
         return _handle_memset_arm(cname, inst, names, counter, ops)
     end
-    if startswith(cname, "llvm.cos")
+    if startswith(cname, "llvm.cos.")
         w = _iwidth(ops[1])
         w == 64 || _ir_error(inst,
             "llvm.cos: only f64 supported (got width=$w); native " *
@@ -917,7 +923,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     # the rem_pio2 infrastructure; ≤2 ULP vs `Base.tan` across the full
     # Float64 range). f32 rejected per §13. First close in Tier C1 trig
     # completion (Bennett-Enzyme-Parity-NorthStar.md §C1).
-    if startswith(cname, "llvm.tan")
+    if startswith(cname, "llvm.tan.")
         w = _iwidth(ops[1])
         w == 64 || _ir_error(inst,
             "llvm.tan: only f64 supported (got width=$w); native " *
@@ -925,11 +931,47 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "(Bennett-s1zl)")
         return IRCall(dest, soft_tan, [_operand(ops[1], names)], [w], w)
     end
+    # Bennett-7goc: `llvm.atan2.f64` → `soft_atan2` (musl atan2.c port
+    # built on soft_atan; ≤2 ULP vs `Base.atan(y, x)`). Tier C1.5 in the
+    # Enzyme parity north-star. MUST come before the `llvm.atan.` arm:
+    # before Bennett-7goc the (untightened) `startswith("llvm.atan")`
+    # silently matched `"llvm.atan2.f64"` and dispatched to soft_atan
+    # with just the y operand, dropping x and producing wrong results
+    # outside the (y>0, x>0) quadrant. f32 rejected per §13.
+    if startswith(cname, "llvm.atan2.")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.atan2: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-7goc)")
+        return IRCall(dest, soft_atan2,
+                      [_operand(ops[1], names), _operand(ops[2], names)],
+                      [w, w], w)
+    end
+    # Bennett-7goc: libm-style `@atan2(double, double)` external call —
+    # what clang/rustc emit for raw .ll/.bc when the math intrinsic is
+    # disabled or LLVM <18. Same lowering as the intrinsic form. The f32
+    # variant `@atan2f` is rejected per §13.
+    if cname == "atan2"
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "@atan2 (libm): only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-7goc)")
+        return IRCall(dest, soft_atan2,
+                      [_operand(ops[1], names), _operand(ops[2], names)],
+                      [w, w], w)
+    end
+    if cname == "atan2f"
+        _ir_error(inst,
+            "@atan2f (libm): f32 transcendentals are not bit-exact " *
+            "(CLAUDE.md §13). (Bennett-7goc)")
+    end
     # Bennett-qpke: `llvm.atan.f64` → `soft_atan` (musl atan.c branchless
     # port, ≤2 ULP vs `Base.atan` across the full Float64 range). Self-
     # contained — no dependency on `_rp_rem_pio2`. f32 rejected per §13.
     # Tier C1.2 in the Enzyme parity north-star.
-    if startswith(cname, "llvm.atan")
+    if startswith(cname, "llvm.atan.")
         w = _iwidth(ops[1])
         w == 64 || _ir_error(inst,
             "llvm.atan: only f64 supported (got width=$w); native " *
@@ -941,7 +983,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     # port, ≤2 ULP vs `Base.asin` across [-1, 1]). Shares the rational
     # `_asin_R(z)` helper with `soft_acos` (Bennett-bd7f). f32 rejected
     # per §13. Tier C1.3 in the Enzyme parity north-star.
-    if startswith(cname, "llvm.asin")
+    if startswith(cname, "llvm.asin.")
         w = _iwidth(ops[1])
         w == 64 || _ir_error(inst,
             "llvm.asin: only f64 supported (got width=$w); native " *
@@ -953,7 +995,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     # port; reuses `_asin_R(z)` helper from fasin.jl per CLAUDE.md §12).
     # ≤2 ULP vs `Base.acos` across [-1, 1]. f32 rejected per §13.
     # Tier C1.4 in the Enzyme parity north-star.
-    if startswith(cname, "llvm.acos")
+    if startswith(cname, "llvm.acos.")
         w = _iwidth(ops[1])
         w == 64 || _ir_error(inst,
             "llvm.acos: only f64 supported (got width=$w); native " *
