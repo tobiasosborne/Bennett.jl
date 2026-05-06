@@ -172,14 +172,29 @@ broader strategy isn't pinned.
   CRITICAL ORDERING in the huge arm: `(0.5·E)·E` not `(E·E)·0.5` —
   delays overflow until `|x| ≈ 1419` so true-finite results in
   `|x| ∈ [710, 710.475]` match Base.sinh.
-- `cosh`, `asinh`, `acosh`, `atanh` — open
+- `cosh` — **closed** (Bennett-bybh, 2026-05-06). Three-regime branchless
+  port adapting Julia stdlib `Base.cosh(::Float64)` (julia 1.12
+  base/special/hyperbolic.jl:103-125) — STRUCTURAL MIRROR of Bennett-ky5n
+  (sinh) with three localised differences: (1) cosh is EVEN so no sign
+  tracking — work entirely on `|x|`; (2) medium formula is the SUM
+  `(E + 1/E)/2` (zero cancellation, both terms positive); (3) polynomial
+  has no leading `x` factor (cosh is even so `cosh(x) = kernel(x²)`
+  directly). Polynomial coefficients verbatim from `Base.cosh_kernel`
+  (degree 7 in z=x²). Same huge-arm `(0.5·E)·E` formula as ky5n with
+  the same load-bearing operator ordering. ≤2 ULP vs `Base.cosh` on
+  100k random × 3 seeds × 5 magnitude buckets; §13 contract DIFFERENT
+  from sinh/tanh: `cosh(any subnormal) === 1.0` exactly (since
+  `1 + subnormal² = 1.0` in fp64; verified bit-exact across all 1074
+  binades × ±). 3+1 protocol skipped per §2 exception (mechanical
+  extension of ky5n; differences localised to algorithmic structure).
+- `asinh`, `acosh`, `atanh` — open
 
   Enzyme: TableGen via `IntrPattern` (LLVM ≥19) + C-library `CallPattern`.
-  Bennett: 7 of 11 done. The playbook is well-rehearsed (3mo / 582 / emv
-  / jexo / s1zl / qpke / ckvj / bd7f / 7goc / m2bv / ky5n): port a
-  vetted reference (musl / Arm Optimized Routines / Julia stdlib), ship
-  per-bead regression tests with random sweep + subnormal-output testset
-  (per CLAUDE.md §13).
+  Bennett: 8 of 11 done. The playbook is well-rehearsed (3mo / 582 / emv
+  / jexo / s1zl / qpke / ckvj / bd7f / 7goc / m2bv / ky5n / bybh): port
+  a vetted reference (musl / Arm Optimized Routines / Julia stdlib),
+  ship per-bead regression tests with random sweep + subnormal-output
+  testset (per CLAUDE.md §13).
 
 #### C2 — Other transcendentals
 - `expm1`, `log1p`, `cbrt`, `hypot`, `exp10`, `ldexp`, `frexp`, `scalbn`,

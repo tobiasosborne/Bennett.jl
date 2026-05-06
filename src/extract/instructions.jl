@@ -1003,6 +1003,39 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "@sinhf (libm): f32 transcendentals are not bit-exact " *
             "(CLAUDE.md §13). (Bennett-ky5n)")
     end
+    # Bennett-bybh: `llvm.cosh.f64` → `soft_cosh` (regime-split port
+    # of Julia stdlib `Base.cosh` — even function, polynomial for
+    # |x| ≤ 1.0, `(E + 1/E)/2` for medium (no cancellation), `(0.5·E)·E`
+    # for huge. ONE soft_exp_fast call total. ≤2 ULP vs `Base.cosh`;
+    # subnormal input → 1.0 exactly. f32 rejected per §13.
+    # Tier C1.8 — third hyperbolic close after Bennett-m2bv (tanh) and
+    # Bennett-ky5n (sinh).
+    # Defence-in-depth placement: trailing `.` on `llvm.cos.` already
+    # prevents `startswith("llvm.cos.", "llvm.cosh.f64")` from matching
+    # (position 8 is `h`, not `.`). Order between cos/cosh arms is
+    # semantically free; placed here to group with other hyperbolics.
+    if startswith(cname, "llvm.cosh.")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.cosh: only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-bybh)")
+        return IRCall(dest, soft_cosh, [_operand(ops[1], names)], [w], w)
+    end
+    # Bennett-bybh: libm-style `@cosh(double)` external call.
+    if cname == "cosh"
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "@cosh (libm): only f64 supported (got width=$w); native " *
+            "f32/f16 transcendentals are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-bybh)")
+        return IRCall(dest, soft_cosh, [_operand(ops[1], names)], [w], w)
+    end
+    if cname == "coshf"
+        _ir_error(inst,
+            "@coshf (libm): f32 transcendentals are not bit-exact " *
+            "(CLAUDE.md §13). (Bennett-bybh)")
+    end
     # Bennett-7goc: `llvm.atan2.f64` → `soft_atan2` (musl atan2.c port
     # built on soft_atan; ≤2 ULP vs `Base.atan(y, x)`). Tier C1.5 in the
     # Enzyme parity north-star. MUST come before the `llvm.atan.` arm:
