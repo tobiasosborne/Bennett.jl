@@ -1,3 +1,41 @@
+## Session log — 2026-05-13 — Bennett-k31q stale close (`test_t0_preprocessing` memset allowlist gap no longer reproduces)
+
+**Closed:** `Bennett-k31q` as stale/already-fixed by the current
+`Bennett-9nwt` memset handling and current Julia/LLVM IR shape.
+
+Ground-truth read before action:
+
+* `Bennett-k31q` claimed `test/test_t0_preprocessing.jl` failed because
+  `cond_pair` hit a raw `llvm.memset.p0.i64` extraction error and the
+  test allowlist did not include `memset`.
+* Current `test/test_t0_preprocessing.jl` only measures extraction and
+  preprocessing store/alloca survival; it does not simulate the corpus.
+* Current `_handle_memset_arm` already has the intended `c == 0`
+  silent-drop Case A and precise fail-loud handling for unsupported
+  `c != 0` shapes.
+* Existing `test/test_9nwt_memset_const.jl` already pins the relevant
+  memset behavior, including `c=0 N=8` silent drop and reject cases.
+
+Validation:
+
+* `julia --project test/test_t0_preprocessing.jl` passed. Current
+  `cond_pair` does **not** enter `skipped`; it extracts as `raw=3,
+  post-pp=3` dynamic-index memory ops. `array_even_idx` has the same
+  shape. Corpus total remains 6 surviving stores+allocas.
+* `julia --project test/test_9nwt_memset_const.jl` passed: 82/82.
+
+Decision:
+
+* Do **not** broaden the T0 allowlist with `memset`. That would weaken
+  the canary without a current failure. If a future Julia/LLVM version
+  reintroduces a fail-loud memset skip, the test should surface it and
+  the exact shape should be investigated under `Bennett-8bys` or a new
+  narrower bead.
+* No source/test edits were warranted. The only durable changes are the
+  bead close and this worklog note.
+
+---
+
 ## Session log — 2026-05-13 — project orientation + beads workflow check
 
 Orientation-only session. Read `README.md`, `AGENTS.md`, `CLAUDE.md`,
