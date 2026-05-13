@@ -1,3 +1,76 @@
+## Session log — 2026-05-13 — Bennett-ao66 vector intrinsic scalarisation
+
+Implemented `Bennett-ao66`: vector-form LLVM intrinsic calls in
+`src/extract/vectors.jl` now scalarise lane-wise instead of failing with
+`unsupported vector opcode LLVMCall`.
+
+Design / implementation notes:
+
+* Added `_VectorLaneValue`, an extractor-local adapter that implements
+  `_iwidth` / `_operand` for already-resolved lane operands. This lets
+  vector calls reuse the existing scalar `_handle_intrinsic` dispatch
+  table without constructing fake LLVM `CallInst`s or duplicating the
+  scalar intrinsic lowering logic.
+* `_vector_shape` now accepts floating-point vector element types as
+  bit-pattern lanes, enabling `<2 x i64> <-> <2 x double>` vector
+  bitcast plumbing for `llvm.sqrt.v2f64` and `llvm.fma.v2f64`.
+* `extractelement` now uses `_type_width` instead of `LLVM.width`, so
+  extracting a `double` lane works before scalar bitcast back to `i64`.
+* Vector `LLVMCall` handling rejects scalar-return vector calls
+  (reductions), non-LLVM vector calls, poison/undef lane reads, and
+  vector intrinsics whose scalar handler returns `nothing`.
+* Reviewer catch: broad scalar handler reuse could silently miscompile
+  floating-point `llvm.minimum` / `llvm.maximum` / `llvm.minnum` /
+  `llvm.maxnum`, because their current scalar handlers use integer
+  `IRICmp` on bit patterns. Added fail-loud rejection for floating
+  vector min/max forms until a bit-exact soft-float implementation is
+  designed.
+* Reviewer catch: `llvm.abs`, `llvm.ctlz`, and `llvm.cttz` with poison
+  immarg `true` can produce poison for lane-dependent inputs. Added
+  fail-loud validation for non-constant or `true` poison immargs in the
+  vector scalarisation path. `i1 true` can appear as `ConstOperand(-1)`.
+* Explicitly did not add ConstantFP vector-lane decoding. Direct
+  `<2 x double> <double ...>` constants still fail loud in
+  `_resolve_vec_lanes`; current f64 fixtures use integer bit-pattern
+  vectors plus vector bitcast. Future support needs NaN-payload-aware
+  ConstantFP decoding.
+
+Tests added:
+
+* `test/test_ao66_vector_intrinsic_rescalarise.jl`
+* Raw `.ll` fixtures for `llvm.smax.v4i64`, `llvm.umax.v2i64`,
+  `llvm.abs.v4i32`, `llvm.sqrt.v2f64`, `llvm.fma.v2f64`,
+  unsupported `llvm.expect.v4i64`, rejected `llvm.sqrt.v2f32`,
+  rejected poison `llvm.abs.v4i32(..., true)`, and rejected
+  `llvm.minimum.v2f64`.
+* The ao66 test is included in `test/runtests.jl`.
+
+Validation completed:
+
+* `julia --project test/test_ao66_vector_intrinsic_rescalarise.jl`
+  passed: 41/41.
+* `julia --project test/test_vector_ir.jl` passed.
+* `julia --project test/test_cc07_repro.jl` passed.
+* Wrapped direct runs of `test/test_1pb_llvm_transcendentals.jl` and
+  `test/test_h6f_llvm_fma_dispatch.jl` passed: 44/44 and 14/14.
+* Reviewer agent re-review found no blocking findings after the min/max
+  and poison-immarg guards; only a low-severity i1-width nit, which was
+  fixed.
+
+Validation caveat:
+
+* Full `julia --project -e 'using Pkg; Pkg.test()'` did **not** complete
+  with a clean final status in this session. One attempt was interrupted
+  by the user while it was still running; an earlier attempt lost final
+  output after the long soft-float/corpus sections even though no Julia
+  process remained. A redirected attempt failed before startup because
+  the Julia launcher could not create a lockfile on a read-only sandbox
+  path. Based on the focused extractor/vector/intrinsic tests and
+  reviewer pass, the change is likely correct, but the next handoff
+  should rerun full `Pkg.test()` serially from a clean shell.
+
+---
+
 ## Session log — 2026-05-13 — Bennett-k31q stale close (`test_t0_preprocessing` memset allowlist gap no longer reproduces)
 
 **Closed:** `Bennett-k31q` as stale/already-fixed by the current

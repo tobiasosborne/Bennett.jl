@@ -201,6 +201,8 @@ include("test_tabulate.jl")
 # shufflevector + vector arithmetic/icmp/select/cast).
 include("test_cc07_repro.jl")
 include("test_vector_ir.jl")
+# Bennett-ao66 — vector-form LLVM intrinsic calls scalarised lane-wise.
+include("test_ao66_vector_intrinsic_rescalarise.jl")
 # Bennett-cc0.4 — constant-pointer icmp eq (ConstantExpr operand folding).
 include("test_cc04_repro.jl")
 # Bennett-cc0.6 — standardized ir_extract error-message format.

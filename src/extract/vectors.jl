@@ -40,20 +40,87 @@ function _any_vector_operand(inst::LLVM.Instruction)::Bool
     end
 end
 
-# Returns (n_lanes, elem_width) for <N x iM>; `nothing` for non-vectors.
-# Errors on non-integer lanes or unsupported widths.
+# Returns (n_lanes, elem_width) for <N x iM> or <N x float-like>;
+# `nothing` for non-vectors. Float lanes are treated as bit-pattern lanes.
 function _vector_shape(val)::Union{Nothing, Tuple{Int, Int}}
     vt = LLVM.value_type(val)
     vt isa LLVM.VectorType || return nothing
     et = LLVM.eltype(vt)
-    et isa LLVM.IntegerType ||
-        error("ir_extract.jl: vector with non-integer element type $et is not " *
-              "supported; got vector type $vt (Bennett-cc0.7 MVP scope)")
-    w = Int(LLVM.width(et))
+    w = if et isa LLVM.IntegerType
+        Int(LLVM.width(et))
+    elseif et isa LLVM.FloatingPointType
+        Int(_type_width(et))
+    else
+        error("ir_extract.jl: vector with unsupported element type $et; " *
+              "got vector type $vt (Bennett-cc0.7 / Bennett-ao66)")
+    end
     w ∈ (1, 8, 16, 32, 64) ||
         error("ir_extract.jl: vector element width $w is not supported; " *
               "expected 1/8/16/32/64. Got vector type $vt")
     return (Int(LLVM.length(vt)), w)
+end
+
+struct _VectorLaneValue
+    op::IROperand
+    width::Int
+end
+
+_iwidth(val::_VectorLaneValue) = val.width
+_operand(val::_VectorLaneValue, names::Dict{_LLVMRef, Symbol}) = val.op
+
+function _vector_call_callee_name(inst::LLVM.Instruction, ops)
+    isempty(ops) && return ""
+    try
+        return String(LLVM.name(ops[end]))
+    catch e
+        e isa InterruptException && rethrow()
+        return ""
+    end
+end
+
+function _vector_element_is_float(val)::Bool
+    vt = LLVM.value_type(val)
+    vt isa LLVM.VectorType || return false
+    return LLVM.eltype(vt) isa LLVM.FloatingPointType
+end
+
+function _const_bool_arg(v::_VectorLaneValue)::Union{Nothing, Bool}
+    v.width == 1 || return nothing
+    v.op isa ConstOperand || return nothing
+    v.op.value == 0 && return false
+    v.op.value in (1, -1) && return true
+    return nothing
+end
+
+function _validate_vector_intrinsic_lane(cname::AbstractString,
+                                         inst::LLVM.Instruction,
+                                         lane_ops::Vector{_VectorLaneValue})
+    # Scalar min/max handlers currently use integer compares. Allowing their
+    # vector float forms would silently compare f64 bit patterns.
+    if (startswith(cname, "llvm.minnum") || startswith(cname, "llvm.minimum") ||
+        startswith(cname, "llvm.maxnum") || startswith(cname, "llvm.maximum")) &&
+       _vector_element_is_float(inst)
+        _ir_error(inst,
+            "vector intrinsic $cname on floating-point lanes is not supported; " *
+            "scalar handler uses integer comparisons, so Bennett rejects this " *
+            "to avoid bit-pattern min/max miscompile")
+    end
+
+    # These LLVM intrinsics produce poison on specific inputs when the immarg
+    # is true. Bennett cannot prove those path conditions lane-locally here.
+    if startswith(cname, "llvm.abs") || startswith(cname, "llvm.ctlz") ||
+       startswith(cname, "llvm.cttz")
+        length(lane_ops) >= 2 ||
+            _ir_error(inst, "vector intrinsic $cname missing poison immarg")
+        flag = _const_bool_arg(lane_ops[2])
+        flag === nothing &&
+            _ir_error(inst,
+                "vector intrinsic $cname poison immarg must be constant i1")
+        flag == false ||
+            _ir_error(inst,
+                "vector intrinsic $cname with poison-on-overflow/zero immarg=true " *
+                "is not supported; Bennett rejects poison-producing forms")
+    end
 end
 
 # Decode a value's N lanes into IROperands. Handles already-populated SSA
@@ -168,7 +235,7 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
         lane_op = vec_lanes[idx + 1]
         lane_op === POISON_LANE &&
             _ir_error(inst, "extractelement reads poison lane — undefined behaviour")
-        w = Int(LLVM.width(LLVM.value_type(inst)))
+        w = Int(_type_width(LLVM.value_type(inst)))
         return IRBinOp(dest, :add, lane_op, iconst(0), w)
     end
 
@@ -247,6 +314,65 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
         for i in 1:n
             lane_dest = _auto_name(counter)
             push!(insts, IRCast(lane_dest, opname, src_lanes[i], w_from, w_to))
+            out[i] = ssa(lane_dest)
+        end
+        lanes[inst.ref] = out
+        return insts
+    end
+
+    # Vector LLVM intrinsics - scalarise lane-wise and route each lane through
+    # the scalar intrinsic dispatcher. This keeps the large intrinsic table in
+    # one place while ensuring no vector IR reaches lower.jl.
+    if opc == LLVM.API.LLVMCall
+        ops = LLVM.operands(inst)
+        cname = _vector_call_callee_name(inst, ops)
+        startswith(cname, "llvm.") ||
+            _ir_error(inst, "unsupported vector call '$cname' (only LLVM intrinsics are scalarised)")
+
+        shape = _vector_shape(inst)
+        shape === nothing &&
+            _ir_error(inst, "vector intrinsic $cname has scalar return type; vector reductions are not supported")
+        (n, ret_w) = shape
+
+        arg_lanes = Vector{Vector{_VectorLaneValue}}()
+        for arg in ops[1:(length(ops) - 1)]
+            arg_shape = _vector_shape(arg)
+            if arg_shape === nothing
+                arg_op = _operand(arg, names)
+                arg_w = _iwidth(arg)
+                push!(arg_lanes, [_VectorLaneValue(arg_op, arg_w) for _ in 1:n])
+            else
+                (arg_n, arg_w) = arg_shape
+                arg_n == n ||
+                    _ir_error(inst,
+                        "vector intrinsic $cname lane-count mismatch: " *
+                        "return has $n lanes, operand has $arg_n lanes")
+                resolved = _resolve_vec_lanes(arg, lanes, names, n)
+                push!(arg_lanes, [_VectorLaneValue(op, arg_w) for op in resolved])
+            end
+        end
+
+        insts = IRInst[]
+        out = Vector{IROperand}(undef, n)
+        for i in 1:n
+            lane_dest = _auto_name(counter)
+            lane_ops = [arg[i] for arg in arg_lanes]
+            for (j, lane_val) in enumerate(lane_ops)
+                lane_val.op === POISON_LANE &&
+                    _ir_error(inst,
+                        "vector intrinsic $cname reads poison lane $i from operand $j")
+            end
+            _validate_vector_intrinsic_lane(cname, inst, lane_ops)
+            handled = _handle_intrinsic(cname, inst, names, counter, lane_dest, lane_ops)
+            handled === nothing &&
+                _ir_error(inst,
+                    "vector intrinsic $cname has no scalar intrinsic handler " *
+                    "for lane width $ret_w")
+            if handled isa Vector
+                append!(insts, handled)
+            else
+                push!(insts, handled)
+            end
             out[i] = ssa(lane_dest)
         end
         lanes[inst.ref] = out
@@ -342,4 +468,3 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
 
     _ir_error(inst, "unsupported vector opcode $opc")
 end
-
