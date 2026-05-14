@@ -22,6 +22,19 @@ using Bennett: extract_parsed_ir, IRStore, IRAlloca
 # excluded from the rate calculation (no work to eliminate). This matches
 # the issue intent: "measure the ratio of stores/allocas eliminated by
 # T0.2+T0.3 preprocessing."
+#
+# ⚠ --check-bounds SENSITIVITY (Bennett-k31q). Some corpus functions — most
+# notably `cond_pair` — compile to *completely different* LLVM IR depending
+# on the `--check-bounds` flag. Under `--check-bounds=yes` (forced), Julia
+# can no longer stack-allocate the array literal: it emits a GC frame, which
+# brings a volatile `llvm.memset`, an inline-asm thread-pointer read, and an
+# `ijl_gc_small_alloc` external call — all of which Bennett *correctly*
+# fail-loud rejects (they are out of scope, not gaps). `Pkg.test()` ALWAYS
+# runs with `--check-bounds=yes`, so that is the configuration this test
+# must be validated under. A bare `julia --project test/test_t0_preprocessing.jl`
+# uses the default and will NOT reproduce the check-bounds=yes-only skips —
+# do NOT conclude "passes" from a standalone run alone (that mistake is what
+# got Bennett-k31q wrongly closed once already).
 
 """Count IRStore + IRAlloca instructions across all blocks of a ParsedIR."""
 function _count_mem_ops(parsed)
@@ -81,16 +94,23 @@ _corpus = [
     # The delta is T0's contribution ON TOP of Julia's own optimisation.
     for (name, arg_tp_tuple, f) in _corpus
         arg_tup = Tuple{arg_tp_tuple...}
+        # Capture the FULL error message — the allowlist check below greps
+        # it for diagnostic keywords ("volatile", "inline-asm", ...) that sit
+        # well past char 80 in Bennett's verbose fail-loud messages. An
+        # earlier `[1:min(80,end)]` truncation HERE silently defeated the
+        # allowlist (Bennett-k31q): every long message looked "unexpected"
+        # because the keyword was chopped off. Truncation is now display-only
+        # (see the Skipped printout below).
         raw = try
             extract_parsed_ir(f, arg_tup; optimize=true, preprocess=false)
         catch e
-            push!(skipped, name * ":raw=" * sprint(showerror, e)[1:min(80,end)])
+            push!(skipped, name * ":raw=" * sprint(showerror, e))
             continue
         end
         pp = try
             extract_parsed_ir(f, arg_tup; optimize=true, preprocess=true)
         catch e
-            push!(skipped, name * ":pp=" * sprint(showerror, e)[1:min(80,end)])
+            push!(skipped, name * ":pp=" * sprint(showerror, e))
             continue
         end
         raw_c = _count_mem_ops(raw)
@@ -109,8 +129,14 @@ _corpus = [
     active_pp  = sum(r[3] for r in active; init=0)
     active_rate = active_raw == 0 ? 1.0 : (active_raw - active_pp) / active_raw
 
+    cb = Base.JLOptions().check_bounds
+    cb_name = cb == 1 ? "yes (forced — this is the Pkg.test configuration)" :
+              cb == 2 ? "no (forced)" : "default (Julia REPL/script default)"
     println()
     println("  ===== T0.4 Store/Alloca Elimination (20-function corpus) =====")
+    println("  --check-bounds=$cb_name")
+    cb == 1 || println("  ⚠ not check-bounds=yes — some check-bounds-sensitive skips " *
+                       "(e.g. cond_pair) will NOT reproduce here; see file header.")
     println("  $(lpad("Function", 20)) │ $(lpad("raw", 5)) │ $(lpad("post-pp", 8)) │ $(lpad("stores", 6)) │ $(lpad("allocas", 7))")
     println("  " * "─" ^ 58)
     for (name, raw, pp, st, al) in results
@@ -128,7 +154,10 @@ _corpus = [
     if !isempty(skipped)
         println("  Skipped (extract errored): $(length(skipped)):")
         for msg in skipped
-            println("    • $msg")
+            # Display-only truncation (char-safe via `first`, so multibyte
+            # chars like the `—` in Bennett error messages never split). The
+            # allowlist check below operates on the FULL `skipped` entries.
+            println("    • $(first(msg, 160))$(length(msg) > 160 ? " …" : "")")
         end
     end
     println("  ==================================================")
