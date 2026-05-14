@@ -97,8 +97,10 @@ function _validate_vector_intrinsic_lane(cname::AbstractString,
                                          lane_ops::Vector{_VectorLaneValue})
     # Scalar min/max handlers currently use integer compares. Allowing their
     # vector float forms would silently compare f64 bit patterns.
-    if (startswith(cname, "llvm.minnum") || startswith(cname, "llvm.minimum") ||
-        startswith(cname, "llvm.maxnum") || startswith(cname, "llvm.maximum")) &&
+    # Trailing-`.` discipline (worklog 063/064): match the full intrinsic
+    # family name so siblings (e.g. `llvm.minimumnum.*`) cannot be swallowed.
+    if (startswith(cname, "llvm.minnum.") || startswith(cname, "llvm.minimum.") ||
+        startswith(cname, "llvm.maxnum.") || startswith(cname, "llvm.maximum.")) &&
        _vector_element_is_float(inst)
         _ir_error(inst,
             "vector intrinsic $cname on floating-point lanes is not supported; " *
@@ -108,8 +110,8 @@ function _validate_vector_intrinsic_lane(cname::AbstractString,
 
     # These LLVM intrinsics produce poison on specific inputs when the immarg
     # is true. Bennett cannot prove those path conditions lane-locally here.
-    if startswith(cname, "llvm.abs") || startswith(cname, "llvm.ctlz") ||
-       startswith(cname, "llvm.cttz")
+    if startswith(cname, "llvm.abs.") || startswith(cname, "llvm.ctlz.") ||
+       startswith(cname, "llvm.cttz.")
         length(lane_ops) >= 2 ||
             _ir_error(inst, "vector intrinsic $cname missing poison immarg")
         flag = _const_bool_arg(lane_ops[2])

@@ -1,3 +1,112 @@
+## Session log — 2026-05-14 — ao66 tidy + runtests.jl progress tracking + stale-test fixes (k31q reopened)
+
+Review of the previous session's `7a9aef5` (Bennett-ao66 vector intrinsic
+scalarisation) surfaced two loose ends; both addressed here, plus a
+test-harness usability fix that fell out of trying to verify the change — and
+running the full suite to verify then surfaced 3 pre-existing latent-red
+failures (2 fixed, 1 reopened as a bead). See the `Pkg.test()` section below.
+
+**3+1 protocol — happened, was not recorded.** The ao66 change touched
+`src/extract/vectors.jl` (part of the `ir_extract.jl` split, a core-pipeline
+surface per CLAUDE.md §2). The 2026-05-13 worklog entry below mentions only the
+reviewer agent and reads as implement+review. The user confirms the full 3+1
+protocol (2 blind proposers + implementer + reviewer) *did* run — it just
+wasn't written down. Recording it here so the audit trail is complete.
+**Lesson:** when 3+1 runs, the worklog entry must say so explicitly (and when
+it is skipped, say *that* explicitly, per the `bybh` precedent two chunks up).
+A silent worklog leaves a future agent unable to tell.
+
+**Trailing-`.` discipline.** The new guards in `_validate_vector_intrinsic_lane`
+used dotless prefixes (`startswith(cname, "llvm.abs")`, `"llvm.minimum"`, …).
+That mirrors the existing dotless prefixes in `src/extract/instructions.jl`, but
+contradicts the go-forward rule from worklog 063/064 ("every
+`startswith(cname, "llvm.<name>")` MUST include trailing `.` from the moment of
+insertion"). Tightened all seven new prefixes (`llvm.abs.`, `llvm.ctlz.`,
+`llvm.cttz.`, `llvm.minnum.`, `llvm.minimum.`, `llvm.maxnum.`, `llvm.maximum.`).
+Real collision risk was low (`llvm.minimum` could swallow `llvm.minimumnum`,
+but that form is rejected anyway), so this is hygiene, not a bugfix. The
+*pre-existing* dotless prefixes in `instructions.jl` are left alone — touching
+them is unrelated scope and a separate core-file change.
+
+**`runtests.jl` progress tracking.** Verifying the above meant running the
+full suite, which exposed a real usability problem: it now takes *far* longer
+than the "~5 min cold Pkg.test" figure in CLAUDE.md (one run was killed at
+25+ min CPU, presumed hung — though it may just have been slow). The "5 min"
+number is stale: it predates the entire Tier C1/C2 transcendental grind
+(worklogs 054–063), and the outer `@testset "Bennett"` (zy4u / U104) nests
+every file's testsets under one root, so Julia's Test stdlib prints **nothing**
+until the whole suite finishes — a slow file and a hung file look identical.
+Fix: added `runfile(path)` at the top of `test/runtests.jl` — a thin
+`Base.include` wrapper that prints a `▶ starting` marker (eagerly flushed) and
+a `✓ done` line with per-file + cumulative elapsed time, yellow if >30s.
+Mechanically swapped all 249 active `include("test_…")` call sites to
+`runfile(…)` via `sed` — pure rename, **call order unchanged**, so the zy4u
+nesting and the gate-count regression baselines are untouched (the `qjet`
+risk is *reordering*, not renaming). Commented-out includes left as-is.
+
+**Gotcha:** `include` cannot be shadowed by a same-named function in `Main`
+(`ERROR: cannot define function include; it already has a value`) — hence the
+distinct `runfile` name + the call-site rename rather than a zero-churn
+wrapper. CLAUDE.md's "~5 min" estimate should be refreshed once a clean full
+run produces a real number; the cumulative timestamps from `runfile` will give
+the per-file breakdown to find what actually got slow.
+
+**`BENNETT_HEAVY_TESTS` gate.** The `runfile` timestamps showed the cost is
+concentrated in the 17 contiguous `test_*_llvm_*_dispatch.jl` files (1pb / 582
+/ emv / 3mo / s1zl / qpke / ckvj / bd7f / 7goc + the 8 hyperbolic dispatch
+files) — each compiles a soft-float transcendental to a multi-million-gate
+circuit and simulates it; `s1zl` alone is ~127s, the block is ~15 min. Wrapped
+that block in `if get(ENV, "BENNETT_HEAVY_TESTS", "1") != "0"` — default ON,
+set `BENNETT_HEAVY_TESTS=0` for fast iteration on unrelated code paths. Mirrors
+the existing `BENNETT_T5_TESTS` / `BENNETT_RESEARCH_TESTS` gates exactly. Body
+left unindented (zy4u churn-minimisation rationale). **Polarity is
+deliberate:** default-on keeps the green-before-push safety net intact; these
+tests sit downstream of the whole extract→lower→bennett pipeline, so a
+core-file change can perturb them even when it doesn't look related — skipping
+them is an iteration convenience, never a merge gate.
+
+**Full `Pkg.test()` — 540208 pass / 3 fail / 3 broken / 27m37s.** The run
+confirmed the suite is *slow, not hung* (steady per-file progress throughout;
+the cost is the 17-file transcendental-dispatch block, exactly the block now
+gated). The 3 failures are all **pre-existing and latent-red — none caused by
+this session's changes**:
+
+* **`test_kmuj_callee_groups.jl` (2 failures) — fixed this session.** Stale
+  hardcoded counts: the test pinned `_CALLEES_FP_TRANS == 19` / `n_grouped ==
+  80`; actual values are **27 / 88**. The test's comment trail stops at
+  *"7goc: 18→19"* — every transcendental bead after that (`m2bv` … `o7cy`,
+  worklogs 060–063) extended `_CALLEES_FP_TRANS` without bumping the test, so
+  it has been red since ~2026-05-06. Fixed (test-only, counts verified via
+  `using Bennett`, comment trail extended through `o7cy`); now 294/294.
+* **`test_t0_preprocessing.jl` (1 failure) — NOT fixed; `Bennett-k31q`
+  reopened.** `cond_pair` extraction flags an unhandled `llvm.memset.p0.i64`.
+  It **passes standalone** but **fails under full-suite ordering** — a
+  test-ordering dependency. This directly contradicts the 2026-05-13 `k31q`
+  close, which was based only on a standalone run (the one config where it
+  passes). k31q's own original NOTES said it was surfaced via `Pkg.test()`,
+  so the standalone-only check was insufficient. Reopened with a note; per
+  CLAUDE.md §7 this needs a real investigation session, not a tidy-commit fix.
+
+Both pre-existing failures confirm the suite has not been green for ~8+ days
+— consistent with the project's unverified-push norm.
+
+**Validation:** `test/test_ao66_vector_intrinsic_rescalarise.jl` 41/41 green
+after the prefix tightening; `test_vector_ir` + `test_cc07_repro` green;
+`test_kmuj_callee_groups.jl` 294/294 after the count fix; `runtests.jl` parses
+clean after the `runfile` rename + `BENNETT_HEAVY_TESTS` gate (`if`/`end`
+balance verified). After this commit the **only** remaining suite failure is
+the pre-existing `test_t0_preprocessing.jl` / `Bennett-k31q` order-dependency.
+
+**Next agent starts here:** ao66 is fully closed and tidy; `runtests.jl` now
+streams per-file progress and has a `BENNETT_HEAVY_TESTS=0` fast path.
+Outstanding: **`Bennett-k31q`** (reopened) — `test_t0_preprocessing.jl` fails
+only under full-suite ordering; reproduce via full `Pkg.test()` (or bisect the
+ordering dep), NOT the standalone file. Also worth doing: refresh CLAUDE.md's
+stale "~5 min cold Pkg.test" figure — the real number is ~27 min full,
+~10-12 min with `BENNETT_HEAVY_TESTS=0`.
+
+---
+
 ## Session log — 2026-05-13 — Bennett-ao66 vector intrinsic scalarisation
 
 Implemented `Bennett-ao66`: vector-form LLVM intrinsic calls in
