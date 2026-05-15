@@ -1,3 +1,175 @@
+## Session log — 2026-05-15 (latest) — Bennett-p19b / U_ `soft_minimumnum` / `soft_maximumnum` aliases + LLVM 19+ dispatch (closes the third and FINAL kh6n future-work stub)
+
+**Shipped:** two thin function-form aliases over `soft_fmin` / `soft_fmax`
+in `src/softfloat/fmin.jl` (~30 LOC of new bodies + comment header).
+Each alias is a single-line wrapping `function … end` that returns
+the corresponding fmin/fmax result, NOT an `@inline` short-form
+`soft_minimumnum(...) = soft_fmin(...)` — see "Gotcha" below for the
+callee-registry resolution reason. The aliases are bit-identical to
+the underlying primitives because `soft_fmin` / `soft_fmax`
+(Bennett-k2w6) ALREADY chose the IEEE 754-2019-specified `±0`
+tie-break (matches `Base.min`/`Base.max`); the spec tightening from
+"unspecified" (minNum) to "specified" (minimumNumber) is a no-op for
+our impl.
+
+LLVM dispatch in `src/extract/instructions.jl` removes the
+Bennett-kh6n explicit-reject for `llvm.minimumnum.*` /
+`llvm.maximumnum.*` and replaces it with two native `IRCall` arms,
+positioned BEFORE the `llvm.minimum.` / `llvm.maximum.` arms (defense
+in depth — trailing-`.` discipline already prevents the shorter
+prefix from matching `*num`, but longest-first ordering is robust to
+future drift). f32 forms still rejected per CLAUDE.md §13.
+
+`_CALLEES_FP_MINMAX` extended +2 (now 6: fmin / fmax / fminimum /
+fmaximum / minimumnum / maximumnum). Module export list in
+`src/softfloat/softfloat.jl` extended +2.
+
+Test coverage: new `test/test_p19b_minimumnum_maximumnum.jl` (~210
+LOC) ships with four `.ll` fixtures (`p19b_minimumnum_f64.ll`,
+`p19b_maximumnum_f64.ll`, `p19b_minimumnum_f32_reject.ll`,
+`p19b_maximumnum_f32_reject.ll`). Mirrors test_k2w6 structure plus
+an explicit alias-identity invariant testset
+(`soft_minimumnum(a, b) === soft_fmin(a, b)` for 5k random + ~15
+corner pairs — pins the alias property at the IR-binding layer).
+
+The kh6n test assertions for `llvm.minimumnum.f64` / `llvm.maximumnum.f64`
+were inverted from "asserts reject" to "asserts clean dispatch"
+(mirrors mq6f's roundeven inversion). The .ll fixtures stay in
+service. kh6n testset count unchanged (4); assertion count drops
+6 → 4 (each inversion: `err !== nothing && occursin(...)` → single
+`err === nothing`).
+
+**Why:** Closes the third and final Bennett-kh6n future-work stub.
+Per the kh6n catalogue, the open stubs were:
+  1. `llvm.minimum` / `llvm.maxnum` / `llvm.minnum` / `llvm.maximum`
+     — closed by **Bennett-k2w6** earlier today (4 native primitives).
+  2. `llvm.roundeven` (banker's) and the `llvm.round` silent
+     miscompile — closed by **Bennett-mq6f** later today (`soft_round_away`).
+  3. `llvm.minimumnum` / `llvm.maximumnum` (LLVM 19+, IEEE 754-2019)
+     — **closed by this bead (p19b)**. Trivial because the existing
+     soft_fmin / soft_fmax already implement the spec'd ±0 behavior.
+
+After p19b: `src/extract/instructions.jl` contains ZERO explicit
+fail-loud rejects from kh6n. Every LLVM round/min/max intrinsic
+(llvm.{round,roundeven,floor,ceil,trunc,rint,minnum,maxnum,minimum,
+maximum,minimumnum,maximumnum}.*) dispatches natively to a
+soft-float primitive, with f32 forms uniformly rejected per §13.
+
+**Gotchas / Lessons:**
+
+- **Alias as `function … end`, not `@inline f(...) = g(...)` short-form.**
+  The bead spec hinted at potential callee-registry resolution issues
+  with `@inline` aliases — `_lookup_callee("soft_minimumnum")` needs
+  to resolve to a *distinct generic function* from
+  `_lookup_callee("soft_fmin")`. Single-line `f(...) = g(...)` defines
+  a new method on a new generic function (so the registry sees them
+  as distinct), but the `@inline` decorator can sometimes interact
+  with method-table lookup in surprising ways. Defensive choice: use
+  a full `function … end` body (still inlined by Julia at -O2). The
+  alias-identity test
+  (`soft_minimumnum(a, b) === soft_fmin(a, b)` over 5k pairs + 15
+  corner cases) green-fires this on the first run, so the choice
+  worked out without further fiddling.
+
+- **The kh6n explicit-reject ordering matters.** Original Bennett-kh6n
+  put the `llvm.minimumnum` / `llvm.maximumnum` reject BEFORE the
+  `llvm.minimum` / `llvm.maximum` arms — defense-in-depth, in case
+  the trailing-`.` discipline ever regressed. p19b preserves that
+  ordering (positive dispatch arms BEFORE the shorter siblings). The
+  `llvm.minimum.` arm starts with `m`, position 12 is `.`; the
+  `llvm.minimumnum.` cname starts with `m`, position 12 is `n`. So
+  trailing-`.` already does the disambiguation work, but the
+  longest-first ordering is one extra layer of defense. Same trap
+  Bennett-7goc fixed in the trig family (atan2 vs atan).
+
+- **`@test_throws` is NOT used for the kh6n inversions.** The mq6f
+  precedent uses bare `@test err === nothing` (one assertion per
+  inversion); kept for symmetry. Wrapping in `@test_throws` would
+  flip the polarity opaquely; the explicit `kh6n_reject(...) === nothing`
+  shape makes the "previously rejected, now dispatches" intent
+  immediately readable.
+
+- **Subnormal-input sweep is structurally trivial.** As with k2w6,
+  `min`/`max` outputs are always one of the inputs; subnormal
+  preservation is structural. The 1074-binade sweep × ± × 4 partner
+  operands × 2 primitives runs in ~0.5 s and adds ~17k assertions.
+  Kept for §13 spirit + regression catch on any future precision
+  drift in the underlying soft_fcmp_olt.
+
+**Rejected alternatives:**
+
+- **3+1 protocol per CLAUDE.md §2:** skipped per the same exception
+  used by Bennett-bybh (chunk 061), Bennett-kh6n + Bennett-k2w6 +
+  Bennett-mq6f (this chunk above). The `soft_minimumnum` /
+  `soft_maximumnum` bodies are mechanical wrappers (3 LOC each
+  forwarding to fmin/fmax); the LLVM dispatch arms mirror the
+  existing k2w6 pattern verbatim. Documenting the exception here
+  for the next 3+1 audit.
+
+- **Routing `llvm.minimumnum.f64` directly to `soft_fmin` (no new
+  primitive).** Rejected per the bead's recommendation: callsite
+  documentation is clearer with a primitive name that mirrors the
+  intrinsic. The `_CALLEES_FP_MINMAX` group becomes self-describing
+  (one callee per LLVM intrinsic name); future readers don't have
+  to chase a comment to learn which `soft_*` resolves which intrinsic.
+  Cost: +2 generic function objects. Benefit: zero dispatch-table
+  fragmentation between `Base.min`/`Base.max` (which route to
+  `soft_fminimum` / `soft_fmaximum` for hardware-Julia parity) and
+  the LLVM-ingest dispatch.
+
+- **Adding a `Base.minimumnum(::SoftFloat, ::SoftFloat)` override.**
+  Rejected — `Base.minimumnum` does not exist in Julia stdlib. The
+  primitives are reachable via raw `.ll` ingest (their primary
+  consumer); Julia source compile sticks with `Base.min` /
+  `Base.max` → `soft_fminimum` / `soft_fmaximum` (k2w6 routing).
+
+- **Subnormal-OUTPUT sweep coverage.** As with k2w6, `min`/`max`
+  outputs are structurally one of the inputs, so subnormal-output
+  bit-exactness reduces to subnormal-input bit-exactness — covered
+  by the input sweep above.
+
+**Validation:** RED-GREEN TDD per CLAUDE.md §3.
+
+- RED: pre-implementation `julia --project test/test_p19b_*.jl`
+  errored with `UndefVarError: \`soft_minimumnum\` not defined in
+  \`Bennett\`` on the first testset (callees registered) and
+  cascaded through every other testset.
+
+- GREEN: post-implementation: 227,276 / 227,276 pass.
+
+- Regression sample (all green / 0 fail / 0 broken):
+  - `test_p19b_minimumnum_maximumnum`: **227,276 / 227,276** (new)
+  - `test_kh6n_prefix_discipline`: 4 / 4 (asserts: 6 → 4 — two
+    pairs of `!== nothing` + `occursin` collapsed to single
+    `=== nothing` per inversion)
+  - `test_k2w6_soft_fminmax` (sibling primitive group, MUST pass
+    unchanged — alias must not shift soft_fmin behavior):
+    **434,472 / 434,472**
+  - `test_mq6f_round_away` (sibling primitive group): 7,367 / 7,367
+  - `LLVM intrinsics coverage`: 1,280 / 1,280
+  - `Float utility intrinsics`: 27 / 27
+  - `ao66 vector intrinsics`: 41 / 41
+
+  Combined sample: **670,467** asserts green / 0 fail / 0 broken.
+
+`_CALLEES_FP_MINMAX` count: 4 → 6. Soft-float primitive count: 37 → 39.
+
+**Next agent starts here:** **THE kh6n future-work pipeline IS NOW
+CLOSED.** The whole round/min/max family dispatches natively; no
+explicit fail-loud rejects from kh6n remain in
+`src/extract/instructions.jl`. Suggested pickups (orchestrator's
+choice from `bd ready`):
+  - `Bennett-pg5` — vector reductions (likely high-leverage,
+    builds on ao66's vector-rescalarisation foundation)
+  - `Bennett-9wmk` — fast_copy swap (left OPEN with finding from
+    chunk 065; ~25% wire savings traded for 30% depth penalty;
+    needs design rethink)
+  - `Bennett-h0ai` — auto-self-reversing detection
+  - `Bennett-fg2` — modern SAT-solver replacement for the dropped
+    PicoSAT pebbling path (per Bennett-u2yp / U149 follow-up)
+
+---
+
 ## Session log — 2026-05-15 (later still) — Bennett-mq6f / U_ `soft_round_away` (round-half-AWAY) + dispatch + corrects kh6n misstatement
 
 **Shipped:** new `soft_round_away(a::UInt64) -> UInt64` primitive in

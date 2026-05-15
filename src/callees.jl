@@ -38,8 +38,16 @@ const _CALLEES_FP_ROUND = (
 # minNum/maxNum); `soft_fminimum` / `soft_fmaximum` are NaN-propagating
 # (≡ llvm.minimum / llvm.maximum / IEEE 754-2008 minimum/maximum, also
 # matches Julia Base.min/max bit-exactly).
+# Bennett-p19b: third semantic pair `soft_minimumnum` / `soft_maximumnum`
+# (≡ llvm.minimumnum / llvm.maximumnum / IEEE 754-2019 minimumNumber/
+# maximumNumber, LLVM 19+) — NaN-absorbing with the ±0 tie-break
+# specified rather than unspecified. Bit-identical to `soft_fmin` /
+# `soft_fmax` (which already chose the specified ±0 behavior); aliased
+# at the soft-float layer so the callee registry resolves the distinct
+# LLVM intrinsic names.
 const _CALLEES_FP_MINMAX = (
     soft_fmin, soft_fmax, soft_fminimum, soft_fmaximum,
+    soft_minimumnum, soft_maximumnum,
 )
 
 # IEEE 754 comparison (returns i1). Bennett-d77b / U132: 6 new primitives

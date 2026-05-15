@@ -131,3 +131,40 @@ function soft_fmax(a::UInt64, b::UInt64)::UInt64
     res    = ifelse(a_nan, b, ifelse(b_nan, a, base))
     return ifelse(both_nan, UInt64(0x7FF8000000000000), res)
 end
+
+# Bennett-p19b: IEEE 754-2019 minimumNumber/maximumNumber (LLVM 19+
+# llvm.minimumnum / llvm.maximumnum). Semantically identical to
+# soft_fmin / soft_fmax (above) — both are NaN-absorbing and both
+# specify the ±0 sign-aware tie-break (returning -0.0 from min, +0.0
+# from max). LLVM 19 explicitly tightens the ±0 spec from "unspecified"
+# (minnum) to "specified" (minimumnum); soft_fmin already chose the
+# specified behavior, so the bodies coincide. Aliased rather than
+# duplicated for callsite clarity. The body forms below are full
+# `function … end` (rather than `@inline` short-form) so the callee
+# registry resolves `soft_minimumnum` / `soft_maximumnum` as distinct
+# generic functions from `soft_fmin` / `soft_fmax`, even though every
+# instance is delegated identically.
+
+"""
+    soft_minimumnum(a::UInt64, b::UInt64) -> UInt64
+
+IEEE 754-2019 `minimumNumber` on raw bit patterns. NaN-absorbing
+(returns the non-NaN operand if exactly one is NaN; canonical qNaN
+if both NaN). The ±0 tie-break is specified: returns the negative
+zero. Bit-identical to [`soft_fmin`](@ref) (which already chose
+this convention for least-surprise consistency with `Base.min`).
+"""
+function soft_minimumnum(a::UInt64, b::UInt64)::UInt64
+    return soft_fmin(a, b)
+end
+
+"""
+    soft_maximumnum(a::UInt64, b::UInt64) -> UInt64
+
+IEEE 754-2019 `maximumNumber` on raw bit patterns. Symmetric to
+[`soft_minimumnum`](@ref); ±0 tie-break returns the positive zero.
+Bit-identical to [`soft_fmax`](@ref).
+"""
+function soft_maximumnum(a::UInt64, b::UInt64)::UInt64
+    return soft_fmax(a, b)
+end

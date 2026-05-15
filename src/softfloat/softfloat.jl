@@ -65,6 +65,7 @@ export soft_fadd, soft_fsub, soft_fmul, soft_fma, soft_fdiv, soft_fsqrt,
        soft_atan, soft_atan2, soft_asin, soft_acos,
        soft_tanh, soft_sinh, soft_cosh, soft_asinh, soft_acosh, soft_atanh,
        soft_log1p, soft_expm1,
-       soft_fmin, soft_fmax, soft_fminimum, soft_fmaximum
+       soft_fmin, soft_fmax, soft_fminimum, soft_fmaximum,
+       soft_minimumnum, soft_maximumnum
 
 end # module SoftFloatLib

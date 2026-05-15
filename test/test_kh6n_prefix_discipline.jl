@@ -22,18 +22,26 @@ end
     # and dispatch them to the wrong gates. After the kh6n fix the call
     # must produce a clear _ir_error mentioning the offending intrinsic.
 
-    @testset "llvm.minimumnum.f64 not swallowed by llvm.minimum" begin
+    # Bennett-p19b superseded the kh6n llvm.minimumnum.f64 / llvm.maximumnum.f64
+    # rejects with native dispatch to soft_minimumnum / soft_maximumnum (thin
+    # aliases over soft_fmin / soft_fmax, since the existing NaN-absorbing
+    # primitives already chose the IEEE 754-2019-specified ±0 tie-break).
+    # The reject fixtures are kept at test/fixtures/ll/kh6n_minimumnum_f64_reject.ll
+    # and test/fixtures/ll/kh6n_maximumnum_f64_reject.ll for git-history clarity
+    # but no longer test rejection — positive dispatch coverage lives in
+    # test_p19b_minimumnum_maximumnum.jl. Below: invariant tests asserting both
+    # intrinsics now dispatch cleanly (no error). Closes the third and final
+    # kh6n future-work stub.
+    @testset "llvm.minimumnum.f64 dispatches cleanly post-p19b (was kh6n reject)" begin
         err = kh6n_reject("kh6n_minimumnum_f64_reject.ll",
                           "kh6n_minimumnum_f64")
-        @test err !== nothing
-        @test occursin("llvm.minimumnum", err)
+        @test err === nothing  # Bennett-p19b: native dispatch, no reject
     end
 
-    @testset "llvm.maximumnum.f64 not swallowed by llvm.maximum" begin
+    @testset "llvm.maximumnum.f64 dispatches cleanly post-p19b (was kh6n reject)" begin
         err = kh6n_reject("kh6n_maximumnum_f64_reject.ll",
                           "kh6n_maximumnum_f64")
-        @test err !== nothing
-        @test occursin("llvm.maximumnum", err)
+        @test err === nothing  # Bennett-p19b: native dispatch, no reject
     end
 
     # Bennett-mq6f superseded the kh6n llvm.roundeven.f64 reject. The kh6n

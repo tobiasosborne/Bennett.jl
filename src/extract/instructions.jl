@@ -749,25 +749,42 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
        startswith(cname, "llvm.trunc.") || startswith(cname, "llvm.rint.")
         # No-op: handled by callee registry
     end
-    # Bennett-kh6n: `llvm.minimumnum.*` / `llvm.maximumnum.*` (LLVM 19+,
-    # IEEE 754-2019 minimumNumber/maximumNumber) MUST be rejected
-    # explicitly — pre-fix the (untightened) `llvm.minimum` / `llvm.maximum`
-    # arms swallowed them via prefix-match and dispatched to the wrong
-    # gates. NaN tie-break and quiet-NaN propagation differ from
-    # min/maximum, so even if we add float min/max later this is a
-    # separate primitive. Mirror Bennett-7goc's atan2-vs-atan precedent.
-    if startswith(cname, "llvm.minimumnum.") || startswith(cname, "llvm.maximumnum.")
-        _ir_error(inst,
-            "$(cname): IEEE 754-2019 minimumNumber/maximumNumber is not " *
-            "implemented; the existing min/max arms below use integer " *
-            "compare on bit patterns and have differing NaN semantics. " *
-            "Native soft_minimumnum / soft_maximumnum is future work. " *
-            "(Bennett-kh6n)")
+    # Bennett-p19b: native dispatch for IEEE 754-2019 minimumNumber /
+    # maximumNumber (LLVM 19+ `llvm.minimumnum.*` / `llvm.maximumnum.*`).
+    # Semantically NaN-absorbing with the ±0 tie-break SPECIFIED
+    # (-0.0 < +0.0 in min, +0.0 > -0.0 in max). Our `soft_fmin` /
+    # `soft_fmax` already chose the specified ±0 behavior (matches
+    # `Base.min` / `Base.max`), so `soft_minimumnum` / `soft_maximumnum`
+    # are aliased thin wrappers over them — see src/softfloat/fmin.jl.
+    # Both arms appear BEFORE the shorter `llvm.minimum.` / `llvm.maximum.`
+    # arms below (defense in depth: trailing-`.` already prevents the
+    # shorter prefix from matching `*num`, but longest-first ordering
+    # is robust to future prefix-discipline drift). Closes the third
+    # and final Bennett-kh6n future-work stub (after k2w6 + mq6f).
+    if startswith(cname, "llvm.minimumnum.")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.minimumnum: only f64 supported (got width=$w); native " *
+            "f32/f16 paths are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-p19b)")
+        return IRCall(dest, soft_minimumnum,
+                      [_operand(ops[1], names), _operand(ops[2], names)],
+                      [w, w], w)
+    end
+    if startswith(cname, "llvm.maximumnum.")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.maximumnum: only f64 supported (got width=$w); native " *
+            "f32/f16 paths are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-p19b)")
+        return IRCall(dest, soft_maximumnum,
+                      [_operand(ops[1], names), _operand(ops[2], names)],
+                      [w, w], w)
     end
     # llvm.minnum / llvm.maxnum / llvm.minimum / llvm.maximum
     # Trailing-`.` discipline (Bennett-kh6n): without it, `llvm.minimum`
     # silently swallows `llvm.minimumnum.*` and `llvm.maximum` swallows
-    # `llvm.maximumnum.*` (rejected explicitly above).
+    # `llvm.maximumnum.*` (handled by the explicit Bennett-p19b arms above).
     #
     # Bennett-k2w6: native dispatch for all four float min/max variants.
     # Two semantic pairs:
