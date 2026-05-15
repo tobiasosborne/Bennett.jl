@@ -240,6 +240,9 @@ runfile("test_cc07_repro.jl")
 runfile("test_vector_ir.jl")
 # Bennett-ao66 — vector-form LLVM intrinsic calls scalarised lane-wise.
 runfile("test_ao66_vector_intrinsic_rescalarise.jl")
+# Bennett-pg5 — llvm.vector.reduce.{add,mul,and,or,xor,smax,smin,umax,umin}
+# integer reductions (vector → scalar via linear left-to-right fold chain).
+runfile("test_pg5_vector_reductions.jl")
 # Bennett-cc0.4 — constant-pointer icmp eq (ConstantExpr operand folding).
 runfile("test_cc04_repro.jl")
 # Bennett-cc0.6 — standardized ir_extract error-message format.

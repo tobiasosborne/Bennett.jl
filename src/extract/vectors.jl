@@ -174,6 +174,131 @@ function _resolve_vec_lanes(val::LLVM.Value,
           "or poison/undef")
 end
 
+# Bennett-pg5: native dispatch for the 9 LLVM integer vector-reduction
+# intrinsics (`llvm.vector.reduce.{add,mul,and,or,xor,smax,smin,umax,umin}.*`).
+# These take ONE vector operand and return a SCALAR equal to
+# `lane[0] OP lane[1] OP ... OP lane[N-1]`. The lowering emits a left-to-right
+# linear fold chain over the resolved lanes. The last op writes `dest`; all
+# intermediate accumulators get auto-named SSA temporaries.
+#
+# Float reductions (`fadd`, `fmul`, `fmin`, `fmax`, `fminimum`, `fmaximum`,
+# `fminimumnum`, `fmaximumnum`) are out of scope for pg5 — see Bennett-lx5h (P3).
+# `fadd` / `fmul` additionally carry a "start value" first arg whose
+# non-identity cases need careful handling.
+#
+# Returns the IRInst chain on a hit, or `nothing` if `cname` is not a
+# vector-reduction intrinsic (caller falls through to the per-lane
+# scalarisation path).
+function _handle_vector_reduction(cname::AbstractString,
+                                  inst::LLVM.Instruction,
+                                  names::Dict{_LLVMRef, Symbol},
+                                  lanes::Dict{_LLVMRef, Vector{IROperand}},
+                                  counter::Ref{Int},
+                                  dest::Symbol)
+    startswith(cname, "llvm.vector.reduce.") || return nothing
+
+    # Trailing-`.` discipline on each op token (Bennett-kh6n). The op name
+    # sits between two `.` so prefix-collision risk is minimal, but the
+    # disciplined match is cheap insurance against future LLVM additions
+    # (e.g. a hypothetical `llvm.vector.reduce.added.*`).
+    op_dispatch = nothing  # (:binop, sym) | (:cmp, pred)
+    if startswith(cname, "llvm.vector.reduce.add.")
+        op_dispatch = (:binop, :add)
+    elseif startswith(cname, "llvm.vector.reduce.mul.")
+        op_dispatch = (:binop, :mul)
+    elseif startswith(cname, "llvm.vector.reduce.and.")
+        op_dispatch = (:binop, :and)
+    elseif startswith(cname, "llvm.vector.reduce.or.")
+        op_dispatch = (:binop, :or)
+    elseif startswith(cname, "llvm.vector.reduce.xor.")
+        op_dispatch = (:binop, :xor)
+    elseif startswith(cname, "llvm.vector.reduce.smax.")
+        op_dispatch = (:cmp, :sge)
+    elseif startswith(cname, "llvm.vector.reduce.smin.")
+        op_dispatch = (:cmp, :sle)
+    elseif startswith(cname, "llvm.vector.reduce.umax.")
+        op_dispatch = (:cmp, :uge)
+    elseif startswith(cname, "llvm.vector.reduce.umin.")
+        op_dispatch = (:cmp, :ule)
+    else
+        # Float reduction (`fadd` / `fmul` / `fmin` / `fmax` / `fminimum` /
+        # `fmaximum` / `fminimumnum` / `fmaximumnum`) — out of scope for pg5,
+        # punt to Bennett-lx5h. Fail loud here rather than fall through to
+        # the catch-all so the user gets the explicit pg5/lx5h context.
+        _ir_error(inst,
+            "vector reduction $cname is not supported; Bennett-pg5 covers " *
+            "the 9 integer reductions (add/mul/and/or/xor/smax/smin/umax/umin). " *
+            "Float reductions are tracked in Bennett-lx5h (P3)")
+    end
+
+    # Operand layout: [vector, callee] for integer reductions (single arg).
+    # Anything else (e.g. `fadd` with start value: [start, vector, callee])
+    # is a structural mismatch handled above; defensive guard here.
+    ops = LLVM.operands(inst)
+    length(ops) == 2 ||
+        _ir_error(inst,
+            "vector reduction $cname expected exactly 1 vector operand " *
+            "(got $(length(ops) - 1) args before callee)")
+
+    vec = ops[1]
+    _safe_is_vector_type(vec) ||
+        _ir_error(inst,
+            "vector reduction $cname operand is not a vector " *
+            "(got $(LLVM.value_type(vec)))")
+
+    # Reject float-lane vectors. The integer reductions are bit-pattern-agnostic
+    # for ints but would silently sum f64 bit patterns — wrong.
+    _vector_element_is_float(vec) &&
+        _ir_error(inst,
+            "vector reduction $cname has float-element operand; " *
+            "Bennett-pg5 covers integer reductions only. " *
+            "Float reductions are tracked in Bennett-lx5h (P3)")
+
+    (n, w) = _vector_shape(vec)
+    n >= 1 ||
+        _ir_error(inst,
+            "vector reduction $cname has empty vector operand " *
+            "(N=$n; LLVM langref says <0 x iN> is poison)")
+
+    vec_lanes = _resolve_vec_lanes(vec, lanes, names, n)
+    for (i, op) in enumerate(vec_lanes)
+        op === POISON_LANE &&
+            _ir_error(inst,
+                "vector reduction $cname reads poison lane at index $(i - 1)")
+    end
+
+    insts = IRInst[]
+
+    # N=1 trivial case: result is just lane[0]. Emit a rename via add-zero
+    # (mirrors the extractelement rename pattern, vectors.jl line ~241).
+    if n == 1
+        push!(insts, IRBinOp(dest, :add, vec_lanes[1], iconst(0), w))
+        return insts
+    end
+
+    # N≥2: linear left-to-right fold chain.
+    #   acc = lane[0]
+    #   for i in 1:n-1:
+    #     acc = OP(acc, lane[i])
+    # The last fold step writes `dest`; all intermediates get auto-names.
+    acc = vec_lanes[1]
+    (kind, opv) = op_dispatch
+    for i in 2:n
+        is_last = (i == n)
+        step_dest = is_last ? dest : _auto_name(counter)
+        if kind == :binop
+            push!(insts, IRBinOp(step_dest, opv, acc, vec_lanes[i], w))
+            acc = ssa(step_dest)
+        else  # :cmp — emits IRICmp + IRSelect
+            cmp_dest = _auto_name(counter)
+            push!(insts, IRICmp(cmp_dest, opv, acc, vec_lanes[i], w))
+            push!(insts, IRSelect(step_dest, ssa(cmp_dest), acc, vec_lanes[i], w))
+            acc = ssa(step_dest)
+        end
+    end
+    return insts
+end
+
 function _convert_vector_instruction(inst::LLVM.Instruction,
                                      names::Dict{_LLVMRef, Symbol},
                                      lanes::Dict{_LLVMRef, Vector{IROperand}},
@@ -331,9 +456,22 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
         startswith(cname, "llvm.") ||
             _ir_error(inst, "unsupported vector call '$cname' (only LLVM intrinsics are scalarised)")
 
+        # Bennett-pg5: integer vector-reduction intrinsics. These have a
+        # SCALAR result type but a VECTOR operand, so they hit the vector
+        # dispatch path (via `_any_vector_operand`) yet `_vector_shape(inst)`
+        # returns `nothing` (scalar return). Handle them BEFORE the shape
+        # check so the catch-all reject only fires for genuinely-unsupported
+        # vector intrinsics with scalar returns. Trailing-`.` discipline on
+        # every op token (per Bennett-kh6n).
+        reduction = _handle_vector_reduction(cname, inst, names, lanes, counter, dest)
+        reduction === nothing || return reduction
+
         shape = _vector_shape(inst)
         shape === nothing &&
-            _ir_error(inst, "vector intrinsic $cname has scalar return type; vector reductions are not supported")
+            _ir_error(inst, "vector intrinsic $cname has scalar return type; " *
+                            "Bennett-pg5 covers integer vector.reduce.{add,mul,and,or,xor," *
+                            "smax,smin,umax,umin}; float reductions are tracked in " *
+                            "Bennett-lx5h (P3)")
         (n, ret_w) = shape
 
         arg_lanes = Vector{Vector{_VectorLaneValue}}()
