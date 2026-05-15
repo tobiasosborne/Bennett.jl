@@ -293,7 +293,7 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
             "reversible_compile: strategy=:tabulate not applicable — $reason"))
         widths = _tabulate_input_widths(arg_types, bit_width)
         out_width = bit_width > 0 ? bit_width : sizeof(arg_types.parameters[1]) * 8
-        lr = lower_tabulate(f, arg_types, widths; out_width)
+        lr = lower_tabulate(f, arg_types, widths; out_width, auto_self_reversing)
         return bennett(lr)
     end
 
@@ -304,7 +304,7 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     if strategy === :auto && _tabulate_auto_picks(parsed, arg_types, bit_width)
         widths = _tabulate_input_widths(arg_types, bit_width)
         out_width = bit_width > 0 ? bit_width : sizeof(arg_types.parameters[1]) * 8
-        lr = lower_tabulate(f, arg_types, widths; out_width)
+        lr = lower_tabulate(f, arg_types, widths; out_width, auto_self_reversing)
         return bennett(lr)
     end
 

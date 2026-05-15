@@ -253,4 +253,102 @@ using Bennett: LoweringResult, GateGroup, ReversibleGate, NOTGate, CNOTGate,
         @test reversible_compile(x -> x + 1.0, Float64;
                                   auto_self_reversing=false) isa ReversibleCircuit
     end
+
+    # ====================================================================
+    # h0ai follow-up: producer-tag for `lower_tabulate` LRs (this PR).
+    #
+    # `lower_tabulate` previously emitted `gate_groups=[]` and hard-coded
+    # `self_reversing=true`. The change here:
+    #   1. Emits ONE `:__tabulate_qrom` GateGroup over the entire QROM
+    #      block, with `is_self_reversing=true`. This makes the producer
+    #      contract explicit and inferrable by `_infer_self_reversing`
+    #      should a future caller route tabulate through `lower(parsed)`.
+    #   2. Threads `auto_self_reversing` into `lower_tabulate` and into
+    #      the LR-level `self_reversing` flag, so the kill switch works
+    #      end-to-end on both `strategy=:tabulate` and `:auto`-picks-tabulate.
+    # ====================================================================
+
+    # Test function used by T14-T17: trivially tabulatable, full UInt8 range.
+    _h0ai_tab_f(x::UInt8) = x ⊻ UInt8(0x5a)
+
+    # ---- T14: tabulate emits the producer-tag ----
+    @testset "T14: lower_tabulate emits :__tabulate_qrom producer-tag" begin
+        lr = Bennett.lower_tabulate(_h0ai_tab_f, Tuple{UInt8}, [8]; out_width=8)
+        @test length(lr.gate_groups) == 1
+        gg = lr.gate_groups[1]
+        @test gg.ssa_name === :__tabulate_qrom
+        @test gg.is_self_reversing == true
+        @test gg.result_wires == lr.output_wires
+        @test gg.gate_start == 1
+        @test gg.gate_end == length(lr.gates)
+        # Default kwarg: auto_self_reversing=true preserves the LR flag.
+        @test lr.self_reversing == true
+    end
+
+    # ---- T15: _infer_self_reversing returns true on tabulate LR ----
+    @testset "T15: _infer_self_reversing accepts tabulate LR" begin
+        lr = Bennett.lower_tabulate(_h0ai_tab_f, Tuple{UInt8}, [8]; out_width=8)
+        @test _infer_self_reversing(lr, Int[]) == true
+        circuit = Bennett.bennett(lr)
+        @test verify_reversibility(circuit)
+        for x in UInt8(0):UInt8(255)
+            @test simulate(circuit, x) == _h0ai_tab_f(x)
+        end
+    end
+
+    # ---- T16: kill-switch on the explicit :tabulate path ----
+    @testset "T16: auto_self_reversing=false kill-switch on strategy=:tabulate" begin
+        c_default = reversible_compile(_h0ai_tab_f, UInt8; strategy=:tabulate)
+        c_killed  = reversible_compile(_h0ai_tab_f, UInt8; strategy=:tabulate,
+                                        auto_self_reversing=false)
+        # With the kill switch, Bennett wraps (forward + copy + reverse) →
+        # strictly more gates than the self-reversing short-circuit.
+        @test gate_count(c_killed).total > gate_count(c_default).total
+        @test verify_reversibility(c_default)
+        @test verify_reversibility(c_killed)
+        for x in UInt8(0):UInt8(255)
+            @test simulate(c_default, x) == _h0ai_tab_f(x)
+            @test simulate(c_killed,  x) == _h0ai_tab_f(x)
+        end
+    end
+
+    # ---- T17: kill-switch on the :auto path when the cost model picks tabulate ----
+    @testset "T17: auto_self_reversing=false kill-switch on strategy=:auto→tabulate" begin
+        # Need a function whose ParsedIR contains an O(W²) op AND total input
+        # width ≤ 4. `x * UInt8(5)` lowered at bit_width=4 satisfies both
+        # (`mul` is expensive; total width = 4). Verify via the auto-pick
+        # predicate before asserting; if it changes in the future, mark
+        # @test_skip + file a follow-up rather than silently invent behavior.
+        g(x::UInt8) = x * UInt8(5)
+        parsed = Bennett.extract_parsed_ir(g, Tuple{UInt8}; optimize=false)
+        if Bennett._tabulate_auto_picks(parsed, Tuple{UInt8}, 4)
+            c_default = reversible_compile(g, UInt8; bit_width=4, strategy=:auto)
+            c_killed  = reversible_compile(g, UInt8; bit_width=4, strategy=:auto,
+                                            auto_self_reversing=false)
+            @test gate_count(c_killed).total > gate_count(c_default).total
+            @test verify_reversibility(c_default)
+            @test verify_reversibility(c_killed)
+            # 4-bit input — 16 oracle checks; truncate g to the 4-bit window.
+            mask4(y) = UInt8(y & 0x0f)
+            for x in UInt8(0):UInt8(15)
+                @test simulate(c_default, x) == mask4(g(x))
+                @test simulate(c_killed,  x) == mask4(g(x))
+            end
+        else
+            @test_skip "T17 skipped: _tabulate_auto_picks did not select tabulate for g at bit_width=4 — file an h0ai follow-up"
+        end
+    end
+
+    # ---- T18: regression — T11 invariant after our edit ----
+    @testset "T18: T11 regression (tabulate LR self_reversing=true by default)" begin
+        # Pin the exact T11 assertion verbatim as explicit regression coverage
+        # of the lower_tabulate edit (auto_self_reversing=true is the default,
+        # so this lifts the LR-flag and preserves the bennett() short-circuit).
+        f(x::Int8) = x ⊻ Int8(0x5A)
+        c = reversible_compile(f, Int8; strategy=:tabulate)
+        @test verify_reversibility(c; n_tests=16)
+        for x in Int8(-128):Int8(127)
+            @test simulate(c, x) == f(x)
+        end
+    end
 end

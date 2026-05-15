@@ -12,9 +12,10 @@ closed self-cleaning primitive — `result_wires` carry the primitive's
 output, all internal ancillae return to zero by the end of the group,
 and the input wires read by the group are preserved. Producers known
 to satisfy this contract (e.g. the qcla_tree mul dispatch when no
-truncation is applied) tag their emitted group; the LR-level structural
-aggregator (`_infer_self_reversing`) checks the surrounding context
-and the U03 runtime probe before promoting `lr.self_reversing=true`.
+truncation is applied, and `lower_tabulate`'s `:__tabulate_qrom` group
+over the entire QROM block) tag their emitted group; the LR-level
+structural aggregator (`_infer_self_reversing`) checks the surrounding
+context and the U03 runtime probe before promoting `lr.self_reversing=true`.
 
 Producers MUST NOT set `is_self_reversing=true` on a group whose
 emitted output is later sliced/truncated by the dispatch site — the

@@ -1,3 +1,124 @@
+## Session log — 2026-05-15 — Bennett-hzl9 close — producer-tag for `lower_tabulate` (3+1, orchestrator-driven)
+
+**Shipped:** `lower_tabulate` now emits a single `:__tabulate_qrom` GateGroup
+with `is_self_reversing=true` over the entire QROM block, and the LR-level
+`self_reversing` flag honors a new `auto_self_reversing::Bool=true` kwarg
+threaded from both `reversible_compile` call sites
+(`src/Bennett.jl:296,307`). h0ai's auto-detection pipeline can now infer
+true on tabulate-emitted LRs structurally; previously `gate_groups=[]`
+made `_infer_self_reversing` return false even though the LR was a
+single self-cleaning primitive. The kill switch — silently ignored
+on the tabulate path before this PR — is now respected end-to-end
+on `strategy=:tabulate` AND `strategy=:auto` redirected to tabulate.
+
+**Why this matters (vs h0ai's own status):** h0ai shipped 2026-05-15
+morning is "conservative-only" — no real-world function triggers
+auto-promotion today because the only existing producer-tag site
+(`arith.jl:218` qcla_tree) is gated by a non-firing `length(full) == W`
+predicate. hzl9 adds the second producer-tag site, which DOES fire on
+every tabulate-emitted circuit (QROM tables = the canonical real-world
+self-reversing primitive — see README "Self-reversing primitives"
+section + the chunk-068 README block on bennett_direct).
+
+**3+1 orchestration (per user-driven exercise):** orchestrator =
+human-tagged review role. Two Plan proposers (opus) ran serially with
+identical briefs, both isolated. Implementer (opus general-purpose)
+took the synthesised verdict.
+- **Proposer A** picked Option-A (LR-flag unconditional, defer probe
+  to `bennett()` time) + Option-Y (kill switch).
+- **Proposer B** picked Option-B (LR-flag conditional via in-place
+  `_infer_self_reversing` call inside `lower_tabulate`) + Option-Y.
+- **Reviewer synthesis:** Option-A + Option-Y wins on cost (B would
+  run U03 probe twice — once at lower_tabulate exit, once at
+  bennett() entry — for marginal benefit, since the producer is
+  trusted code, NOT user code). A's argued cost (full input-space
+  simulate) was empirically wrong but conclusion was right. B's
+  wire-range convention (`first(input_wires)` / `wa.next_wire - 1`
+  mirroring `lower_block_insts!` at driver.jl:386) was adopted as
+  the cleaner wire-bracket pattern. B's 1-sentence docstring update
+  in `src/lowering/types.jl` was also adopted.
+
+**Gotchas / Lessons:**
+
+1. The orchestrator's chunk-068 "next agent decision point" listed
+   hzl9 as "would make auto-promotion fire on lower_tabulate-emitted
+   circuits = QROM tables = real-world" — that framing is precise
+   ONLY if you read it as structural, not behavioral. Behaviorally
+   the LR-level flag was already true on tabulate LRs pre-hzl9 (set
+   unconditionally at tabulate.jl:212), so `bennett(lr)` already
+   short-circuited correctly. The real gap was that
+   `_infer_self_reversing` returned false on the same LRs because
+   `gate_groups=[]`. That's a structural inconsistency, not a missed
+   optimization. The PR fixes both the structural gap AND a separate
+   contract bug (kill switch silently ignored on the tabulate path —
+   confirmed by reading src/Bennett.jl:296,307 — `auto_self_reversing`
+   never threaded into the tabulate-strategy dispatch).
+
+2. **3+1 proposer disagreement on `_validate_self_reversing!` cost**:
+   Proposer A claimed it simulates over the full input space ("2^32
+   for W=32 tabulate"). Proposer B claimed it runs a fixed probe
+   battery. Both can't be right. Reviewer (me) read the source:
+   `_validate_self_reversing!` at `bennett_transform.jl:106-135`
+   iterates `_u03_self_reversing_probes(total_in)` — a FIXED battery
+   (per the U03 design from Bennett-egu6, 4 probes per the existing
+   T1 testset). B was right on the mechanism. A was wrong on cost
+   BUT still right on the architectural conclusion (don't run the
+   probe twice). Take-home: orchestrator must read the source of
+   truth when proposers contradict, NOT pick by majority or by who
+   sounded more confident.
+
+3. **T17 defensive `@test_skip` pattern is now canonical for any
+   test that depends on a cost-model auto-pick predicate.** The
+   implementer threaded `if Bennett._tabulate_auto_picks(...)` and
+   `@test_skip` with a filed-follow-up message if false, rather than
+   hard-asserting the auto-pick. Future cost-model evolution
+   (e.g. `Bennett-z2dj` T5-P6 dispatcher) won't silently break this
+   testset — it will surface as a skip + bead.
+
+4. **Comment style minor friction with CLAUDE.md "WHY not WHAT"**:
+   the GateGroup constructor block in src/tabulate.jl has per-field
+   comments. Reviewer let them stand because the producer-tag
+   invariant is load-bearing and subtle (e.g. `__tabulate_qrom`
+   prefix non-collision rationale, `wa.next_wire - 1` mirroring
+   driver.jl:386). Worth keeping despite the rule.
+
+**Rejected alternatives:**
+
+- **Option B (in-place inference inside `lower_tabulate`)** —
+  rejected because it runs the U03 probe at lower_tabulate exit
+  AND again at bennett() entry. Trusted-producer code shouldn't
+  double-pay the probe. Documented in the synthesis.
+
+- **A per-invocation unique `__tabulate_qrom_<gensym>` symbol**
+  — rejected (Proposer A noted as open question). `_infer_self_reversing`
+  only checks the prefix and tag count, so uniqueness adds gensym
+  noise without semantic value.
+
+- **Filing a follow-up for the contract bug separately** — rejected;
+  it was the same surface and the same kwarg, so bundling in hzl9
+  was cleaner than splitting into a sibling bead.
+
+**Next agent starts here:** four h0ai follow-ups remain after this
+close (`jpa5` non-slicing qcla_tree variant, `pzft` uncompute high-W
+qcla_tree wires, `rjk7` extend self-reversing fast-path to non-default
+Bennett strategies, `lxk7` extend U03 probe to randomised-input
+battery). `jpa5` is the natural next pickup if you want auto-promotion
+to fire on the qcla_tree mul path (the OTHER major producer-tag site)
+— hzl9 only closed the QROM half. Otherwise per chunk 068 top: (b)
+Bennett-9wmk pool-recycling design puzzle, or (c) docs pivot.
+
+**Test deltas:**
+- `test/test_h0ai_auto_self_reversing.jl`: 132,167 → 132,428 asserts
+  (T14–T18 appended, +261 pure-assertion delta — measured before vs
+  after by re-running the file). 18 testsets, all green.
+- Peer regressions all green: test_tabulate (94/94), test_qrom
+  (69/69), test_qrom_dispatch (774/774), test_self_reversing (5/5),
+  test_egu6_self_reversing_check (264/264),
+  test_b2fs_tabulate_tuple_unpack (22/22),
+  test_gate_count_regression (39/39). No pin rebaseline.
+
+---
+
 ## Session log — 2026-05-15 — Bennett-h0ai / U_ auto self_reversing detection (3+1)
 
 **Shipped:** producer-tag + structural aggregator + `trusted_dirty_wires` U03

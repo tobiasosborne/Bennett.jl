@@ -179,15 +179,40 @@ function _unpack_args(raw::UInt64, input_widths::Vector{Int}, arg_T)
 end
 
 """
-    lower_tabulate(f, arg_types, input_widths; out_width) -> LoweringResult
+    lower_tabulate(f, arg_types, input_widths; out_width,
+                   auto_self_reversing=true) -> LoweringResult
 
 Build a `LoweringResult` that computes `(x, 0^W_out) → (x, f(x))` via QROM.
 Emits a single `emit_qrom!` over a compile-time table built by evaluating
-`f` on every input. Marks the result `self_reversing=true` so `bennett()`
-skips the copy+uncompute wrap — QROM is already self-clean.
+`f` on every input. Marks the result `self_reversing=true` (when
+`auto_self_reversing=true`, the default) so `bennett()` skips the
+copy+uncompute wrap — QROM is already self-clean.
+
+# Bennett-h0ai (producer-tag)
+
+The emitted `LoweringResult` also carries a single `GateGroup` named
+`:__tabulate_qrom` over the entire QROM gate block, with
+`is_self_reversing=true`. This is the second known producer-tag emit
+site (alongside the qcla_tree mul dispatch in `src/lowering/arith.jl`),
+and makes the contract explicit and inferrable by `_infer_self_reversing`
+if a future caller routes tabulate through `lower(parsed)` as a
+subroutine. The tag's `result_wires` are exactly `lr.output_wires`
+(no truncation, no post-processing), satisfying the producer-tag
+invariant documented in `src/lowering/types.jl:7-26`.
+
+# Kill-switch
+
+Setting `auto_self_reversing=false` suppresses the LR-level
+`self_reversing` flag (constructed `false` instead of `true`). The
+producer-tag on the GateGroup remains regardless — only the top-level
+LR flag is affected. This mirrors the kill-switch semantics threaded
+through `lower(parsed)` and `reversible_compile`, so the Bennett wrap
+(forward + copy-out + reverse) is engaged end-to-end for benchmarking
+and regression bisects.
 """
 function lower_tabulate(f, arg_types::Type{<:Tuple},
-                        input_widths::Vector{Int}; out_width::Int)
+                        input_widths::Vector{Int}; out_width::Int,
+                        auto_self_reversing::Bool=true)
     1 <= out_width <= 64 ||
         throw(ArgumentError("tabulate: out_width must be in 1..64, got $out_width"))
 
@@ -201,13 +226,34 @@ function lower_tabulate(f, arg_types::Type{<:Tuple},
 
     # Allocate input wires, flat layout matching the simulator's expectation.
     input_wires = allocate!(wa, total_in)
+    wire_start = first(input_wires)  # mirror lower_block_insts! convention
 
     # QROM requires power-of-two L; by construction L = 2^total_in is one.
-    # idx_wires are the input wires in-order (LSB-first within each arg,
+    # idx_wires are the input_wires in-order (LSB-first within each arg,
     # args concatenated — matches simulator).
     output_wires = emit_qrom!(gates, wa, table, input_wires, out_width)
 
+    # Bennett-h0ai: emit a single producer-tagged GateGroup spanning the
+    # entire QROM block. Degenerate empty-table case yields no group.
+    gate_groups = if length(gates) > 0
+        group = GateGroup(
+            :__tabulate_qrom,           # ssa_name (fresh prefix — does not collide
+                                        # with __pred_/__ret_/__branch_ boilerplate)
+            1,                          # gate_start (1-based, inclusive)
+            length(gates),              # gate_end
+            copy(output_wires),         # result_wires (copy to avoid aliasing LR.output_wires)
+            Symbol[],                   # input_ssa_vars (tabulate has no SSA inputs)
+            wire_start,                 # wire_start (mirror lower_block_insts! convention)
+            wa.next_wire - 1,           # wire_end (mirror driver.jl:386)
+            Int[],                      # cleanup_wires (QROM is self-clean; nothing to replay-free)
+            true,                       # is_self_reversing — the producer-tag
+        )
+        GateGroup[group]
+    else
+        GateGroup[]
+    end
+
     return LoweringResult(gates, wire_count(wa), input_wires, output_wires,
                           copy(input_widths), [out_width],
-                          GateGroup[], true)   # self_reversing = true
+                          gate_groups, auto_self_reversing)
 end
