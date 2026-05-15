@@ -10,8 +10,9 @@ Bennett-spa8 / U27: `:auto` always returns `:ripple`. The pre-U27
 default preferred Cuccaro on an op2-dead path, but Cuccaro's one-wire
 in-place saving is immediately erased by Bennett's copy-out pass,
 while shipping a strictly worse Toffoli-depth (the Cuccaro MAJ/UMA
-chain serialises every Toffoli). On `(x,y)->x+y` at W=32:
-  cuccaro: 410 total / T-depth 124
+chain serialises every Toffoli). On `(x,y)->x+y` at W=32 (post
+Bennett-gsxe §3.5 optimisation):
+  cuccaro: 408 total / T-depth 122
   ripple : 346 total / T-depth 62
 `op2_dead` / `liveness_enabled` are retained in the signature for
 backward compatibility with callers that still thread them.

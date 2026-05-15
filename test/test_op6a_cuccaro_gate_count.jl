@@ -1,12 +1,19 @@
 # Bennett-op6a / U140 — `lower_add_cuccaro!`'s docstring previously
 # advertised "2n Toffoli, 5n CNOT, 2n negations" for an n-bit adder
-# but the implementation emits 2W−2 Toffoli, 4W−2 CNOT, 0 NOT for the
-# mod-2^W variant (carry-out absent). Discrepancy traced to the
-# original Cuccaro 2004 paper presenting the carry-out form; our impl
-# is the carry-suppressed mod-2^W variant.
+# but the implementation emits the carry-suppressed mod-2^W variant.
+# Discrepancy traced to the original Cuccaro 2004 paper presenting the
+# carry-out form; our impl is the carry-suppressed mod-2^W variant.
 #
-# Docstring corrected. This file regression-anchors the actual gate
-# counts at canonical widths so a future drift surfaces immediately.
+# Bennett-gsxe / U_ (2026-05-15) — §3.5 high-bit optimisation applied:
+# the Toffoli at the W-1 boundary that would compute c_W into the high
+# carry wire is dropped, the matching Phase-3 uncompute Toffoli is
+# dropped, and ONE new Toffoli is injected into Phase 2 with the same
+# two controls but writing directly into b[W]. Net change: −1 Toffoli
+# and −1 total gate at every W ≥ 2. New formulas: Toffoli = 2W−3,
+# CNOT = 4W−2, NOT = 0, Total = 6W−5.
+#
+# This file regression-anchors the actual gate counts at canonical
+# widths so a future drift surfaces immediately.
 
 using Test
 using Bennett
@@ -14,8 +21,8 @@ using Bennett: lower_add_cuccaro!, WireAllocator, allocate!
 
 @testset "Bennett-op6a / U140 — lower_add_cuccaro! gate counts" begin
 
-    # Measured 2026-04-26 across W ∈ {2, 3, 4, 8, 16, 32}.
-    # Formulas: Toffoli = 2W-2, CNOT = 4W-2, NOT = 0, Total = 6W-4.
+    # Post-Bennett-gsxe formulas: Toffoli = 2W-3, CNOT = 4W-2, NOT = 0,
+    # Total = 6W-5. Verified across W ∈ {2, 3, 4, 8, 16, 32, 64}.
     for W in (2, 3, 4, 8, 16, 32, 64)
         @testset "W=$W" begin
             gates = ReversibleGate[]
@@ -28,10 +35,10 @@ using Bennett: lower_add_cuccaro!, WireAllocator, allocate!
             cnots = count(g -> g isa CNOTGate, gates)
             toffs = count(g -> g isa ToffoliGate, gates)
 
-            @test toffs == 2 * W - 2
+            @test toffs == 2 * W - 3
             @test cnots == 4 * W - 2
             @test nots  == 0
-            @test length(gates) == 6 * W - 4
+            @test length(gates) == 6 * W - 5
         end
     end
 

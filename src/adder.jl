@@ -20,16 +20,22 @@ end
 """
 Cuccaro in-place adder: (a, b, 0) → (a, a+b, 0) using only 1 ancilla.
 
-From Cuccaro et al. 2004 (arXiv:quant-ph/0410184), Figure 5.
+From Cuccaro et al. 2004 (arXiv:quant-ph/0410184), Figure 5, with the
+§3.5 high-bit optimisation applied (Bennett-gsxe): the Toffoli at the
+W-1 boundary that would compute c_W into the high carry wire is
+dropped, the matching Phase-3 uncompute Toffoli is dropped, and ONE
+new Toffoli is injected into Phase 2 that XORs the same product
+directly into b[W]. Net −1 Toffoli at every W ≥ 2.
+
 Uses MAJ (majority) gates rippling up and UMA (unmajority-and-add)
 gates rippling back down. Result s_i overwrites b_i in place.
 
 Gate counts (this implementation, mod 2^W output — no carry-out
-emitted; Bennett-op6a / U140 measurement, 2026-04-26):
-  Toffoli: 2W − 2
+emitted; pinned by `test_op6a_cuccaro_gate_count.jl`):
+  Toffoli: 2W − 3   (was 2W − 2 pre-Bennett-gsxe)
   CNOT:    4W − 2
   NOT:     0
-  Total:   6W − 4
+  Total:   6W − 5   (was 6W − 4 pre-Bennett-gsxe)
   Depth:   2W + O(1)
 Only 1 ancilla qubit (X) vs W-1 in traditional ripple-carry.
 The "2n NOT" advertised in the original paper appears in the
@@ -61,13 +67,35 @@ function lower_add_cuccaro!(gates::Vector{ReversibleGate}, wa::WireAllocator,
 
     # Allocate single ancilla X (initial carry c_0 = 0)
     X = allocate!(wa, 1)
-    # Bennett-5kio / U109: phase-1 MAJ ripple = 3 + 3(W-2) gates; high-bit
-    # CNOT pair = 2; phase-3 UMA ripple = 3(W-2) + 3 gates. Total ≈ 6W - 4.
+    # 6W - 5 gates after the Bennett-gsxe §3.5 optimisation (was 6W - 4).
     sizehint!(gates, length(gates) + 6 * W)
 
     # MAJ gate: CNOT(c,b); CNOT(c,a); Toffoli(a,b,c)
     # Transforms (c_i, b_i, a_i) → (c_i ⊕ a_i, b_i ⊕ a_i, c_{i+1})
-    # where c_{i+1} = MAJ(a_i, b_i, c_i) written into position of a_i
+    # where c_{i+1} = MAJ(a_i, b_i, c_i) written into position of a_i.
+    #
+    # Bennett-gsxe / U_: §3.5 trick — the Toffoli that would write c_W
+    # into a[W-1] (or a[1] when W=2) and its matching Phase-3 uncompute
+    # are both omitted; one new Toffoli in Phase 2 XORs the same MAJ
+    # product directly into b[W]. The wires a[W-1] (resp. a[1]) thus
+    # retain a_{W-1} (resp. a_1) across the boundary instead of briefly
+    # holding c_W.
+
+    if W == 2
+        # Phase 1 first MAJ — Toffoli dropped (it would write c_2 into a[1])
+        push!(gates, CNOTGate(a[1], b[1]))
+        push!(gates, CNOTGate(a[1], X[1]))
+        # Phase 2 — inject Toffoli with controls (X[1], b[1])
+        push!(gates, CNOTGate(a[W], b[W]))
+        push!(gates, CNOTGate(a[W-1], b[W]))
+        push!(gates, ToffoliGate(X[1], b[1], b[W]))
+        # Phase 3 last UMA — matching Toffoli dropped
+        push!(gates, CNOTGate(a[1], X[1]))
+        push!(gates, CNOTGate(X[1], b[1]))
+        return b
+    end
+
+    # W ≥ 3 path.
 
     # Phase 1: MAJ ripple up (compute carries into a[] wires)
     # First MAJ: inputs (X[1], b[1], a[1])
@@ -75,34 +103,41 @@ function lower_add_cuccaro!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     push!(gates, CNOTGate(a[1], X[1]))
     push!(gates, ToffoliGate(X[1], b[1], a[1]))
 
-    # Middle MAJs: inputs (a[i-1], b[i], a[i]) for i = 2..W-1
-    for i in 2:(W-1)
+    # Middle MAJs i = 2..W-2 (full)
+    for i in 2:(W-2)
         push!(gates, CNOTGate(a[i], b[i]))
         push!(gates, CNOTGate(a[i], a[i-1]))
         push!(gates, ToffoliGate(a[i-1], b[i], a[i]))
     end
 
-    # Last carry: a[W-1] now holds c_W (the overflow carry)
-    # For mod 2^W addition, we don't output c_W separately
+    # Phase 1 last middle MAJ at i = W-1 — Toffoli omitted (§3.5).
+    # Post-state: a[W-2] = c_{W-1} ⊕ a_{W-1}; b[W-1] = b_{W-1} ⊕ a_{W-1};
+    # a[W-1] still holds a_{W-1} (NOT c_W).
+    push!(gates, CNOTGate(a[W-1], b[W-1]))
+    push!(gates, CNOTGate(a[W-1], a[W-2]))
 
-    # Phase 2: Compute s_{W-1} (high sum bit)
-    # s_{W-1} = a_{W-1} ⊕ b_{W-1} ⊕ c_{W-1}
-    # At this point: a[W-1] = c_W, b[W-1] = b_{W-1} ⊕ a_{W-1} (from last MAJ's first CNOT? no...)
-    # Actually for the last bit we just need CNOT + CNOT:
-    push!(gates, CNOTGate(a[W], b[W]))     # b[W] = b_W ⊕ a_W
-    push!(gates, CNOTGate(a[W-1], b[W]))   # b[W] = b_W ⊕ a_W ⊕ c_W = s_W
+    # Phase 2: compute s_W into b[W] using the moved Toffoli.
+    # s_W = b_W ⊕ a_W ⊕ c_W. The two CNOTs contribute b_W ⊕ a_W ⊕ a_{W-1};
+    # the Toffoli adds (a[W-2]·b[W-1]) = MAJ(a_{W-1}, b_{W-1}, c_{W-1}) ⊕ a_{W-1}
+    # which combines with the spurious a_{W-1} term to leave c_W.
+    push!(gates, CNOTGate(a[W], b[W]))
+    push!(gates, CNOTGate(a[W-1], b[W]))
+    push!(gates, ToffoliGate(a[W-2], b[W-1], b[W]))
 
-    # Phase 3: UMA ripple back down (compute sums, restore a[], clean carries)
-    # UMA gate: Toffoli(a,b,c); CNOT(c,a); CNOT(a,b)
-    # Transforms (c_i ⊕ a_i, b_i ⊕ a_i, c_{i+1}) → (c_i, s_i, a_i)
+    # Phase 3 first UMA at i = W-1 — Toffoli omitted (§3.5 match).
+    # CNOT(a[W-1], a[W-2]) restores a[W-2] = c_{W-1}; the next CNOT
+    # computes s_{W-1} into b[W-1].
+    push!(gates, CNOTGate(a[W-1], a[W-2]))
+    push!(gates, CNOTGate(a[W-2], b[W-1]))
 
-    for i in (W-1):-1:2
+    # Phase 3 middle UMAs i = W-2..2 (full)
+    for i in (W-2):-1:2
         push!(gates, ToffoliGate(a[i-1], b[i], a[i]))
         push!(gates, CNOTGate(a[i], a[i-1]))
         push!(gates, CNOTGate(a[i-1], b[i]))
     end
 
-    # Last UMA: (X[1], b[1], a[1])
+    # Last UMA: (X[1], b[1], a[1]) — full
     push!(gates, ToffoliGate(X[1], b[1], a[1]))
     push!(gates, CNOTGate(a[1], X[1]))
     push!(gates, CNOTGate(X[1], b[1]))
