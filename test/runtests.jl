@@ -243,6 +243,10 @@ runfile("test_ao66_vector_intrinsic_rescalarise.jl")
 # Bennett-pg5 — llvm.vector.reduce.{add,mul,and,or,xor,smax,smin,umax,umin}
 # integer reductions (vector → scalar via linear left-to-right fold chain).
 runfile("test_pg5_vector_reductions.jl")
+# Bennett-lx5h — llvm.vector.reduce.{fadd,fmul,fmin,fmax,fminimum,fmaximum,
+# fminimumnum,fmaximumnum} float reductions (fold via IRCall over the
+# matching soft_* primitive; fadd/fmul carry a scalar START arg).
+runfile("test_lx5h_float_vector_reductions.jl")
 # Bennett-cc0.4 — constant-pointer icmp eq (ConstantExpr operand folding).
 runfile("test_cc04_repro.jl")
 # Bennett-cc0.6 — standardized ir_extract error-message format.

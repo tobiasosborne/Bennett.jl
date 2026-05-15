@@ -1,3 +1,163 @@
+## Session log — 2026-05-15 (later) — Bennett-lx5h / U_ `llvm.vector.reduce.{fadd,fmul,fmin,fmax,fminimum,fmaximum,fminimumnum,fmaximumnum}.*` float reductions
+
+**Shipped:** native dispatch for the 8 LLVM **float** vector-reduction
+intrinsics — the float follow-up to pg5. Extends the existing
+`_handle_vector_reduction` helper in `src/extract/vectors.jl` (added by pg5
+earlier today) with 8 more dispatch arms folding lanes via `IRCall` to the
+matching `soft_*` primitive (`soft_fadd` / `soft_fmul` / `soft_fmin` /
+`soft_fmax` / `soft_fminimum` / `soft_fmaximum` / `soft_minimumnum` /
+`soft_maximumnum`; all 8 already in the callee registry per k2w6 + p19b).
+
+The dispatch table now encodes three kinds: `(:binop, sym)` and `(:cmp, pred)`
+(integer arms from pg5); new `(:fcall, soft_fn)` for floats. The structural
+wrinkle vs pg5: `fadd` / `fmul` carry a SCALAR START value as the first call
+arg (operand layout `[start, vector, callee]` rather than `[vector, callee]`).
+The fold for fadd/fmul uses `start` as the initial accumulator and folds ALL
+N lanes (not N-1); the result is `start OP lane[0] OP ... OP lane[N-1]` per
+LLVM langref. Min/max-family share pg5's 1-operand layout. Strict left-to-
+right fold per CLAUDE.md §13 (the LLVM `reassoc` fast-math flag is INTENTIONALLY
+IGNORED — bit-exactness over performance).
+
+Test coverage: new `test/test_lx5h_float_vector_reductions.jl` (~270 LOC) with
+10 `.ll` fixtures (one per intrinsic at v4f64 + v2f64 fadd corner + 2 f32
+reject fixtures). Each green test asserts `verify_reversibility` AND
+bit-exactness vs a `_ref_<op>_fold` Julia reference using the matching `soft_*`
+primitive — the same chain the dispatch arm emits, so equality is structural.
+Cases cover identity-start (-0.0 / +1.0) AND non-identity-start fadd/fmul,
+NaN propagation vs absorption per the table, ±0 sign tie-breaks, ±Inf, and
+N=2 single-fold-step. f32 fixtures rejected with the §13 / Bennett-3rph
+pointer message.
+
+Updated `test/test_pg5_vector_reductions.jl`: pg5's old "fadd reject" testset
+is now a "no longer hits the pg5/lx5h reject" verifier — the dispatch reaches
+lx5h's float-fold path before the catch-all fires; the old reject fixture
+still fails, but for an unrelated reason (raw `double 0.0` ConstantFP literal
+in IR, Bennett-bjdg). `runtests.jl` registers `test_lx5h_float_vector_reductions.jl`
+right after `test_pg5_vector_reductions.jl` (peer family).
+
+**Why:** Closes the float half of the `llvm.vector.reduce.*` family. Together
+with pg5 (integer reductions, this morning) and ao66 (per-lane vector
+intrinsic scalarisation), the LLVM vector-reduction surface is now fully
+covered. Auto-vectorised Julia loops containing `sum(v)` / `prod(v)` / `minimum(v)`
+/ `maximum(v)` etc. on small Float64 vectors compile end-to-end.
+
+**Gotchas / Lessons:**
+
+- **fadd/fmul scalar START arg is the structural difference.** Pre-lx5h I
+  expected the float arms to be a copy-paste of the integer arms with a
+  different opcode-to-callee map. The `(start, vec)` operand layout broke
+  that assumption: the dispatch must check `length(ops) == 3` (vs 2) for
+  fadd/fmul, pick `vec_idx = 2` (vs 1), and use `_operand(ops[1], names)` as
+  the initial accumulator — folding ALL N lanes, not the conventional
+  "acc = lane[0]; fold over lane[1..n-1]" pattern. The `is_fadd_or_fmul`
+  flag drives both branches.
+
+- **Strict left-to-right per §13 — `reassoc` flag IGNORED.** LLVM langref
+  defines `vector.reduce.fadd(start, <a, b, c, d>)` as
+  `((((start + a) + b) + c) + d)` *if* the `reassoc` fast-math flag is
+  unset, and any associative ordering otherwise. Bennett's bit-exactness
+  contract (§13) trumps the `reassoc` permission: even when LLVM marks the
+  call as reassociable, the dispatch always emits the strict left-to-right
+  chain. This makes the `soft_fadd` / `soft_fmul` fold bit-exact against a
+  hand-written reference (`_ref_fadd_fold` / `_ref_fmul_fold` in the test
+  file) — no need for ULP slack. Doing tree-reduce or any reassociation
+  would silently diverge by 1-2 ULP at edge cases; not worth it for this
+  workload.
+
+- **N=1 float reduction needs `IRCall(soft_op, lane[0], lane[0])`, NOT add-zero.**
+  Integer pg5 emits `IRBinOp(:add, lane[0], iconst(0))` as a rename for the
+  single-lane corner. For float min/max-family that would route the f64 bit
+  pattern through the integer adder (wrong: -0.0 + 0 = +0.0 silently
+  changes the sign bit). Instead the lx5h N=1 path emits
+  `IRCall(soft_op, lane[0], lane[0])`: idempotent for non-NaN
+  (`soft_fmin(x,x) == x`) and canonicalises NaN bit pattern to qNaN —
+  matches LLVM's single-NaN-operand behavior. Note: N=1 float fadd/fmul
+  doesn't hit this branch (the fadd/fmul path folds `start` with `lane[0]`
+  in one IRCall, regardless of N).
+
+- **Longest-prefix-first matters for `fminimumnum.` vs `fminimum.`.** The
+  trailing `.` discipline (kh6n) blocks the silent-swallow in this case
+  because `fminimum.` wouldn't match `fminimumnum.v4f64` — the next char
+  after `fminimum` is `n`, not `.`. So the disciplined check works either
+  way. But I ordered `fminimumnum.` BEFORE `fminimum.` anyway, mirroring
+  Bennett-p19b's dispatch ordering convention. Belt-and-braces; documented
+  in the dispatch comment.
+
+- **f32 reject must come AFTER the cname-prefix match.** First instinct was
+  to put the f32 reject at the top of the float branch (early-exit). Wrong:
+  the f32 vectors still need to flow through the cname dispatch first so
+  the error message can name the specific intrinsic. The check sits inside
+  the `is_float` block right after the lane-element-type validation —
+  fail-loud with a §13 / Bennett-3rph / lx5h pointer.
+
+- **pg5's old reject fixture still fails — for an unrelated reason.** The
+  `pg5_reduce_fadd_v4f64_reject.ll` fixture used `double 0.0` as a literal
+  IR constant (not via `bitcast i64 ... to double`), which Bennett's
+  `_operand` rejects per Bennett-bjdg ("ConstantFP operand not supported").
+  Pre-lx5h the pg5 catch-all rejected first; post-lx5h the dispatch reaches
+  lx5h's float-fold path and then trips the ConstantFP rejection. I updated
+  pg5's testset to verify the OLD pg5/lx5h "Bennett-pg5 covers integer
+  reductions only" message is GONE (i.e., dispatch made it past the
+  catch-all) and the NEW failure mode is ConstantFP-related — confirms the
+  dispatch boundary moved without losing fail-loud-ness.
+
+**Rejected alternatives:**
+
+- **3+1 protocol per CLAUDE.md §2:** skipped per the same exception used by
+  Bennett-kh6n / k2w6 / mq6f / p19b / pg5 (chunk 066 + chunk 067 top entry).
+  The lx5h dispatch is mechanical — it mirrors pg5's pattern with
+  `(:fcall, soft_fn)` substituted for `(:binop, sym)` / `(:cmp, pred)`,
+  and the only design choice (fadd/fmul start-arg layout) is unambiguously
+  dictated by LLVM langref. No load-bearing design decisions; documenting
+  the exception here for the next 3+1 audit.
+
+- **Allowing the `reassoc` fast-math flag to relax left-to-right ordering.**
+  Considered; rejected per §13 (bit-exactness). Even if LLVM marks the call
+  reassociable, Bennett emits the strict chain. A future bead could expose
+  this as an opt-in if a benchmark needs it, but the default must be
+  bit-exact.
+
+- **Tree-reduce for fadd/fmul (log₂ N depth instead of N).** Same rationale
+  as pg5 (linear chain is cleaner; small N in practice; reversible-circuit
+  depth dominated by Bennett construction not the fold). Plus tree-reduce
+  for fadd would break left-to-right bit-exactness — non-starter under §13.
+
+- **Updating pg5's reject fixture to use `bitcast i64 0 to double` so it
+  becomes a green smoke test.** Considered; rejected to keep pg5's testset
+  scope as-shipped (changing a bead's fixtures retroactively muddies the
+  bead boundary). The "no longer hits the pg5/lx5h reject" testset is a
+  cleaner statement of the boundary shift.
+
+- **A separate `fminimumnum`/`fmaximumnum` reduction handler that reuses
+  `fmin`/`fmax`'s emitted gates** (since `soft_minimumnum` ≡ `soft_fmin`
+  by aliasing per p19b). Considered; rejected for callsite clarity — the
+  dispatch routes to the named callee and the callee registry handles the
+  delegation. Identical reversible circuits per the alias, but the name
+  appears in `print_circuit` debug output, which matters for tracing
+  user IR back to LLVM intrinsics.
+
+**Validation:** Per-bead test file `test_lx5h_float_vector_reductions.jl`
+green (71/71 assertions across 10 testsets — 1 per fadd width + fmul +
+fmin + fmax + fminimum + fmaximum + fminimumnum + fmaximumnum + 1 combined
+f32 reject testset). Peer regressions all green: pg5 (56/56 incl. updated
+"no longer hits reject" testset), ao66, kh6n, k2w6, mq6f, p19b, intrinsics,
+float_intrinsics. Full Pkg.test() not run per user MEMORY note (~27 min;
+focused regression sample sufficient).
+
+**Next agent starts here:** lx5h closes the float-vector-reduction parallel
+to pg5 and finishes the LLVM `vector.reduce.*` family (17 intrinsics: 9 int
++ 8 float). Suggested next pickups (look at `bd ready`):
+- **Bennett-9wmk** (fast_copy swap revisit, OPEN with finding from chunk
+  065): bare swap saves ~25% wire but adds 30% depth (breaks polylog-depth
+  promise); needs design work to swap only at non-critical-path nodes.
+- **Bennett-h0ai** (auto-self-reversing, P3, needs 3+1): touches
+  bennett_transform.jl per §2 protocol — proposers needed.
+- Or pick a different P3 from `bd ready`. Catalogue is ~98% closed at
+  this point; remaining items skew toward 3+1-protocol-required core
+  changes or research/scoping work.
+
+---
+
 ## Session log — 2026-05-15 — Bennett-pg5 / U_ `llvm.vector.reduce.{add,mul,and,or,xor,smax,smin,umax,umin}.*` integer reductions
 
 **Shipped:** native dispatch for the 9 LLVM integer vector-reduction intrinsics

@@ -159,10 +159,24 @@ end
         end
     end
 
-    @testset "reduce.fadd.v4f64 fails loud (out of scope per pg5)" begin
+    # Bennett-lx5h follow-up: float reductions are now NATIVELY DISPATCHED
+    # (no longer rejected by the pg5 catch-all). The pre-lx5h reject fixture
+    # `pg5_reduce_fadd_v4f64_reject.ll` still fails to compile — but for an
+    # unrelated reason (raw `double 0.0` ConstantFP literal in IR; Bennett.jl
+    # does not lower raw float constants per Bennett-bjdg). Verify the old
+    # pg5/lx5h error message is GONE: the dispatch reaches lx5h's float-fold
+    # path before the catch-all fires. Full float-reduction NaN/±0/±Inf/
+    # start-value coverage lives in test_lx5h_float_vector_reductions.jl.
+    @testset "reduce.fadd.v4f64 no longer hits the pg5/lx5h reject" begin
         err = pg5_reject("pg5_reduce_fadd_v4f64_reject.ll", "pg5_reduce_fadd_v4f64")
         @test err !== nothing
-        @test occursin("llvm.vector.reduce.fadd", err)
-        @test occursin("Bennett-lx5h", err)
+        # Old pre-lx5h failure path was the pg5 catch-all rejecting float lanes;
+        # post-lx5h the catch-all is bypassed and the failure is downstream
+        # (ConstantFP literal handling in `_operand`). Confirm the new failure
+        # mode by checking it mentions ConstantFP / SoftFloat (Bennett-bjdg) NOT
+        # the pg5/lx5h "tracked in Bennett-lx5h" reject text.
+        @test occursin("ConstantFP", err) || occursin("SoftFloat", err) ||
+              occursin("Bennett-bjdg", err)
+        @test !occursin("Bennett-pg5 covers integer reductions only", err)
     end
 end

@@ -181,10 +181,21 @@ end
 # linear fold chain over the resolved lanes. The last op writes `dest`; all
 # intermediate accumulators get auto-named SSA temporaries.
 #
-# Float reductions (`fadd`, `fmul`, `fmin`, `fmax`, `fminimum`, `fmaximum`,
-# `fminimumnum`, `fmaximumnum`) are out of scope for pg5 — see Bennett-lx5h (P3).
-# `fadd` / `fmul` additionally carry a "start value" first arg whose
-# non-identity cases need careful handling.
+# Bennett-lx5h: float-vector reductions extend the same dispatch. The 8 float
+# intrinsics fold via `IRCall` over the matching `soft_*` primitive
+# (`soft_fadd`, `soft_fmul`, `soft_fmin`, `soft_fmax`, `soft_fminimum`,
+# `soft_fmaximum`, `soft_minimumnum`, `soft_maximumnum`). Two structural
+# differences vs the integer arms:
+#   1. `fadd` / `fmul` carry a SCALAR START value as the first call arg
+#      (operand layout `[start, vector, callee]` rather than `[vector, callee]`).
+#      The result is `start OP lane[0] OP lane[1] OP ... OP lane[N-1]`; the
+#      fold initial accumulator is `start` (not `lane[0]`), and the loop folds
+#      ALL N lanes. For fadd the identity start is `-0.0`; for fmul it is `+1.0`.
+#   2. min/max-family reductions are 1-operand `[vector, callee]` like the
+#      integer arms; the fold starts from `lane[0]` and folds N-1 times.
+# Strict left-to-right fold per CLAUDE.md §13 (bit-exactness over performance —
+# the LLVM `reassoc` flag is INTENTIONALLY IGNORED). f32 vector forms are
+# rejected per §13 / Bennett-3rph.
 #
 # Returns the IRInst chain on a hit, or `nothing` if `cname` is not a
 # vector-reduction intrinsic (caller falls through to the per-lane
@@ -201,7 +212,19 @@ function _handle_vector_reduction(cname::AbstractString,
     # sits between two `.` so prefix-collision risk is minimal, but the
     # disciplined match is cheap insurance against future LLVM additions
     # (e.g. a hypothetical `llvm.vector.reduce.added.*`).
-    op_dispatch = nothing  # (:binop, sym) | (:cmp, pred)
+    #
+    # `op_dispatch` encoding:
+    #   (:binop, sym)        → integer binop fold (add/mul/and/or/xor)
+    #   (:cmp,   pred)       → integer min/max fold via IRICmp + IRSelect
+    #   (:fcall, soft_fn)    → float fold via IRCall over the soft_* primitive
+    # Bennett-lx5h: longest-first ordering matters for `fminimumnum.` /
+    # `fmaximumnum.` — they MUST come before `fminimum.` / `fmaximum.`
+    # because the trailing `.` after the long name is part of the literal,
+    # not the discipline guard. Without longest-first, `fminimumnum.v4f64`
+    # would match `fminimum.` (no — the trailing dot rules that out: the
+    # next char after `fminimum` would be `n`, not `.`). Belt-and-braces:
+    # check the longer prefix first anyway, mirroring Bennett-p19b.
+    op_dispatch = nothing
     if startswith(cname, "llvm.vector.reduce.add.")
         op_dispatch = (:binop, :add)
     elseif startswith(cname, "llvm.vector.reduce.mul.")
@@ -220,39 +243,95 @@ function _handle_vector_reduction(cname::AbstractString,
         op_dispatch = (:cmp, :uge)
     elseif startswith(cname, "llvm.vector.reduce.umin.")
         op_dispatch = (:cmp, :ule)
+    elseif startswith(cname, "llvm.vector.reduce.fadd.")
+        op_dispatch = (:fcall, soft_fadd)
+    elseif startswith(cname, "llvm.vector.reduce.fmul.")
+        op_dispatch = (:fcall, soft_fmul)
+    elseif startswith(cname, "llvm.vector.reduce.fminimumnum.")
+        op_dispatch = (:fcall, soft_minimumnum)
+    elseif startswith(cname, "llvm.vector.reduce.fmaximumnum.")
+        op_dispatch = (:fcall, soft_maximumnum)
+    elseif startswith(cname, "llvm.vector.reduce.fminimum.")
+        op_dispatch = (:fcall, soft_fminimum)
+    elseif startswith(cname, "llvm.vector.reduce.fmaximum.")
+        op_dispatch = (:fcall, soft_fmaximum)
+    elseif startswith(cname, "llvm.vector.reduce.fmin.")
+        op_dispatch = (:fcall, soft_fmin)
+    elseif startswith(cname, "llvm.vector.reduce.fmax.")
+        op_dispatch = (:fcall, soft_fmax)
     else
-        # Float reduction (`fadd` / `fmul` / `fmin` / `fmax` / `fminimum` /
-        # `fmaximum` / `fminimumnum` / `fmaximumnum`) — out of scope for pg5,
-        # punt to Bennett-lx5h. Fail loud here rather than fall through to
-        # the catch-all so the user gets the explicit pg5/lx5h context.
+        # Unrecognised reduction op token. Fail loud rather than fall through.
         _ir_error(inst,
             "vector reduction $cname is not supported; Bennett-pg5 covers " *
-            "the 9 integer reductions (add/mul/and/or/xor/smax/smin/umax/umin). " *
-            "Float reductions are tracked in Bennett-lx5h (P3)")
+            "the 9 integer reductions (add/mul/and/or/xor/smax/smin/umax/umin); " *
+            "Bennett-lx5h covers the 8 float reductions (fadd/fmul/fmin/fmax/" *
+            "fminimum/fmaximum/fminimumnum/fmaximumnum)")
     end
 
-    # Operand layout: [vector, callee] for integer reductions (single arg).
-    # Anything else (e.g. `fadd` with start value: [start, vector, callee])
-    # is a structural mismatch handled above; defensive guard here.
-    ops = LLVM.operands(inst)
-    length(ops) == 2 ||
-        _ir_error(inst,
-            "vector reduction $cname expected exactly 1 vector operand " *
-            "(got $(length(ops) - 1) args before callee)")
+    (kind, opv) = op_dispatch
+    is_float = (kind == :fcall)
+    is_fadd_or_fmul = is_float && (opv === soft_fadd || opv === soft_fmul)
 
-    vec = ops[1]
+    ops = LLVM.operands(inst)
+
+    # Operand layout dispatch:
+    #   - integer reductions and float min/max-family: [vector, callee]
+    #     → length(ops) == 2; vec_idx = 1; no start operand.
+    #   - float fadd/fmul: [start, vector, callee]
+    #     → length(ops) == 3; vec_idx = 2; ops[1] is the scalar start value.
+    expected_n = is_fadd_or_fmul ? 3 : 2
+    length(ops) == expected_n ||
+        _ir_error(inst,
+            "vector reduction $cname expected $(expected_n - 1) operand(s) " *
+            "before callee (got $(length(ops) - 1))")
+
+    vec_idx = is_fadd_or_fmul ? 2 : 1
+    vec = ops[vec_idx]
     _safe_is_vector_type(vec) ||
         _ir_error(inst,
             "vector reduction $cname operand is not a vector " *
             "(got $(LLVM.value_type(vec)))")
 
-    # Reject float-lane vectors. The integer reductions are bit-pattern-agnostic
-    # for ints but would silently sum f64 bit patterns — wrong.
-    _vector_element_is_float(vec) &&
-        _ir_error(inst,
-            "vector reduction $cname has float-element operand; " *
-            "Bennett-pg5 covers integer reductions only. " *
-            "Float reductions are tracked in Bennett-lx5h (P3)")
+    # Lane-element-type validation. Integer reductions reject float lanes
+    # (would silently sum f64 bit patterns). Float reductions reject f32
+    # lanes per CLAUDE.md §13 / Bennett-3rph.
+    if is_float
+        _vector_element_is_float(vec) ||
+            _ir_error(inst,
+                "vector reduction $cname expected float-element operand " *
+                "(got $(LLVM.value_type(vec))); Bennett-lx5h covers " *
+                "float reductions only — integer reductions are tracked " *
+                "in Bennett-pg5")
+        # Width must be 64 (f64). f32 vectors silently double-round through
+        # the soft_fpext → f64 → soft_fptrunc routing per Bennett-3rph; the
+        # bit-exactness contract (§13) only applies to f64.
+        (_, lane_w) = _vector_shape(vec)
+        lane_w == 64 ||
+            _ir_error(inst,
+                "vector reduction $cname: only f64 vector lanes supported " *
+                "(got width=$lane_w); native f32 paths are not bit-exact " *
+                "(CLAUDE.md §13 / Bennett-3rph). (Bennett-lx5h)")
+        if is_fadd_or_fmul
+            # Start arg must be a SCALAR f64. Reject vector start (LLVM langref
+            # mandates scalar) and reject f32-typed start (same §13 contract).
+            start_val = ops[1]
+            _safe_is_vector_type(start_val) &&
+                _ir_error(inst,
+                    "vector reduction $cname start value must be scalar " *
+                    "(got vector $(LLVM.value_type(start_val)))")
+            start_w = Int(_type_width(LLVM.value_type(start_val)))
+            start_w == 64 ||
+                _ir_error(inst,
+                    "vector reduction $cname start value width=$start_w; " *
+                    "only f64 supported (CLAUDE.md §13)")
+        end
+    else
+        _vector_element_is_float(vec) &&
+            _ir_error(inst,
+                "vector reduction $cname has float-element operand; " *
+                "Bennett-pg5 covers integer reductions only. " *
+                "Float reductions are tracked in Bennett-lx5h (P3)")
+    end
 
     (n, w) = _vector_shape(vec)
     n >= 1 ||
@@ -269,10 +348,37 @@ function _handle_vector_reduction(cname::AbstractString,
 
     insts = IRInst[]
 
-    # N=1 trivial case: result is just lane[0]. Emit a rename via add-zero
-    # (mirrors the extractelement rename pattern, vectors.jl line ~241).
+    # ---- Float fadd/fmul with scalar START value ----
+    # Fold layout: acc = start; for i in 1:n: acc = OP(acc, lane[i]).
+    # All N lanes participate; the LAST fold step writes `dest`. For N=1
+    # there's exactly one fold step (start, lane[0]) → dest.
+    if is_fadd_or_fmul
+        acc = _operand(ops[1], names)
+        for i in 1:n
+            is_last = (i == n)
+            step_dest = is_last ? dest : _auto_name(counter)
+            push!(insts, IRCall(step_dest, opv,
+                                IROperand[acc, vec_lanes[i]], [w, w], w))
+            acc = ssa(step_dest)
+        end
+        return insts
+    end
+
+    # N=1 trivial case (integer + float min/max-family): result is just lane[0].
+    # For integers, emit a rename via add-zero (mirrors the extractelement
+    # rename pattern, vectors.jl line ~241). For float min/max, the same
+    # add-zero rename would be incorrect (would route f64 bit-pattern through
+    # the integer adder), so route through the matching soft_* primitive
+    # paired with itself (idempotent: soft_fmin(x,x) = x for non-NaN; for NaN
+    # both single-input forms canonicalise to qNaN, which matches the LLVM
+    # langref one-lane semantics for single-NaN-operand reductions).
     if n == 1
-        push!(insts, IRBinOp(dest, :add, vec_lanes[1], iconst(0), w))
+        if is_float
+            push!(insts, IRCall(dest, opv,
+                                IROperand[vec_lanes[1], vec_lanes[1]], [w, w], w))
+        else
+            push!(insts, IRBinOp(dest, :add, vec_lanes[1], iconst(0), w))
+        end
         return insts
     end
 
@@ -282,17 +388,20 @@ function _handle_vector_reduction(cname::AbstractString,
     #     acc = OP(acc, lane[i])
     # The last fold step writes `dest`; all intermediates get auto-names.
     acc = vec_lanes[1]
-    (kind, opv) = op_dispatch
     for i in 2:n
         is_last = (i == n)
         step_dest = is_last ? dest : _auto_name(counter)
         if kind == :binop
             push!(insts, IRBinOp(step_dest, opv, acc, vec_lanes[i], w))
             acc = ssa(step_dest)
-        else  # :cmp — emits IRICmp + IRSelect
+        elseif kind == :cmp  # integer min/max: IRICmp + IRSelect
             cmp_dest = _auto_name(counter)
             push!(insts, IRICmp(cmp_dest, opv, acc, vec_lanes[i], w))
             push!(insts, IRSelect(step_dest, ssa(cmp_dest), acc, vec_lanes[i], w))
+            acc = ssa(step_dest)
+        else  # :fcall — float min/max-family: IRCall over soft_* primitive
+            push!(insts, IRCall(step_dest, opv,
+                                IROperand[acc, vec_lanes[i]], [w, w], w))
             acc = ssa(step_dest)
         end
     end
