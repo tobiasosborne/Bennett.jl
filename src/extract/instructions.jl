@@ -746,46 +746,57 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     # silently swallows `llvm.minimumnum.*` and `llvm.maximum` swallows
     # `llvm.maximumnum.*` (rejected explicitly above).
     #
-    # Float-operand rejection (Bennett-kh6n) mirrors the vector handler
-    # in src/extract/vectors.jl:_validate_vector_intrinsic_lane: this arm
-    # emits `IRICmp(:slt)` on the operand bit pattern, which on f64
-    # mishandles +0/-0 (signed-int compare treats them as unequal),
-    # NaN propagation (NaN bit patterns compare like +Inf), and signed
-    # vs unsigned negative-float ordering. Native soft_fmin/fmax is
-    # future work; until then, fail loud on float operands.
-    if startswith(cname, "llvm.minnum.") || startswith(cname, "llvm.minimum.")
-        if LLVM.value_type(ops[1]) isa LLVM.FloatingPointType
-            _ir_error(inst,
-                "$(cname) on floating-point operands is not supported; the " *
-                "scalar handler uses integer comparisons on bit patterns, " *
-                "which mishandles +0/-0 and NaN per IEEE 754. Native " *
-                "soft_fmin/fmax is future work. (Bennett-kh6n)")
-        end
+    # Bennett-k2w6: native dispatch for all four float min/max variants.
+    # Two semantic pairs:
+    #   - llvm.minnum  / llvm.maxnum   ≡ IEEE 754 minNum/maxNum, NaN-absorbing.
+    #   - llvm.minimum / llvm.maximum  ≡ IEEE 754-2008 minimum/maximum,
+    #                                    NaN-propagating (matches Julia
+    #                                    Base.min/max bit-exactly).
+    # f32 rejected per CLAUDE.md §13 (Bennett-3rph). The original
+    # IRICmp(:slt)/(:sgt) integer-compare path that pre-Bennett-kh6n
+    # silently dispatched float operands is removed — it was always wrong
+    # for f64 (mishandles +0/-0 and NaN), and llvm.minnum/minimum/maxnum/
+    # maximum are float-only intrinsics per LLVM langref so the integer
+    # path was pure dead code.
+    if startswith(cname, "llvm.minnum.")
         w = _iwidth(ops[1])
-        x_op = _operand(ops[1], names)
-        y_op = _operand(ops[2], names)
-        cmp = _auto_name(counter)
-        return [
-            IRICmp(cmp, :slt, x_op, y_op, w),
-            IRSelect(dest, ssa(cmp), x_op, y_op, w),
-        ]
+        w == 64 || _ir_error(inst,
+            "llvm.minnum: only f64 supported (got width=$w); native " *
+            "f32/f16 paths are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-k2w6)")
+        return IRCall(dest, soft_fmin,
+                      [_operand(ops[1], names), _operand(ops[2], names)],
+                      [w, w], w)
     end
-    if startswith(cname, "llvm.maxnum.") || startswith(cname, "llvm.maximum.")
-        if LLVM.value_type(ops[1]) isa LLVM.FloatingPointType
-            _ir_error(inst,
-                "$(cname) on floating-point operands is not supported; the " *
-                "scalar handler uses integer comparisons on bit patterns, " *
-                "which mishandles +0/-0 and NaN per IEEE 754. Native " *
-                "soft_fmin/fmax is future work. (Bennett-kh6n)")
-        end
+    if startswith(cname, "llvm.maxnum.")
         w = _iwidth(ops[1])
-        x_op = _operand(ops[1], names)
-        y_op = _operand(ops[2], names)
-        cmp = _auto_name(counter)
-        return [
-            IRICmp(cmp, :sgt, x_op, y_op, w),
-            IRSelect(dest, ssa(cmp), x_op, y_op, w),
-        ]
+        w == 64 || _ir_error(inst,
+            "llvm.maxnum: only f64 supported (got width=$w); native " *
+            "f32/f16 paths are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-k2w6)")
+        return IRCall(dest, soft_fmax,
+                      [_operand(ops[1], names), _operand(ops[2], names)],
+                      [w, w], w)
+    end
+    if startswith(cname, "llvm.minimum.")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.minimum: only f64 supported (got width=$w); native " *
+            "f32/f16 paths are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-k2w6)")
+        return IRCall(dest, soft_fminimum,
+                      [_operand(ops[1], names), _operand(ops[2], names)],
+                      [w, w], w)
+    end
+    if startswith(cname, "llvm.maximum.")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.maximum: only f64 supported (got width=$w); native " *
+            "f32/f16 paths are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-k2w6)")
+        return IRCall(dest, soft_fmaximum,
+                      [_operand(ops[1], names), _operand(ops[2], names)],
+                      [w, w], w)
     end
     # Bennett-1pb: direct dispatch for transcendental intrinsics. The Julia
     # frontend normally routes these through SoftFloat dispatch

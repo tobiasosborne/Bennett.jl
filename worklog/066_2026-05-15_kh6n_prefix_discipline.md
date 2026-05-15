@@ -1,3 +1,155 @@
+## Session log — 2026-05-15 (later) — Bennett-k2w6 / U_ native `soft_fmin` / `soft_fmax` / `soft_fminimum` / `soft_fmaximum` + LLVM dispatch (closes kh6n future-work stub)
+
+**Shipped:** four IEEE 754 binary64 min/max primitives in
+`src/softfloat/fmin.jl`, two semantic pairs:
+
+  - `soft_fmin` / `soft_fmax` ≡ `llvm.minnum` / `llvm.maxnum` ≡ IEEE 754
+    `minNum` / `maxNum`. NaN-absorbing: if exactly one operand is NaN,
+    return the other; if both are NaN, return canonical qNaN.
+  - `soft_fminimum` / `soft_fmaximum` ≡ `llvm.minimum` / `llvm.maximum` ≡
+    IEEE 754-2008 `minimum` / `maximum`. NaN-propagating: if either
+    operand is NaN, return canonical qNaN. Matches Julia's
+    `Base.min(::Float64, ::Float64)` / `Base.max(...)` bit-exactly.
+
+All four agree on `-0.0 < +0.0` for the tie-break (returns the negative
+zero from `min`, the positive zero from `max`). Built on the existing
+`soft_fcmp_olt` (sign-aware ordered compare with NaN→false and ±0→false)
+plus a small explicit NaN/sign-tie-break override layer.
+
+LLVM dispatch in `src/extract/instructions.jl` replaces the four
+Bennett-kh6n fail-loud float-rejects with native `IRCall` to the new
+primitives. The original `IRICmp(:slt)/(:sgt)` integer-compare
+fallthrough is removed entirely — `llvm.minnum`/`minimum`/`maxnum`/
+`maximum` are float-only intrinsics per LLVM langref so the integer
+path was pure dead code post-kh6n. f32 forms still rejected per
+CLAUDE.md §13 (Bennett-3rph).
+
+`Base.min(::SoftFloat, ::SoftFloat)` and `Base.max(::SoftFloat, ...)`
+overrides in `src/softfloat_dispatch.jl` route to the NaN-propagating
+`soft_fminimum` / `soft_fmaximum` (matching Julia's hardware-float
+semantics — the NaN-absorbing pair is reserved for the LLVM ingest
+path). New `_CALLEES_FP_MINMAX` group in `src/callees.jl`. Module
+re-export list in `src/softfloat/softfloat.jl` extended +4.
+
+**Why:** Bennett-kh6n earlier today closed the trailing-`.` prefix-
+discipline gap, but it left four `_ir_error` stubs telling the caller
+that "native `soft_fmin`/`soft_fmax` is future work." The future-work
+clock is short — every Julia function that uses `min(::Float64, ...)`
+silently went through the generic `Base.min` fallback (which uses
+`<` + `ifelse`); after the kh6n reject, raw `.ll` ingest containing
+`llvm.minnum`/`llvm.minimum` simply failed loud. Closing the stub the
+same day removes the regression risk and gives Julia-source compile
+the bit-exact-vs-Base.min guarantee it should have.
+
+The new file completes the f64 min/max story: every LLVM min/max
+flavor (minnum / minimum / maxnum / maximum) now dispatches; every
+Julia `min`/`max` on Float64 routes through SoftFloat to the
+matching primitive; ±0 sign-aware tie-break, NaN propagation
+semantics, and `±Inf` corners are bit-exact against the LLVM langref
+(NaN-absorbing) or `Base.min`/`Base.max` (NaN-propagating).
+
+**Gotchas / Lessons:**
+
+- Julia's `Base.min(NaN, 1.0)` returns `NaN` — i.e. Julia's `min` is
+  IEEE 754-2008-style NaN-PROPAGATING, NOT NaN-absorbing. This was
+  worth confirming with a tiny REPL probe before designing the
+  dispatch matrix (previously I had assumed `Base.min` matched the
+  older `minNum` semantics). Concrete consequence: the SoftFloat
+  dispatch override `Base.min(::SoftFloat, ::SoftFloat)` MUST route
+  to `soft_fminimum` (not `soft_fmin`), otherwise compiled circuits
+  would disagree with hardware `min(::Float64, ::Float64)` on any
+  NaN input.
+
+- `soft_fcmp_olt(a, b)` returns 0 when both `a` and `b` are zero
+  regardless of sign (the `both_zero` override). So a naive
+  `ifelse(soft_fcmp_olt(a, b) != 0, a, b)` for fmin would return
+  `b` for `min(-0.0, +0.0)`. The fix is the explicit `both_zero`
+  branch that picks the operand with the sign bit set. Symmetric
+  for fmax (pick the sign-clear operand). All four primitives need
+  this override; structural — drops out of one extra `ifelse`.
+
+- `soft_fcmp_olt` is not `@inline`d in fcmp.jl. When `soft_fmin`
+  calls it inside a compiled circuit, Bennett's lower_call! handles
+  the nested IRCall recursively — soft_fcmp_olt is itself a
+  registered callee, so the gates inline at the gate level. The
+  bit-level test (which calls `Bennett.soft_fmin(a, b)` directly)
+  exercises the Julia call path; Julia's compiler may or may not
+  inline. Both paths are bit-exact in the test sweep.
+
+- The kh6n test fixtures `kh6n_minimum_f64_reject.ll` and
+  `kh6n_minnum_f64_reject.ll` are now stale assertions (the
+  dispatch path no longer rejects them). The corresponding
+  testsets in `test_kh6n_prefix_discipline.jl` were removed with a
+  comment pointing at `test_k2w6_soft_fminmax.jl` for the new
+  positive coverage. The `.ll` fixtures themselves are kept for
+  git-history clarity — small enough that deletion would be lossy.
+
+**Rejected alternatives:**
+
+- 3+1 protocol per CLAUDE.md §2: skipped per the same exception
+  used by Bennett-bybh and Bennett-kh6n. The four primitives are
+  mechanical extensions of `soft_fcmp_olt` (which is the contested-
+  design piece, already 3+1-resolved earlier); the LLVM dispatch
+  arms mirror the existing transcendental-dispatch pattern verbatim;
+  the SoftFloat dispatch is a one-line `Base.min(::SoftFloat, ...)`
+  routing in the same shape as `Base.sqrt`/`Base.exp`. Documenting
+  the exception here for the next 3+1 audit.
+
+- Routing `Base.min`/`Base.max` to the NaN-absorbing `soft_fmin`/
+  `soft_fmax`. Rejected: would silently disagree with hardware
+  `min(::Float64, ...)` on every NaN input. The principle of least
+  surprise + bit-exactness against Julia's hardware default per
+  CLAUDE.md §13 dominates.
+
+- Implementing as a `@generated`/`@eval`-collapsed handler shared
+  across the four primitives. Rejected as premature: the four
+  bodies are 5-7 lines each with two boolean knobs (NaN propagation
+  + min-vs-max sign-pick); collapsing them would cost readability
+  for ~40 lines saved. If a fifth pair is added (`fminimumnum`/
+  `fmaximumnum`), reconsider.
+
+- Subnormal-output sweep coverage per CLAUDE.md §13: min/max are
+  not transcendentals (their outputs are always one of the inputs,
+  so subnormal preservation is structural). The §13 rule technically
+  doesn't apply. Included subnormal-INPUT sweep anyway — tests
+  every binade × ± × 4 representative `other` values × 4 primitives
+  = 34,368 assertions — to follow the spirit of the rule and catch
+  any future loss-of-precision regression.
+
+**Validation:** RED-GREEN TDD per CLAUDE.md §3.
+
+- RED: `test/test_k2w6_soft_fminmax.jl` (with 8 `.ll` fixtures) had
+  434,464 errors / 8 pass on first run (only the f32 reject tests
+  passed — the kh6n rejects from earlier still applied to f32; the
+  positive bit-level + IR-level + Base.min/max routes had no
+  primitives to call).
+
+- GREEN: 434,472 / 434,472 pass after implementing
+  `src/softfloat/fmin.jl` + wiring `_CALLEES_FP_MINMAX` +
+  `Base.min`/`Base.max` overrides + LLVM dispatch arms.
+
+- Regression sample: kh6n trailing-`.` discipline still 7/7
+  (down from 13/13 — 6 tests now superseded by k2w6). Plus
+  `LLVM intrinsics coverage`: 1280, `Float utility intrinsics`: 27,
+  `ao66 vector intrinsics`: 41, `h6f fma dispatch`: 14. No
+  regressions.
+
+`_CALLEES_FP_MINMAX` extended with 4 primitives. `_CALLEES_FP_TRANS`
+unchanged (min/max isn't transcendental). Total Bennett soft-float
+primitive count now 36 (was 32).
+
+**Next agent starts here:** kh6n's other two future-work flags
+remain: `soft_minimumnum` / `soft_maximumnum` (IEEE 754-2019
+`minimumNumber`/`maximumNumber`, distinct from minimum/maximum in
+how quiet NaNs participate) and `soft_roundeven` (banker's rounding
+/ round-half-to-even, distinct from `soft_round` which is
+round-half-away-from-zero). All three are filed via the explicit
+`_ir_error` stubs in `src/extract/instructions.jl`. Each is a
+small, bounded primitive on the same scaffold as fmin.jl and
+fround.jl — pickable in the same one-session pattern as k2w6.
+
+---
+
 ## Session log — 2026-05-15 — Bennett-kh6n / U_ trailing-`.` prefix-discipline codemod for scalar `llvm.*` intrinsics
 
 **Shipped:** see git log around the kh6n commit; 32 untightened

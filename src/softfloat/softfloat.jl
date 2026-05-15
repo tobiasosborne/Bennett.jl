@@ -45,6 +45,7 @@ include("fptosi.jl")
 include("fptoui.jl")
 include("sitofp.jl")
 include("fround.jl")
+include("fmin.jl")
 
 # Public surface: 32 IEEE-754 primitives. Internal helpers and bit-pattern
 # constants are module-private (no `export`) — leak-free under
@@ -63,6 +64,7 @@ export soft_fadd, soft_fsub, soft_fmul, soft_fma, soft_fdiv, soft_fsqrt,
        soft_sin, soft_cos, soft_tan,
        soft_atan, soft_atan2, soft_asin, soft_acos,
        soft_tanh, soft_sinh, soft_cosh, soft_asinh, soft_acosh, soft_atanh,
-       soft_log1p, soft_expm1
+       soft_log1p, soft_expm1,
+       soft_fmin, soft_fmax, soft_fminimum, soft_fmaximum
 
 end # module SoftFloatLib

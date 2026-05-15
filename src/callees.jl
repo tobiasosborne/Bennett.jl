@@ -28,6 +28,15 @@ const _CALLEES_FP_ROUND = (
     soft_floor, soft_ceil, soft_trunc, soft_round,
 )
 
+# IEEE 754 binary min/max. Bennett-k2w6: two semantic pairs — `soft_fmin`
+# / `soft_fmax` are NaN-absorbing (≡ llvm.minnum / llvm.maxnum / IEEE 754
+# minNum/maxNum); `soft_fminimum` / `soft_fmaximum` are NaN-propagating
+# (≡ llvm.minimum / llvm.maximum / IEEE 754-2008 minimum/maximum, also
+# matches Julia Base.min/max bit-exactly).
+const _CALLEES_FP_MINMAX = (
+    soft_fmin, soft_fmax, soft_fminimum, soft_fmaximum,
+)
+
 # IEEE 754 comparison (returns i1). Bennett-d77b / U132: 6 new primitives
 # (ord, uno, one, ueq, ult, ule) complete the LLVM fcmp predicate table.
 # Combined with operand-swap dispatch in ir_extract.jl for ogt/oge/ugt/uge,
@@ -95,6 +104,7 @@ const _CALLEES_MUX_EXCH_GUARDED = (
 const _CALLEE_GROUPS = (
     _CALLEES_INTEGER_DIV,
     _CALLEES_FP_BINARY, _CALLEES_FP_UNARY, _CALLEES_FP_ROUND,
+    _CALLEES_FP_MINMAX,
     _CALLEES_FP_CMP, _CALLEES_FP_CONV, _CALLEES_FP_TRANS,
     _CALLEES_MUX_EXCH, _CALLEES_MUX_EXCH_GUARDED,
 )

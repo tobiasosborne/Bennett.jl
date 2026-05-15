@@ -43,21 +43,11 @@ end
         @test occursin("llvm.roundeven", err)
     end
 
-    @testset "scalar llvm.minimum.f64 rejects float operands" begin
-        err = kh6n_reject("kh6n_minimum_f64_reject.ll",
-                          "kh6n_minimum_f64")
-        @test err !== nothing
-        @test occursin("llvm.minimum", err)
-        @test occursin("integer compar", err)
-    end
-
-    @testset "scalar llvm.minnum.f64 rejects float operands" begin
-        err = kh6n_reject("kh6n_minnum_f64_reject.ll",
-                          "kh6n_minnum_f64")
-        @test err !== nothing
-        @test occursin("llvm.minnum", err)
-        @test occursin("integer compar", err)
-    end
+    # Bennett-k2w6 superseded the kh6n float-rejects for llvm.minimum.f64
+    # and llvm.minnum.f64 with native soft_fminimum / soft_fmin dispatch.
+    # The reject fixtures are kept at test/fixtures/ll/kh6n_minimum_f64_reject.ll
+    # and test/fixtures/ll/kh6n_minnum_f64_reject.ll for git-history clarity
+    # but no longer test rejection — coverage moved to test_k2w6_soft_fminmax.jl.
 
     # Source-property test: every `startswith(cname, "llvm.<x>")` in
     # src/extract/instructions.jl must end with a trailing `.` to prevent
