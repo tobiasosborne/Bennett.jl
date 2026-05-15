@@ -36,11 +36,20 @@ end
         @test occursin("llvm.maximumnum", err)
     end
 
-    @testset "llvm.roundeven.f64 not swallowed by llvm.round" begin
-        err = kh6n_reject("kh6n_roundeven_f64_reject.ll",
-                          "kh6n_roundeven_f64")
-        @test err !== nothing
-        @test occursin("llvm.roundeven", err)
+    # Bennett-mq6f superseded the kh6n llvm.roundeven.f64 reject. The kh6n
+    # rationale (claiming `soft_round` was round-half-AWAY) was a misstatement
+    # — `soft_round` IS banker's (≡ `Base.round(::Float64)`, pinned by
+    # Bennett-2hhx), so `llvm.roundeven` (also banker's per LLVM langref)
+    # now dispatches to `soft_round` natively. The actual silent miscompile
+    # was for `llvm.round.f64` (round-half-AWAY per langref) which pre-mq6f
+    # fell through the no-op arm to banker's `soft_round`. The kh6n
+    # roundeven .ll fixture is kept at test/fixtures/ll/kh6n_roundeven_f64_reject.ll
+    # for git-history clarity but no longer tests rejection — positive
+    # dispatch coverage lives in test_mq6f_round_away.jl. Below: an
+    # invariant test asserting roundeven now dispatches cleanly (no error).
+    @testset "llvm.roundeven.f64 dispatches cleanly post-mq6f (was kh6n reject)" begin
+        err = kh6n_reject("kh6n_roundeven_f64_reject.ll", "kh6n_roundeven_f64")
+        @test err === nothing  # Bennett-mq6f: native dispatch, no reject
     end
 
     # Bennett-k2w6 superseded the kh6n float-rejects for llvm.minimum.f64

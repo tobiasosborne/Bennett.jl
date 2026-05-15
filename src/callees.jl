@@ -24,8 +24,13 @@ const _CALLEES_FP_UNARY = (
 )
 
 # IEEE 754 rounding to integral (no precision loss; result still binary64).
+# Bennett-mq6f: `soft_round_away` (round-half-AWAY-from-zero, ≡ `llvm.round`)
+# is the LLVM-distinct sibling of `soft_round` (banker's ties-to-even,
+# ≡ `llvm.roundeven`). Both are registered so raw `.ll` ingest of either
+# intrinsic resolves cleanly; SoftFloat-typed `Base.round(::SoftFloat)`
+# routes to `soft_round` (matches Julia's hardware default).
 const _CALLEES_FP_ROUND = (
-    soft_floor, soft_ceil, soft_trunc, soft_round,
+    soft_floor, soft_ceil, soft_trunc, soft_round, soft_round_away,
 )
 
 # IEEE 754 binary min/max. Bennett-k2w6: two semantic pairs — `soft_fmin`

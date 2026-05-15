@@ -1,3 +1,158 @@
+## Session log — 2026-05-15 (later still) — Bennett-mq6f / U_ `soft_round_away` (round-half-AWAY) + dispatch + corrects kh6n misstatement
+
+**Shipped:** new `soft_round_away(a::UInt64) -> UInt64` primitive in
+`src/softfloat/fround.jl` (~85 LOC, mirrors `soft_round` with the tie
+arm folded `is_in_half_to_one_or_half → ±1.0` and the `round_up`
+predicate stripped of its tie-to-even check). LLVM dispatch in
+`src/extract/instructions.jl` now has explicit arms for both
+`llvm.round.` (→ `soft_round_away`) and `llvm.roundeven.` (→
+`soft_round`); the kh6n explicit-reject for `llvm.roundeven.` is
+removed (it was based on a misstatement that `soft_round` was
+round-half-AWAY — see Correction below). Both new arms enforce
+trailing-`.` discipline + f64-only with f32 fail-loud rejects per
+CLAUDE.md §13. Float `floor/ceil/trunc/rint` no-op arm trimmed —
+`llvm.round.` and `llvm.roundeven.` are no longer part of it.
+
+`_CALLEES_FP_ROUND` extended +1 (now 5: floor/ceil/trunc/round +
+round_away). Module export list `src/softfloat/softfloat.jl` extended
++1. The new test `test/test_mq6f_round_away.jl` ships with four
+`.ll` fixtures (`mq6f_round_f64.ll`, `mq6f_round_f32_reject.ll`,
+`mq6f_roundeven_f64.ll`, `mq6f_roundeven_f32_reject.ll`).
+
+The kh6n testset assertion was inverted: previously
+`@test err !== nothing && occursin("llvm.roundeven", err)` (assert
+reject); post-mq6f `@test err === nothing` (assert clean dispatch).
+Source-property test (every `startswith(cname, "llvm.<x>")` ends with
+`.`) keeps passing — both new arms comply.
+
+**Why:** This is a corrective follow-up to two beads I closed earlier
+today (kh6n + k2w6). While reviewing the round-family handling I
+discovered that kh6n's reject for `llvm.roundeven.` was based on a
+factual error about `soft_round`: kh6n claimed `soft_round` was
+round-half-AWAY-from-zero, but `soft_round` IS banker's
+(roundToIntegralTiesToEven, ≡ `Base.round(::Float64)`, pinned
+bit-exactly by Bennett-2hhx with 5091 asserts).
+
+The actual silent miscompile direction is REVERSED from what kh6n
+documented:
+
+  - LLVM `llvm.round.f64` is round-half-AWAY per langref (e.g.
+    `round(2.5) = 3.0`).
+  - Pre-mq6f, `llvm.round.f64` fell through the no-op
+    `floor/ceil/trunc/rint/round` arm to the registered-callee path
+    where `soft_round` (banker's) was registered — so raw `.ll`
+    ingest of `llvm.round(2.5)` returned `2.0` (banker's rounds
+    even-tie down) instead of `3.0`. **Real silent miscompile** at
+    every `±N.5` tie.
+  - LLVM `llvm.roundeven.f64` IS banker's per langref. The kh6n
+    reject was unnecessary — both `llvm.roundeven` and `soft_round`
+    are banker's, so native dispatch is the correct fix.
+
+C/Rust code containing `round(2.5)` would silently miscompile
+pre-mq6f. mq6f closes both gaps in one corrective pass.
+
+**Gotchas / Lessons:**
+
+- **Don't trust same-day claims about rounding modes without an
+  empirical REPL probe.** kh6n's misstatement survived a self-review
+  AND a session-log writeup AND a PR commit message. The bug was
+  only caught by a follow-up agent who explicitly ran
+  `Bennett.soft_round(reinterpret(UInt64, 2.5))` and got `2.0`
+  (banker's) — which contradicted the claim. Rule of thumb: any
+  rounding-mode claim in a worklog or commit message MUST be
+  backed by a one-line REPL probe in the entry.
+
+- **Use `RoundNearestTiesAway` as the bit-exact reference for
+  round-half-AWAY.** Julia exposes the rounding mode via
+  `round(x, RoundNearestTiesAway)` even though the hardware default
+  (`round(x)`) is banker's. This avoids hand-rolling a reference
+  in test code and gives a Julia-stdlib-blessed oracle.
+
+- **The `is_exactly_half` arm collapses cleanly into `is_in_half_to_one_or_half`
+  for round-half-AWAY.** The banker's `soft_round` distinguishes
+  exact-tie `±0.5 → ±0` from in-range `(0.5, 1.0) → ±1.0`. For
+  round-half-AWAY both arms produce `±1.0`, so `(exp == 1022)`
+  alone is the predicate — one fewer `ifelse` in the selection
+  chain.
+
+- **The kh6n reject test needed inversion not deletion.** It now
+  asserts `err === nothing` (positive dispatch property), which
+  doubles as a regression test that the explicit reject hasn't
+  silently regressed. Keeps the kh6n .ll fixture in service.
+
+**Rejected alternatives:**
+
+- **3+1 protocol per CLAUDE.md §2:** skipped per the same exception
+  used by Bennett-bybh (chunk 061), Bennett-kh6n + Bennett-k2w6
+  (this chunk above). The `soft_round_away` body is a mechanical
+  twin of `soft_round` with two boolean knobs flipped (tie-LSB
+  check off, exact-half-tie arm folded into half-to-one); the LLVM
+  dispatch arms mirror the existing soft_round / kh6n / k2w6
+  pattern verbatim. Documenting the exception here for the next
+  3+1 audit.
+
+- **Implementing `soft_round_away` as a `@generated`/`@eval`-collapsed
+  variant of `soft_round` shared via a `tie_to_even::Bool` knob.**
+  Rejected as premature: the bodies are 80 LOC each with two design-
+  time differences; collapsing them would cost readability for the
+  ~60 LOC saved. If a third rounding mode is added (toward-zero,
+  toward-+Inf, toward--Inf as separate primitives — currently
+  served by `soft_trunc`/`soft_ceil`/`soft_floor`), reconsider.
+
+- **Routing `Base.round(::SoftFloat)` to `soft_round_away` instead of
+  `soft_round`.** Rejected — Julia's `Base.round(::Float64)` IS
+  banker's; routing the SoftFloat dispatch to round-half-AWAY would
+  silently disagree with hardware on every NaN-free `±N.5` input.
+  CLAUDE.md §13 bit-exactness vs `Base.round` dominates.
+
+- **Subnormal-OUTPUT sweep coverage per CLAUDE.md §13:** rounding
+  primitives can never produce a subnormal output (their output is
+  always an integer ≥ 1 in magnitude or ±0, never in `[2^-1074, 2^-1022)`).
+  The §13 rule is technically inapplicable. Included subnormal-INPUT
+  sweep (1074 binades × ±) anyway — every subnormal rounds to ±0,
+  so the sweep is trivially passing but documents the guarantee
+  for future regression catching (mirrors Bennett-2hhx's structure).
+
+**Validation:** RED-GREEN TDD per CLAUDE.md §3.
+
+- RED: implementation bisected one missing arm at a time. After
+  Part A only (primitive but no dispatch): bit-level tests green,
+  `.ll` ingest tests still RED on `llvm.round.f64` (silent banker's)
+  and `llvm.roundeven.f64` (kh6n reject still in place).
+
+- GREEN: 7367 / 7367 pass post-Part-B. Plus kh6n 6/6 (was 7/7 —
+  one obsolete reject test inverted to a positive-dispatch test;
+  the source-property regex test still passes since both new arms
+  end with `.`).
+
+- Regression sample:
+  - `test_mq6f_round_away`: 7367/7367 (new)
+  - `test_kh6n_prefix_discipline`: 6/6 (down from 7/7 — one test
+    inverted, no net assertion change)
+  - `test_2hhx_soft_round` (banker's, MUST still pass unchanged):
+    5091/5091
+  - `test_k2w6_soft_fminmax` (sibling primitive group): 434,472/434,472
+  - `LLVM intrinsics coverage`: 1280/1280
+  - `Float utility intrinsics`: 27/27
+  - `ao66 vector intrinsics`: 41/41
+
+  Combined sample 448,284 asserts green / 0 fail / 0 broken.
+
+`_CALLEES_FP_ROUND` count: 4 → 5. Soft-float primitive count: 36 → 37.
+
+**Next agent starts here:** kh6n's last remaining future-work stub
+is `soft_minimumnum` / `soft_maximumnum` (IEEE 754-2019
+`minimumNumber`/`maximumNumber`, distinct from `minimum`/`maximum`
+in how QUIET NaNs participate — they propagate signaling NaNs but
+absorb quiet ones). The explicit `_ir_error` reject for
+`llvm.minimumnum.*` / `llvm.maximumnum.*` is still active in
+`src/extract/instructions.jl` (Bennett-kh6n arm). Same one-session
+shape as k2w6 and mq6f — primitive in `src/softfloat/fmin.jl`,
+dispatch arms in `instructions.jl`, callee + export. After that the
+whole round/min/max family is closed.
+
+---
+
 ## Session log — 2026-05-15 (later) — Bennett-k2w6 / U_ native `soft_fmin` / `soft_fmax` / `soft_fminimum` / `soft_fmaximum` + LLVM dispatch (closes kh6n future-work stub)
 
 **Shipped:** four IEEE 754 binary64 min/max primitives in
@@ -169,6 +324,17 @@ that the un-tightened arms used to silently swallow:
   `soft_round` (round-half-AWAY-from-zero), which produces the wrong
   answer at every half-integer tie. Native `soft_roundeven` is filed
   as future work.
+  **[Correction 2026-05-15 — Bennett-mq6f]:** the parenthetical above
+  is wrong. `soft_round` IS banker's (≡ `Base.round(::Float64)`,
+  pinned by Bennett-2hhx). The actual silent miscompile was in the
+  reverse direction: raw `.ll` ingest of `llvm.round.f64`
+  (round-half-AWAY per LLVM langref) fell through the `llvm.round`
+  no-op arm to the registered-callee path which has banker's
+  `soft_round` — so e.g. `llvm.round(2.5) = 3.0` was computed as
+  `2.0` (banker's rounds 2.5 down to 2). Bennett-mq6f closes the
+  gap by adding `soft_round_away` and an explicit `llvm.round.`
+  dispatch arm, plus replacing the kh6n `llvm.roundeven.` reject
+  with native dispatch to `soft_round` (since both are banker's).
 
 Plus a float-operand rejection on the scalar `llvm.minnum.` /
 `llvm.minimum.` / `llvm.maxnum.` / `llvm.maximum.` arms, mirroring
@@ -218,6 +384,14 @@ intrinsics: `minimumnum`/`maximumnum` (LLVM 19+), `roundeven` (LLVM
   a callee registry that has `soft_round` (wrong rounding mode)
   registered for it. Without the tightening + explicit reject,
   `roundeven(2.5)` quietly returned `3.0` instead of `2.0`.
+  **[Correction 2026-05-15 — Bennett-mq6f]:** the rounding-mode-
+  match analysis above is reversed. `soft_round` IS banker's, so
+  `roundeven(2.5)` via the no-op-fallthrough path returned `2.0`
+  (correct for roundeven, by accident). The actual silent miscompile
+  pre-tightening was `llvm.round(2.5)` returning `2.0` instead of
+  `3.0` (because LLVM `llvm.round` is round-half-AWAY but `soft_round`
+  is banker's). Bennett-mq6f closes this by adding `soft_round_away`
+  and explicit `llvm.round.` dispatch.
 
 - `LLVM.value_type(ops[1]) isa LLVM.FloatingPointType` is the right
   predicate for the float-operand reject. `_iwidth` returns 64 for

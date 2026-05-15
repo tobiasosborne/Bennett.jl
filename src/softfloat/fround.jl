@@ -200,3 +200,96 @@ function soft_round(a::UInt64)::UInt64
                     normal_result))))
     return result
 end
+
+"""
+    soft_round_away(a::UInt64) -> UInt64
+
+IEEE 754 `roundToIntegralTiesToAway` on Float64 bit patterns. Equivalent
+to `LLVM.round.f64` (the `llvm.round` intrinsic, distinct from
+`llvm.roundeven` which is banker's / round-half-to-even). Also matches
+`Base.round(x, RoundNearestTiesAway)` bit-exactly.
+
+The "round half AWAY from zero" rule:
+  * `round(0.5, RoundNearestTiesAway)  = 1.0`  (tie → away from 0)
+  * `round(1.5, RoundNearestTiesAway)  = 2.0`  (tie → away from 0)
+  * `round(2.5, RoundNearestTiesAway)  = 3.0`  (tie → away from 0)
+  * `round(-0.5, RoundNearestTiesAway) = -1.0` (tie → away from 0)
+  * `round(0.7, RoundNearestTiesAway)  = 1.0`  (closer to 1)
+  * `round(0.3, RoundNearestTiesAway)  = 0.0`  (closer to 0)
+
+## Algorithm
+
+Mirrors `soft_round` (banker's) verbatim except:
+
+  * `|x| == 0.5` exact tie returns `±1.0` (away from zero) instead of `±0`
+    (tie-to-even). The `(0.5, 1.0)` arm already returns `±1.0`, so the
+    `is_exactly_half` branch is folded into the `is_in_half_to_one` arm
+    via a single `is_in_half_to_one_or_half` predicate.
+  * `round_up := round_bit == 1` (round up iff dropped fraction ≥ 0.5),
+    no LSB-tie-to-even check.
+
+Tested bit-exactly against `Base.round(x, RoundNearestTiesAway)` over
+edge cases (ties, negatives, subnormals, near-2^52, NaN with payload,
+±Inf, ±0) plus the standard subnormal-input binade sweep. Per
+CLAUDE.md §13 the contract here is identical to `soft_round` for any
+non-half-tie input — the divergence lives entirely at `±N.5`.
+(Bennett-mq6f.)
+"""
+function soft_round_away(a::UInt64)::UInt64
+    sign = a & UInt64(0x8000000000000000)
+    abs_a = a & UInt64(0x7FFFFFFFFFFFFFFF)
+    exp = Int64((abs_a >> 52) & UInt64(0x7ff))
+
+    # ── Special cases (NaN / Inf passthrough) ────────────────────────
+    is_special = exp == Int64(0x7ff)
+    is_nan_input = is_special & ((abs_a & FRAC_MASK) != UInt64(0))
+    special_result = ifelse(is_nan_input, a | QUIET_BIT, a)
+
+    # ── |x| < 0.5 → ±0 (covers subnormals + zero) ────────────────────
+    is_below_half = exp < Int64(1022)
+
+    # ── |x| in [0.5, 1.0) → ±1.0 (tie at 0.5 goes AWAY from zero) ────
+    # Combines the banker's `is_exactly_half` (→ ±0) and `is_in_half_to_one`
+    # (→ ±1.0) arms into a single ±1.0 arm — the only divergence point.
+    is_in_half_to_one_or_half = (exp == Int64(1022))
+    one_with_sign = sign | reinterpret(UInt64, 1.0)
+
+    # ── |x| >= 2^52 → already integer ────────────────────────────────
+    is_integer = exp >= Int64(1075)
+
+    # ── General case: |x| in [1.0, 2^52), exp in [1023, 1074] ────────
+    frac_bits_raw = Int64(1075) - exp
+    frac_bits = clamp(frac_bits_raw, Int64(1), Int64(52))
+    round_bit_pos = frac_bits - Int64(1)
+
+    m = (abs_a & FRAC_MASK) | IMPLICIT  # add implicit leading 1
+    trunc_mask = ~((UInt64(1) << frac_bits) - UInt64(1))
+    truncated_m = m & trunc_mask
+
+    round_bit = (m >> round_bit_pos) & UInt64(1)
+
+    # Round-half-AWAY: round up iff dropped fraction >= 0.5 (i.e. iff
+    # the round_bit is set). NO sticky / LSB tie-to-even check — that's
+    # the whole point of vs `soft_round`.
+    round_up = round_bit == UInt64(1)
+
+    incr = UInt64(1) << frac_bits
+    rounded_m = truncated_m + ifelse(round_up, incr, UInt64(0))
+
+    # Carry into exponent (e.g. round(1.999...) → 2.0 sets bit 53).
+    has_carry = (rounded_m >> 53) != UInt64(0)
+    final_m = ifelse(has_carry, rounded_m >> 1, rounded_m)
+    final_exp = ifelse(has_carry, exp + Int64(1), exp)
+
+    normal_result = sign |
+                    (UInt64(final_exp) << 52) |
+                    (final_m & FRAC_MASK)
+
+    # ── Selection chain ──────────────────────────────────────────────
+    result = ifelse(is_special, special_result,
+             ifelse(is_below_half, sign,
+             ifelse(is_in_half_to_one_or_half, one_with_sign,
+             ifelse(is_integer, a,
+                    normal_result))))
+    return result
+end

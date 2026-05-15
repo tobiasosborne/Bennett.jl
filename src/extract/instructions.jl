@@ -452,10 +452,13 @@ end
 # dispatch was lifted out of `_convert_instruction`'s 836-line body into
 # this helper. Order of `if startswith(cname, "...")` branches is LOAD-
 # BEARING — `llvm.minnum` / `llvm.minimum` and `llvm.maxnum` / `llvm.maximum`
-# share handlers via prefix-match, and the floor/ceil/trunc/rint/round
+# share handlers via prefix-match, and the floor/ceil/trunc/rint
 # branch is INTENTIONALLY a no-op (it lets the registered-callee path in
 # `_convert_instruction` pick up `soft_floor` / `soft_ceil` / etc. via
-# the SoftFloat dispatch). Returns `nothing` if no intrinsic matched —
+# the SoftFloat dispatch). `llvm.round.` and `llvm.roundeven.` have
+# explicit dispatch arms (Bennett-mq6f) because they semantically
+# diverge — `llvm.round` is round-half-AWAY (`soft_round_away`) while
+# `llvm.roundeven` is banker's (`soft_round`). Returns `nothing` if no intrinsic matched —
 # the call site then proceeds to the registered-callee lookup and the
 # benign-allowlist guard. Per CLAUDE.md §2 this is part of the 3+1-mandated
 # tzrs refactor (proposers: A and B; orchestrator: tobias 2026-04-27).
@@ -698,32 +701,52 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             IRBinOp(dest, :or, ssa(mag), ssa(sgn), w),
         ]
     end
-    # Bennett-kh6n: `llvm.roundeven.f64` (banker's rounding /
-    # round-half-to-even, IEEE 754 roundToIntegralTiesToEven) MUST be
-    # rejected explicitly — the trailing-`.` discipline below stops the
-    # `llvm.round.` arm from swallowing it, but the callee registry only
-    # has `soft_round` (round-half-AWAY-from-zero) so the silent
-    # fallthrough silently miscompiles at the half-integer ties. Native
-    # `soft_roundeven` is future work; until then, fail loud.
+    # Bennett-mq6f: `llvm.roundeven.f64` is IEEE 754 roundToIntegralTiesToEven
+    # (banker's rounding) — bit-exactly equivalent to our `soft_round` (which
+    # is also banker's, matching `Base.round(::Float64)` per Bennett-2hhx).
+    # Native dispatch closes the kh6n future-work stub.
+    #
+    # Bennett-kh6n's earlier explicit reject (since removed) incorrectly
+    # claimed `soft_round` was round-half-AWAY; in fact `soft_round` IS
+    # banker's, and the silent miscompile direction is reversed — see the
+    # `llvm.round.` arm below for the actual round-half-AWAY dispatch.
     if startswith(cname, "llvm.roundeven.")
-        _ir_error(inst,
-            "$(cname): banker's rounding (round-half-to-even / IEEE 754 " *
-            "roundToIntegralTiesToEven) is not implemented; the registered " *
-            "`soft_round` callee implements round-half-AWAY-from-zero, which " *
-            "differs at half-integer ties. Native soft_roundeven is filed " *
-            "as future work. (Bennett-kh6n)")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.roundeven: only f64 supported (got width=$w); native " *
+            "f32/f16 paths are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-mq6f)")
+        return IRCall(dest, soft_round, [_operand(ops[1], names)], [w], w)
     end
-    # llvm.floor / llvm.ceil / llvm.trunc / llvm.rint / llvm.round
+    # Bennett-mq6f: `llvm.round.f64` is IEEE 754 roundToIntegralTiesToAway
+    # (round-half-AWAY-from-zero) per LLVM langref — DISTINCT from
+    # `llvm.roundeven.f64` (banker's). Pre-Bennett-mq6f this arm fell
+    # through to the no-op `floor/ceil/trunc/rint/round` block below and
+    # then hit the callee-registry path which (correctly) dispatches
+    # `soft_round` for the SoftFloat-typed `Base.round` — but `soft_round`
+    # is banker's, so raw `.ll` ingest of `llvm.round.f64` silently
+    # miscompiled at every `±N.5` tie. Native dispatch to the new
+    # `soft_round_away` primitive closes the gap.
+    if startswith(cname, "llvm.round.")
+        w = _iwidth(ops[1])
+        w == 64 || _ir_error(inst,
+            "llvm.round: only f64 supported (got width=$w); native " *
+            "f32/f16 paths are not bit-exact (CLAUDE.md §13). " *
+            "(Bennett-mq6f)")
+        return IRCall(dest, soft_round_away, [_operand(ops[1], names)], [w], w)
+    end
+    # llvm.floor / llvm.ceil / llvm.trunc / llvm.rint
     # Intentionally NO return: the registered-callee path in
     # `_convert_instruction` picks these up via SoftFloat dispatch
     # (`soft_floor` / `soft_ceil` / `soft_trunc` are registered callees).
     # Falling through to the next `if` keeps the original semantics.
-    # Trailing-`.` discipline (Bennett-kh6n) so `llvm.round.` cannot
-    # swallow `llvm.roundeven.` (which has different semantics — see the
-    # explicit reject above).
+    # Bennett-mq6f: `llvm.round.` and `llvm.roundeven.` are no longer
+    # part of this no-op arm — both have explicit dispatch above (with
+    # different rounding modes). `llvm.rint.` defaults to round-to-nearest-
+    # ties-to-even per IEEE 754; the callee registry serves that via
+    # `soft_round` (banker's).
     if startswith(cname, "llvm.floor.") || startswith(cname, "llvm.ceil.") ||
-       startswith(cname, "llvm.trunc.") || startswith(cname, "llvm.rint.") ||
-       startswith(cname, "llvm.round.")
+       startswith(cname, "llvm.trunc.") || startswith(cname, "llvm.rint.")
         # No-op: handled by callee registry
     end
     # Bennett-kh6n: `llvm.minimumnum.*` / `llvm.maximumnum.*` (LLVM 19+,
