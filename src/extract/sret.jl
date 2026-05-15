@@ -144,7 +144,7 @@ function _try_handle_sret_memcpy_reject!(inst::LLVM.Instruction, sret_ref::_LLVM
         e isa InterruptException && rethrow()
         ""
     end
-    startswith(cname, "llvm.memcpy") || return false
+    startswith(cname, "llvm.memcpy.") || return false
     if n_ops >= 2 && ops[1].ref === sret_ref
         _ir_error(inst,
             "sret with llvm.memcpy form is not supported " *

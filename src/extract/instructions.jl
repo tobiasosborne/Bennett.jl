@@ -462,7 +462,7 @@ end
 function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
                            names::Dict{_LLVMRef, Symbol}, counter::Ref{Int},
                            dest::Symbol, ops)
-    if startswith(cname, "llvm.umax")
+    if startswith(cname, "llvm.umax.")
         cmp_dest = _auto_name(counter)
         w = _iwidth(ops[1])
         return [
@@ -470,7 +470,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             IRSelect(dest, ssa(cmp_dest), _operand(ops[1], names), _operand(ops[2], names), w)
         ]
     end
-    if startswith(cname, "llvm.umin")
+    if startswith(cname, "llvm.umin.")
         cmp_dest = _auto_name(counter)
         w = _iwidth(ops[1])
         return [
@@ -478,7 +478,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             IRSelect(dest, ssa(cmp_dest), _operand(ops[1], names), _operand(ops[2], names), w)
         ]
     end
-    if startswith(cname, "llvm.smax")
+    if startswith(cname, "llvm.smax.")
         cmp_dest = _auto_name(counter)
         w = _iwidth(ops[1])
         return [
@@ -486,7 +486,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             IRSelect(dest, ssa(cmp_dest), _operand(ops[1], names), _operand(ops[2], names), w)
         ]
     end
-    if startswith(cname, "llvm.smin")
+    if startswith(cname, "llvm.smin.")
         cmp_dest = _auto_name(counter)
         w = _iwidth(ops[1])
         return [
@@ -495,7 +495,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
         ]
     end
     # llvm.abs.iN(x, is_int_min_poison) = x >= 0 ? x : 0 - x
-    if startswith(cname, "llvm.abs")
+    if startswith(cname, "llvm.abs.")
         w = _iwidth(ops[1])
         x_op = _operand(ops[1], names)
         neg_dest = _auto_name(counter)
@@ -508,7 +508,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     end
     # llvm.ctpop.iN(x) = popcount(x)
     # Expand: sum of individual bits via cascaded add
-    if startswith(cname, "llvm.ctpop")
+    if startswith(cname, "llvm.ctpop.")
         w = _iwidth(ops[1])
         x_op = _operand(ops[1], names)
         result = IRInst[]
@@ -531,7 +531,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     end
     # llvm.ctlz.iN(x, is_zero_poison) = count leading zeros
     # Expand: cascade LSB→MSB so highest set bit wins (overwrites last)
-    if startswith(cname, "llvm.ctlz")
+    if startswith(cname, "llvm.ctlz.")
         w = _iwidth(ops[1])
         x_op = _operand(ops[1], names)
         result = IRInst[]
@@ -553,7 +553,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     end
     # llvm.cttz.iN(x, is_zero_poison) = count trailing zeros
     # Cascade MSB→LSB so lowest set bit wins (overwrites last)
-    if startswith(cname, "llvm.cttz")
+    if startswith(cname, "llvm.cttz.")
         w = _iwidth(ops[1])
         x_op = _operand(ops[1], names)
         result = IRInst[]
@@ -575,7 +575,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     end
     # llvm.bitreverse.iN(x) = reverse bit order
     # Expand: for each bit, shift to mirrored position and OR together
-    if startswith(cname, "llvm.bitreverse")
+    if startswith(cname, "llvm.bitreverse.")
         w = _iwidth(ops[1])
         x_op = _operand(ops[1], names)
         result = IRInst[]
@@ -603,7 +603,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
         return result
     end
     # llvm.bswap.iN(x) = reverse byte order (N must be multiple of 16)
-    if startswith(cname, "llvm.bswap")
+    if startswith(cname, "llvm.bswap.")
         w = _iwidth(ops[1])
         x_op = _operand(ops[1], names)
         n_bytes = w ÷ 8
@@ -628,7 +628,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
         return result
     end
     # llvm.fshl.i64(a, b, shift) = (a << shift) | (b >> (64 - shift))
-    if startswith(cname, "llvm.fshl")
+    if startswith(cname, "llvm.fshl.")
         w = _iwidth(ops[1])
         a_op = _operand(ops[1], names)
         b_op = _operand(ops[2], names)
@@ -653,7 +653,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
         end
     end
     # llvm.fshr.i64(a, b, shift) = (a << (64 - shift)) | (b >> shift)
-    if startswith(cname, "llvm.fshr")
+    if startswith(cname, "llvm.fshr.")
         w = _iwidth(ops[1])
         a_op = _operand(ops[1], names)
         b_op = _operand(ops[2], names)
@@ -678,13 +678,13 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
         end
     end
     # llvm.fabs: clear sign bit (AND with ~sign_bit)
-    if startswith(cname, "llvm.fabs")
+    if startswith(cname, "llvm.fabs.")
         w = _iwidth(ops[1])
         mask = w == 64 ? typemax(Int64) : Int((1 << (w - 1)) - 1)
         return IRBinOp(dest, :and, _operand(ops[1], names), iconst(mask), w)
     end
     # llvm.copysign: (x AND ~sign_bit) OR (y AND sign_bit)
-    if startswith(cname, "llvm.copysign")
+    if startswith(cname, "llvm.copysign.")
         w = _iwidth(ops[1])
         mag_mask = w == 64 ? typemax(Int64) : Int((1 << (w - 1)) - 1)
         sign_bit = w == 64 ? typemin(Int64) : Int(1 << (w - 1))
@@ -698,18 +698,69 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             IRBinOp(dest, :or, ssa(mag), ssa(sgn), w),
         ]
     end
+    # Bennett-kh6n: `llvm.roundeven.f64` (banker's rounding /
+    # round-half-to-even, IEEE 754 roundToIntegralTiesToEven) MUST be
+    # rejected explicitly — the trailing-`.` discipline below stops the
+    # `llvm.round.` arm from swallowing it, but the callee registry only
+    # has `soft_round` (round-half-AWAY-from-zero) so the silent
+    # fallthrough silently miscompiles at the half-integer ties. Native
+    # `soft_roundeven` is future work; until then, fail loud.
+    if startswith(cname, "llvm.roundeven.")
+        _ir_error(inst,
+            "$(cname): banker's rounding (round-half-to-even / IEEE 754 " *
+            "roundToIntegralTiesToEven) is not implemented; the registered " *
+            "`soft_round` callee implements round-half-AWAY-from-zero, which " *
+            "differs at half-integer ties. Native soft_roundeven is filed " *
+            "as future work. (Bennett-kh6n)")
+    end
     # llvm.floor / llvm.ceil / llvm.trunc / llvm.rint / llvm.round
     # Intentionally NO return: the registered-callee path in
     # `_convert_instruction` picks these up via SoftFloat dispatch
     # (`soft_floor` / `soft_ceil` / `soft_trunc` are registered callees).
     # Falling through to the next `if` keeps the original semantics.
-    if startswith(cname, "llvm.floor") || startswith(cname, "llvm.ceil") ||
-       startswith(cname, "llvm.trunc") || startswith(cname, "llvm.rint") ||
-       startswith(cname, "llvm.round")
+    # Trailing-`.` discipline (Bennett-kh6n) so `llvm.round.` cannot
+    # swallow `llvm.roundeven.` (which has different semantics — see the
+    # explicit reject above).
+    if startswith(cname, "llvm.floor.") || startswith(cname, "llvm.ceil.") ||
+       startswith(cname, "llvm.trunc.") || startswith(cname, "llvm.rint.") ||
+       startswith(cname, "llvm.round.")
         # No-op: handled by callee registry
     end
+    # Bennett-kh6n: `llvm.minimumnum.*` / `llvm.maximumnum.*` (LLVM 19+,
+    # IEEE 754-2019 minimumNumber/maximumNumber) MUST be rejected
+    # explicitly — pre-fix the (untightened) `llvm.minimum` / `llvm.maximum`
+    # arms swallowed them via prefix-match and dispatched to the wrong
+    # gates. NaN tie-break and quiet-NaN propagation differ from
+    # min/maximum, so even if we add float min/max later this is a
+    # separate primitive. Mirror Bennett-7goc's atan2-vs-atan precedent.
+    if startswith(cname, "llvm.minimumnum.") || startswith(cname, "llvm.maximumnum.")
+        _ir_error(inst,
+            "$(cname): IEEE 754-2019 minimumNumber/maximumNumber is not " *
+            "implemented; the existing min/max arms below use integer " *
+            "compare on bit patterns and have differing NaN semantics. " *
+            "Native soft_minimumnum / soft_maximumnum is future work. " *
+            "(Bennett-kh6n)")
+    end
     # llvm.minnum / llvm.maxnum / llvm.minimum / llvm.maximum
-    if startswith(cname, "llvm.minnum") || startswith(cname, "llvm.minimum")
+    # Trailing-`.` discipline (Bennett-kh6n): without it, `llvm.minimum`
+    # silently swallows `llvm.minimumnum.*` and `llvm.maximum` swallows
+    # `llvm.maximumnum.*` (rejected explicitly above).
+    #
+    # Float-operand rejection (Bennett-kh6n) mirrors the vector handler
+    # in src/extract/vectors.jl:_validate_vector_intrinsic_lane: this arm
+    # emits `IRICmp(:slt)` on the operand bit pattern, which on f64
+    # mishandles +0/-0 (signed-int compare treats them as unequal),
+    # NaN propagation (NaN bit patterns compare like +Inf), and signed
+    # vs unsigned negative-float ordering. Native soft_fmin/fmax is
+    # future work; until then, fail loud on float operands.
+    if startswith(cname, "llvm.minnum.") || startswith(cname, "llvm.minimum.")
+        if LLVM.value_type(ops[1]) isa LLVM.FloatingPointType
+            _ir_error(inst,
+                "$(cname) on floating-point operands is not supported; the " *
+                "scalar handler uses integer comparisons on bit patterns, " *
+                "which mishandles +0/-0 and NaN per IEEE 754. Native " *
+                "soft_fmin/fmax is future work. (Bennett-kh6n)")
+        end
         w = _iwidth(ops[1])
         x_op = _operand(ops[1], names)
         y_op = _operand(ops[2], names)
@@ -719,7 +770,14 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             IRSelect(dest, ssa(cmp), x_op, y_op, w),
         ]
     end
-    if startswith(cname, "llvm.maxnum") || startswith(cname, "llvm.maximum")
+    if startswith(cname, "llvm.maxnum.") || startswith(cname, "llvm.maximum.")
+        if LLVM.value_type(ops[1]) isa LLVM.FloatingPointType
+            _ir_error(inst,
+                "$(cname) on floating-point operands is not supported; the " *
+                "scalar handler uses integer comparisons on bit patterns, " *
+                "which mishandles +0/-0 and NaN per IEEE 754. Native " *
+                "soft_fmin/fmax is future work. (Bennett-kh6n)")
+        end
         w = _iwidth(ops[1])
         x_op = _operand(ops[1], names)
         y_op = _operand(ops[2], names)
@@ -744,7 +802,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     #
     # `llvm.exp2.*` is checked before `llvm.exp.*` because both share the
     # `llvm.exp` prefix; the order is load-bearing.
-    if startswith(cname, "llvm.sqrt")
+    if startswith(cname, "llvm.sqrt.")
         w = _iwidth(ops[1])
         w == 64 || _ir_error(inst,
             "llvm.sqrt: only f64 supported (got width=$w); native " *
@@ -768,7 +826,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     # would mean fmuladd produces a different last-ulp answer than fma
     # on the same inputs, which is a class of "silent disagreement" bug
     # CLAUDE.md §1 (fail loud) + §13 (bit-exact f64) explicitly avoid.
-    if startswith(cname, "llvm.fma") || startswith(cname, "llvm.fmuladd")
+    if startswith(cname, "llvm.fma.") || startswith(cname, "llvm.fmuladd.")
         w = _iwidth(ops[1])
         w == 64 || _ir_error(inst,
             "llvm.fma/fmuladd: only f64 supported (got width=$w); native " *
@@ -850,7 +908,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     # f64, exponent is i32 — so it routes to soft_powi (binary squaring),
     # not soft_pow. Order is load-bearing again: `llvm.powi.*` checked
     # before `llvm.pow.*` because both share the `llvm.pow` prefix.
-    if startswith(cname, "llvm.powi")
+    if startswith(cname, "llvm.powi.")
         w_base = _iwidth(ops[1])
         w_exp  = _iwidth(ops[2])
         w_base == 64 || _ir_error(inst,
@@ -865,7 +923,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
                       [_operand(ops[1], names), _operand(ops[2], names)],
                       [w_base, w_exp], w_base)
     end
-    if startswith(cname, "llvm.pow")
+    if startswith(cname, "llvm.pow.")
         w = _iwidth(ops[1])
         w == 64 || _ir_error(inst,
             "llvm.pow: only f64 supported (got width=$w); native " *
@@ -915,7 +973,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     # itself can grow multi-byte spans). With byte-granular chunks the
     # bead's "N is multiple of 8 bytes" wording becomes moot — any
     # positive N works.
-    if startswith(cname, "llvm.memmove")
+    if startswith(cname, "llvm.memmove.")
         _ir_error(inst,
             "$(cname): memmove is not yet lowered to reversible gates. " *
             "Memmove permits src/dst overlap and reversibility forbids " *
@@ -925,14 +983,14 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "variable-size / overlap / memmove). " *
             "(Bennett-37mt Phase 1 — memmove deferred to Bennett-8bys)")
     end
-    if startswith(cname, "llvm.memcpy")
+    if startswith(cname, "llvm.memcpy.")
         return _handle_memcpy_arm(cname, inst, names, counter, ops)
     end
     # Bennett-hao Phase 2 (Bennett-9nwt): const-c const-N memset on
     # alloca-i8-backed dst lowers to byte-granular IRPtrOffset+IRStore
     # pairs with ConstOperand(c) at width=8. c=0 takes a separate
     # silent-drop fast path that preserves pre-9nwt benign behaviour.
-    if startswith(cname, "llvm.memset")
+    if startswith(cname, "llvm.memset.")
         return _handle_memset_arm(cname, inst, names, counter, ops)
     end
     if startswith(cname, "llvm.cos.")
