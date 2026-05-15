@@ -258,7 +258,8 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
                                Dict{Symbol,Int}(), Ref(0),
                                opts.compact_calls,
                                opts.alloca_info, opts.ptr_provenance, Ref(0),
-                               opts.globals, :ripple, opts.mul, opts.entry_label)
+                               opts.globals, :ripple, opts.mul, opts.entry_label,
+                               Ref(false))   # Bennett-h0ai producer-tag
 
         # (a1) Lower header's non-phi instructions through the canonical
         # dispatcher. `header_body_insts` is in source order (collected at

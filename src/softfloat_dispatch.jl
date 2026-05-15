@@ -70,7 +70,8 @@ with direct `call @j_soft_fdiv` instructions that the callee registry recognizes
 """
 const _FLOAT64_OVERLOAD_KWARGS = (:optimize, :max_loop_iterations,
                                   :compact_calls, :strategy, :add, :mul,
-                                  :fold_constants, :target)
+                                  :fold_constants, :target,
+                                  :auto_self_reversing)
 # Kwargs that only make sense on the Tuple-of-integers path.
 const _FLOAT64_OVERLOAD_CROSS_REJECT = (:bit_width,)
 
@@ -83,6 +84,7 @@ function reversible_compile(f::F, float_types::Type{Float64}...;
                             mul::Symbol=_DEFAULT_COMPILE_OPTIONS.mul,
                             fold_constants::Bool=_DEFAULT_COMPILE_OPTIONS.fold_constants,
                             target::Symbol=_DEFAULT_COMPILE_OPTIONS.target,
+                            auto_self_reversing::Bool=_DEFAULT_COMPILE_OPTIONS.auto_self_reversing,
                             kwargs...) where {F}
     _reject_unknown_kwargs("Float64 overload", _FLOAT64_OVERLOAD_KWARGS,
                            _FLOAT64_OVERLOAD_CROSS_REJECT, kwargs)
@@ -100,15 +102,18 @@ function reversible_compile(f::F, float_types::Type{Float64}...;
     if N == 1
         w = (x::UInt64) -> (@inline f(SoftFloat(x))).bits
         return reversible_compile(w, UInt64; optimize, max_loop_iterations,
-                                  compact_calls, add, mul, fold_constants, target)
+                                  compact_calls, add, mul, fold_constants, target,
+                                  auto_self_reversing)
     elseif N == 2
         w = (a::UInt64, b::UInt64) -> (@inline f(SoftFloat(a), SoftFloat(b))).bits
         return reversible_compile(w, UInt64, UInt64; optimize, max_loop_iterations,
-                                  compact_calls, add, mul, fold_constants, target)
+                                  compact_calls, add, mul, fold_constants, target,
+                                  auto_self_reversing)
     elseif N == 3
         w = (a::UInt64, b::UInt64, c::UInt64) -> (@inline f(SoftFloat(a), SoftFloat(b), SoftFloat(c))).bits
         return reversible_compile(w, UInt64, UInt64, UInt64; optimize, max_loop_iterations,
-                                  compact_calls, add, mul, fold_constants, target)
+                                  compact_calls, add, mul, fold_constants, target,
+                                  auto_self_reversing)
     else
         throw(ArgumentError("Float64 compile supports up to 3 arguments (got $N)"))
     end
@@ -126,6 +131,7 @@ function reversible_compile(f::F, ::Type{Float64}, opts::CompileOptions) where {
         mul                 = opts.mul,
         fold_constants      = opts.fold_constants,
         target              = opts.target,
+        auto_self_reversing = opts.auto_self_reversing,
     )
 end
 
@@ -140,6 +146,7 @@ function reversible_compile(f::F, ::Type{Float64}, ::Type{Float64}, opts::Compil
         mul                 = opts.mul,
         fold_constants      = opts.fold_constants,
         target              = opts.target,
+        auto_self_reversing = opts.auto_self_reversing,
     )
 end
 
@@ -155,5 +162,6 @@ function reversible_compile(f::F, ::Type{Float64}, ::Type{Float64}, ::Type{Float
         mul                 = opts.mul,
         fold_constants      = opts.fold_constants,
         target              = opts.target,
+        auto_self_reversing = opts.auto_self_reversing,
     )
 end

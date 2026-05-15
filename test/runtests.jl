@@ -268,6 +268,12 @@ runfile("test_rggq_value_eager_branching.jl")
 # Bennett-egu6 / U03 — bennett() runtime-validates self_reversing=true
 # primitives via a 4-probe battery checking ancilla-zero + input-preservation.
 runfile("test_egu6_self_reversing_check.jl")
+# Bennett-h0ai — auto self_reversing detection via producer-tag (GateGroup.is_self_reversing)
+# + structural aggregator (_infer_self_reversing) + U03 runtime probe with
+# `trusted_dirty_wires` allowlist for the entry-block predicate. Conservative
+# under the current arith.jl:218 dispatch (no producer ever fires today; the
+# infrastructure is wired and tested via direct mechanism-level construction).
+runfile("test_h0ai_auto_self_reversing.jl")
 # Bennett-xy4j / U06 — soft_fmul now pre-normalises subnormal operands via
 # _sf_normalize_to_bit52 before the 53×53 multiply (mirrors fdiv/fma).
 runfile("test_xy4j_fmul_subnormal.jl")

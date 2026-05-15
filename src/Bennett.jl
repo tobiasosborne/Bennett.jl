@@ -143,6 +143,12 @@ Base.@kwdef struct CompileOptions
     strategy::Symbol = :auto
     fold_constants::Bool = true
     target::Symbol = :gate_count
+    # Bennett-h0ai: when true (default), `lower(parsed)` infers
+    # `lr.self_reversing` from producer-tagged GateGroups + structural
+    # invariants + the U03 runtime probe, halving gate counts on circuits
+    # that are end-to-end self-cleaning. Set false to disable the
+    # inference (kill-switch for benchmarking and regression bisects).
+    auto_self_reversing::Bool = true
 end
 
 const _DEFAULT_COMPILE_OPTIONS = CompileOptions()
@@ -217,7 +223,8 @@ true
 """
 const _TUPLE_OVERLOAD_KWARGS = (:optimize, :max_loop_iterations,
                                :compact_calls, :bit_width, :add, :mul,
-                               :strategy, :fold_constants, :target)
+                               :strategy, :fold_constants, :target,
+                               :auto_self_reversing)
 
 function reversible_compile(f, arg_types::Type{<:Tuple};
                             optimize::Bool=_DEFAULT_COMPILE_OPTIONS.optimize,
@@ -229,6 +236,7 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
                             strategy::Symbol=_DEFAULT_COMPILE_OPTIONS.strategy,
                             fold_constants::Bool=_DEFAULT_COMPILE_OPTIONS.fold_constants,
                             target::Symbol=_DEFAULT_COMPILE_OPTIONS.target,
+                            auto_self_reversing::Bool=_DEFAULT_COMPILE_OPTIONS.auto_self_reversing,
                             kwargs...)
     _reject_unknown_kwargs("Tuple overload", _TUPLE_OVERLOAD_KWARGS,
                            (), kwargs)
@@ -304,12 +312,13 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
         parsed = _narrow_ir(parsed, bit_width)
     end
     lr = lower(parsed; max_loop_iterations, compact_calls, add, mul,
-               fold_constants, target)
+               fold_constants, target, auto_self_reversing)
     return bennett(lr)
 end
 
 const _PARSED_OVERLOAD_KWARGS = (:max_loop_iterations, :compact_calls,
-                                :add, :mul, :fold_constants, :target)
+                                :add, :mul, :fold_constants, :target,
+                                :auto_self_reversing)
 # Kwargs that only make sense on the Julia-function entry path (they
 # configure IR extraction or pre-extraction narrowing); rejected
 # loudly if sent to the ParsedIR overload.
@@ -333,11 +342,12 @@ function reversible_compile(parsed::ParsedIR;
                             mul::Symbol=_DEFAULT_COMPILE_OPTIONS.mul,
                             fold_constants::Bool=_DEFAULT_COMPILE_OPTIONS.fold_constants,
                             target::Symbol=_DEFAULT_COMPILE_OPTIONS.target,
+                            auto_self_reversing::Bool=_DEFAULT_COMPILE_OPTIONS.auto_self_reversing,
                             kwargs...)
     _reject_unknown_kwargs("ParsedIR overload", _PARSED_OVERLOAD_KWARGS,
                            _PARSED_OVERLOAD_CROSS_REJECT, kwargs)
     lr = lower(parsed; max_loop_iterations, compact_calls, add, mul,
-               fold_constants, target)
+               fold_constants, target, auto_self_reversing)
     return bennett(lr)
 end
 
@@ -372,15 +382,16 @@ same name. Per-overload applicability is enforced (e.g. setting
 """
 function reversible_compile(f, arg_types::Type{<:Tuple}, opts::CompileOptions)
     return reversible_compile(f, arg_types;
-        optimize            = opts.optimize,
-        max_loop_iterations = opts.max_loop_iterations,
-        compact_calls       = opts.compact_calls,
-        bit_width           = opts.bit_width,
-        add                 = opts.add,
-        mul                 = opts.mul,
-        strategy            = opts.strategy,
-        fold_constants      = opts.fold_constants,
-        target              = opts.target,
+        optimize             = opts.optimize,
+        max_loop_iterations  = opts.max_loop_iterations,
+        compact_calls        = opts.compact_calls,
+        bit_width            = opts.bit_width,
+        add                  = opts.add,
+        mul                  = opts.mul,
+        strategy             = opts.strategy,
+        fold_constants       = opts.fold_constants,
+        target               = opts.target,
+        auto_self_reversing  = opts.auto_self_reversing,
     )
 end
 
@@ -389,12 +400,13 @@ function reversible_compile(parsed::ParsedIR, opts::CompileOptions)
     _check_field_at_default("ParsedIR overload", opts, :bit_width)
     _check_field_at_default("ParsedIR overload", opts, :strategy)
     return reversible_compile(parsed;
-        max_loop_iterations = opts.max_loop_iterations,
-        compact_calls       = opts.compact_calls,
-        add                 = opts.add,
-        mul                 = opts.mul,
-        fold_constants      = opts.fold_constants,
-        target              = opts.target,
+        max_loop_iterations  = opts.max_loop_iterations,
+        compact_calls        = opts.compact_calls,
+        add                  = opts.add,
+        mul                  = opts.mul,
+        fold_constants       = opts.fold_constants,
+        target               = opts.target,
+        auto_self_reversing  = opts.auto_self_reversing,
     )
 end
 

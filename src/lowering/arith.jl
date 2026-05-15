@@ -167,7 +167,8 @@ end
 function lower_binop!(gates, wa, vw, inst::IRBinOp;
                       ssa_liveness::Dict{Symbol,Int}=Dict{Symbol,Int}(),
                       inst_idx::Int=0,
-                      add::Symbol=:auto, mul::Symbol=:auto)
+                      add::Symbol=:auto, mul::Symbol=:auto,
+                      last_inst_self_reversing::Ref{Bool}=Ref(false))
     # Bennett-5qrn / U57: trivial-identity peephole. Short-circuits before
     # `resolve!` so neither the constant operand nor the heavy adder/multiplier
     # allocates ancilla wires. See helper docs above.
@@ -215,7 +216,23 @@ function lower_binop!(gates, wa, vw, inst::IRBinOp;
         elseif inst.op == :mul
             mstrat = _pick_mul_strategy(mul, W)
             if mstrat == :qcla_tree
-                lower_mul_qcla_tree!(gates, wa, a, b, W)[1:W]   # mod 2^W
+                # Bennett-h0ai: tag the producer iff the qcla_tree's full
+                # output IS the binop result (no slice/truncation).
+                # `lower_mul_qcla_tree!` returns 2W wires; the conventional
+                # slice `[1:W]` keeps the low half (mod 2^W) and STRANDS
+                # the high W as dirty ancillae — that path is NOT
+                # self-reversing and must NOT be tagged. Today every
+                # binop arrives with `length(out) > W` so the tag never
+                # fires; future work (h0ai-followup-D) may emit a
+                # non-slicing variant when the function shape allows it,
+                # at which point this branch will start tagging.
+                full = lower_mul_qcla_tree!(gates, wa, a, b, W)
+                if length(full) == W
+                    last_inst_self_reversing[] = true
+                    full
+                else
+                    full[1:W]   # mod 2^W (current path)
+                end
             else
                 lower_mul!(gates, wa, a, b, W)
             end

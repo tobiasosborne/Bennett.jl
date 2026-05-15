@@ -85,8 +85,26 @@ actually keeps Bennett's invariants. For each probe vector, forward-execute
 Raises `ErrorException` with probe/wire/expected/actual context on violation.
 Reuses `apply!` (src/simulator.jl:1-3) and `_compute_ancillae` — CLAUDE.md
 §13 (no duplicated lowering).
+
+# Bennett-h0ai: `trusted_dirty_wires` exemption
+
+The `lower(parsed::ParsedIR)` pipeline injects an entry-block predicate
+NOTGate (`src/lowering/driver.jl:104` — `pw[1] = 1`) before any user
+instructions run. That wire ends the forward pass holding 1, NOT 0,
+which the strict probe rejects as a dirty ancilla even though the
+predicate is doing exactly what it's designed to do.
+
+When `_infer_self_reversing` runs auto-detection over a `lower()`-built
+LR, it passes the entry-block predicate wires via the `trusted_dirty_wires`
+kwarg; those wires are excluded from the ancilla-clean check. Forged
+producer-tag claims (the L3 catch from Bennett-h0ai's design) still
+fail loud because the trusted set is bounded — only the explicitly-named
+predicate wires are exempt, NOT every wire that happens to be dirty.
+
+Default empty set preserves the strict pre-h0ai contract.
 """
-function _validate_self_reversing!(lr::LoweringResult)
+function _validate_self_reversing!(lr::LoweringResult;
+                                   trusted_dirty_wires::Set{Int}=Set{Int}())
     total_in = sum(lr.input_widths)
     ancilla_set = _compute_ancillae(lr.n_wires, lr.input_wires, lr.output_wires)
     for (name, probe_bits) in _u03_self_reversing_probes(total_in)
@@ -105,6 +123,7 @@ function _validate_self_reversing!(lr::LoweringResult)
         end
 
         for w in ancilla_set
+            (w in trusted_dirty_wires) && continue   # Bennett-h0ai exemption
             bits[w] && throw(ArgumentError("bennett(): self_reversing=true contract violated — ancilla wire $w is 1 after forward pass under probe '$name' (n_wires=$(lr.n_wires), n_gates=$(length(lr.gates))). Fix the producer or drop the self_reversing flag."))
         end
         for (k, w) in pairs(lr.input_wires)
@@ -113,6 +132,86 @@ function _validate_self_reversing!(lr::LoweringResult)
         end
     end
     return nothing
+end
+
+"""
+    _infer_self_reversing(lr::LoweringResult, trusted_predicate_wires::Vector{Int})
+        -> Bool
+
+Bennett-h0ai: the structural aggregator (Layer 2) for auto self_reversing
+detection. Returns `true` iff the `lr` is a structural one-primitive
+self-cleaning circuit AND the U03 runtime probe accepts it (with the
+entry-block predicate wires excused via `trusted_dirty_wires`).
+
+# Structural conditions (all must hold for `true`)
+
+1. NO branching (`!_has_branching(lr)`): only one `__pred_*` group exists
+   (the entry-block predicate). Branching adds path-predicate gates whose
+   wires end the forward pass holding values that don't fit the simple
+   exemption pattern.
+2. EXACTLY ONE tagged group. Zero tagged → no producer claims self-cleaning;
+   two-or-more tagged → chained primitives whose composition needs an outer
+   Bennett wrap to glue them. (Future work could extend to compose-with-clean
+   chains; out of scope for h0ai.)
+3. The tagged group's `result_wires == lr.output_wires` exactly. Any
+   permutation, slice, subset, or post-processing breaks the
+   "primitive output IS the function output" assumption that makes the
+   self-reversing fast-path safe.
+4. Every NON-tagged group is pure boilerplate: `__pred_<entry>`, `__ret_*`
+   (length-0 reverse passes), or `__branch_*` (excluded by condition 1).
+   The `__multi_ret_merge` group MUST be absent (covered by condition 1).
+
+# Runtime probe (Layer 3)
+
+After structural checks pass, the U03 probe is invoked with
+`trusted_dirty_wires=Set(trusted_predicate_wires)`. If the probe rejects
+(forged tag, real dirty ancilla outside the exemption, or input mutation),
+this returns `false` — auto-detection is conservative. NOTE: per
+CLAUDE.md §1, a forged producer-tag is technically a producer bug; the
+implementation chose conservative-fallback over loud-throw to preserve
+the principle that `auto_self_reversing=true` MUST never break a working
+compile. If you need fail-loud behavior, set `auto_self_reversing=false`
+explicitly and use the manual `bennett_direct(lr)` entry point.
+"""
+function _infer_self_reversing(lr::LoweringResult,
+                                trusted_predicate_wires::Vector{Int})
+    # Condition 1: no branching.
+    _has_branching(lr) && return false
+
+    # Conditions 2 + 3: exactly one tagged group, result_wires == output_wires.
+    n_tagged = 0
+    tagged::Union{GateGroup,Nothing} = nothing
+    for g in lr.gate_groups
+        if g.is_self_reversing
+            n_tagged += 1
+            tagged = g
+        end
+    end
+    n_tagged == 1 || return false
+    @assert tagged !== nothing
+    tagged.result_wires == lr.output_wires || return false
+
+    # Condition 4: every non-tagged group is boilerplate.
+    # Allowed boilerplate names: __pred_*, __ret_*, __branch_* (the last
+    # is gated by condition 1 anyway). Reject anything else loud-as-data.
+    for g in lr.gate_groups
+        g.is_self_reversing && continue
+        s = String(g.ssa_name)
+        is_boilerplate = startswith(s, "__pred_") ||
+                         startswith(s, "__ret_")  ||
+                         startswith(s, "__branch_")
+        is_boilerplate || return false
+    end
+
+    # Layer 3: runtime probe with trusted-dirty allowlist.
+    trusted_set = Set{Int}(trusted_predicate_wires)
+    try
+        _validate_self_reversing!(lr; trusted_dirty_wires=trusted_set)
+    catch e
+        e isa ArgumentError || rethrow(e)
+        return false
+    end
+    return true
 end
 
 """

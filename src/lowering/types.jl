@@ -3,6 +3,26 @@
 
 Maps one SSA instruction (or infrastructure operation) to its contiguous range
 of gates in the flat gate list.  Used by PRS15 value-level EAGER cleanup.
+
+# Bennett-h0ai (auto self_reversing detection)
+
+The `is_self_reversing` field is the producer-tag for auto-detection. A
+group sets it to `true` when its emitted gate sub-sequence is itself a
+closed self-cleaning primitive — `result_wires` carry the primitive's
+output, all internal ancillae return to zero by the end of the group,
+and the input wires read by the group are preserved. Producers known
+to satisfy this contract (e.g. the qcla_tree mul dispatch when no
+truncation is applied) tag their emitted group; the LR-level structural
+aggregator (`_infer_self_reversing`) checks the surrounding context
+and the U03 runtime probe before promoting `lr.self_reversing=true`.
+
+Producers MUST NOT set `is_self_reversing=true` on a group whose
+emitted output is later sliced/truncated by the dispatch site — the
+discarded wires become stranded ancillae that violate Bennett's
+clean-ancilla invariant. (See `src/lowering/arith.jl:218` — the
+qcla_tree mul dispatch slices `[1:W]` and therefore leaves the tag
+`false`; future work in Bennett-h0ai-followup-D may emit a non-slicing
+variant when the function shape allows it.)
 """
 struct GateGroup
     ssa_name::Symbol            # SSA dest, or synthetic like :__pred_entry
@@ -13,10 +33,14 @@ struct GateGroup
     wire_start::Int             # first wire allocated by this group (inclusive)
     wire_end::Int               # last wire allocated by this group (inclusive; 0 if none)
     cleanup_wires::Vector{Int}  # wires guaranteed zero after forward (can be freed during replay)
+    is_self_reversing::Bool     # Bennett-h0ai: producer-tag for auto self_reversing inference
 end
 
-# Default cleanup_wires to empty
-GateGroup(name, gs, ge, rw, ivars, ws, we) = GateGroup(name, gs, ge, rw, ivars, ws, we, Int[])
+# Default cleanup_wires to empty AND is_self_reversing to false
+GateGroup(name, gs, ge, rw, ivars, ws, we) =
+    GateGroup(name, gs, ge, rw, ivars, ws, we, Int[], false)
+GateGroup(name, gs, ge, rw, ivars, ws, we, cleanup) =
+    GateGroup(name, gs, ge, rw, ivars, ws, we, cleanup, false)
 
 """
     _is_pred_group(g::GateGroup) -> Bool
@@ -109,6 +133,15 @@ struct LoweringCtx
     # Sentinel Symbol("") disables gating entirely (backward-compat for direct
     # `lower_block_insts!` callers).
     entry_label::Symbol
+    # Bennett-h0ai: producer-tag side-channel. The most recent
+    # `_lower_inst!` call writes `true` here iff its emitted gate
+    # sequence is a self-cleaning primitive whose result_wires equal
+    # the binop's destination wire vector (no truncation, no
+    # post-processing). `lower_block_insts!` reads-then-resets this
+    # flag when constructing the GateGroup, transferring the tag to
+    # `GateGroup.is_self_reversing`. Default-false on every dispatch;
+    # only the qcla_tree non-truncating arm sets it today.
+    last_inst_self_reversing::Ref{Bool}
 end
 
 # Bennett-tbm6 (2026-04-27): the 11-arg / 12-arg / 13-arg backward-compat
@@ -157,7 +190,8 @@ _lower_inst!(ctx::LoweringCtx, inst::IRPhi, label::Symbol) =
 _lower_inst!(ctx::LoweringCtx, inst::IRBinOp, ::Symbol) =
     lower_binop!(ctx.gates, ctx.wa, ctx.vw, inst;
                  ssa_liveness=ctx.ssa_liveness, inst_idx=ctx.inst_counter[],
-                 add=ctx.add, mul=ctx.mul)
+                 add=ctx.add, mul=ctx.mul,
+                 last_inst_self_reversing=ctx.last_inst_self_reversing)
 
 _lower_inst!(ctx::LoweringCtx, inst::IRICmp, ::Symbol) =
     lower_icmp!(ctx.gates, ctx.wa, ctx.vw, inst)

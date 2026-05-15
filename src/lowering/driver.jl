@@ -1,7 +1,8 @@
 function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=true,
                fold_constants::Bool=true, compact_calls::Bool=false,
                add::Symbol=:auto, mul::Symbol=:auto,
-               target::Symbol=:gate_count)
+               target::Symbol=:gate_count,
+               auto_self_reversing::Bool=true)
     add in (:auto, :ripple, :cuccaro, :qcla) ||
         throw(ArgumentError("lower: unknown add strategy :$add; supported: :auto, :ripple, :cuccaro, :qcla"))
     mul in (:auto, :shift_add, :qcla_tree) ||
@@ -202,9 +203,26 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
         result
     end
 
+    # Bennett-h0ai: build the LR with self_reversing initially false, then
+    # let `_infer_self_reversing` decide whether to promote. We MUST infer
+    # BEFORE `_fold_constants` because folding clears `gate_groups` (the
+    # producer-tags live there) and itself short-circuits on
+    # `lr.self_reversing == true`.
     lr = LoweringResult(gates, wire_count(wa), input_wires, output_wires,
                          input_widths, parsed.ret_elem_widths,
-                         gate_groups, false)  # self_reversing=false (default)
+                         gate_groups, false)
+
+    if auto_self_reversing
+        # The entry-block predicate NOTGate (driver.jl:104) leaves `pw[1]=1`
+        # at the end of the forward pass — that's the only "expected dirty"
+        # wire at the LR level. Pull its allowlist from `block_pred[order[1]]`.
+        trusted = get(block_pred, order[1], Int[])
+        if _infer_self_reversing(lr, trusted)
+            lr = LoweringResult(lr.gates, lr.n_wires, lr.input_wires,
+                                 lr.output_wires, lr.input_widths,
+                                 lr.output_elem_widths, lr.gate_groups, true)
+        end
+    end
 
     if fold_constants
         lr = _fold_constants(lr)
@@ -351,11 +369,13 @@ function lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_orde
     ctx = LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
                       opts.block_pred, opts.ssa_liveness, opts.inst_counter,
                       opts.compact_calls, opts.alloca_info, opts.ptr_provenance,
-                      Ref(0), opts.globals, opts.add, opts.mul, opts.entry_label)
+                      Ref(0), opts.globals, opts.add, opts.mul, opts.entry_label,
+                      Ref(false))   # Bennett-h0ai producer-tag side-channel
     for inst in block.instructions
         opts.inst_counter[] += 1
         _ws = wa.next_wire
         _gs = length(gates) + 1
+        ctx.last_inst_self_reversing[] = false   # reset before each dispatch
 
         _lower_inst!(ctx, inst, block.label)
 
@@ -363,7 +383,8 @@ function lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_orde
         if _ge >= _gs && hasproperty(inst, :dest)
             push!(opts.gate_groups, GateGroup(inst.dest, _gs, _ge,
                   copy(get(vw, inst.dest, Int[])), _ssa_operands(inst),
-                  _ws, wa.next_wire - 1))
+                  _ws, wa.next_wire - 1, Int[],
+                  ctx.last_inst_self_reversing[]))   # Bennett-h0ai
         end
     end
 end
