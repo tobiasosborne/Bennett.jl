@@ -482,15 +482,18 @@ function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction
     gname = Symbol(LLVM.name(LLVM.Value(src_gref)))
     haskey(globals, gname) || _ir_error(inst,
         "$(cname): memcpy src global @$gname is not extractable as a " *
-        "constant integer-array byte stream. Likely causes: (a) the " *
-        "initializer is a ConstantStruct (not ConstantDataArray) — " *
-        "tracked in Bennett-doih-struct (Bennett-zxhg); (b) the " *
-        "global is an external declaration with no initializer — " *
-        "tracked in Bennett-doih-external (covered by Bennett-zxhg); " *
-        "(c) the initializer is an opaque kind (GlobalAlias, " *
-        "ConstantVector, etc.) — tracked in Bennett-doih-opaque " *
-        "(covered by Bennett-zxhg). Check `parsed.globals` to see " *
-        "what was extracted. (Bennett-doih)")
+        "constant integer byte stream. Likely causes: (a) the " *
+        "initializer is a ConstantStruct with a non-integer field " *
+        "(e.g. ptr-typed, FloatType, VectorType, or IntegerType wider " *
+        "than 64 bits) — tracked in Bennett-zxhg-ptrfield; this is " *
+        "what t5_tr2_hashmap.ll:153's `<{ ptr, [24 x i8] }>` global " *
+        "hits, the `ptr` first field having no Bennett wire " *
+        "semantics; (b) the global is an external declaration with " *
+        "no initializer — tracked in Bennett-doih-external (covered " *
+        "by Bennett-zxhg); (c) the initializer is an opaque kind " *
+        "(GlobalAlias, ConstantVector, etc.) — tracked in " *
+        "Bennett-doih-opaque (covered by Bennett-zxhg). Check " *
+        "`parsed.globals` to see what was extracted. (Bennett-doih)")
     (gdata, gw) = globals[gname]
 
     # G6: same-width invariant. Cross-width packing deferred to

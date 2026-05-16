@@ -198,6 +198,14 @@ runfile("test_ixiz_wider_alloca.jl")
 # _module_to_parsed_ir_on_func → _convert_instruction (kwarg) → _handle_intrinsic
 # → _handle_memcpy_arm → _handle_memcpy_global_src.
 runfile("test_doih_memcpy_global_src.jl")
+# Bennett-zxhg (Bennett-doih follow-up, 2026-05-16): ConstantStruct global
+# extraction. Adds ConstantStruct + ConstantAggregateZero(StructType) arms
+# to _extract_const_globals; pure-integer structs (incl. nested + non-packed)
+# flatten to a byte stream at elem_width=8 via LLVM.offsetof/abi_size. Any
+# non-integer field (ptr/float/vector/i128) hard-rejects → silently skipped
+# in the dict → G5 in _handle_memcpy_global_src fires the precise
+# `Bennett-zxhg-ptrfield` breadcrumb (the t5_tr2_hashmap.ll:153 case).
+runfile("test_zxhg_struct_global.jl")
 # Bennett-h6f: direct llvm.fma / llvm.fmuladd dispatch.
 runfile("test_h6f_llvm_fma_dispatch.jl")
 # Bennett-4eu: indirectbr fail-loud hard stop.

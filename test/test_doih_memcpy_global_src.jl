@@ -130,17 +130,29 @@ using Bennett
         end
     end
 
-    @testset "ConstantStruct global rejects with Bennett-doih-struct (G5)" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "doih_global_src_struct_reject.ll")
-        @test_throws ErrorException Bennett.extract_parsed_ir_from_ll(
+    @testset "ConstantStruct global lowers post-Bennett-zxhg (was reject)" begin
+        # Pre-zxhg: `_extract_const_globals` filtered at
+        # `init isa LLVM.ConstantDataArray`, so this `<{ i8, [3 x i8] }>`
+        # global was silently skipped → G5 fired with Bennett-doih-struct.
+        # Post-zxhg (2026-05-16): the ConstantStruct arm extracts
+        # pure-integer structs to a byte stream (elem_width=8). The doih
+        # G5 path now succeeds and emits 4 IRPtrOffset+IRStore(iconst,8).
+        path = joinpath(@__DIR__, "fixtures", "ll", "doih_global_src_struct.ll")
+        parsed = Bennett.extract_parsed_ir_from_ll(
             path; entry_function="doih_struct_src")
-        try
-            Bennett.extract_parsed_ir_from_ll(path; entry_function="doih_struct_src")
-            @test false
-        catch e
-            msg = sprint(showerror, e)
-            @test occursin("Bennett-doih", msg)
-            @test occursin("Bennett-doih-struct", msg)
+        # The global should be in parsed.globals at elem_width=8 with
+        # the right bytes (i8 1, then [3 x i8] 02 03 04 = bytes
+        # [0x01, 0x02, 0x03, 0x04]).
+        @test haskey(parsed.globals, :gstruct)
+        (gdata, gw) = parsed.globals[:gstruct]
+        @test gw == 8
+        @test gdata == UInt64[0x01, 0x02, 0x03, 0x04]
+        # End-to-end: compile + verify reversibility + check oracle.
+        c = reversible_compile(parsed)
+        @test verify_reversibility(c)
+        # Oracle: load dst[0] = gstruct[0] = 1.
+        for x in Int8(-3):Int8(3)
+            @test simulate(c, x) == Int8(1)
         end
     end
 

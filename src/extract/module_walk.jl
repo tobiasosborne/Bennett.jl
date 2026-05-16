@@ -232,17 +232,142 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function)
 end
 
 """
+Bennett-zxhg helper. Flatten a `ConstantStruct` initializer into a flat
+little-endian `Vector{UInt8}` honoring ABI offset/padding via
+`LLVM.offsetof(dl, struct_ty, i)` and total size via
+`LLVM.abi_size(dl, struct_ty)`.
+
+Returns `nothing` (hard-reject) if ANY field has a type Bennett.jl can't
+materialise:
+  - PointerType / FloatType / VectorType / opaque / IntegerType wider than 64
+  - nested ConstantStruct that itself returns `nothing`
+  - field operand of an unexpected kind (e.g. `undef`, ConstantExpr that's
+    not a ConstantInt/ConstantDataArray/ConstantStruct/ConstantAggregateZero)
+
+Depth-limited at 8 to match `_global_root_and_offset` and prevent
+pathological recursion on hostile input.
+
+The ptr-field reject path is the one named in the doih G5 breadcrumb
+(`Bennett-zxhg-ptrfield`).
+"""
+function _flatten_struct_to_bytes(init::LLVM.ConstantStruct,
+                                  struct_ty::LLVM.StructType,
+                                  dl::LLVM.DataLayout,
+                                  depth::Int=0)
+    depth >= 8 && return nothing
+    # Endianness assertion (cheap insurance for big-endian deployment).
+    LLVM.byteorder(dl) == LLVM.API.LLVMLittleEndian ||
+        return nothing
+
+    total_bytes = Int(LLVM.abi_size(dl, struct_ty))
+    bytes = zeros(UInt8, total_bytes)
+
+    field_types = collect(LLVM.elements(struct_ty))
+    field_vals  = LLVM.operands(init)
+    nfields = length(field_types)
+    length(field_vals) == nfields || return nothing
+
+    for i in 0:(nfields - 1)
+        field_off = Int(LLVM.offsetof(dl, struct_ty, i))
+        field_ty  = field_types[i + 1]
+        field_val = field_vals[i + 1]
+
+        if field_ty isa LLVM.IntegerType
+            w = LLVM.width(field_ty)
+            (w in (8, 16, 32, 64)) || return nothing
+            # ConstantAggregateZero on a sub-int field is just zero —
+            # bytes already zero, nothing to do.
+            if field_val isa LLVM.ConstantAggregateZero
+                # no-op
+            elseif field_val isa LLVM.ConstantInt
+                raw = UInt64(LLVM.API.LLVMConstIntGetZExtValue(field_val.ref))
+                nb = div(w, 8)
+                for k in 0:(nb - 1)
+                    bytes[field_off + k + 1] = UInt8((raw >> (8 * k)) & 0xff)
+                end
+            else
+                return nothing
+            end
+
+        elseif field_ty isa LLVM.ArrayType
+            elem_ty = LLVM.eltype(field_ty)
+            elem_ty isa LLVM.IntegerType || return nothing
+            ew = LLVM.width(elem_ty)
+            (ew in (8, 16, 32, 64)) || return nothing
+            arrlen = Int(LLVM.API.LLVMGetArrayLength(field_ty.ref))
+            nb_per = div(ew, 8)
+
+            if field_val isa LLVM.ConstantAggregateZero
+                # bytes already zero
+            elseif field_val isa LLVM.ConstantDataArray ||
+                   field_val isa LLVM.ConstantArray
+                for k in 0:(arrlen - 1)
+                    elt_ref = LLVM.API.LLVMGetElementAsConstant(field_val.ref, k)
+                    elt = LLVM.Value(elt_ref)
+                    raw = elt isa LLVM.ConstantInt ?
+                        UInt64(LLVM.API.LLVMConstIntGetZExtValue(elt.ref)) :
+                        UInt64(0)
+                    base = field_off + k * nb_per
+                    for b in 0:(nb_per - 1)
+                        bytes[base + b + 1] = UInt8((raw >> (8 * b)) & 0xff)
+                    end
+                end
+            else
+                return nothing
+            end
+
+        elseif field_ty isa LLVM.StructType
+            if field_val isa LLVM.ConstantAggregateZero
+                # bytes already zero
+            elseif field_val isa LLVM.ConstantStruct
+                sub = _flatten_struct_to_bytes(field_val, field_ty, dl, depth + 1)
+                sub === nothing && return nothing
+                length(sub) == Int(LLVM.abi_size(dl, field_ty)) || return nothing
+                for (j, b) in enumerate(sub)
+                    bytes[field_off + j] = b
+                end
+            else
+                return nothing
+            end
+
+        else
+            # PointerType / FloatType / VectorType / opaque / TokenType / etc.
+            # — hard-reject via the Bennett-zxhg-ptrfield breadcrumb at the
+            # downstream G5 call site.
+            return nothing
+        end
+    end
+
+    return bytes
+end
+
+"""
 Extract constant-initialized integer-array globals from `mod`.
 
 Returns a dict keyed by global name (Symbol) mapping to `(data, elem_width)` where
 `data` is the array contents zero-extended into UInt64 (one entry per element) and
 `elem_width` is the per-element bit width from the LLVM type.
 
-Skips non-constant globals, globals without a ConstantDataArray initializer,
-non-integer element types, and elements wider than 64 bits.
+Dispatch on initializer kind (Bennett-zxhg extension):
+  - `ConstantDataArray` on `ArrayType<IntegerType, 8/16/32/64>` — original path
+    (per-element packing at the natural `elem_width`).
+  - `ConstantStruct` on `StructType` — new arm (Bennett-zxhg): flatten to
+    byte stream via `_flatten_struct_to_bytes`; stored as
+    `(UInt64.(bytes), 8)`. ABI padding honored via `LLVM.offsetof`.
+  - `ConstantAggregateZero` on `StructType` or `ArrayType` — new arm
+    (Bennett-zxhg companion): all-zero bytes of `LLVM.abi_size(dl, ty)`,
+    stored as `(zeros(UInt64, total_bytes), 8)`.
+
+Skips non-constant globals, opaque initializers, and anything that doesn't
+fit one of the three dispatch arms. Hard-rejects struct globals with any
+non-integer-shaped field (ptr/float/vector/etc.) via
+`_flatten_struct_to_bytes` returning `nothing` → silently skipped here,
+with the precise breadcrumb fired downstream at
+`_handle_memcpy_global_src` G5 (instructions.jl).
 """
 function _extract_const_globals(mod::LLVM.Module)
     out = Dict{Symbol, Tuple{Vector{UInt64}, Int}}()
+    dl = LLVM.datalayout(mod)
     for g in LLVM.globals(mod)
         # Julia emits various globals (type references, aliases, dispatch tables)
         # whose initializers we can't meaningfully materialize. Guard with a
@@ -266,22 +391,55 @@ function _extract_const_globals(mod::LLVM.Module)
             benign ? nothing : rethrow()
         end
         init === nothing && continue
-        init isa LLVM.ConstantDataArray || continue
-        ty = LLVM.value_type(init)
-        ty isa LLVM.ArrayType || continue
-        elem_ty = LLVM.eltype(ty)
-        elem_ty isa LLVM.IntegerType || continue
-        elem_width = LLVM.width(elem_ty)
-        1 <= elem_width <= 64 || continue
-        n = Int(LLVM.API.LLVMGetArrayLength(ty.ref))
-        data = Vector{UInt64}(undef, n)
-        for i in 0:(n-1)
-            elt_ref = LLVM.API.LLVMGetElementAsConstant(init.ref, i)
-            elt = LLVM.Value(elt_ref)
-            data[i+1] = elt isa LLVM.ConstantInt ?
-                UInt64(LLVM.API.LLVMConstIntGetZExtValue(elt.ref)) : UInt64(0)
+
+        if init isa LLVM.ConstantDataArray
+            ty = LLVM.value_type(init)
+            ty isa LLVM.ArrayType || continue
+            elem_ty = LLVM.eltype(ty)
+            elem_ty isa LLVM.IntegerType || continue
+            elem_width = LLVM.width(elem_ty)
+            1 <= elem_width <= 64 || continue
+            n = Int(LLVM.API.LLVMGetArrayLength(ty.ref))
+            data = Vector{UInt64}(undef, n)
+            for i in 0:(n-1)
+                elt_ref = LLVM.API.LLVMGetElementAsConstant(init.ref, i)
+                elt = LLVM.Value(elt_ref)
+                data[i+1] = elt isa LLVM.ConstantInt ?
+                    UInt64(LLVM.API.LLVMConstIntGetZExtValue(elt.ref)) : UInt64(0)
+            end
+            out[Symbol(LLVM.name(g))] = (data, elem_width)
+
+        elseif init isa LLVM.ConstantStruct
+            ty = LLVM.value_type(init)
+            ty isa LLVM.StructType || continue
+            bytes = _flatten_struct_to_bytes(init, ty, dl, 0)
+            bytes === nothing && continue
+            out[Symbol(LLVM.name(g))] = (UInt64.(bytes), 8)
+
+        elseif init isa LLVM.ConstantAggregateZero
+            ty = LLVM.value_type(init)
+            if ty isa LLVM.StructType
+                total_bytes = Int(LLVM.abi_size(dl, ty))
+                out[Symbol(LLVM.name(g))] = (zeros(UInt64, total_bytes), 8)
+            elseif ty isa LLVM.ArrayType
+                # An all-zero array also lands here in LLVM 18 (not as a
+                # ConstantDataArray). Preserve the natural element-width
+                # dict shape for integer-typed arrays.
+                elem_ty = LLVM.eltype(ty)
+                if elem_ty isa LLVM.IntegerType
+                    ew = LLVM.width(elem_ty)
+                    if 1 <= ew <= 64
+                        n = Int(LLVM.API.LLVMGetArrayLength(ty.ref))
+                        out[Symbol(LLVM.name(g))] = (zeros(UInt64, n), ew)
+                    end
+                end
+                # non-integer-element arrays silently skipped
+            end
+            # other zero-init types (vector, etc.) silently skipped
+
+        else
+            continue
         end
-        out[Symbol(LLVM.name(g))] = (data, elem_width)
     end
     return out
 end
