@@ -136,6 +136,17 @@ intermediate wires.
 If max_pebbles <= 0, uses full Bennett (no optimization).
 """
 function _pebbled_bennett_impl(lr::LoweringResult; max_pebbles::Int=0)
+    # Bennett-rjk7: honor the self_reversing fast-path universally — mirrors
+    # `_bennett_default` (src/bennett_transform.jl:286-294). Skipping the wrap
+    # halves gate count for QROM / Sun-Borissov primitives, and the U03 probe
+    # (`_validate_self_reversing!`, Bennett-egu6) catches forged tags loud per
+    # CLAUDE.md §1 regardless of strategy choice.
+    if lr.self_reversing
+        _validate_self_reversing!(lr)
+        return _build_circuit(lr.gates, lr.n_wires, lr.input_wires,
+                              lr.output_wires, lr)
+    end
+
     copy_wires, total = _allocate_copy_wires(lr)
     n_out = length(lr.output_wires)
 

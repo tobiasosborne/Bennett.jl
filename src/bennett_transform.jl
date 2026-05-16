@@ -255,12 +255,17 @@ on the primary output wires WITHOUT any wrap. Examples:
 - `lower_mul_qcla_tree!` — Sun-Borissov polylogarithmic-depth
   multiplier, src/mul_qcla_tree.jl.
 
-For these, the default-strategy path short-circuits to forward-only
-emission — no copy-out, no reverse pass — typically halving the gate
-count and saving `n_out` ancillae. The U03 contract probe
-(`_validate_self_reversing!`, Bennett-egu6) catches forged
-self_reversing claims at compile time. The non-default strategies do NOT
-inspect `lr.self_reversing` (existing behaviour preserved).
+For these, the strategy short-circuits to forward-only emission — no
+copy-out, no reverse pass — typically halving the gate count and saving
+`n_out` ancillae. **All 6 strategies (DefaultStrategy, EagerStrategy,
+ValueEagerStrategy, CheckpointStrategy, PebbledStrategy,
+PebbledGroupStrategy) honor `lr.self_reversing=true` and take the same
+fast-path** — the U03 contract probe (`_validate_self_reversing!`,
+Bennett-egu6) is invoked uniformly per CLAUDE.md §1 (fail-fast-fail-
+loud), so a forged tag fails identically regardless of strategy choice.
+Universal honoring landed in Bennett-rjk7 (pre-rjk7: DefaultStrategy-
+only; the other strategies wrapped the LR and silently bypassed the
+U03 probe).
 
 Construction sites that produce a self-reversing `lr` MUST set the flag
 explicitly via the 8-arg `LoweringResult` constructor (the 6-arg + 7-arg

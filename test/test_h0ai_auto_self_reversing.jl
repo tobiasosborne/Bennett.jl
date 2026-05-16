@@ -27,8 +27,6 @@
 #   - Modify arith.jl:218 to emit non-slicing qcla_tree when the binop's
 #     result is the function's only meaningful output, AND extend
 #     output_wires to include the high-W bits.
-#   - Extend the self-reversing fast-path to EagerStrategy /
-#     ValueEagerStrategy / etc. (DefaultStrategy already honors it).
 
 using Test, Bennett
 using Bennett: LoweringResult, GateGroup, ReversibleGate, NOTGate, CNOTGate,
