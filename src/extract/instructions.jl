@@ -67,14 +67,25 @@ function _alloca_elem_width_bits(alloca_ref::_LLVMRef)::Int
 end
 
 """
-    _handle_memcpy_arm(cname, inst, names, counter, ops) -> Vector{IRInst}
+    _handle_memcpy_arm(cname, inst, names, counter, ops, globals) -> Vector{IRInst}
 
-Bennett-37mt Phase 1: const-size memcpy between two distinct
-`alloca i8`-backed pointer ranges, lowered as N byte-granular chunks
-(IRPtrOffset src + IRPtrOffset dst + IRLoad width=8 + IRStore width=8).
+Bennett-37mt Phase 1 + Bennett-doih (2026-05-16): const-size memcpy.
+Two arms post-doih:
+
+  - **Non-global arm (37mt + ixiz):** distinct `alloca iM`-backed src/dst,
+    lowered as K element-granular IRPtrOffset+IRLoad+IRStore chunks where
+    K = N / ew_bytes and width = dst_ew (8/16/32/64 — same on both sides).
+  - **Global-src arm (doih):** src is a constant global from the
+    `parsed.globals` dict, dst is a fresh alloca. Lowered as K element-
+    granular IRPtrOffset+IRStore(iconst) chunks pulling the value from
+    the global's data words. See `_handle_memcpy_global_src` for the
+    G1-G9 sub-cascade. DST-as-global is still rejected (writable target
+    makes no sense for a constant).
+
 Out-of-scope shapes fail loud with a precise message naming the
 appropriate downstream bead (`Bennett-8bys` for the catch-all,
-`Bennett-haod` for global-variable source pointers).
+`Bennett-doih-struct` / `Bennett-doih-wide` / `Bennett-doih-vargep` for
+the doih follow-up cases).
 
 Predicates checked, in order, so the earliest mismatch produces the
 most actionable error:
@@ -83,13 +94,20 @@ most actionable error:
   2. `isvolatile == false`
   3. N is a `ConstantInt` (≥ 0)
   4. N == 0 → return `IRInst[]` (legal no-op)
-  5. neither operand is a global variable
+  5a. dst operand is NOT a global variable (still rejected)
+  5b. if src operand IS a global variable → dispatch to
+      `_handle_memcpy_global_src` (doih arm)
   6. both operands trace to an alloca (direct or via const-offset GEP)
   7. distinct alloca roots (rejects `memcpy(p, p, N)` self-copy)
   8. both alloca's element width is 8 bits
+
+The `globals` arg is the ParsedIR globals dict threaded down from
+`_module_to_parsed_ir_on_func`; empty for non-doih invocations.
 """
 function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
-                            names::Dict{_LLVMRef, Symbol}, counter::Ref{Int}, ops)
+                            names::Dict{_LLVMRef, Symbol}, counter::Ref{Int}, ops,
+                            globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}}=
+                                Dict{Symbol, Tuple{Vector{UInt64}, Int}}())
     # Predicate 1: addrspace 0 on both pointers (encoded in the intrinsic name).
     startswith(cname, "llvm.memcpy.p0.p0.") || _ir_error(inst,
         "$(cname): memcpy with non-default pointer address space is not " *
@@ -134,20 +152,33 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
     # Predicate 4: N == 0 is a legal no-op.
     N == 0 && return IRInst[]
 
-    # Predicate 5: globals out of scope. The Bennett-8bys catch-all
-    # explicitly enumerates "Global-pointer src memcpy" as a sub-case
-    # (see its description). The bead body for 37mt mentions a
-    # placeholder "haod" sub-bead, but it was never filed; users should
-    # track this under 8bys.
-    if LLVM.API.LLVMIsAGlobalVariable(dst_v.ref) != C_NULL ||
-       LLVM.API.LLVMIsAGlobalVariable(src_v.ref) != C_NULL
-        which = LLVM.API.LLVMIsAGlobalVariable(dst_v.ref) != C_NULL ? "dst" : "src"
+    # Predicate 5a (Bennett-doih, 2026-05-16): DST cannot be a global —
+    # the global is read-only constant data; writing to it would mutate
+    # text-section memory, which Bennett's reversible model has no
+    # semantics for. Remains a hard reject; tracked in Bennett-8bys for
+    # any future fancy dst-global semantics (e.g. shadow-copy buffer).
+    if LLVM.API.LLVMIsAGlobalVariable(dst_v.ref) != C_NULL
         _ir_error(inst,
-            "$(cname): memcpy with a global-variable pointer ($(which) " *
-            "operand) is not yet supported. Constant-source memcpy needs " *
-            "QROM-style fan-out for the read side. Tracked in Bennett-8bys " *
-            "(catch-all, sub-case: \"Global-pointer src memcpy\"). " *
-            "(Bennett-37mt Phase 1 — alloca-backed pointers only)")
+            "$(cname): memcpy with a global-variable dst pointer is not " *
+            "supported — global data is read-only constant memory and " *
+            "Bennett's reversible model has no semantics for mutating it. " *
+            "Tracked in Bennett-8bys (catch-all, sub-case: \"Global- " *
+            "pointer dst memcpy\"). " *
+            "(Bennett-doih — global-src memcpy supported; global-dst rejected)")
+    end
+
+    # Predicate 5b (Bennett-doih): SRC may be a global — dispatch to
+    # the new global-src arm. Two ways src can reach the global:
+    #   (i) direct global reference (`memcpy(_, @g, _, _)`)
+    #   (ii) const-GEP wrapping a global (`memcpy(_, getelementptr i8,
+    #        ptr @g, i32 OFF, _, _)`) — common when the source pointer
+    #        is offset into a larger constant.
+    # `_global_root_and_offset` handles both forms; if it returns
+    # non-nothing we route to the global-src arm. Variable-GEP src
+    # (runtime index into a global) is rejected inside that helper
+    # with a precise Bennett-doih-vargep breadcrumb.
+    if _src_reaches_global(src_v)
+        return _handle_memcpy_global_src(cname, inst, names, counter, ops, globals)
     end
 
     # Predicate 6: both pointers must trace back to an alloca.
@@ -229,6 +260,298 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
         push!(out, IRPtrOffset(dst_off, dst_op, k * ew_bytes))
         push!(out, IRLoad(tmp, ssa(src_off), dst_ew))
         push!(out, IRStore(ssa(dst_off), ssa(tmp), dst_ew))
+    end
+    return out
+end
+
+# ---- Bennett-doih (2026-05-16, Bennett-8bys sub-bead under Bennett-hao Phase 3) ----
+# Global-pointer src memcpy: copies bytes from a `[N x iM]` ConstantDataArray
+# global into a fresh alloca destination. Lowers to K element-granular
+# IRPtrOffset+IRStore(iconst) chunks pulling per-element values from the
+# `parsed.globals` dict (extracted in `module_walk.jl::_extract_const_globals`).
+#
+# Scope (MVP — intentionally narrow per CLAUDE.md §11 / "scope it tight"
+# lesson from Bennett-ixiz):
+#   - src is either a direct global reference OR a const-GEP `getelementptr
+#     i8, ptr @g, i32 OFF` whose base is a global. Variable-GEP src is
+#     rejected with `Bennett-doih-vargep`.
+#   - global must appear in `parsed.globals` (i.e. be a `ConstantDataArray`
+#     of integer elements, post-_extract_const_globals filtering).
+#     ConstantStruct globals → `Bennett-doih-struct`. External / opaque
+#     initializers → `Bennett-doih-external` / `Bennett-doih-opaque`.
+#   - dst is a fresh alloca with the SAME integer element width as the
+#     global (mirrors `_handle_memcpy_arm`'s predicate 8b). Cross-width
+#     (`alloca i64` dst + `[N x i8]` global, or vice versa) → `Bennett-
+#     doih-wide`. The follow-up bead `Bennett-doih-wide` covers byte-
+#     packing for cross-width.
+#   - N (byte count) must be a multiple of `gw/8` AND fit within the
+#     global's available bytes after applying any const-GEP offset.
+#   - dst alloca must be FRESH per `_alloca_is_fresh` (closes the 37mt
+#     inherited hazard — pre-doih the alloca-i8 memcpy path never had
+#     this gate, but doih is the first memcpy variant we're shipping
+#     with a constant source-side, so the freshness contract matters
+#     for the same §1 reason as Bennett-9nwt's case C).
+
+"""
+    _src_reaches_global(val) -> Bool
+
+Cheap predicate: returns `true` iff `val` is a direct global reference
+or a ConstantExpr GEP whose base operand is a global. Used by
+`_handle_memcpy_arm`'s predicate 5b to decide whether to dispatch to
+the doih global-src arm. The full unpacking (global ref + byte offset)
+happens in `_global_root_and_offset` once we're inside the doih arm.
+"""
+function _src_reaches_global(val::LLVM.Value)::Bool
+    val.ref == C_NULL && return false
+    LLVM.API.LLVMIsAGlobalVariable(val.ref) != C_NULL && return true
+    # Const-GEP wrapping a global: kind == ConstantExprValueKind AND
+    # the constexpr's opcode is `getelementptr`. Operand 1 of that
+    # GEP is the base — recurse one level (defence-in-depth: nested
+    # const-GEPs are uncommon but legal).
+    if val isa LLVM.ConstantExpr
+        opc = LLVM.API.LLVMGetConstOpcode(val.ref)
+        if opc == LLVM.API.LLVMGetElementPtr
+            gep_ops = LLVM.operands(val)
+            length(gep_ops) >= 1 || return false
+            return _src_reaches_global(gep_ops[1])
+        end
+    end
+    # Runtime GEP (Instruction) whose base reaches a global. We still
+    # route to the doih arm so it can fail-loud with a precise
+    # `Bennett-doih-vargep` breadcrumb; falling through to predicate 6
+    # would mis-categorise the failure as "not alloca-backed" + 37mt.
+    if val isa LLVM.Instruction && LLVM.opcode(val) == LLVM.API.LLVMGetElementPtr
+        gep_ops = LLVM.operands(val)
+        length(gep_ops) >= 1 || return false
+        return _src_reaches_global(gep_ops[1])
+    end
+    return false
+end
+
+"""
+    _global_root_and_offset(val) -> Union{Nothing, Tuple{_LLVMRef, Int}}
+
+Walk a pointer SSA value back to its underlying global, accumulating
+any const-GEP byte offsets along the way. Returns `(global_ref,
+byte_offset)` or `nothing` if the chain doesn't bottom out in a global
+or if a variable-index GEP is encountered.
+
+Currently handles:
+  - direct global reference → (ref, 0)
+  - const-GEP `getelementptr i8, ptr @g, i32 OFF` → (ref, OFF)
+  - const-GEP through nested ConstantExpr — recurses
+
+Variable-index GEPs (any GEP index that isn't a ConstantInt) return
+`nothing`; the caller (`_handle_memcpy_global_src`) fails loud with a
+`Bennett-doih-vargep` breadcrumb. Multi-index GEPs through a `[N x iM]`
+ArrayType are flattened: the element index is multiplied by the element
+byte width.
+"""
+function _global_root_and_offset(val::LLVM.Value, depth::Int=0
+                                 )::Union{Nothing, Tuple{_LLVMRef, Int}}
+    depth > 8 && return nothing
+    val.ref == C_NULL && return nothing
+    if LLVM.API.LLVMIsAGlobalVariable(val.ref) != C_NULL
+        return (val.ref, 0)
+    end
+    if val isa LLVM.ConstantExpr &&
+       LLVM.API.LLVMGetConstOpcode(val.ref) == LLVM.API.LLVMGetElementPtr
+        gep_ops = LLVM.operands(val)
+        length(gep_ops) >= 2 || return nothing
+        base = gep_ops[1]
+        # Pointee type of the GEP — accessed via the opaque-ptr GEP
+        # source-element-type API. For `getelementptr i8, ptr @g, ...`
+        # this is i8 (so per-index stride = 1 byte). For `getelementptr
+        # [N x i32], ptr @g, i32 0, i32 K` this is the array type
+        # (first index is 0 stepping past the whole array; second
+        # index K * 4 bytes).
+        srcty = try
+            LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(val.ref))
+        catch e
+            e isa InterruptException && rethrow()
+            return nothing
+        end
+        # Compute byte offset from index operands.
+        idx_off = 0
+        for i in 2:length(gep_ops)
+            iv = gep_ops[i]
+            iv isa LLVM.ConstantInt || return nothing  # variable GEP
+            ival = Int(LLVM.API.LLVMConstIntGetSExtValue(iv.ref))
+            if i == 2
+                # First index strides over `srcty`. We accept either:
+                # (a) `srcty` is integer iM → stride = M/8 (e.g.
+                #     `getelementptr i8, ptr @g, i32 4` → 4 bytes).
+                # (b) `srcty` is ArrayType — first index must be 0
+                #     (stepping past the whole array doesn't make
+                #     sense for a memcpy source). Non-zero outer
+                #     index → reject (multi-array GEP exotica).
+                if srcty isa LLVM.IntegerType
+                    stride = div(LLVM.width(srcty), 8)
+                    idx_off += ival * stride
+                elseif srcty isa LLVM.ArrayType
+                    ival == 0 || return nothing
+                else
+                    return nothing
+                end
+            else
+                # Second+ index: must be into the inner (array) element.
+                if srcty isa LLVM.ArrayType
+                    inner = LLVM.eltype(srcty)
+                    inner isa LLVM.IntegerType || return nothing
+                    stride = div(LLVM.width(inner), 8)
+                    idx_off += ival * stride
+                else
+                    return nothing
+                end
+            end
+        end
+        sub = _global_root_and_offset(base, depth + 1)
+        sub === nothing && return nothing
+        (gref, gbase_off) = sub
+        return (gref, gbase_off + idx_off)
+    end
+    return nothing
+end
+
+"""
+    _handle_memcpy_global_src(cname, inst, names, counter, ops, globals) -> Vector{IRInst}
+
+Bennett-doih global-src memcpy arm. Pre-conditions verified by
+`_handle_memcpy_arm` (predicates 1-4 and 5a). This arm runs G1-G9:
+
+  G1. dst SSA must be in the names table
+  G2. dst is NOT a global (defensive — caller's 5a already covers)
+  G3. dst traces to an alloca via `_alloca_root_ref`
+  G4. dst alloca elem_w is a non-zero integer
+  G5. src reaches a global; that global is in `globals` dict
+  G6. dst_ew == global_ew (no cross-width packing in MVP)
+  G7. src byte offset and N are multiples of ew_bytes
+  G8. N + src_byte_off ≤ available global bytes
+  G9. dst alloca is fresh per `_alloca_is_fresh`
+
+Emission shape (mirror of Bennett-9nwt case C): K element-granular
+`IRPtrOffset + IRStore(iconst, dst_ew)` pairs where each iconst is the
+k-th element of the global at the requested byte offset, K = N / ew_bytes.
+"""
+function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction,
+                                   names::Dict{_LLVMRef, Symbol},
+                                   counter::Ref{Int}, ops,
+                                   globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}})
+    dst_v = ops[1]
+    src_v = ops[2]
+    n_v   = ops[3]
+    N = _const_int_as_int(n_v)  # already validated to be ConstantInt>=0 by caller
+
+    # G1: dst SSA must be in the names table.
+    haskey(names, dst_v.ref) || _ir_error(inst,
+        "$(cname): memcpy dst pointer is not a named SSA value. " *
+        "(Bennett-doih)")
+
+    # G2: dst not a global (defensive — caller's 5a already rejected).
+    LLVM.API.LLVMIsAGlobalVariable(dst_v.ref) == C_NULL || _ir_error(inst,
+        "$(cname): internal — dst is a global but caller's 5a should " *
+        "have rejected it already. (Bennett-doih internal invariant)")
+
+    # G3: dst must trace to an alloca (direct or const-GEP).
+    dst_root = _alloca_root_ref(dst_v)
+    dst_root === nothing && _ir_error(inst,
+        "$(cname): memcpy dst operand is not alloca-backed (or " *
+        "alloca-backed via a const-offset GEP) on the global-src path. " *
+        "Pointer phi/select/parameter dst not handled. Tracked in " *
+        "Bennett-8bys. (Bennett-doih)")
+
+    # G4: dst alloca must have a non-zero integer element width.
+    dst_ew = _alloca_elem_width_bits(dst_root)
+    dst_ew == 0 && _ir_error(inst,
+        "$(cname): memcpy dst alloca has non-integer element type " *
+        "(dst_ew=0 indicates struct, ptr, nested-array, or non-integer " *
+        "ArrayType inner). Tracked in Bennett-8bys. (Bennett-doih)")
+
+    # G5: src reaches a global, and the global is in the globals dict.
+    src_unpacked = _global_root_and_offset(src_v)
+    src_unpacked === nothing && _ir_error(inst,
+        "$(cname): memcpy src reaches a global via a variable-index " *
+        "GEP (runtime indexing) or an exotic GEP shape. doih MVP " *
+        "supports only direct globals and const-byte-offset GEPs of " *
+        "globals. Tracked in Bennett-doih-vargep follow-up " *
+        "(Bennett-ui4f). (Bennett-doih)")
+    (src_gref, src_byte_off) = src_unpacked
+    src_byte_off >= 0 || _ir_error(inst,
+        "$(cname): memcpy src const-GEP yields a negative byte offset " *
+        "($src_byte_off) — out-of-bounds read on the global. (Bennett-doih)")
+    gname = Symbol(LLVM.name(LLVM.Value(src_gref)))
+    haskey(globals, gname) || _ir_error(inst,
+        "$(cname): memcpy src global @$gname is not extractable as a " *
+        "constant integer-array byte stream. Likely causes: (a) the " *
+        "initializer is a ConstantStruct (not ConstantDataArray) — " *
+        "tracked in Bennett-doih-struct (Bennett-zxhg); (b) the " *
+        "global is an external declaration with no initializer — " *
+        "tracked in Bennett-doih-external (covered by Bennett-zxhg); " *
+        "(c) the initializer is an opaque kind (GlobalAlias, " *
+        "ConstantVector, etc.) — tracked in Bennett-doih-opaque " *
+        "(covered by Bennett-zxhg). Check `parsed.globals` to see " *
+        "what was extracted. (Bennett-doih)")
+    (gdata, gw) = globals[gname]
+
+    # G6: same-width invariant. Cross-width packing deferred to
+    # Bennett-doih-wide.
+    dst_ew == gw || _ir_error(inst,
+        "$(cname): memcpy cross-width src/dst (global @$gname is " *
+        "[N x i$gw], dst alloca is i$dst_ew). doih MVP requires " *
+        "matching element widths; byte-packing wider globals into " *
+        "narrower dst (or vice versa) is deferred to " *
+        "Bennett-doih-wide (Bennett-epfe). (Bennett-doih)")
+
+    # G7: byte-offset and N must be multiples of ew_bytes.
+    ew_bytes = div(dst_ew, 8)
+    ew_bytes >= 1 || _ir_error(inst,
+        "$(cname): internal — dst_ew=$dst_ew bits gives ew_bytes=0. " *
+        "(Bennett-doih internal invariant)")
+    rem(src_byte_off, ew_bytes) == 0 || _ir_error(inst,
+        "$(cname): memcpy src const-GEP byte offset $src_byte_off is " *
+        "not a multiple of element size $ew_bytes bytes — sub-element " *
+        "alignment not supported. Tracked in Bennett-doih-wide " *
+        "(Bennett-epfe). (Bennett-doih)")
+    rem(N, ew_bytes) == 0 || _ir_error(inst,
+        "$(cname): memcpy N=$N bytes is not a multiple of element " *
+        "size $ew_bytes bytes — byte-granular tail copy on the " *
+        "global-src path is out of scope. Tracked in " *
+        "Bennett-doih-wide (Bennett-epfe). (Bennett-doih)")
+
+    # G8: N + src_byte_off must fit within the global's bytes.
+    avail_bytes = length(gdata) * ew_bytes
+    src_byte_off + N <= avail_bytes || _ir_error(inst,
+        "$(cname): memcpy reads $N bytes starting at offset $src_byte_off " *
+        "from global @$gname which has only $avail_bytes available " *
+        "bytes ($(length(gdata)) elements × $ew_bytes bytes). " *
+        "Out-of-bounds read. (Bennett-doih)")
+
+    # G9: dst alloca must be fresh (no prior IR-visible writes within
+    # the same basic block). Reuses the Bennett-9nwt helper.
+    _alloca_is_fresh(dst_root, inst) || _ir_error(inst,
+        "$(cname): memcpy dst alloca has prior IR-visible writes within " *
+        "this basic block (non-fresh dst) on the global-src path. " *
+        "Reversibility forbids destructive overwrite without first " *
+        "uncomputing the existing slot bits. Tracked in " *
+        "Bennett-8bys-uncompute. (Bennett-doih)")
+
+    # ---- Emission: K element-granular IRPtrOffset + IRStore(iconst) ----
+    # K = N / ew_bytes; each iconst is the source element at index
+    # (src_byte_off / ew_bytes + k). Cast UInt64 → Int via reinterpret
+    # to preserve the bit pattern for high-bit-set values (e.g. signed
+    # i64 negative constants stored unsigned in the globals dict).
+    dst_op = ssa(names[dst_v.ref])
+    K = div(N, ew_bytes)
+    src_elem_off = div(src_byte_off, ew_bytes)
+    out = IRInst[]
+    sizehint!(out, 2 * K)
+    for k in 0:(K - 1)
+        dst_off = _auto_name(counter)
+        word = gdata[src_elem_off + k + 1]  # 1-based indexing
+        # Cast to signed Int via reinterpret (preserves bit pattern).
+        ival = reinterpret(Int64, word) % Int
+        push!(out, IRPtrOffset(dst_off, dst_op, k * ew_bytes))
+        push!(out, IRStore(ssa(dst_off), iconst(ival), dst_ew))
     end
     return out
 end
@@ -530,7 +853,9 @@ end
 # tzrs refactor (proposers: A and B; orchestrator: tobias 2026-04-27).
 function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
                            names::Dict{_LLVMRef, Symbol}, counter::Ref{Int},
-                           dest::Symbol, ops)
+                           dest::Symbol, ops,
+                           globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}}=
+                               Dict{Symbol, Tuple{Vector{UInt64}, Int}}())
     if startswith(cname, "llvm.umax.")
         cmp_dest = _auto_name(counter)
         w = _iwidth(ops[1])
@@ -1101,7 +1426,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "(Bennett-37mt Phase 1 — memmove deferred to Bennett-8bys)")
     end
     if startswith(cname, "llvm.memcpy.")
-        return _handle_memcpy_arm(cname, inst, names, counter, ops)
+        return _handle_memcpy_arm(cname, inst, names, counter, ops, globals)
     end
     # Bennett-hao Phase 2 (Bennett-9nwt): const-c const-N memset on
     # alloca-i8-backed dst lowers to byte-granular IRPtrOffset+IRStore
@@ -1451,7 +1776,9 @@ end
 # instruction count. Re-measure if a workload OOMs during extraction.
 function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symbol},
                               counter::Ref{Int},
-                              lanes::Dict{_LLVMRef, Vector{IROperand}}=Dict{_LLVMRef, Vector{IROperand}}())
+                              lanes::Dict{_LLVMRef, Vector{IROperand}}=Dict{_LLVMRef, Vector{IROperand}}();
+                              globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}}=
+                                  Dict{Symbol, Tuple{Vector{UInt64}, Int}}())
     opc = LLVM.opcode(inst)
     dest = names[inst.ref]
 
@@ -1630,7 +1957,7 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             # prefix block to `_handle_intrinsic` (helper above). Returns
             # nothing if no intrinsic matched; we then fall through to the
             # registered-callee path.
-            handled = _handle_intrinsic(cname, inst, names, counter, dest, ops)
+            handled = _handle_intrinsic(cname, inst, names, counter, dest, ops, globals)
             handled === nothing || return handled
         end
         # Known Julia function calls → IRCall for gate-level inlining

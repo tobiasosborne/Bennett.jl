@@ -187,7 +187,7 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function)
             # prefix is how we distinguish legitimate fail-loud errors from
             # LLVM.jl's "unknown kind" pass-through.
             ir_inst = try
-                _convert_instruction(inst, names, counter, lanes)
+                _convert_instruction(inst, names, counter, lanes; globals=globals)
             catch e
                 e isa InterruptException && rethrow()
                 msg = sprint(showerror, e)

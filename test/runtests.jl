@@ -191,6 +191,13 @@ runfile("test_munq_arr_i8_alloca.jl")
 # integer ew (8/16/32/64); same-width firewall in lowering/memory.jl
 # unchanged.
 runfile("test_ixiz_wider_alloca.jl")
+# Bennett-doih (Bennett-8bys sub-bead under Bennett-hao Phase 3, 2026-05-16):
+# global-pointer src memcpy. Splits predicate 5 in _handle_memcpy_arm into
+# 5a (DST-as-global still rejects) and 5b (SRC-as-global dispatches to new
+# _handle_memcpy_global_src arm). Threads ParsedIR.globals dict through
+# _module_to_parsed_ir_on_func → _convert_instruction (kwarg) → _handle_intrinsic
+# → _handle_memcpy_arm → _handle_memcpy_global_src.
+runfile("test_doih_memcpy_global_src.jl")
 # Bennett-h6f: direct llvm.fma / llvm.fmuladd dispatch.
 runfile("test_h6f_llvm_fma_dispatch.jl")
 # Bennett-4eu: indirectbr fail-loud hard stop.
