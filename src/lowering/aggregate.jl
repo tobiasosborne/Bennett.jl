@@ -194,7 +194,34 @@ end
 function lower_ptr_offset!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                            vw::Dict{Symbol,Vector{Int}}, inst::IRPtrOffset;
                            ptr_provenance::Union{Nothing,Dict{Symbol,Vector{PtrOrigin}}}=nothing,
-                           alloca_info::Union{Nothing,Dict{Symbol,Tuple{Int,Int}}}=nothing)
+                           alloca_info::Union{Nothing,Dict{Symbol,Tuple{Int,Int}}}=nothing,
+                           persistent_info::Union{Nothing,Dict{Symbol,Any}}=nothing)
+    # Bennett-z2dj T5-P6 / consensus §5 Step 8: persistent-slab early-return.
+    # Must come BEFORE the `vw[inst.base.name]` lookup below — persistent slabs
+    # *do* have a `vw` entry (the slab wires), but the flat-byte-slice path is
+    # wrong for them (the slab is opaque to byte-offset GEPs).
+    if persistent_info !== nothing && ptr_provenance !== nothing &&
+       haskey(persistent_info, inst.base.name)
+        # MVP: const-offset GEPs into a persistent slab are only meaningful for
+        # offset 0 (i.e. an alias for the slab itself). Any non-zero offset is
+        # operating on slab-internal layout, which the persistent helpers do not
+        # model. Refuse loudly; future bead extends this.
+        inst.offset_bytes == 0 ||
+            throw(ArgumentError("lower_ptr_offset!: non-zero const offset $(inst.offset_bytes)B " *
+                "into persistent slab '$(inst.base.name)' is NYI (Bennett-z2dj Step 8 MVP). " *
+                "Persistent slabs are opaque to byte-offset GEPs — file a bd issue for " *
+                "intra-slab offset support."))
+        persistent_info[inst.dest] = persistent_info[inst.base.name]
+        base_origins = get(ptr_provenance, inst.base.name, PtrOrigin[])
+        isempty(base_origins) &&
+            throw(AssertionError("lower_ptr_offset!: persistent base '$(inst.base.name)' " *
+                "has no ptr_provenance entry — _lower_alloca_dynamic_n! should have installed one."))
+        new_origins = [PtrOrigin(o.alloca_dest, iconst(0), o.predicate_wire)
+                       for o in base_origins]
+        ptr_provenance[inst.dest] = new_origins
+        return
+    end
+
     # The base operand should be a flat wire array (from ptr param)
     if !haskey(vw, inst.base.name)
         throw(AssertionError("lower_var_gep!: GEP base $(inst.base.name) not found in variable wires"))
@@ -266,13 +293,43 @@ function lower_var_gep!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                         vw::Dict{Symbol,Vector{Int}}, inst::IRVarGEP;
                         ptr_provenance::Union{Nothing,Dict{Symbol,Vector{PtrOrigin}}}=nothing,
                         alloca_info::Union{Nothing,Dict{Symbol,Tuple{Int,Int}}}=nothing,
-                        globals::Union{Nothing,Dict{Symbol,Tuple{Vector{UInt64},Int}}}=nothing)
+                        globals::Union{Nothing,Dict{Symbol,Tuple{Vector{UInt64},Int}}}=nothing,
+                        persistent_info::Union{Nothing,Dict{Symbol,Any}}=nothing)
     # T1c.2: constant global table → QROM
     if globals !== nothing && haskey(globals, inst.base.name)
         data, gw = globals[inst.base.name]
         gw == inst.elem_width ||
             throw(DimensionMismatch("lower_var_gep!: elem_width=$(inst.elem_width) disagrees with global $(inst.base.name) elem_width=$gw"))
         vw[inst.dest] = _emit_qrom_from_gep!(gates, wa, vw, data, inst.index, inst.elem_width)
+        return
+    end
+
+    # Bennett-z2dj T5-P6 / consensus §5 Step 8: persistent-slab early-return.
+    # A GEP off a persistent slab installs provenance pointing at the slab plus
+    # the runtime index, and tags `persistent_info[inst.dest]` with the same impl
+    # so chained GEPs (rare but possible) carry the tag. The wire-slab indexing
+    # below is skipped — the persistent helpers (Step 5) consume the slab wires
+    # via `ctx.vw[alloca_dest]` directly and use the per-origin `idx_op` as the
+    # pmap_set/get key, so `vw[inst.dest]` must NOT alias a slice of the slab.
+    if persistent_info !== nothing && ptr_provenance !== nothing &&
+       haskey(persistent_info, inst.base.name)
+        persistent_info[inst.dest] = persistent_info[inst.base.name]
+        # Carry the base's predicate_wire through. For an alloca-direct base, the
+        # base's single PtrOrigin (installed by _lower_alloca_dynamic_n!) supplies
+        # the entry predicate.
+        base_origins = get(ptr_provenance, inst.base.name, PtrOrigin[])
+        if isempty(base_origins)
+            throw(AssertionError("lower_var_gep!: persistent base '$(inst.base.name)' " *
+                "has no ptr_provenance entry — _lower_alloca_dynamic_n! should have " *
+                "installed one. (Bennett-z2dj Step 8)"))
+        end
+        new_origins = PtrOrigin[]
+        for o in base_origins
+            # The slab's "alloca_dest" is itself; the new origin's idx is the GEP's
+            # runtime index; predicate_wire is inherited.
+            push!(new_origins, PtrOrigin(o.alloca_dest, inst.index, o.predicate_wire))
+        end
+        ptr_provenance[inst.dest] = new_origins
         return
     end
 
@@ -417,6 +474,16 @@ end
 function _lower_load_via_mux!(ctx::LoweringCtx, inst::IRLoad, origin::PtrOrigin)
     alloca_dest = origin.alloca_dest
     idx_op = origin.idx_op
+
+    # Bennett-z2dj T5-P6 / consensus §5 Step 6: persistent-slab early-out.
+    # Persistent allocas populate ctx.persistent_info (not ctx.alloca_info)
+    # so the ctx.alloca_info[alloca_dest] lookup below would KeyError.
+    # Route persistent loads to the dedicated helper which emits an IRCall
+    # to impl.pmap_get instead of the MUX-EXCH / shadow paths.
+    if haskey(ctx.persistent_info, alloca_dest)
+        return _lower_load_via_persistent!(ctx, inst, alloca_dest)
+    end
+
     info = ctx.alloca_info[alloca_dest]
 
     strategy = _pick_alloca_strategy(info, idx_op)

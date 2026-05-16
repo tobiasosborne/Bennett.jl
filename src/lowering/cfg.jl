@@ -259,7 +259,12 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
                                opts.compact_calls,
                                opts.alloca_info, opts.ptr_provenance, Ref(0),
                                opts.globals, :ripple, opts.mul, opts.entry_label,
-                               Ref(false))   # Bennett-h0ai producer-tag
+                               Ref(false),   # Bennett-h0ai producer-tag
+                               # Bennett-z2dj / T5-P6 (Step 2): persistent_tree
+                               # dispatcher state — shared across iterations via
+                               # the same opts.persistent_info dict.
+                               opts.mem, opts.persistent_impl, opts.hashcons,
+                               opts.persistent_info)
 
         # (a1) Lower header's non-phi instructions through the canonical
         # dispatcher. `header_body_insts` is in source order (collected at

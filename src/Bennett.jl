@@ -149,6 +149,15 @@ Base.@kwdef struct CompileOptions
     # that are end-to-end self-cleaning. Set false to disable the
     # inference (kill-switch for benchmarking and regression bisects).
     auto_self_reversing::Bool = true
+    # Bennett-z2dj T5-P6: persistent-map dispatcher knobs. `mem=:auto` (the
+    # default) is byte-identical to pre-z2dj behavior. `mem=:persistent`
+    # opts dynamic-n allocas into the `:persistent_tree` arm; `persistent_impl`
+    # picks the impl (only `:linear_scan` wired today; `:okasaki`/`:hamt`/`:cf`
+    # in follow-up beads); `hashcons` selects hash-consing strategy
+    # (`:none` today; `:naive`/`:feistel` in follow-up beads).
+    mem::Symbol = :auto
+    persistent_impl::Symbol = :linear_scan
+    hashcons::Symbol = :none
 end
 
 const _DEFAULT_COMPILE_OPTIONS = CompileOptions()
@@ -200,6 +209,29 @@ end
 end
 
 """
+    validate_persistent_config(mem, persistent_impl, hashcons) -> Nothing
+
+Bennett-z2dj T5-P6 / consensus §5 Step 9: when `mem === :persistent`, verify
+that `_resolve_persistent_impl(persistent_impl, hashcons)` succeeds — i.e. the
+requested (impl, hashcons) combo has registered callees. The `_resolve_*`
+helper throws `ArgumentError` on NYI; this wrapper turns that into a
+front-loaded validation so users see the actionable error at `reversible_compile`
+entry, not deep in `lower_alloca!`.
+
+When `mem !== :persistent`, this is a no-op — the other two kwargs are ignored
+(but their values must still pass `lower()`'s domain checks if reached).
+"""
+function validate_persistent_config(mem::Symbol, persistent_impl::Symbol,
+                                    hashcons::Symbol)
+    if mem === :persistent
+        # _resolve_persistent_impl lives in src/lowering/memory.jl and throws
+        # ArgumentError on NYI (impl, hashcons) combos. We discard the return.
+        _resolve_persistent_impl(persistent_impl, hashcons)
+    end
+    return nothing
+end
+
+"""
     reversible_compile(f, arg_types::Type{<:Tuple}) -> ReversibleCircuit
     reversible_compile(f, types::Type...; kw...) -> ReversibleCircuit
 
@@ -224,7 +256,8 @@ true
 const _TUPLE_OVERLOAD_KWARGS = (:optimize, :max_loop_iterations,
                                :compact_calls, :bit_width, :add, :mul,
                                :strategy, :fold_constants, :target,
-                               :auto_self_reversing)
+                               :auto_self_reversing,
+                               :mem, :persistent_impl, :hashcons)
 
 function reversible_compile(f, arg_types::Type{<:Tuple};
                             optimize::Bool=_DEFAULT_COMPILE_OPTIONS.optimize,
@@ -237,9 +270,16 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
                             fold_constants::Bool=_DEFAULT_COMPILE_OPTIONS.fold_constants,
                             target::Symbol=_DEFAULT_COMPILE_OPTIONS.target,
                             auto_self_reversing::Bool=_DEFAULT_COMPILE_OPTIONS.auto_self_reversing,
+                            mem::Symbol=_DEFAULT_COMPILE_OPTIONS.mem,
+                            persistent_impl::Symbol=_DEFAULT_COMPILE_OPTIONS.persistent_impl,
+                            hashcons::Symbol=_DEFAULT_COMPILE_OPTIONS.hashcons,
                             kwargs...)
     _reject_unknown_kwargs("Tuple overload", _TUPLE_OVERLOAD_KWARGS,
                            (), kwargs)
+    # Bennett-z2dj T5-P6 (Step 9): front-load NYI (mem, persistent_impl,
+    # hashcons) errors at the surface so users hit them at reversible_compile
+    # entry rather than deep inside lower_alloca!.
+    validate_persistent_config(mem, persistent_impl, hashcons)
     # Bennett-k0bg / U25: up-front kwarg + type validation.
     # `bit_width == 0` means "infer from arg_types"; otherwise the width
     # must be in [1, 64] (powers-of-2 are the common case but narrow
@@ -312,13 +352,15 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
         parsed = _narrow_ir(parsed, bit_width)
     end
     lr = lower(parsed; max_loop_iterations, compact_calls, add, mul,
-               fold_constants, target, auto_self_reversing)
+               fold_constants, target, auto_self_reversing,
+               mem, persistent_impl, hashcons)
     return bennett(lr)
 end
 
 const _PARSED_OVERLOAD_KWARGS = (:max_loop_iterations, :compact_calls,
                                 :add, :mul, :fold_constants, :target,
-                                :auto_self_reversing)
+                                :auto_self_reversing,
+                                :mem, :persistent_impl, :hashcons)
 # Kwargs that only make sense on the Julia-function entry path (they
 # configure IR extraction or pre-extraction narrowing); rejected
 # loudly if sent to the ParsedIR overload.
@@ -343,11 +385,17 @@ function reversible_compile(parsed::ParsedIR;
                             fold_constants::Bool=_DEFAULT_COMPILE_OPTIONS.fold_constants,
                             target::Symbol=_DEFAULT_COMPILE_OPTIONS.target,
                             auto_self_reversing::Bool=_DEFAULT_COMPILE_OPTIONS.auto_self_reversing,
+                            mem::Symbol=_DEFAULT_COMPILE_OPTIONS.mem,
+                            persistent_impl::Symbol=_DEFAULT_COMPILE_OPTIONS.persistent_impl,
+                            hashcons::Symbol=_DEFAULT_COMPILE_OPTIONS.hashcons,
                             kwargs...)
     _reject_unknown_kwargs("ParsedIR overload", _PARSED_OVERLOAD_KWARGS,
                            _PARSED_OVERLOAD_CROSS_REJECT, kwargs)
+    # Bennett-z2dj T5-P6 (Step 9): front-load NYI errors at the surface.
+    validate_persistent_config(mem, persistent_impl, hashcons)
     lr = lower(parsed; max_loop_iterations, compact_calls, add, mul,
-               fold_constants, target, auto_self_reversing)
+               fold_constants, target, auto_self_reversing,
+               mem, persistent_impl, hashcons)
     return bennett(lr)
 end
 
@@ -392,6 +440,9 @@ function reversible_compile(f, arg_types::Type{<:Tuple}, opts::CompileOptions)
         fold_constants       = opts.fold_constants,
         target               = opts.target,
         auto_self_reversing  = opts.auto_self_reversing,
+        mem                  = opts.mem,
+        persistent_impl      = opts.persistent_impl,
+        hashcons             = opts.hashcons,
     )
 end
 
@@ -407,6 +458,9 @@ function reversible_compile(parsed::ParsedIR, opts::CompileOptions)
         fold_constants       = opts.fold_constants,
         target               = opts.target,
         auto_self_reversing  = opts.auto_self_reversing,
+        mem                  = opts.mem,
+        persistent_impl      = opts.persistent_impl,
+        hashcons             = opts.hashcons,
     )
 end
 

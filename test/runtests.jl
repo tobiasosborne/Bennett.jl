@@ -614,6 +614,11 @@ runfile("test_t3j0_switch_label_collision.jl")
 # test_persistent_hashcons.jl during U54 cycle 5).  The remainder of
 # the hashcons coverage rides under BENNETT_RESEARCH_TESTS below.
 runfile("test_hashcons_feistel.jl")
+# Bennett-z2dj — T5-P6 `:persistent_tree` dispatcher arm. RED test (Step 1):
+# every testset is expected to FAIL until Steps 2-9 of `docs/design/p6_consensus.md`
+# §5 land. Safe to include unconditionally — `@test_throws` / `@test` failures
+# are the explicit RED contract.
+runfile("test_t5_p6_persistent_dispatch.jl")
 
 # T5 corpora — multi-language RED tests (T5-P2a/b/c).  All currently RED
 # via @test_throws; safe to include unconditionally.  C and Rust corpora

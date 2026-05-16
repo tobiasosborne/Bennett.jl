@@ -71,7 +71,8 @@ with direct `call @j_soft_fdiv` instructions that the callee registry recognizes
 const _FLOAT64_OVERLOAD_KWARGS = (:optimize, :max_loop_iterations,
                                   :compact_calls, :strategy, :add, :mul,
                                   :fold_constants, :target,
-                                  :auto_self_reversing)
+                                  :auto_self_reversing,
+                                  :mem, :persistent_impl, :hashcons)
 # Kwargs that only make sense on the Tuple-of-integers path.
 const _FLOAT64_OVERLOAD_CROSS_REJECT = (:bit_width,)
 
@@ -85,6 +86,9 @@ function reversible_compile(f::F, float_types::Type{Float64}...;
                             fold_constants::Bool=_DEFAULT_COMPILE_OPTIONS.fold_constants,
                             target::Symbol=_DEFAULT_COMPILE_OPTIONS.target,
                             auto_self_reversing::Bool=_DEFAULT_COMPILE_OPTIONS.auto_self_reversing,
+                            mem::Symbol=_DEFAULT_COMPILE_OPTIONS.mem,
+                            persistent_impl::Symbol=_DEFAULT_COMPILE_OPTIONS.persistent_impl,
+                            hashcons::Symbol=_DEFAULT_COMPILE_OPTIONS.hashcons,
                             kwargs...) where {F}
     _reject_unknown_kwargs("Float64 overload", _FLOAT64_OVERLOAD_KWARGS,
                            _FLOAT64_OVERLOAD_CROSS_REJECT, kwargs)
@@ -103,17 +107,20 @@ function reversible_compile(f::F, float_types::Type{Float64}...;
         w = (x::UInt64) -> (@inline f(SoftFloat(x))).bits
         return reversible_compile(w, UInt64; optimize, max_loop_iterations,
                                   compact_calls, add, mul, fold_constants, target,
-                                  auto_self_reversing)
+                                  auto_self_reversing,
+                                  mem, persistent_impl, hashcons)
     elseif N == 2
         w = (a::UInt64, b::UInt64) -> (@inline f(SoftFloat(a), SoftFloat(b))).bits
         return reversible_compile(w, UInt64, UInt64; optimize, max_loop_iterations,
                                   compact_calls, add, mul, fold_constants, target,
-                                  auto_self_reversing)
+                                  auto_self_reversing,
+                                  mem, persistent_impl, hashcons)
     elseif N == 3
         w = (a::UInt64, b::UInt64, c::UInt64) -> (@inline f(SoftFloat(a), SoftFloat(b), SoftFloat(c))).bits
         return reversible_compile(w, UInt64, UInt64, UInt64; optimize, max_loop_iterations,
                                   compact_calls, add, mul, fold_constants, target,
-                                  auto_self_reversing)
+                                  auto_self_reversing,
+                                  mem, persistent_impl, hashcons)
     else
         throw(ArgumentError("Float64 compile supports up to 3 arguments (got $N)"))
     end
@@ -132,6 +139,9 @@ function reversible_compile(f::F, ::Type{Float64}, opts::CompileOptions) where {
         fold_constants      = opts.fold_constants,
         target              = opts.target,
         auto_self_reversing = opts.auto_self_reversing,
+        mem                 = opts.mem,
+        persistent_impl     = opts.persistent_impl,
+        hashcons            = opts.hashcons,
     )
 end
 
@@ -147,6 +157,9 @@ function reversible_compile(f::F, ::Type{Float64}, ::Type{Float64}, opts::Compil
         fold_constants      = opts.fold_constants,
         target              = opts.target,
         auto_self_reversing = opts.auto_self_reversing,
+        mem                 = opts.mem,
+        persistent_impl     = opts.persistent_impl,
+        hashcons            = opts.hashcons,
     )
 end
 
@@ -163,5 +176,8 @@ function reversible_compile(f::F, ::Type{Float64}, ::Type{Float64}, ::Type{Float
         fold_constants      = opts.fold_constants,
         target              = opts.target,
         auto_self_reversing = opts.auto_self_reversing,
+        mem                 = opts.mem,
+        persistent_impl     = opts.persistent_impl,
+        hashcons            = opts.hashcons,
     )
 end

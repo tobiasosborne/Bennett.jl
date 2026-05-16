@@ -113,6 +113,14 @@ const _CALLEES_MUX_EXCH_GUARDED = (
     soft_mux_store_guarded_2x32,
 )
 
+# Bennett-z2dj T5-P6: persistent-map callees for the :persistent_tree
+# alloca-strategy arm. Linear-scan stub today; :okasaki / :hamt / :cf wired
+# in follow-up beads. `pmap_new` is NOT registered — its all-zero output is
+# reached for free via WireAllocator's zero invariant (consensus §3+§4).
+const _CALLEES_PERSISTENT = (
+    linear_scan_pmap_set, linear_scan_pmap_get,
+)
+
 # Single source of truth: every group above is registered exactly once.
 const _CALLEE_GROUPS = (
     _CALLEES_INTEGER_DIV,
@@ -120,6 +128,7 @@ const _CALLEE_GROUPS = (
     _CALLEES_FP_MINMAX,
     _CALLEES_FP_CMP, _CALLEES_FP_CONV, _CALLEES_FP_TRANS,
     _CALLEES_MUX_EXCH, _CALLEES_MUX_EXCH_GUARDED,
+    _CALLEES_PERSISTENT,
 )
 
 for group in _CALLEE_GROUPS, f in group

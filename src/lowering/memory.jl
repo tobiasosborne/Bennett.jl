@@ -7,14 +7,31 @@ Allocate the wire range for a fresh reversible array and record it in the
 per-compilation alloca_info + ptr_provenance maps. No gates are emitted —
 fresh wires are zero by WireAllocator invariant.
 
-MVP: only (elem_width=8, n_elems=iconst(4)) is accepted. Anything else errors
-loudly; T1b.5 adds wider shapes.
+Bennett-z2dj / T5-P6 Step 4: dispatcher that splits on whether `inst.n_elems`
+is a compile-time constant. Const-n routes to `_lower_alloca_const_n!` (the
+byte-identical pre-Step-4 body); dynamic-n routes to `_lower_alloca_dynamic_n!`
+which under `mem=:persistent` allocates the persistent-DS state slab and
+records the impl in `ctx.persistent_info`.
+
+MVP for const-n: (elem_width, n_elems=iconst(k)) with k >= 1. Dynamic n_elems
+under `mem=:auto` errors with a hint to opt in via `mem=:persistent`.
 """
 function lower_alloca!(ctx::LoweringCtx, inst::IRAlloca)
-    inst.n_elems isa ConstOperand ||
-        error("lower_alloca!: dynamic n_elems not supported " *
-              "(got $(typeof(inst.n_elems))); " *
-              "T3b.3 shadow memory handles static-sized allocas only.")
+    if inst.n_elems isa ConstOperand
+        return _lower_alloca_const_n!(ctx, inst)
+    else
+        return _lower_alloca_dynamic_n!(ctx, inst)
+    end
+end
+
+"""
+    _lower_alloca_const_n!(ctx, inst::IRAlloca)
+
+Bennett-z2dj / T5-P6 Step 4: extracted from former `lower_alloca!` body;
+this is the byte-identical const-n branch. Allocates `elem_width * n` zero
+wires and registers a single-origin entry-predicate provenance entry.
+"""
+function _lower_alloca_const_n!(ctx::LoweringCtx, inst::IRAlloca)
     n = inst.n_elems.value
     n >= 1 || throw(ArgumentError("lower_alloca!: non-positive n_elems=$n"))
     inst.elem_width >= 1 || throw(ArgumentError("lower_alloca!: non-positive elem_width=$(inst.elem_width)"))
@@ -28,6 +45,53 @@ function lower_alloca!(ctx::LoweringCtx, inst::IRAlloca)
     # multi-origin merges (lower_phi!/lower_select!) AND edge predicates with
     # the origin's guard uniformly, and keeps the single-origin fast path
     # byte-identical to pre-M2b (the entry predicate is always 1 at runtime).
+    ctx.ptr_provenance[inst.dest] = [PtrOrigin(inst.dest, iconst(0),
+                                               _entry_predicate_wire(ctx))]
+    return nothing
+end
+
+"""
+    _lower_alloca_dynamic_n!(ctx, inst::IRAlloca)
+
+Bennett-z2dj / T5-P6 Step 4 (consensus §5). Dynamic-n alloca branch.
+
+Routes via `_pick_alloca_strategy_dynamic_n`, which throws under
+`mem=:auto` with a hint pointing to `mem=:persistent`. Under
+`mem=:persistent` the strategy is `:persistent_tree`: resolve the impl
+via `_resolve_persistent_impl`, allocate `_state_len_bits(impl)` fresh
+wires (zero by WireAllocator invariant — `linear_scan_pmap_new()`
+returns all-zero, so no `pmap_new` IRCall is emitted; Bennett's reverse
+pass uncomputes back to all-zero cleanly per consensus §3), and record
+the impl mapping in `ctx.persistent_info[inst.dest]` for the Step 5
+store/load helpers + Step 8 GEP guards.
+
+A single-origin entry-predicate `PtrOrigin` is installed in
+`ctx.ptr_provenance[inst.dest]` so existing GEP walkers don't crash on
+the dynamic-n alloca. Non-entry-block STORE rejection (consensus §3 R1)
+lives in Step 5's `_lower_store_via_persistent!`, NOT here — Bennett's
+existing `lower_alloca!` historically accepts allocas in any block, and
+the spec's R1 guard belongs at the store site.
+"""
+function _lower_alloca_dynamic_n!(ctx::LoweringCtx, inst::IRAlloca)
+    # Validates ctx.mem; throws on :auto with the mem=:persistent hint.
+    # Returns :persistent_tree under mem=:persistent.
+    strategy = _pick_alloca_strategy_dynamic_n(ctx, inst)
+    strategy === :persistent_tree ||
+        error("_lower_alloca_dynamic_n!: unsupported strategy :$strategy " *
+              "(only :persistent_tree wired today)")
+    impl = _resolve_persistent_impl(ctx.persistent_impl, ctx.hashcons)
+    # State-slab allocation: fresh wires are zero by WireAllocator invariant.
+    # linear_scan_pmap_new() returns all-zero, so no NOT gates needed —
+    # Bennett's reverse pass will uncompute cleanly to all-zero (consensus §3).
+    n_bits = _state_len_bits(impl)
+    wires = allocate!(ctx.wa, n_bits)
+    ctx.vw[inst.dest] = wires
+    # Record impl mapping so store/load helpers (Step 5) and GEP/PtrOffset
+    # guards (Step 8) can dispatch on it.
+    ctx.persistent_info[inst.dest] = impl
+    # GEP walkers crash on missing provenance; install a single-origin entry-
+    # predicate provenance so GEP-of-this-alloca passes the existing
+    # multi-origin checks (consensus §5 Step 4 last bullet).
     ctx.ptr_provenance[inst.dest] = [PtrOrigin(inst.dest, iconst(0),
                                                _entry_predicate_wire(ctx))]
     return nothing
@@ -92,6 +156,271 @@ function _pick_alloca_strategy(shape::Tuple{Int,Int}, idx::IROperand)
     elem_w, n = shape
     n * elem_w > 64 && return :shadow_checkpoint
     return :unsupported
+end
+
+# ---- Bennett-z2dj / T5-P6 Step 3: persistent-tree dispatcher helpers ----
+#
+# Per `docs/design/p6_consensus.md` §5 Step 3: define the dispatcher sibling
+# and four small helpers used by Steps 4 and 9. Step 3 only DEFINES these
+# helpers — they are not yet called from `lower_alloca!` (that wiring is
+# Step 4). Existing observable behaviour is unchanged.
+
+"""
+    _pick_alloca_strategy_dynamic_n(ctx::LoweringCtx, inst::IRAlloca) -> Symbol
+
+Bennett-z2dj / T5-P6 (consensus §5 Step 3). Sibling of
+`_pick_alloca_strategy` for the dynamic-n case (`inst.n_elems` not
+`ConstOperand`). Today's behaviour: under `mem=:auto` the dynamic-n
+arm refuses to silently fall through and instructs the user to opt in
+via `mem=:persistent`; under `mem=:persistent` it returns
+`:persistent_tree` so Step 4 can route to the persistent-DS lowering.
+Any other `ctx.mem` value is defensive — `lower()` already validates
+`mem in (:auto, :persistent)`.
+"""
+function _pick_alloca_strategy_dynamic_n(ctx::LoweringCtx, inst::IRAlloca)::Symbol
+    if ctx.mem === :auto
+        throw(ArgumentError("dynamic n_elems alloca encountered under mem=:auto; " *
+              "the persistent_tree arm is the only correct lowering for dynamic n. " *
+              "Re-run reversible_compile(f, ...; mem=:persistent) to enable it."))
+    elseif ctx.mem === :persistent
+        return :persistent_tree
+    else
+        throw(ArgumentError("_pick_alloca_strategy_dynamic_n: unexpected mem=:$(ctx.mem)"))
+    end
+end
+
+"""
+    _resolve_persistent_impl(impl::Symbol, hashcons::Symbol)
+        -> Bennett.Persistent.PersistentMapImpl
+
+Bennett-z2dj / T5-P6 (consensus §5 Step 3). Single source of truth that
+maps the (`persistent_impl`, `hashcons`) kwarg pair to the concrete
+`PersistentMapImpl` instance. Only `(:linear_scan, :none)` is wired in
+the Step 3 MVP; every other combination throws an `ArgumentError`
+pointing at the follow-up beads that will land the missing arms.
+
+Note: no explicit `::PersistentMapImpl` return-type annotation — the
+type lives in `Bennett.Persistent`, a submodule loaded AFTER `lower.jl`
+(see `Bennett.jl`: lower.jl on line 32, persistent/persistent.jl on
+line 58). Annotating the return type would parse-error at include time.
+The function bodies execute later and resolve `Bennett.LINEAR_SCAN_IMPL`
+lazily via getproperty.
+"""
+function _resolve_persistent_impl(impl::Symbol, hashcons::Symbol)
+    # Validate impl symbol first.
+    impl in (:linear_scan, :okasaki, :hamt, :cf) ||
+        throw(ArgumentError("_resolve_persistent_impl: unknown persistent_impl :$impl; " *
+              "supported: :linear_scan (others NYI)"))
+    hashcons in (:none, :naive, :feistel) ||
+        throw(ArgumentError("_resolve_persistent_impl: unknown hashcons :$hashcons; " *
+              "supported: :none (others NYI)"))
+
+    if impl === :linear_scan
+        if hashcons === :none
+            return Bennett.LINEAR_SCAN_IMPL
+        else
+            throw(ArgumentError("_resolve_persistent_impl: hashcons=:$hashcons NYI on " *
+                  ":linear_scan; only :none is wired " *
+                  "(Bennett-z2dj follow-up beads track :naive, :feistel)"))
+        end
+    else
+        throw(ArgumentError("_resolve_persistent_impl: persistent_impl=:$impl NYI; " *
+              "only :linear_scan is wired " *
+              "(Bennett-z2dj follow-up beads track :okasaki, :hamt, :cf)"))
+    end
+end
+
+"""
+    _state_len_bits(impl) -> Int
+
+Bennett-z2dj / T5-P6 (consensus §5 Step 3). Total wire count for the
+impl's state tuple. Derived generically from a one-shot `impl.pmap_new()`
+call: the returned `NTuple{N, T}` has `N * sizeof(T) * 8` bits. Called
+once per `lower_alloca!` in Step 4 so performance is irrelevant. For
+`LINEAR_SCAN_IMPL` the result is `9 * 64 = 576` bits.
+
+(`impl` is duck-typed — see `_resolve_persistent_impl` for why the type
+isn't annotated at parse time.)
+"""
+function _state_len_bits(impl)::Int
+    s = impl.pmap_new()
+    s isa NTuple ||
+        throw(ArgumentError("_state_len_bits: impl.pmap_new() must return an NTuple; " *
+              "got $(typeof(s))"))
+    N = length(s)
+    T = eltype(s)
+    return N * sizeof(T) * 8
+end
+
+"""
+    _K_bits(impl) -> Int
+
+Bennett-z2dj / T5-P6 (consensus §5 Step 3). Bit-width of the impl's
+key type. For `LINEAR_SCAN_IMPL` this is `sizeof(Int8) * 8 = 8`.
+"""
+_K_bits(impl)::Int = sizeof(impl.K) * 8
+
+"""
+    _V_bits(impl) -> Int
+
+Bennett-z2dj / T5-P6 (consensus §5 Step 3). Bit-width of the impl's
+value type. For `LINEAR_SCAN_IMPL` this is `sizeof(Int8) * 8 = 8`.
+"""
+_V_bits(impl)::Int = sizeof(impl.V) * 8
+
+# ---- Bennett-z2dj / T5-P6 Step 5: persistent store/load helpers ----
+#
+# Per `docs/design/p6_consensus.md` §5 Step 5: emit one IRCall to the
+# impl's `pmap_set` / `pmap_get` per LLVM store/load instruction whose
+# pointer resolves (via `ctx.ptr_provenance`) to a persistent alloca.
+# The IRCall machinery (Bennett-atf4 in src/lowering/call.jl) derives
+# the concrete callee Julia arg-type tuple from `methods(callee)`, so
+# the widths we pass in `arg_widths` must match
+# `_state_len_bits(impl) / _K_bits(impl) / _V_bits(impl)` exactly.
+#
+# Step 5 alone defines these helpers; the dispatcher wiring that
+# routes `lower_store!` / `lower_load!` into them when the pointer
+# targets a persistent slab lands in Step 6. They are therefore
+# unreachable from `lower()` after this step — intentional, per
+# consensus §5's TDD-friendly slice boundary.
+
+"""
+    _lower_store_via_persistent!(ctx, inst::IRStore, alloca_dest, block_label)
+
+Bennett-z2dj / T5-P6 Step 5 (consensus §5 + §3 R1). Map an LLVM
+`store v, ptr` whose `ptr` resolves through `ctx.ptr_provenance` to
+a single-origin `PtrOrigin` over a persistent slab (`alloca_dest` in
+`ctx.persistent_info`) into one IRCall to `impl.pmap_set`. After the
+call, `ctx.vw[alloca_dest]` is rebound to the post-call state wires
+so subsequent loads through the same alloca see the updated state.
+
+Refusal contracts:
+- **Non-entry-block store** (consensus §3 R1). Bennett's reverse pass
+  would see the store un-guarded by its branch predicate, risking
+  false-path sensitisation (CLAUDE.md §"Phi Resolution"). Refused
+  with a `:persistent` substring in the message so the test in
+  `test_t5_p6_persistent_dispatch.jl` testset 3 can match on it.
+- **Multi-origin pointer** (consensus §R4). A pointer-typed phi/
+  select that merges two persistent slabs is NYI; refused loudly.
+"""
+function _lower_store_via_persistent!(ctx::LoweringCtx, inst::IRStore,
+                                      alloca_dest::Symbol, block_label::Symbol)
+    # Consensus §3 R1 — non-entry-block persistent stores are unsafe under
+    # Bennett's reverse pass. Sentinel Symbol("") (direct lower_block_insts!
+    # callers without entry-block info) is treated as entry for backward
+    # compatibility, matching the shadow-store convention upstream.
+    if block_label !== ctx.entry_label && block_label !== Symbol("")
+        throw(ArgumentError(
+            "_lower_store_via_persistent!: persistent store in non-entry block " *
+            ":$(block_label) is refused (consensus §3 R1: would risk Bennett " *
+            "reverse-pass false-path sensitisation). Move the store into the " *
+            "entry block, or guard it with an explicit `if` that the " *
+            "block-predicate machinery handles, or file a bd issue for " *
+            "block-pred-guarded persistent store support."))
+    end
+
+    # Multi-origin refusal (consensus §R4). The caller (Step 6 dispatcher)
+    # picks one PtrOrigin from the provenance list; we re-derive impl + key +
+    # value widths here for self-contained validation.
+    haskey(ctx.ptr_provenance, inst.ptr.name) ||
+        throw(AssertionError("_lower_store_via_persistent!: no provenance for ptr " *
+              "%$(inst.ptr.name); persistent stores must target a known alloca"))
+    origins = ctx.ptr_provenance[inst.ptr.name]
+    length(origins) == 1 || throw(ArgumentError(
+        "_lower_store_via_persistent!: multi-origin pointer (n=$(length(origins))) " *
+        "into persistent slab :$alloca_dest is NYI " *
+        "(consensus §R4 follow-up bead)."))
+    origin = origins[1]
+
+    haskey(ctx.persistent_info, alloca_dest) ||
+        throw(AssertionError("_lower_store_via_persistent!: alloca :$alloca_dest has " *
+              "no persistent_info entry; dispatcher routed a non-persistent alloca here"))
+    impl = ctx.persistent_info[alloca_dest]
+    state_w = _state_len_bits(impl)
+    k_w     = _K_bits(impl)
+    v_w     = _V_bits(impl)
+
+    # Width sanity: the value being stored must match impl.V's width.
+    inst.width == v_w ||
+        throw(DimensionMismatch("_lower_store_via_persistent!: store width=$(inst.width) " *
+              "doesn't match impl V width=$v_w (impl=$(typeof(impl)))"))
+
+    # Fresh synthetic SSA name for the post-call state. Bennett-z2dj uses the
+    # existing `ctx.mux_counter[]` monotonic counter (also used by the MUX-EXCH
+    # helpers) so synthetic names stay unique across all lowering paths.
+    ctx.mux_counter[] += 1
+    new_state_dest = Symbol("__persistent_state_", alloca_dest, "_", ctx.mux_counter[])
+
+    # IRCall: callee is impl.pmap_set, args are (state, key, value).
+    # The state arg is `SSAOperand(alloca_dest)` — ctx.vw[alloca_dest] already
+    # holds the impl's state wires (installed by _lower_alloca_dynamic_n!).
+    # The key arg is `origin.idx_op` (the GEP index that selects this slot).
+    # The value arg is `inst.val` (the IROperand being stored).
+    call = IRCall(new_state_dest, impl.pmap_set,
+                  IROperand[SSAOperand(alloca_dest), origin.idx_op, inst.val],
+                  [state_w, k_w, v_w],
+                  state_w)
+    lower_call!(ctx.gates, ctx.wa, ctx.vw, call;
+                compact=ctx.compact_calls)
+
+    # Rebind alloca's wire map to the post-call state. Subsequent loads through
+    # the same alloca pointer see the updated state. (Bennett's reverse pass
+    # uncomputes the call gates and cleans up the post-state wires; the old
+    # state wires remain in ctx.vw under their original SSA name if anyone
+    # captured them.)
+    ctx.vw[alloca_dest] = ctx.vw[new_state_dest]
+    return nothing
+end
+
+"""
+    _lower_load_via_persistent!(ctx, inst::IRLoad, alloca_dest)
+
+Bennett-z2dj / T5-P6 Step 5 (consensus §5). Map an LLVM
+`%dest = load ptr` whose `ptr` resolves through `ctx.ptr_provenance`
+to a single-origin `PtrOrigin` over a persistent slab into one IRCall
+to `impl.pmap_get`. The loaded value wires are installed at
+`ctx.vw[inst.dest]` by `lower_call!`.
+
+No non-entry-block guard for loads — loads are read-only and do not
+threaten Bennett's reverse-pass invariant. Multi-origin pointers are
+refused identically to the store helper.
+"""
+function _lower_load_via_persistent!(ctx::LoweringCtx, inst::IRLoad,
+                                     alloca_dest::Symbol)
+    haskey(ctx.ptr_provenance, inst.ptr.name) ||
+        throw(AssertionError("_lower_load_via_persistent!: no provenance for ptr " *
+              "%$(inst.ptr.name); persistent loads must target a known alloca"))
+    origins = ctx.ptr_provenance[inst.ptr.name]
+    length(origins) == 1 || throw(ArgumentError(
+        "_lower_load_via_persistent!: multi-origin pointer (n=$(length(origins))) " *
+        "into persistent slab :$alloca_dest is NYI " *
+        "(consensus §R4 follow-up bead)."))
+    origin = origins[1]
+
+    haskey(ctx.persistent_info, alloca_dest) ||
+        throw(AssertionError("_lower_load_via_persistent!: alloca :$alloca_dest has " *
+              "no persistent_info entry; dispatcher routed a non-persistent alloca here"))
+    impl = ctx.persistent_info[alloca_dest]
+    state_w = _state_len_bits(impl)
+    k_w     = _K_bits(impl)
+    v_w     = _V_bits(impl)
+
+    # Width sanity: the load width must match impl.V's width.
+    inst.width == v_w ||
+        throw(DimensionMismatch("_lower_load_via_persistent!: load width=$(inst.width) " *
+              "doesn't match impl V width=$v_w (impl=$(typeof(impl)))"))
+
+    # IRCall: callee is impl.pmap_get, args are (state, key); returns the V
+    # wires into `inst.dest`. The state arg is `SSAOperand(alloca_dest)` —
+    # ctx.vw[alloca_dest] already holds the impl's state wires.
+    call = IRCall(inst.dest, impl.pmap_get,
+                  IROperand[SSAOperand(alloca_dest), origin.idx_op],
+                  [state_w, k_w],
+                  v_w)
+    lower_call!(ctx.gates, ctx.wa, ctx.vw, call;
+                compact=ctx.compact_calls)
+    # ctx.vw[inst.dest] now holds the V wires (set by lower_call!).
+    return nothing
 end
 
 """
@@ -176,6 +505,16 @@ function _lower_store_single_origin!(ctx::LoweringCtx, inst::IRStore,
                                      origin::PtrOrigin, block_label::Symbol)
     alloca_dest = origin.alloca_dest
     idx_op = origin.idx_op
+
+    # Bennett-z2dj T5-P6 / consensus §5 Step 6: persistent-slab early-out.
+    # Persistent allocas populate ctx.persistent_info (not ctx.alloca_info)
+    # so the alloca_info lookup below would mistakenly diagnose them as
+    # unknown. Route persistent stores to the dedicated helper which emits
+    # an IRCall to impl.pmap_set instead of the MUX-EXCH / shadow paths.
+    if haskey(ctx.persistent_info, alloca_dest)
+        return _lower_store_via_persistent!(ctx, inst, alloca_dest, block_label)
+    end
+
     info = get(ctx.alloca_info, alloca_dest, nothing)
     info === nothing &&
         throw(AssertionError("lower_store!: provenance points to unknown alloca %$alloca_dest"))

@@ -2,11 +2,31 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
                fold_constants::Bool=true, compact_calls::Bool=false,
                add::Symbol=:auto, mul::Symbol=:auto,
                target::Symbol=:gate_count,
-               auto_self_reversing::Bool=true)
+               auto_self_reversing::Bool=true,
+               # Bennett-z2dj / T5-P6 (Step 2): persistent_tree dispatcher arm
+               # kwargs. Plumbed only — handlers land in Steps 3-9. The
+               # `persistent_info` per-function state dict is purely internal,
+               # constructed empty inside this function and populated by
+               # `lower_alloca!` (Step 4).
+               mem::Symbol = :auto,
+               persistent_impl::Symbol = :linear_scan,
+               hashcons::Symbol = :none)
     add in (:auto, :ripple, :cuccaro, :qcla) ||
         throw(ArgumentError("lower: unknown add strategy :$add; supported: :auto, :ripple, :cuccaro, :qcla"))
     mul in (:auto, :shift_add, :qcla_tree) ||
         throw(ArgumentError("lower: unknown mul strategy :$mul; supported: :auto, :shift_add, :qcla_tree (Bennett-tbm6: :karatsuba removed 2026-04-27)"))
+    # Bennett-z2dj / T5-P6 (Step 2): validate new kwargs at function entry,
+    # mirroring add/mul validation above. Only `:auto` / `:linear_scan` /
+    # `:none` defaults are wired in Step 2; non-default values are accepted
+    # at the surface (so Step 1's RED tests reach further) but the actual
+    # dispatch and handlers light up in Steps 3-9. Unknown symbols still
+    # error fast per CLAUDE.md §1.
+    mem in (:auto, :persistent) ||
+        throw(ArgumentError("lower: unknown mem :$mem; supported: :auto, :persistent"))
+    persistent_impl in (:linear_scan, :okasaki, :hamt, :cf) ||
+        throw(ArgumentError("lower: unknown persistent_impl :$persistent_impl; supported: :linear_scan (others NYI)"))
+    hashcons in (:none, :naive, :feistel) ||
+        throw(ArgumentError("lower: unknown hashcons :$hashcons; supported: :none (others NYI)"))
     # Bennett-4fri / U30: `target` selects the objective the `:auto`
     # dispatchers optimise for. `:gate_count` (default) preserves the
     # pre-U30 choices; `:depth` switches `mul=:auto` to `qcla_tree`
@@ -36,6 +56,11 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
     # block (bug), which hard-errored on branched stores — see L7a/L7b tests.
     alloca_info = Dict{Symbol, Tuple{Int,Int}}()
     ptr_provenance = Dict{Symbol, Vector{PtrOrigin}}()
+    # Bennett-z2dj / T5-P6 (Step 2): per-function persistent-impl state.
+    # Step 4 (`lower_alloca!`) populates an entry whenever an alloca takes
+    # the `:persistent_tree` strategy. Values are `PersistentMapImpl` (typed
+    # `Any` because of include order — see types.jl LoweringCtx note).
+    persistent_info = Dict{Symbol, Any}()
 
     for (name, width) in parsed.args
         wires = allocate!(wa, width)
@@ -137,6 +162,13 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
             ptr_provenance = ptr_provenance,
             entry_label    = order[1],
             loop_headers   = loop_headers,
+            # Bennett-z2dj / T5-P6 (Step 2): forward dispatcher kwargs +
+            # per-function persistent_info dict so every LoweringCtx in
+            # this function sees the same state.
+            mem            = mem,
+            persistent_impl = persistent_impl,
+            hashcons       = hashcons,
+            persistent_info = persistent_info,
         )
 
         if label in loop_headers
@@ -370,7 +402,10 @@ function lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_orde
                       opts.block_pred, opts.ssa_liveness, opts.inst_counter,
                       opts.compact_calls, opts.alloca_info, opts.ptr_provenance,
                       Ref(0), opts.globals, opts.add, opts.mul, opts.entry_label,
-                      Ref(false))   # Bennett-h0ai producer-tag side-channel
+                      Ref(false),   # Bennett-h0ai producer-tag side-channel
+                      # Bennett-z2dj / T5-P6 (Step 2): persistent_tree dispatcher
+                      opts.mem, opts.persistent_impl, opts.hashcons,
+                      opts.persistent_info)
     for inst in block.instructions
         opts.inst_counter[] += 1
         _ws = wa.next_wire

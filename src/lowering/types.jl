@@ -143,6 +143,21 @@ struct LoweringCtx
     # `GateGroup.is_self_reversing`. Default-false on every dispatch;
     # only the qcla_tree non-truncating arm sets it today.
     last_inst_self_reversing::Ref{Bool}
+    # Bennett-z2dj / T5-P6 (Step 2): persistent_tree dispatcher arm
+    # kwargs. Plumbed through `lower(parsed; ...)` for Steps 3-9 to
+    # consume. Step 2's contract: every kwarg defaulted, behavior
+    # unchanged — these are pure wiring fields whose handlers light up
+    # in later steps (Step 4 alloca dispatch, Step 9 validation).
+    mem::Symbol                                                  # :auto / :persistent
+    persistent_impl::Symbol                                      # :linear_scan / :okasaki / :hamt / :cf
+    hashcons::Symbol                                             # :none / :naive / :feistel
+    # Per-function state: which allocas got `:persistent_tree` and which
+    # impl they're using. Values are `Bennett.Persistent.PersistentMapImpl`
+    # (typed as `Any` here because src/lowering/types.jl loads BEFORE
+    # src/persistent/persistent.jl in Bennett.jl — see include order at
+    # src/Bennett.jl:32 vs :58). Step 9 will add a `validate_persistent_config`
+    # pass that type-checks each value as `PersistentMapImpl`.
+    persistent_info::Dict{Symbol, Any}
 end
 
 # Bennett-tbm6 (2026-04-27): the 11-arg / 12-arg / 13-arg backward-compat
@@ -181,6 +196,15 @@ Base.@kwdef struct BlockLoweringOpts
     ptr_provenance::Dict{Symbol,Vector{PtrOrigin}}      = Dict{Symbol,Vector{PtrOrigin}}()
     entry_label::Symbol                                 = Symbol("")
     loop_headers::Set{Symbol}                           = Set{Symbol}()
+    # Bennett-z2dj / T5-P6 (Step 2): persistent_tree dispatcher arm.
+    # Forwarded from `lower(parsed; mem=..., ...)` and into each
+    # `LoweringCtx(...)`. Step 2 wires only; handlers land in Steps 3-9.
+    mem::Symbol                                         = :auto
+    persistent_impl::Symbol                             = :linear_scan
+    hashcons::Symbol                                    = :none
+    # Per-function state: values are `Bennett.Persistent.PersistentMapImpl`
+    # (typed `Any` because of include order — see types.jl LoweringCtx note).
+    persistent_info::Dict{Symbol, Any}                   = Dict{Symbol, Any}()
 end
 
 # Dispatched instruction lowering — Julia selects the method by inst type
@@ -205,11 +229,12 @@ _lower_inst!(ctx::LoweringCtx, inst::IRCast, ::Symbol) =
 
 _lower_inst!(ctx::LoweringCtx, inst::IRPtrOffset, ::Symbol) =
     lower_ptr_offset!(ctx.gates, ctx.wa, ctx.vw, inst; ptr_provenance=ctx.ptr_provenance,
-                      alloca_info=ctx.alloca_info)
+                      alloca_info=ctx.alloca_info, persistent_info=ctx.persistent_info)
 
 _lower_inst!(ctx::LoweringCtx, inst::IRVarGEP, ::Symbol) =
     lower_var_gep!(ctx.gates, ctx.wa, ctx.vw, inst; ptr_provenance=ctx.ptr_provenance,
-                   alloca_info=ctx.alloca_info, globals=ctx.globals)
+                   alloca_info=ctx.alloca_info, globals=ctx.globals,
+                   persistent_info=ctx.persistent_info)
 
 _lower_inst!(ctx::LoweringCtx, inst::IRLoad, ::Symbol) =
     lower_load!(ctx, inst)
