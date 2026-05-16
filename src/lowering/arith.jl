@@ -221,11 +221,26 @@ function lower_binop!(gates, wa, vw, inst::IRBinOp;
                 # `lower_mul_qcla_tree!` returns 2W wires; the conventional
                 # slice `[1:W]` keeps the low half (mod 2^W) and STRANDS
                 # the high W as dirty ancillae — that path is NOT
-                # self-reversing and must NOT be tagged. Today every
-                # binop arrives with `length(out) > W` so the tag never
-                # fires; future work (h0ai-followup-D) may emit a
-                # non-slicing variant when the function shape allows it,
-                # at which point this branch will start tagging.
+                # self-reversing and must NOT be tagged.
+                #
+                # Bennett-jpa5 (closed 2026-05-16, won't-fix): the
+                # `length(full) == W` branch below is currently UNREACHABLE.
+                # LLVM `mul` instructions always have matching operand and
+                # result widths (LLVM IR semantics), and `_iwidth(inst)`
+                # in src/extract/helpers.jl reads the RESULT type. There
+                # is no IR shape that the extractor produces where
+                # `length(full) = 2W` does not exceed `W = inst.width`.
+                # The branch is retained as a future hook: if a downstream
+                # task ever fires the producer-tag here (e.g. via the
+                # broader architectural work in Bennett-pzft, which
+                # contemplates uncomputing the high-W wires post-slice),
+                # the structural aggregator `_infer_self_reversing` in
+                # src/bennett_transform.jl:176 STILL needs extension to
+                # accept zext/sext IRCast groups as "boilerplate" — today
+                # it only allows `__pred_*` / `__ret_*` / `__branch_*`,
+                # which excludes the cast groups that always precede a
+                # zext-fed widening mul. See worklog/069 (2026-05-16
+                # jpa5 triage) for the full analysis.
                 full = lower_mul_qcla_tree!(gates, wa, a, b, W)
                 if length(full) == W
                     last_inst_self_reversing[] = true

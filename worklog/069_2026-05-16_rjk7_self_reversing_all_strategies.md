@@ -1,3 +1,130 @@
+## Session log — 2026-05-16 — Bennett-jpa5 close as won't-fix — auto self_reversing non-slicing qcla_tree variant for raw IR ingest
+
+**Shipped:** Bennett-jpa5 triaged and closed as won't-fix. The dead-code
+branch at `src/lowering/arith.jl:230` (`if length(full) == W`) retained
+as a future hook but its comment was rewritten to name the real
+structural blocker uncovered by triage. No code-behavior change.
+
+**Why (the triage finding):** The bead's REWORK annotation was correct
+— `_iwidth(inst)` in `src/extract/helpers.jl:186` reads LLVM result
+type, and LLVM `mul` always has matching operand/result widths, so the
+extractor cannot produce `IRBinOp(:mul, ..., width=W)` where
+`length(full)=2W != W`. Verified empirically: `f(x::Int32,y::Int32) =
+Int64(x)*Int64(y)` lowers via `code_llvm(optimize=false)` to
+`sext i32→i64; sext i32→i64; mul i64`, arriving in ParsedIR as
+`IRCast(:zext or :sext), IRCast, IRBinOp(:mul, ..., 64)` — operand width
+already == result width post-cast. The dead-code branch is
+structurally unreachable today.
+
+**Why option (c) was ALSO rejected:** The bead annotator's "cheapest"
+option (detect zext-provenance at lowering time, fire the producer-tag
+on widening muls because the high-W result bits are static zero) has
+TWO compounding blockers, only one of which was named in the annotation:
+1. **Plumbing:** `lower_binop!` (src/lowering/arith.jl:167) takes only
+   the `IRBinOp` and the `vw` wire-dict — neither carries SSA-predecessor
+   info. Adding a `zext_origin::Dict{Symbol,Int}` sidecar to
+   `LoweringCtx` and populating it in `lower_cast!` is a non-core
+   tweak, doable solo.
+2. **The blocker the annotation MISSED:** even if (1) is solved, the
+   structural aggregator `_infer_self_reversing` (in
+   `src/bennett_transform.jl:176`) rejects ANY LR whose non-tagged
+   groups aren't `__pred_*` / `__ret_*` / `__branch_*` (condition 4 at
+   lines 197-204). A zext-fed widening mul has 2+ IRCast groups
+   (`__v1`, `__v2`) whose result wires hold real data — they're NOT
+   in the boilerplate allowlist. So firing the producer-tag on the
+   mul would have ZERO effect end-to-end: the aggregator would still
+   return false because the surrounding cast groups disqualify the LR.
+   Making (c) deliver a real win requires extending
+   `_infer_self_reversing` to either treat IRCast groups as
+   trusted-preprocessing boilerplate OR fuse cast+mul groups —
+   either is a CORE change to the h0ai contract (CLAUDE.md §2 3+1
+   territory).
+
+**Also:** Julia's standard signed widening (`Int64(x::Int32)`) uses
+`sext`, NOT `zext`. Option (c)'s "high-W zero" guarantee only holds
+for zext. Negatives sext-extended have `0xFFFFFFFF` in the high half;
+their product has non-zero high bits. So (c) would ONLY ever help
+`UInt32→UInt64` widening (a narrow Julia idiom) — and only AFTER the
+core architectural blocker above is lifted. Risk/reward strongly
+favored close-as-won't-fix.
+
+**Bigger picture:** the underlying motivation ("make h0ai promote
+zext+mul fused circuits") is already covered by the sibling bead
+`Bennett-pzft` ("uncompute high-W qcla_tree wires for truncating
+case") — it's the more general attack on the same fundamental
+"qcla_tree+slice strands dirt" problem. The cast-group-as-boilerplate
+extension is the natural sub-problem to pick up if anyone proves the
+narrow win is empirically valuable.
+
+**Drive-by:** updated the comment block at
+`src/lowering/arith.jl:218-247` to name the dead-code branch as
+structurally unreachable today (with full reference to
+`_iwidth`/`_infer_self_reversing` blockers) instead of the previous
+hand-wavy "future work (h0ai-followup-D)" framing. The branch itself
+is preserved as a future hook should the architectural work in pzft
+land. NO Julia source/test behavior change.
+
+**Gotchas / Lessons:**
+
+1. **Three-layer h0ai analysis is REQUIRED when triaging any
+   producer-tag follow-up.** Just verifying "can the producer-tag
+   fire?" (Layer 1) is insufficient — you also need Layer 2
+   (`_infer_self_reversing` structural conditions) and Layer 3
+   (`_validate_self_reversing!` runtime probe). The jpa5 annotation
+   stopped at Layer 1. The full triage caught the Layer 2 blocker
+   (cast-group classification) that would have made option (c) a
+   no-op-in-production.
+
+2. **CLAUDE.md §10 (skepticism) paid off again.** The bead
+   annotator's three reframe options labeled (c) "cheapest". The
+   true cheapest IS (c), but the bead's framing of (c) was
+   architecturally incomplete — implementing it as described would
+   ship dead-effort code. The triage produced a more accurate verdict
+   by reading `_infer_self_reversing` end-to-end.
+
+3. **For future triagers facing dead-code paths with future-work
+   pointers**: the right move is usually to keep the code (it's a
+   labeled scaffold) but rewrite the comment to name the SPECIFIC
+   structural blockers found during triage. A "future work (bead-id)"
+   comment is honest IF the bead is open; if the bead is closed
+   won't-fix, the comment needs to explain WHY, otherwise the next
+   triager will reopen it.
+
+**Rejected alternatives:**
+
+- **Option (a) IRWidenMul node + dest_width split:** core IR change
+  (CLAUDE.md §2 3+1) for a feature that fires only on raw .ll/.bc
+  ingest with `mul iN` whose operands are widened by external
+  toolchains (C `__int128` etc.). No T5 corpus fixture currently
+  triggers this shape; cost/benefit terrible.
+- **Option (b) extractor pattern-detects zext+zext+mul:** also core
+  (touches `ir_extract.jl` per CLAUDE.md §2), AND would have the
+  same Layer 2 blocker as (c) — even with a fused IRWidenMul, the
+  surrounding LLVM-level zext casts would still extract as separate
+  IRCast nodes in the current pipeline.
+- **Delete the dead `if length(full) == W` branch entirely:**
+  considered, rejected. The branch is a labeled scaffold; comment-
+  only rewrite preserves it as a future hook while making the
+  current state honest. CLAUDE.md §1 (fail loud) would also accept
+  `@assert false` but that would crash production if anyone ever
+  extended the extractor to produce widening-mul shapes mid-flight.
+- **File a sub-bead for the cast-group-boilerplate extension:**
+  considered. Rejected because `Bennett-pzft` (already open) is the
+  more general attack on the same problem — splitting it further
+  would fragment the design space.
+
+**Next agent starts here:** If a future user reports that
+`UInt32→UInt64` widening mul fails to auto-promote and they want it
+to, the design work lives in `Bennett-pzft`. The first design
+question: does `_infer_self_reversing` get a new boilerplate class
+for IRCast groups, or does the producer-tag emission fuse cast+mul
+into one group? Both have correctness implications for the U03
+probe — the cast wires hold real data, not zeros, so any "trusted"
+extension must teach `_validate_self_reversing!` to allowlist them
+in addition to the entry-block predicate wires it already excuses.
+
+---
+
 ## Session log — 2026-05-16 — Bennett-ixiz close — wider-element alloca support (3+1, orchestrator-driven, bead-premise-rewritten-in-flight)
 
 **Shipped:** wider-element alloca support across the extract + lowering
