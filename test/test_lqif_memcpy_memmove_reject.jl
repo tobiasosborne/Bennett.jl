@@ -24,21 +24,27 @@ using Bennett
 
 @testset "Bennett-lqif: llvm.memcpy / llvm.memmove reject (post-37mt residue)" begin
 
-    @testset "llvm.memcpy on alloca-i64 fails loud → 8bys (elem_w predicate)" begin
+    @testset "llvm.memcpy on alloca-i64 lowers cleanly (Bennett-ixiz)" begin
+        # Bennett-ixiz (2026-05-16): the prior Phase 1 alloca-i64 reject
+        # at predicate 8 (`elem_w must be 8`) was lifted to accept any
+        # equal-width integer alloca. The fixture `lqif_memcpy_reject.ll`
+        # uses `alloca i64` + an 8-byte memcpy (= 1 element at ew=64);
+        # post-ixiz it now lowers to 1× IRLoad(width=64) + 1×
+        # IRStore(width=64). Filename retained for git history clarity.
         path = joinpath(@__DIR__, "fixtures", "ll", "lqif_memcpy_reject.ll")
-        @test_throws ErrorException Bennett.extract_parsed_ir_from_ll(
-            path; entry_function="memcpy_user")
-        # The fixture uses `alloca i64, align 8` for both src and dst, so
-        # post-37mt the rejection routes through the elem_w=8 predicate
-        # rather than the old Phase 0 blanket reject.
-        try
-            Bennett.extract_parsed_ir_from_ll(path; entry_function="memcpy_user")
-            @test false  # should have thrown
-        catch e
-            msg = sprint(showerror, e)
-            @test occursin("Bennett-37mt", msg)
-            @test occursin("Bennett-8bys", msg)
-            @test occursin("element width", msg)
+        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="memcpy_user")
+        all_insts = vcat([blk.instructions for blk in parsed.blocks]...)
+        loads64  = filter(i -> i isa Bennett.IRLoad  && i.width == 64, all_insts)
+        stores64 = filter(i -> i isa Bennett.IRStore && i.width == 64, all_insts)
+        # 1 memcpy load + final %y load.
+        @test length(loads64)  >= 1
+        # %x source store + 1 memcpy store.
+        @test length(stores64) >= 1 + 1
+
+        c = reversible_compile(parsed)
+        @test verify_reversibility(c)
+        for x in Int64[0, 1, -1, typemax(Int64), typemin(Int64)]
+            @test simulate(c, x) == x
         end
     end
 

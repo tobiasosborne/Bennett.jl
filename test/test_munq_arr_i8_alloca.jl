@@ -69,10 +69,34 @@ using Bennett
             path; entry_function="arr_nested")
     end
 
-    @testset "Wider-element ArrayType `[N x i16]` rejected → ixiz" begin
+    @testset "Wider-element ArrayType `[N x i16]` accepted (Bennett-ixiz)" begin
+        # Bennett-ixiz (2026-05-16): the alloca handler in
+        # src/extract/instructions.jl previously bailed at
+        # `LLVM.width(inner) == 8 || return nothing`, and the
+        # `_alloca_elem_width_bits` helper returned 0 for `[N x i16]`.
+        # Both gates were lifted to accept any integer inner width.
+        # This fixture was the canonical wider-elem `[N x i16]` shape
+        # that pre-ixiz rejected at extract; post-ixiz it must compile
+        # cleanly via the same memcpy path Bennett-37mt uses for [N x i8].
         path = joinpath(@__DIR__, "fixtures", "ll", "munq_arr_i16_reject.ll")
-        @test_throws ErrorException Bennett.extract_parsed_ir_from_ll(
-            path; entry_function="arr_i16")
+        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="arr_i16")
+        all_insts = vcat([blk.instructions for blk in parsed.blocks]...)
+        allocas = filter(i -> i isa Bennett.IRAlloca, all_insts)
+        @test length(allocas) == 2
+        @test all(a -> a.elem_width == 16, allocas)
+        @test all(a -> a.n_elems isa Bennett.ConstOperand && a.n_elems.value == 4,
+                  allocas)
+        # Helper invariant: `_alloca_elem_width_bits` now returns 16 for
+        # `[4 x i16]` allocas (vs. 0 pre-ixiz).
+        # (Direct helper test omitted — covered structurally by the
+        # IRAlloca shape assertions above.)
+        c = reversible_compile(parsed)
+        @test verify_reversibility(c)
+        # Identity oracle: store x to src[0], memcpy 8 bytes (1 element
+        # at ew=16 → wait: N=8, ew_bytes=2 ⇒ K=4 elements copied).
+        for x in Int16[0, 1, -1, typemax(Int16), typemin(Int16)]
+            @test simulate(c, x) == x
+        end
     end
 
 end

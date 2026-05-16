@@ -1,3 +1,179 @@
+## Session log — 2026-05-16 — Bennett-ixiz close — wider-element alloca support (3+1, orchestrator-driven, bead-premise-rewritten-in-flight)
+
+**Shipped:** wider-element alloca support across the extract + lowering
+pipeline. `alloca i64` (and `[K x i16]`, `[K x i32]`, `[K x i64]`, etc.)
+now flow through memcpy/memset/load/store with element-stride correctness.
+Five gate sites lifted: G1 in `src/lowering/aggregate.jl:227` (sub-element
+fail-loud guard + element-stride formula), G3 in `src/extract/instructions.jl`
+at both the `_alloca_elem_width_bits` helper AND a second alloca-conversion
+site in `_convert_instruction:2032` (implementer's bonus catch — the bead
+description and orchestrator brief both missed this duplicate), G4 in
+`_handle_memcpy_arm` (predicate 8 lifted to integer-element check;
+predicate 8b added for cross-width reject; predicate 8c for N-not-
+multiple-of-ew_bytes), G5 in `_handle_memset_arm` (predicate 12 lifted;
+predicate 12b added; new `_broadcast_byte_to_width` helper for byte fill).
+Mixed-width store/load (e.g., 32-bit store into i64 slot) stays loud-
+rejected by the four unchanged Gate-2 firewall sites in `src/lowering/
+memory.jl` (lines 212-213, 245-246, 370-371, 423-424) — both proposers
+independently verified those already check `inst.width == elem_w`, NOT
+`== 8`, so they correctly admit same-width at any elem_w.
+
+**Critical bead-premise correction (filed as bd note on Bennett-ixiz):**
+the bead description called out "two gate sites" — `aggregate.jl:227` AND
+`memory.jl:245-246`. Both proposers verified the source and discovered
+the framing was wrong: memory.jl Gate-2 sites are already same-width-
+correct and serve as the mixed-width firewall (NOT a blocker). The real
+blockers were FOUR sites in extract+lowering, not two. Lifting only G1
+(per the bead's narrowest reading) would NOT have flipped the three
+existing reject tests because extract bails before lowering ever runs.
+Proposer A spotted the memory.jl framing was wrong but didn't propose
+the extract lifts (incomplete scope); Proposer B spotted both and
+proposed the full 5-gate scope. **Synthesis adopted B's expanded scope
++ A's testing structure clarity.** Per CLAUDE.md §10 (skepticism):
+orchestrators should verify bead descriptions against source before
+scoping work. This is the second bead in two days where proposer
+verification caught a description error (hzl9 yesterday also had a
+framing issue around tabulate self_reversing handling).
+
+**Why this matters (vs. ixiz's nominal P3 scope):** ixiz's
+description called itself a "non-MVP" lift of memory restrictions.
+Empirically it's a substantial scope-expansion enabler for the T5
+multi-language LLVM ingest path. Any C/Rust code that uses `alloca i64`
+(most non-Julia LLVM-typed code) was hitting these restrictions
+pre-ixiz. Three existing reject tests (in test_munq, test_37mt,
+test_9nwt — and the implementer caught a fourth, test_lqif, as a
+drive-by) flipped from `@test_throws` to positive lowering assertions.
+
+**Pre-ixiz RED-state evidence (T6/T8/T9 fail-loud cases, captured 2026-05-16):**
+- T6 (sub-element IRPtrOffset on i64): pre-ixiz, Gate 1's `ew == 8 || continue`
+  silently DROPPED the origin, leaving `ptr_provenance[inst.dest]` empty;
+  downstream IRStore through that pointer would then fail at the provenance
+  assertion (a different error than the new fail-loud DimensionMismatch).
+  Post-ixiz, sub-element offsets are caught at the source with a precise
+  message naming `alloca_dest` and `ew`.
+- T8 (cross-alloca-width memcpy): pre-ixiz, the `dst_ew != 8 || src_ew != 8`
+  predicate 8 rejected ANY non-i8 alloca, so a mixed i8/i64 memcpy was
+  rejected by a vague "Phase 1 supports byte-granularity only" message.
+  Post-ixiz, the new predicate 8b gives a precise "cross-width
+  src/dst" message naming both widths.
+- T9 (N not multiple of ew_bytes): pre-ixiz, the same blanket predicate 8
+  swallowed this case. Post-ixiz, predicate 8c catches it with a precise
+  message.
+
+**Orchestration (CLAUDE.md §2 3+1, orchestrator-driven):**
+- **Proposer A** (opus, Plan): verified source, picked Q2 (α) "no change to
+  memory.jl" — correct. But **scope-incomplete**: A's plan kept the lift to
+  `aggregate.jl` only, missing G3/G4/G5 in `extract/instructions.jl`. Would
+  have shipped dead code on the memcpy/memset path because extract still
+  bails before lowering runs.
+- **Proposer B** (opus, Plan, isolated from A): verified source independently,
+  ALSO picked Q2 (α), AND caught the extract-layer gates. Proposed the full
+  5-gate scope. Flagged subtle issues: memset byte-broadcast semantics for
+  later mixed-width loads (now firewalled by Gate-2); cross-alloca-width
+  reject; N-not-multiple-of-ew_bytes reject.
+- **Reviewer synthesis:** B's full scope adopted. Implementer ALSO caught
+  a duplicate `LLVM.width(inner) == 8` gate at `_convert_instruction:2032`
+  that both proposers missed — without that lift, IRAlloca wouldn't carry
+  the right elem_w and G3/G4 wouldn't actually wire through. Implementer's
+  4th catch.
+
+**Gotchas / Lessons:**
+
+1. **The implementer's drive-by lqif test flip was correct and welcome.**
+   `test_lqif_memcpy_memmove_reject.jl` had a testset "llvm.memcpy on
+   alloca-i64 fails loud" asserting the exact behavior ixiz removes. Without
+   flipping it, lqif would have broken. The implementer recognized this
+   regression risk and applied the same flip pattern as the 3 named tests.
+   **Lesson for future orchestration briefs:** when a bead changes a
+   rejection contract, the brief should grep for ALL tests asserting that
+   contract, not just the named ones in the bead description. Add a
+   "search for `@test_throws` referencing this code path" step to the
+   implementer brief template.
+
+2. **The implementer's `_convert_instruction:2032` catch saved a half-shipped
+   change.** The orchestrator brief listed G1+G3+G4+G5 (4 gate sites). The
+   implementer found a FIFTH: a duplicate `LLVM.width(inner) == 8` gate in
+   the alloca-conversion arm of `_convert_instruction`, separate from the
+   `_alloca_elem_width_bits` helper. Without the fifth lift, IRAlloca would
+   still carry `elem_w=8` for `[K x i16]` allocas, and the lift would be
+   silently incorrect (wrong wire count). **Lesson:** when lifting a
+   restriction in a helper function, grep the codebase for that exact
+   restriction string at OTHER call sites — `git grep "width(inner) == 8"`
+   would have caught both sites.
+
+3. **The pre-existing `_pick_alloca_strategy (N=1, W>=64)` gap surfaced as a
+   secondary observation during ixiz Explore.** Filed as Bennett-a5ag (P4)
+   so it doesn't get lost. Real but rare: single-slot alloca with dynamic
+   index would always have idx=0, so the gap mostly matters when LLVM
+   optimization reduces a multi-slot pattern to single-slot.
+
+4. **Memset byte-broadcast semantics are a real footgun for future
+   mixed-width support.** Post-ixiz, `memset(alloca_i64, 0xAB, 16)` emits
+   `IRStore(width=64, val=0xABABABABABABABAB)`. If a future call site then
+   loads at width=8 to read a single byte, Gate-2 firewall in memory.jl
+   correctly rejects with `DimensionMismatch`. This is *correct* per the
+   shadow-tape elem_w granularity invariant — but user code patterns
+   commonly do `memset(p, 0, N); ... = p[i]` expecting byte-granular reads
+   to work. Filed Bennett-2fue (P3) for the mixed-width support work,
+   which requires shadow-tape redesign (not a small task).
+
+**Rejected alternatives:**
+
+- **Lift Gate 2 in memory.jl too** (the bead's literal reading) — rejected
+  because Gate 2 is already correct; lifting would silently break the
+  mixed-width firewall.
+- **Lift only G1 in aggregate.jl** (Proposer A's narrow scope) — rejected
+  because the three reject tests would not flip (extract bails before
+  lowering). The bead description's "two gate sites" framing led A to this
+  conclusion.
+- **Drive-by fix the `_pick_alloca_strategy (1, 64)` gap** — rejected per
+  senior-engineer rule "keep beads focused." Filed Bennett-a5ag instead.
+
+**Test deltas:**
+- New `test/test_ixiz_wider_alloca.jl`: 53/53 pass, 45s. 9 testsets across
+  3 positive groups + 4 fail-loud cases (T1 i64 round-trip; T2 [N x i16]
+  round-trip; T3 i64 memcpy; T4/T5 i64 memset c=0/c=0xAB; T6 sub-element
+  rejection; T7 mixed-width rejection (firewall); T8 cross-alloca-width
+  rejection; T9 N-not-multiple-of-ew_bytes rejection).
+- Seven new `.ll` fixtures in `test/fixtures/ll/ixiz_*.ll`.
+- Two existing fixtures renamed (stripping `_reject` suffix):
+  `37mt_memcpy_alloca_i64_reject.ll` → `37mt_memcpy_alloca_i64.ll`;
+  `9nwt_memset_alloca_i64_reject.ll` → `9nwt_memset_alloca_i64.ll`.
+- Four flipped reject testsets (in test_munq / test_37mt / test_9nwt /
+  test_lqif — the lqif flip was the implementer's drive-by catch).
+- Peer regressions all green:
+  - test_munq_arr_i8_alloca: 69/69
+  - test_37mt_memcpy_const_aligned: 86/86
+  - test_9nwt_memset_const: 87/87
+  - test_lqif_memcpy_memmove_reject: 12/12
+  - test_gate_count_regression: 39/39 (§6 explicit-strategy baselines
+    unchanged — confirms no Int8 hot path used wider allocas)
+  - test_shadow_memory: 594/594
+  - test_tfo8_alloca_strategy_tables: 62/62
+  - test_lower_store_alloca: 41/41
+  - test_store_alloca_extract: 279/279
+  - Total: ~1322 asserts green across the alloca/memcpy/memset surface.
+
+**Sibling beads filed (deferred scope):**
+- **Bennett-2fue (P3)** — Mixed-width store/load on wider-element allocas
+  (requires shadow tape redesign).
+- **Bennett-a5ag (P4)** — `_pick_alloca_strategy (N=1, W>=64)` dynamic-
+  index gap.
+
+**Next agent starts here:** open-bead count 33 → 32 after ixiz close.
+Natural follow-ups within the hao Phase 3 family (now 7 sub-beads):
+`xtu9` (variable-size memcpy/memset — directly depends on ixiz, so the
+prerequisite is now met), `doih` (global-pointer src memcpy via QROM
+fan-out — t5_tr2_hashmap.ll line 153 fails today), `zmry` (non-fresh
+dst uncompute), `yxr8` (memmove + alias analysis), `2fue` (mixed-width,
+just filed), `6c6f` (QROAM SELECT-SWAP, larger algorithm change).
+Bennett-z2dj T5-P6 dispatcher still in_progress as the biggest critical
+path. h0ai cluster down to 3 follow-ups (jpa5 needs reframe, pzft P4,
+lxk7 P4 — the last two are conditional/optional per their own
+descriptions).
+
+---
+
 ## Session log — 2026-05-16 — Bennett-rjk7 close — universal `lr.self_reversing` fast-path (3+1, orchestrator-driven)
 
 **Shipped:** the `lr.self_reversing=true` short-circuit fast-path —

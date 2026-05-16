@@ -184,6 +184,13 @@ runfile("test_9nwt_memset_const.jl")
 # allocas as IRAlloca(elem_w=8, n_elems=N). Unblocks t5_tr2_hashmap.ll
 # corpus for the existing 37mt/9nwt paths.
 runfile("test_munq_arr_i8_alloca.jl")
+# Bennett-ixiz: wider-element alloca support (lifts ew==8 gates in
+# extract/instructions.jl alloca handler + _alloca_elem_width_bits helper,
+# memcpy predicate 8, memset predicate 12, and aggregate.jl
+# lower_ptr_offset! ptr-provenance propagation). Accepts arbitrary
+# integer ew (8/16/32/64); same-width firewall in lowering/memory.jl
+# unchanged.
+runfile("test_ixiz_wider_alloca.jl")
 # Bennett-h6f: direct llvm.fma / llvm.fmuladd dispatch.
 runfile("test_h6f_llvm_fma_dispatch.jl")
 # Bennett-4eu: indirectbr fail-loud hard stop.

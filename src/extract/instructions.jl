@@ -35,18 +35,23 @@ end
     _alloca_elem_width_bits(alloca_ref) -> Int
 
 Returns the alloca's element width in bits, or 0 if the allocated type
-is not a Bennett-supported integer-or-byte-array shape (struct, ptr,
-nested array, wider-element ArrayType).
+is not a Bennett-supported integer-or-integer-array shape (struct, ptr,
+nested array, non-integer inner).
 
-Supported shapes (Bennett-munq, 2026-05-03):
-  - `iN` IntegerType — returns N.
-  - `[K x i8]` ArrayType wrapping i8 — returns 8 (matches the Rust
-    frontend's canonical `alloca [K x i8]` shape; pre-munq this
-    returned 0 and gated Phase 1/2 off the t5 corpus entirely).
+Supported shapes:
+  - `iN` IntegerType — returns N (Bennett-munq accepted `i8`; ixiz
+    extended to arbitrary `iN`, but `iN` already worked via the
+    IntegerType branch above).
+  - `[K x iN]` ArrayType wrapping an IntegerType — returns N. Bennett-
+    munq accepted only `[K x i8]`; Bennett-ixiz (2026-05-16) lifted the
+    `LLVM.width(inner) == 8` gate to accept arbitrary integer inner
+    widths (`[K x i16]`, `[K x i32]`, `[K x i64]`, ...).
 
-Wider ArrayType inner widths (`[K x i16]`, `[K x i64]`) and nested
-ArrayType (`[K x [M x i8]]`) return 0 and are deferred to
-Bennett-ixiz / future follow-ups.
+Nested ArrayType (`[K x [M x i8]]`) still returns 0 — the
+`inner isa LLVM.IntegerType || return 0` guard rejects the nested case
+because the inner of a nested ArrayType is itself ArrayType, not
+IntegerType. Future-deferred to a follow-up bead (Bennett-8bys
+catch-all).
 """
 function _alloca_elem_width_bits(alloca_ref::_LLVMRef)::Int
     elem_ty = LLVM.LLVMType(LLVM.API.LLVMGetAllocatedType(alloca_ref))
@@ -55,8 +60,8 @@ function _alloca_elem_width_bits(alloca_ref::_LLVMRef)::Int
     end
     if elem_ty isa LLVM.ArrayType
         inner = LLVM.eltype(elem_ty)
-        inner isa LLVM.IntegerType && LLVM.width(inner) == 8 || return 0
-        return 8
+        inner isa LLVM.IntegerType || return 0
+        return LLVM.width(inner)
     end
     return 0
 end
@@ -167,21 +172,37 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
         "Reversibility forbids destructive in-place overwrite. Tracked " *
         "in Bennett-8bys. (Bennett-37mt Phase 1 — distinct allocas only)")
 
-    # Predicate 8: both allocas must have element width 8 bits.
+    # Predicate 8: both allocas must have a known integer element type.
+    # Bennett-ixiz (2026-05-16) lifted the prior `dst_ew == 8 && src_ew == 8`
+    # gate; arbitrary equal integer element widths (8/16/32/64) are now
+    # accepted. The new predicates 8b (same-width) and 8c (N is multiple of
+    # ew_bytes) follow.
     dst_ew = _alloca_elem_width_bits(dst_root)
     src_ew = _alloca_elem_width_bits(src_root)
-    if dst_ew != 8 || src_ew != 8
+    if dst_ew == 0 || src_ew == 0
         _ir_error(inst,
-            "$(cname): memcpy operand alloca has element width " *
-            "(dst=$(dst_ew == 0 ? "non-integer" : string(dst_ew)) bits, " *
-            "src=$(src_ew == 0 ? "non-integer" : string(src_ew)) bits); " *
-            "Bennett-37mt Phase 1 supports byte-granularity (`alloca i8, " *
-            "i32 N`) only. Wider-element allocas need extended " *
-            "ptr_provenance propagation in src/lowering/aggregate.jl " *
-            "(currently `ew == 8 || continue` at line 227) and a wider " *
-            "shadow-store path in src/lowering/memory.jl. Tracked in " *
-            "Bennett-8bys. (Bennett-37mt Phase 1)")
+            "$(cname): memcpy operand alloca has non-integer element type " *
+            "(dst_ew=$dst_ew bits, src_ew=$src_ew bits — 0 indicates a " *
+            "struct, ptr, nested-array, or non-integer ArrayType inner). " *
+            "Bennett's wire model only supports flat integer-typed " *
+            "allocas. Tracked in Bennett-8bys. (Bennett-37mt / Bennett-ixiz)")
     end
+
+    # Predicate 8b (Bennett-ixiz): src and dst must have the same element
+    # width. Cross-width memcpy requires implicit pack/unpack lowering and
+    # a wider shadow-tape contract; out-of-scope for ixiz.
+    dst_ew == src_ew || _ir_error(inst,
+        "$(cname): memcpy cross-width src/dst (src=$src_ew bits, " *
+        "dst=$dst_ew bits) is out-of-scope for Bennett-ixiz — requires " *
+        "implicit pack/unpack lowering. Tracked in Bennett-8bys.")
+
+    # Predicate 8c (Bennett-ixiz): N must be a whole multiple of element-
+    # size bytes. Byte-granular tail copy (loading partial elements) is
+    # out-of-scope.
+    rem(N * 8, dst_ew) == 0 || _ir_error(inst,
+        "$(cname): memcpy N=$N bytes is not a multiple of element size " *
+        "$(div(dst_ew, 8)) bytes — byte-granular tail copy is " *
+        "out-of-scope for Bennett-ixiz. Tracked in Bennett-8bys.")
 
     # Operand resolution: both operand SSA names must be in the table.
     haskey(names, dst_v.ref) || _ir_error(inst,
@@ -193,17 +214,21 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
     dst_op = ssa(names[dst_v.ref])
     src_op = ssa(names[src_v.ref])
 
-    # Expansion: N byte-granular IRPtrOffset+IRPtrOffset+IRLoad+IRStore quads.
+    # Expansion (Bennett-ixiz): K element-granular
+    # IRPtrOffset+IRPtrOffset+IRLoad+IRStore quads, where
+    # K = N / ew_bytes and each load/store is at width = dst_ew.
+    ew_bytes = div(dst_ew, 8)
+    K = div(N, ew_bytes)
     out = IRInst[]
-    sizehint!(out, 4 * N)
-    for k in 0:(N - 1)
+    sizehint!(out, 4 * K)
+    for k in 0:(K - 1)
         src_off = _auto_name(counter)
         dst_off = _auto_name(counter)
         tmp     = _auto_name(counter)
-        push!(out, IRPtrOffset(src_off, src_op, k))
-        push!(out, IRPtrOffset(dst_off, dst_op, k))
-        push!(out, IRLoad(tmp, ssa(src_off), 8))
-        push!(out, IRStore(ssa(dst_off), ssa(tmp), 8))
+        push!(out, IRPtrOffset(src_off, src_op, k * ew_bytes))
+        push!(out, IRPtrOffset(dst_off, dst_op, k * ew_bytes))
+        push!(out, IRLoad(tmp, ssa(src_off), dst_ew))
+        push!(out, IRStore(ssa(dst_off), ssa(tmp), dst_ew))
     end
     return out
 end
@@ -288,6 +313,32 @@ function _alloca_is_fresh(alloca_ref::_LLVMRef, memset_inst::LLVM.Instruction)::
         # Loads, GEPs, arithmetic, casts: pure with respect to memory writes.
     end
     return false
+end
+
+"""
+    _broadcast_byte_to_width(c::Int, ew::Int) -> Int
+
+Bennett-ixiz: replicate the low 8 bits of `c` across `ew` bits, so an
+ew-bit IRStore with the returned constant has the same byte-wise effect
+as `memset(_, c, ew/8, _)`. E.g. `_broadcast_byte_to_width(0xAB, 64)
+→ 0xABABABABABABABAB` packed into an Int.
+
+`ew` must be a power-of-2 multiple of 8 (8/16/32/64). The returned Int
+holds the low `ew` bits; for `ew == 64` the result may be negative
+when the high bit is set (e.g. c=0xAB gives 0xABABABABABABABAB which is
+-0x5454545454545455 as a signed Int64 — that is the correct in-memory
+bit pattern and round-trips via simulate).
+"""
+function _broadcast_byte_to_width(c::Int, ew::Int)::Int
+    c_u8 = UInt8(c & 0xff)
+    out = UInt64(0)
+    for k in 0:(div(ew, 8) - 1)
+        out |= UInt64(c_u8) << (k * 8)
+    end
+    if ew >= 64
+        return reinterpret(Int64, out) % Int
+    end
+    return Int(out & ((UInt64(1) << ew) - UInt64(1)))
 end
 
 """
@@ -416,15 +467,24 @@ function _handle_memset_arm(cname::AbstractString, inst::LLVM.Instruction,
         "Bennett-9nwt does not yet handle. Tracked in Bennett-8bys. " *
         "(Bennett-9nwt Phase 2)")
 
-    # Predicate 12: alloca element width must be 8 bits.
+    # Predicate 12: alloca element type must be integer.
+    # Bennett-ixiz (2026-05-16) lifted the prior `dst_ew == 8` gate;
+    # arbitrary integer element widths are now accepted, with the fill
+    # byte c broadcast across the element width (see _broadcast_byte_to_width).
     dst_ew = _alloca_elem_width_bits(dst_root)
-    dst_ew == 8 || _ir_error(inst,
-        "$(cname): memset dst alloca has element width " *
-        "$(dst_ew == 0 ? "non-integer" : string(dst_ew)) bits; " *
-        "Bennett-9nwt Phase 2 supports byte-granularity (`alloca i8, " *
-        "i32 N`) only. Wider-element allocas need a wider shadow-store " *
-        "path in src/lowering/memory.jl, same gap as memcpy on " *
-        "alloca-i64. Tracked in Bennett-8bys. (Bennett-9nwt Phase 2)")
+    dst_ew == 0 && _ir_error(inst,
+        "$(cname): memset dst alloca has non-integer element type " *
+        "(struct, ptr, nested-array, or non-integer ArrayType inner). " *
+        "Bennett's wire model only supports flat integer-typed allocas. " *
+        "Tracked in Bennett-8bys. (Bennett-9nwt / Bennett-ixiz)")
+
+    # Predicate 12b (Bennett-ixiz): N must be a whole multiple of element-
+    # size bytes. Byte-granular tail set (setting partial element bytes)
+    # is out-of-scope.
+    rem(N * 8, dst_ew) == 0 || _ir_error(inst,
+        "$(cname): memset N=$N bytes is not a multiple of element size " *
+        "$(div(dst_ew, 8)) bytes — byte-granular tail set is out-of-scope " *
+        "for Bennett-ixiz. Tracked in Bennett-8bys.")
 
     # Predicate 13: freshness (intra-block sweep). Non-fresh dst would
     # XOR-overlay c onto existing data instead of cleanly setting it,
@@ -436,14 +496,20 @@ function _handle_memset_arm(cname::AbstractString, inst::LLVM.Instruction,
         "slot bits via CNOT-uncompute. Tracked in " *
         "Bennett-8bys-uncompute. (Bennett-9nwt Phase 2 — fresh-dst only)")
 
-    # Case C expansion: N byte-granular IRPtrOffset+IRStore pairs at width=8.
+    # Case C expansion (Bennett-ixiz): K element-granular IRPtrOffset+IRStore
+    # pairs at width = dst_ew, where K = N / ew_bytes. The byte fill c is
+    # broadcast across the full element width (e.g. c=0xAB → 0xABABABABABABABAB
+    # for ew=64) via _broadcast_byte_to_width.
+    ew_bytes = div(dst_ew, 8)
+    K = div(N, ew_bytes)
+    c_broadcast = _broadcast_byte_to_width(c_int, dst_ew)
     dst_op = ssa(names[dst_v.ref])
     out = IRInst[]
-    sizehint!(out, 2 * N)
-    for k in 0:(N - 1)
+    sizehint!(out, 2 * K)
+    for k in 0:(K - 1)
         dst_off = _auto_name(counter)
-        push!(out, IRPtrOffset(dst_off, dst_op, k))
-        push!(out, IRStore(ssa(dst_off), iconst(c_int), 8))
+        push!(out, IRPtrOffset(dst_off, dst_op, k * ew_bytes))
+        push!(out, IRStore(ssa(dst_off), iconst(c_broadcast), dst_ew))
     end
     return out
 end
@@ -1963,18 +2029,20 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
     # lowering currently rejects :ssa).
     if opc == LLVM.API.LLVMAlloca
         elem_ty = LLVM.LLVMType(LLVM.API.LLVMGetAllocatedType(inst.ref))
-        # Bennett-munq (2026-05-03): accept `[K x i8]` ArrayType allocas
-        # in addition to `iN` IntegerType. Maps `alloca [K x i8]` to
-        # `IRAlloca(dest, elem_w=8, n_elems=K)` — same downstream shape
-        # as `alloca i8, i32 K`, which the existing memory pipeline
-        # already supports. Other ArrayType inner widths (`[K x i16]`,
-        # etc.) and nested ArrayType (`[K x [M x i8]]`) still return
-        # nothing and are deferred to Bennett-ixiz / future follow-ups.
+        # Bennett-munq (2026-05-03) accepted `[K x i8]` ArrayType allocas
+        # alongside `iN` IntegerType, mapping `alloca [K x i8]` to
+        # `IRAlloca(dest, elem_w=8, n_elems=K)`. Bennett-ixiz (2026-05-16)
+        # lifted the `LLVM.width(inner) == 8` gate to accept any integer
+        # inner width, e.g. `[K x i16]` → `IRAlloca(_, 16, iconst(K))`.
+        # Nested ArrayType (`[K x [M x i8]]`) is still silently dropped
+        # because the inner of a nested ArrayType is itself ArrayType,
+        # not IntegerType (the `inner isa LLVM.IntegerType` guard rejects
+        # the nested case). Future-deferred to Bennett-8bys catch-all.
         if elem_ty isa LLVM.ArrayType
             inner = LLVM.eltype(elem_ty)
-            inner isa LLVM.IntegerType && LLVM.width(inner) == 8 || return nothing
+            inner isa LLVM.IntegerType || return nothing
             n_arr = LLVM.length(elem_ty)
-            return IRAlloca(dest, 8, iconst(n_arr))
+            return IRAlloca(dest, LLVM.width(inner), iconst(n_arr))
         end
         elem_ty isa LLVM.IntegerType || return nothing
         elem_w = LLVM.width(elem_ty)

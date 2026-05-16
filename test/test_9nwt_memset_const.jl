@@ -113,18 +113,32 @@ using Bennett
         end
     end
 
-    @testset "alloca-i64 dst memset (c≠0) fails loud → 8bys" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "9nwt_memset_alloca_i64_reject.ll")
-        @test_throws ErrorException Bennett.extract_parsed_ir_from_ll(
-            path; entry_function="memset_alloca_i64")
-        try
-            Bennett.extract_parsed_ir_from_ll(path; entry_function="memset_alloca_i64")
-            @test false
-        catch e
-            msg = sprint(showerror, e)
-            @test occursin("Bennett-9nwt", msg)
-            @test occursin("Bennett-8bys", msg)
-            @test occursin("element width", msg)
+    @testset "alloca-i64 dst memset (c=0xAB N=16) broadcasts → 2× width=64 stores (Bennett-ixiz)" begin
+        # Bennett-ixiz (2026-05-16): predicate 12 was lifted to accept
+        # arbitrary integer dst_ew, and the byte fill c is broadcast
+        # across the element width via `_broadcast_byte_to_width`.
+        # For ew=64, c=0xAB → 0xABABABABABABABAB.
+        # Lowering: K = N / ew_bytes = 16 / 8 = 2 chunks; each emits one
+        # IRPtrOffset + one IRStore(width=64, val=0xABABABABABABABAB).
+        path = joinpath(@__DIR__, "fixtures", "ll", "9nwt_memset_alloca_i64.ll")
+        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="memset_alloca_i64")
+        all_insts = vcat([blk.instructions for blk in parsed.blocks]...)
+        offs     = filter(i -> i isa Bennett.IRPtrOffset, all_insts)
+        stores64 = filter(i -> i isa Bennett.IRStore && i.width == 64, all_insts)
+        @test length(offs)     >= 2
+        @test length(stores64) >= 2
+        # Pin every memset-emitted store carries the broadcast pattern.
+        expected_broadcast = Int(0xababababababababab % Int64)
+        memset_stores = filter(stores64) do s
+            s.val isa Bennett.ConstOperand && s.val.value == expected_broadcast
+        end
+        @test length(memset_stores) == 2
+
+        c = reversible_compile(parsed)
+        @test verify_reversibility(c)
+        # Oracle: load dst[0] returns 0xABABABABABABABAB regardless of input.
+        for x in Int64[0, 1, -1, typemax(Int64), typemin(Int64)]
+            @test simulate(c, x) == expected_broadcast
         end
     end
 

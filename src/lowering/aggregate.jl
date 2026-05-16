@@ -209,9 +209,19 @@ function lower_ptr_offset!(gates::Vector{ReversibleGate}, wa::WireAllocator,
 
     # Bennett-cc0 M2b: propagate pointer provenance per-origin. For each
     # origin of the base (typically 1 pre-M2b; >1 after a ptr-phi/select),
-    # bump the element index by offset_bytes (MVP: elem_width = 8). Preserves
-    # the predicate_wire per origin — the GEP is a pure index map, not a
-    # control-flow merge.
+    # bump the element index by `offset_bytes / ew_bytes` — i.e. the GEP
+    # byte offset is converted to an element-count stride. Preserves the
+    # predicate_wire per origin (the GEP is a pure index map, not a
+    # control-flow merge).
+    #
+    # Bennett-ixiz (2026-05-16): the prior `ew == 8 || continue` silent-
+    # skip is replaced by per-origin element-stride arithmetic
+    # (`div(offset_bytes * 8, ew)`) so arbitrary integer element widths
+    # (8/16/32/64) are supported. Sub-element offsets (byte offset not a
+    # whole multiple of ew/8) are rejected fail-loud — intra-slot offsets
+    # are not representable in the shadow-tape model. The rem-guard is
+    # placed PER-ORIGIN because a ptr-phi over allocas of differing
+    # element type can have different `alloca_dest`/ew per origin.
     if ptr_provenance !== nothing && alloca_info !== nothing
         base_origins = if haskey(ptr_provenance, inst.base.name)
             ptr_provenance[inst.base.name]
@@ -224,8 +234,15 @@ function lower_ptr_offset!(gates::Vector{ReversibleGate}, wa::WireAllocator,
             info = get(alloca_info, o.alloca_dest, nothing)
             info === nothing && continue
             ew = first(info)
-            ew == 8 || continue  # non-MVP; skip this origin
-            new_idx = iconst(o.idx_op.value + inst.offset_bytes)
+            # Bennett-ixiz sub-element guard: a byte offset that doesn't
+            # divide the element width cleanly cannot be represented as
+            # an element-count bump.
+            rem(inst.offset_bytes * 8, ew) == 0 ||
+                throw(DimensionMismatch("IRPtrOffset off=$(inst.offset_bytes)B " *
+                    "is sub-element on alloca '$(o.alloca_dest)' (elem_w=$ew bits); " *
+                    "intra-slot offsets are not representable in the shadow-tape " *
+                    "model. Bennett-ixiz."))
+            new_idx = iconst(o.idx_op.value + div(inst.offset_bytes * 8, ew))
             push!(new_origins, PtrOrigin(o.alloca_dest, new_idx, o.predicate_wire))
         end
         if !isempty(new_origins)

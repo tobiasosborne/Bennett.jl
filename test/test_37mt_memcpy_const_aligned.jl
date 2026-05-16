@@ -102,18 +102,32 @@ using Bennett
         end
     end
 
-    @testset "alloca i64 (elem_w≠8) memcpy fails loud → 8bys" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "37mt_memcpy_alloca_i64_reject.ll")
-        @test_throws ErrorException Bennett.extract_parsed_ir_from_ll(
-            path; entry_function="memcpy_alloca_i64")
-        try
-            Bennett.extract_parsed_ir_from_ll(path; entry_function="memcpy_alloca_i64")
-            @test false
-        catch e
-            msg = sprint(showerror, e)
-            @test occursin("Bennett-37mt", msg)
-            @test occursin("Bennett-8bys", msg)
-            @test occursin("element width", msg)
+    @testset "alloca i64 (elem_w=64) memcpy lowered to 2× width=64 chunks (Bennett-ixiz)" begin
+        # Bennett-ixiz (2026-05-16): predicate 8 was lifted to accept
+        # arbitrary equal integer element widths. This fixture
+        # (`alloca i64, i32 2` + memcpy N=16) lowers to K = N / ew_bytes
+        # = 16/8 = 2 element-granular IRLoad(width=64) + IRStore(width=64)
+        # chunks, plus 4 IRPtrOffset (src + dst per chunk).
+        path = joinpath(@__DIR__, "fixtures", "ll", "37mt_memcpy_alloca_i64.ll")
+        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="memcpy_alloca_i64")
+        all_insts = vcat([blk.instructions for blk in parsed.blocks]...)
+        loads64  = filter(i -> i isa Bennett.IRLoad      && i.width == 64, all_insts)
+        stores64 = filter(i -> i isa Bennett.IRStore     && i.width == 64, all_insts)
+        offs     = filter(i -> i isa Bennett.IRPtrOffset, all_insts)
+        # 2 memcpy IRLoad + the trailing %y load.
+        @test length(loads64)  >= 2
+        # %x source store + 2 memcpy stores.
+        @test length(stores64) >= 1 + 2
+        # 4 IRPtrOffset for memcpy (src+dst per chunk), 2 chunks total.
+        @test length(offs)     >= 4
+
+        c = reversible_compile(parsed)
+        @test verify_reversibility(c)
+        # Identity oracle: src[0] = x, memcpy 16 bytes (= 2 elements)
+        # src→dst, load dst[0] → x.
+        for x in Int64[0, 1, -1, typemax(Int64), typemin(Int64),
+                       0xdeadbeefdeadbeef % Int64]
+            @test simulate(c, x) == x
         end
     end
 
