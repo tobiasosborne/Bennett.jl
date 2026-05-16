@@ -206,6 +206,13 @@ runfile("test_doih_memcpy_global_src.jl")
 # in the dict → G5 in _handle_memcpy_global_src fires the precise
 # `Bennett-zxhg-ptrfield` breadcrumb (the t5_tr2_hashmap.ll:153 case).
 runfile("test_zxhg_struct_global.jl")
+# Bennett-land (Bennett-zxhg follow-up, 2026-05-16): ptr-typed ConstantStruct
+# field materialisation via synthetic 64-bit LE addresses. `_ptr_identity` →
+# `(:named, ref)` / `(:null, 0)` lower to `0x1000_0000_0000_0000 | counter`;
+# `(:addr, K)` and `nothing` still reject. New load-escape guard at
+# `_handle_load` fails loud (`Bennett-land-ptrload`) when synth-tagged
+# alloca bytes are consumed by anything other than another `llvm.memcpy.*`.
+runfile("test_land_ptrfield_struct.jl")
 # Bennett-h6f: direct llvm.fma / llvm.fmuladd dispatch.
 runfile("test_h6f_llvm_fma_dispatch.jl")
 # Bennett-4eu: indirectbr fail-loud hard stop.

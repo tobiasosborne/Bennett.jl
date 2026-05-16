@@ -107,7 +107,10 @@ The `globals` arg is the ParsedIR globals dict threaded down from
 function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
                             names::Dict{_LLVMRef, Symbol}, counter::Ref{Int}, ops,
                             globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}}=
-                                Dict{Symbol, Tuple{Vector{UInt64}, Int}}())
+                                Dict{Symbol, Tuple{Vector{UInt64}, Int}}();
+                            synth_ptr_provenance::Set{Tuple{Symbol, Int, Int}}=
+                                Set{Tuple{Symbol, Int, Int}}(),
+                            synth_ptr_allocas::Set{_LLVMRef}=Set{_LLVMRef}())
     # Predicate 1: addrspace 0 on both pointers (encoded in the intrinsic name).
     startswith(cname, "llvm.memcpy.p0.p0.") || _ir_error(inst,
         "$(cname): memcpy with non-default pointer address space is not " *
@@ -178,7 +181,9 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
     # (runtime index into a global) is rejected inside that helper
     # with a precise Bennett-doih-vargep breadcrumb.
     if _src_reaches_global(src_v)
-        return _handle_memcpy_global_src(cname, inst, names, counter, ops, globals)
+        return _handle_memcpy_global_src(cname, inst, names, counter, ops, globals;
+                                         synth_ptr_provenance=synth_ptr_provenance,
+                                         synth_ptr_allocas=synth_ptr_allocas)
     end
 
     # Predicate 6: both pointers must trace back to an alloca.
@@ -244,6 +249,19 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
         "(Bennett-37mt Phase 1)")
     dst_op = ssa(names[dst_v.ref])
     src_op = ssa(names[src_v.ref])
+
+    # Bennett-land: carry-through tagging. If src alloca was previously
+    # tagged as carrying synthetic-address bytes (via a prior memcpy
+    # from a struct-with-ptr-field global), propagate the tag to dst.
+    # This handles the HashMap::new pattern:
+    #   memcpy %_3 ← @anon       (tags %_3 in global-src arm)
+    #   memcpy %_2 ← %_3         (this arm: propagates tag to %_2)
+    #   memcpy %_0 ← %_2         (this arm: propagates tag to %_0)
+    # Without this propagation, a later load through %_2 / %_0 would
+    # silently miscompile on the synth-address bytes.
+    if src_root in synth_ptr_allocas
+        push!(synth_ptr_allocas, dst_root)
+    end
 
     # Expansion (Bennett-ixiz): K element-granular
     # IRPtrOffset+IRPtrOffset+IRLoad+IRStore quads, where
@@ -436,7 +454,10 @@ k-th element of the global at the requested byte offset, K = N / ew_bytes.
 function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction,
                                    names::Dict{_LLVMRef, Symbol},
                                    counter::Ref{Int}, ops,
-                                   globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}})
+                                   globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}};
+                                   synth_ptr_provenance::Set{Tuple{Symbol, Int, Int}}=
+                                       Set{Tuple{Symbol, Int, Int}}(),
+                                   synth_ptr_allocas::Set{_LLVMRef}=Set{_LLVMRef}())
     dst_v = ops[1]
     src_v = ops[2]
     n_v   = ops[3]
@@ -483,15 +504,21 @@ function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction
     haskey(globals, gname) || _ir_error(inst,
         "$(cname): memcpy src global @$gname is not extractable as a " *
         "constant integer byte stream. Likely causes: (a) the " *
-        "initializer is a ConstantStruct with a non-integer field " *
-        "(e.g. ptr-typed, FloatType, VectorType, or IntegerType wider " *
-        "than 64 bits) — tracked in Bennett-zxhg-ptrfield; this is " *
-        "what t5_tr2_hashmap.ll:153's `<{ ptr, [24 x i8] }>` global " *
-        "hits, the `ptr` first field having no Bennett wire " *
-        "semantics; (b) the global is an external declaration with " *
-        "no initializer — tracked in Bennett-doih-external (covered " *
-        "by Bennett-zxhg); (c) the initializer is an opaque kind " *
-        "(GlobalAlias, ConstantVector, etc.) — tracked in " *
+        "initializer is a ConstantStruct with a non-materialisable " *
+        "field — Bennett-zxhg-ptrfield covers the FloatType / " *
+        "VectorType / opaque / IntegerType-wider-than-64 residuals; " *
+        "ptr-typed fields now materialise as synthetic 64-bit " *
+        "compile-time addresses (Bennett-land), so a ptr field per " *
+        "se no longer hits this branch — but the new " *
+        "Bennett-land-ptrload escape guard fails loud downstream if " *
+        "any loaded byte traces back to such synthetic-address bytes. " *
+        "Bennett-land also still rejects ptr fields with non-zero " *
+        "addrspace (Bennett-land-addrspace), inttoptr-of-const " *
+        "operands (Bennett-land-inttoptr), and undef/unresolvable " *
+        "ptr identity. (b) the global is an external declaration " *
+        "with no initializer — tracked in Bennett-doih-external " *
+        "(covered by Bennett-zxhg); (c) the initializer is an opaque " *
+        "kind (GlobalAlias, ConstantVector, etc.) — tracked in " *
         "Bennett-doih-opaque (covered by Bennett-zxhg). Check " *
         "`parsed.globals` to see what was extracted. (Bennett-doih)")
     (gdata, gw) = globals[gname]
@@ -537,6 +564,19 @@ function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction
         "Reversibility forbids destructive overwrite without first " *
         "uncomputing the existing slot bits. Tracked in " *
         "Bennett-8bys-uncompute. (Bennett-doih)")
+
+    # ---- Bennett-land: tag dst alloca if any synth-ptr provenance ----
+    # If the source global has any synth_ptr_provenance entries, mark
+    # the dst alloca as "carries synthetic-address bytes" so the
+    # downstream load-escape guard at `_handle_load` can fail loud
+    # (`Bennett-land-ptrload`) when those bytes are read back as a
+    # pointer/integer for arithmetic, comparison, or dereference. The
+    # MVP guard is alloca-level coarse (any load from this alloca that
+    # isn't piped into another memcpy fails loud); byte-precise overlap
+    # analysis is tracked in `Bennett-land-precise-escape`.
+    if any(p -> p[1] === gname, synth_ptr_provenance)
+        push!(synth_ptr_allocas, dst_root)
+    end
 
     # ---- Emission: K element-granular IRPtrOffset + IRStore(iconst) ----
     # K = N / ew_bytes; each iconst is the source element at index
@@ -858,7 +898,10 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
                            names::Dict{_LLVMRef, Symbol}, counter::Ref{Int},
                            dest::Symbol, ops,
                            globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}}=
-                               Dict{Symbol, Tuple{Vector{UInt64}, Int}}())
+                               Dict{Symbol, Tuple{Vector{UInt64}, Int}}();
+                           synth_ptr_provenance::Set{Tuple{Symbol, Int, Int}}=
+                               Set{Tuple{Symbol, Int, Int}}(),
+                           synth_ptr_allocas::Set{_LLVMRef}=Set{_LLVMRef}())
     if startswith(cname, "llvm.umax.")
         cmp_dest = _auto_name(counter)
         w = _iwidth(ops[1])
@@ -1429,7 +1472,9 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "(Bennett-37mt Phase 1 — memmove deferred to Bennett-8bys)")
     end
     if startswith(cname, "llvm.memcpy.")
-        return _handle_memcpy_arm(cname, inst, names, counter, ops, globals)
+        return _handle_memcpy_arm(cname, inst, names, counter, ops, globals;
+                                  synth_ptr_provenance=synth_ptr_provenance,
+                                  synth_ptr_allocas=synth_ptr_allocas)
     end
     # Bennett-hao Phase 2 (Bennett-9nwt): const-c const-N memset on
     # alloca-i8-backed dst lowers to byte-granular IRPtrOffset+IRStore
@@ -1781,7 +1826,10 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                               counter::Ref{Int},
                               lanes::Dict{_LLVMRef, Vector{IROperand}}=Dict{_LLVMRef, Vector{IROperand}}();
                               globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}}=
-                                  Dict{Symbol, Tuple{Vector{UInt64}, Int}}())
+                                  Dict{Symbol, Tuple{Vector{UInt64}, Int}}(),
+                              synth_ptr_provenance::Set{Tuple{Symbol, Int, Int}}=
+                                  Set{Tuple{Symbol, Int, Int}}(),
+                              synth_ptr_allocas::Set{_LLVMRef}=Set{_LLVMRef}())
     opc = LLVM.opcode(inst)
     dest = names[inst.ref]
 
@@ -1960,7 +2008,9 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             # prefix block to `_handle_intrinsic` (helper above). Returns
             # nothing if no intrinsic matched; we then fall through to the
             # registered-callee path.
-            handled = _handle_intrinsic(cname, inst, names, counter, dest, ops, globals)
+            handled = _handle_intrinsic(cname, inst, names, counter, dest, ops, globals;
+                                        synth_ptr_provenance=synth_ptr_provenance,
+                                        synth_ptr_allocas=synth_ptr_allocas)
             handled === nothing || return handled
         end
         # Known Julia function calls → IRCall for gate-level inlining
@@ -2153,6 +2203,65 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 "atomic load not supported (Bennett-4mmt / U14)")
         ops = LLVM.operands(inst)
         ptr = ops[1]
+
+        # Bennett-land: load-escape guard. If the load source traces
+        # back to an alloca tagged as carrying synthetic-address bytes
+        # (via a prior memcpy from a struct-with-ptr-field global),
+        # the only safe consumer pattern is to pipe the result into
+        # another `llvm.memcpy.*` (i.e. continue carrying the bytes
+        # forward, the Rust panic-Location ABI shape). ANY other use —
+        # arithmetic, comparison, dereference, return — would
+        # silently miscompile because the synthetic 64-bit address is
+        # not the real allocator address of the pointee. Fail loud
+        # here so the user gets a precise breadcrumb at the load
+        # site rather than a garbage simulation result downstream.
+        if !isempty(synth_ptr_allocas)
+            load_root = _alloca_root_ref(ptr)
+            if load_root !== nothing && load_root in synth_ptr_allocas
+                # Walk uses; require every use to be an `llvm.memcpy.*`
+                # intrinsic call. Anything else fails loud.
+                all_memcpy = true
+                n_uses = 0
+                for use in LLVM.uses(inst)
+                    n_uses += 1
+                    user_inst = LLVM.user(use)
+                    if user_inst isa LLVM.CallInst || (user_inst isa LLVM.Instruction &&
+                                                       LLVM.opcode(user_inst) == LLVM.API.LLVMCall)
+                        # Last operand of a call is the callee.
+                        call_ops = LLVM.operands(user_inst)
+                        callee_name = try
+                            LLVM.name(call_ops[end])
+                        catch e
+                            e isa InterruptException && rethrow()
+                            ""
+                        end
+                        if startswith(callee_name, "llvm.memcpy.")
+                            continue
+                        end
+                    end
+                    all_memcpy = false
+                    break
+                end
+                if !all_memcpy || n_uses == 0
+                    _ir_error(inst,
+                        "load through pointer rooted at an alloca that " *
+                        "received synthetic-address bytes from a " *
+                        "ptr-field ConstantStruct global (via " *
+                        "`llvm.memcpy.*` from a Bennett-land-materialised " *
+                        "global). The synthetic address (high nibble " *
+                        "0x1) is NOT the real allocator address of the " *
+                        "pointee; loading these bytes back and using " *
+                        "them as an integer / pointer / index would " *
+                        "silently miscompile. The only safe consumer " *
+                        "pattern is to pipe the load result into " *
+                        "another `llvm.memcpy.*` (continue carrying " *
+                        "the bytes forward — the Rust panic-Location " *
+                        "ABI shape). Got $(n_uses == 0 ? "zero uses" : " " *
+                        "a non-memcpy use") instead. (Bennett-land-ptrload)")
+                end
+            end
+        end
+
         if haskey(names, ptr.ref)
             rt = LLVM.value_type(inst)
             if rt isa LLVM.IntegerType

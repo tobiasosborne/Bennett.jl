@@ -82,7 +82,8 @@ function extract_parsed_ir(f, arg_types::Type{<:Tuple};
     # Stamp memssa into the result if requested
     if memssa !== nothing
         result = ParsedIR(result.ret_width, result.args, result.blocks,
-                          result.ret_elem_widths, result.globals, memssa)
+                          result.ret_elem_widths, result.globals, memssa,
+                          result.synth_ptr_provenance)
     end
     return result
 end
@@ -154,7 +155,8 @@ function extract_parsed_ir_from_ll(path::AbstractString;
     end
     if memssa !== nothing
         result = ParsedIR(result.ret_width, result.args, result.blocks,
-                          result.ret_elem_widths, result.globals, memssa)
+                          result.ret_elem_widths, result.globals, memssa,
+                          result.synth_ptr_provenance)
     end
     return result
 end

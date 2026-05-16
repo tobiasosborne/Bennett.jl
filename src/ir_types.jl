@@ -359,18 +359,39 @@ struct ParsedIR
     # / U44: typed concretely as Union{Nothing, MemSSAInfo} after
     # MemSSAInfo's definition was moved here above ParsedIR.
     memssa::Union{Nothing, MemSSAInfo}
+    # Bennett-land: provenance set for synthetic ptr-field bytes materialised
+    # by `_flatten_struct_to_bytes`. Each tuple is
+    # `(struct_global_name, field_byte_offset, field_byte_width)` recording
+    # which bytes of `globals[struct_global_name]` are a synthetic compile-
+    # time address (8 LE bytes) rather than a real integer constant. The
+    # downstream load escape guard at `_handle_load` keys off this set to
+    # fail loud (`Bennett-land-ptrload`) when the synthetic bytes are loaded
+    # back as a pointer/integer for arithmetic, comparison, or
+    # dereference. Empty for any module with no ptr-field structs.
+    synth_ptr_provenance::Set{Tuple{Symbol, Int, Int}}
 end
 
 # Constructor without globals or memssa (defaults: empty globals, no memssa).
 function ParsedIR(ret_width::Int, args::Vector{Tuple{Symbol, Int}},
                   blocks::Vector{IRBasicBlock}, ret_elem_widths::Vector{Int})
     ParsedIR(ret_width, args, blocks, ret_elem_widths,
-             Dict{Symbol, Tuple{Vector{UInt64}, Int}}(), nothing)
+             Dict{Symbol, Tuple{Vector{UInt64}, Int}}(), nothing,
+             Set{Tuple{Symbol, Int, Int}}())
 end
 
 # Constructor with globals but no memssa.
 function ParsedIR(ret_width::Int, args::Vector{Tuple{Symbol, Int}},
                   blocks::Vector{IRBasicBlock}, ret_elem_widths::Vector{Int},
                   globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}})
-    ParsedIR(ret_width, args, blocks, ret_elem_widths, globals, nothing)
+    ParsedIR(ret_width, args, blocks, ret_elem_widths, globals, nothing,
+             Set{Tuple{Symbol, Int, Int}}())
+end
+
+# Constructor with globals + memssa (legacy; defaults synth_ptr_provenance to empty).
+function ParsedIR(ret_width::Int, args::Vector{Tuple{Symbol, Int}},
+                  blocks::Vector{IRBasicBlock}, ret_elem_widths::Vector{Int},
+                  globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}},
+                  memssa::Union{Nothing, MemSSAInfo})
+    ParsedIR(ret_width, args, blocks, ret_elem_widths, globals, memssa,
+             Set{Tuple{Symbol, Int, Int}}())
 end

@@ -55,7 +55,17 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function)
 
     # T1c.2: extract compile-time-constant global arrays so lower_var_gep! can
     # dispatch read-only lookups through QROM instead of a MUX-tree.
-    globals = _extract_const_globals(mod)
+    # Bennett-land: returns both the globals dict and the
+    # synth_ptr_provenance set (entries for ptr-field structs that were
+    # materialised with synthetic 64-bit addresses; consumed by the
+    # downstream load-escape guard).
+    globals, synth_ptr_provenance = _extract_const_globals(mod)
+
+    # Bennett-land: per-function tracking of alloca refs that received
+    # synthetic-address bytes via memcpy. Populated by
+    # `_handle_memcpy_global_src` (initial tag) and `_handle_memcpy_arm`
+    # (carry-through tag). Consulted by `_handle_load`'s escape guard.
+    synth_ptr_allocas = Set{_LLVMRef}()
 
     # Bennett-dv1z: detect sret calling convention. When present, the LLVM
     # return type is `void`; the aggregate shape comes from the sret attribute.
@@ -187,7 +197,10 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function)
             # prefix is how we distinguish legitimate fail-loud errors from
             # LLVM.jl's "unknown kind" pass-through.
             ir_inst = try
-                _convert_instruction(inst, names, counter, lanes; globals=globals)
+                _convert_instruction(inst, names, counter, lanes;
+                                     globals=globals,
+                                     synth_ptr_provenance=synth_ptr_provenance,
+                                     synth_ptr_allocas=synth_ptr_allocas)
             catch e
                 e isa InterruptException && rethrow()
                 msg = sprint(showerror, e)
@@ -228,44 +241,114 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function)
     # Post-pass: expand switch terminators into cascaded icmp + branch blocks
     blocks = _expand_switches(blocks)
 
-    return ParsedIR(ret_width, args, blocks, ret_elem_widths, globals)
+    return ParsedIR(ret_width, args, blocks, ret_elem_widths, globals,
+                    nothing, synth_ptr_provenance)
 end
 
 """
-Bennett-zxhg helper. Flatten a `ConstantStruct` initializer into a flat
-little-endian `Vector{UInt8}` honoring ABI offset/padding via
-`LLVM.offsetof(dl, struct_ty, i)` and total size via
+Bennett-land: synthetic-address constants for ptr-typed ConstantStruct
+fields.
+
+`_LAND_SYNTH_ADDR_BASE` (`0x1000_0000_0000_0000`) is the high-nibble
+prefix that makes synthetic addresses visually distinguishable from real
+allocator addresses (`0x0000_7FFF_FFFF_FFFF` and below on canonical
+x86_64) and from small integer constants. The next 60 bits hold the
+per-module monotonic counter, giving ~2^60 unique slots — vastly more
+than any practical module exercises (t5 corpus uses ~28 ptr-containing
+structs).
+
+Per the orchestrator-synthesised spec for Bennett-land: B's monotonic
+counter is preferred over A's hash-based scheme because uniqueness is
+guaranteed by construction (no birthday collisions) and the assignment
+is deterministic across runs of the same module (since
+`LLVM.globals(mod)` iterates in module-insertion order).
+"""
+const _LAND_SYNTH_ADDR_BASE = UInt64(0x1000_0000_0000_0000)
+
+"""
+Assign a synthetic 64-bit little-endian address for a named global
+pointee. Idempotent: a second lookup of the same `gname` returns the
+same address (so two ptr-fields pointing at the same global pack to
+identical bytes — semantically correct).
+
+Returns the assigned `UInt64`. Mutates `addr_assigned` and bumps
+`addr_counter`.
+
+Lives OUTSIDE `_extract_const_globals` per Bennett-8kno's static
+substring inspection (test_8kno's catch-block fingerprint must remain
+byte-identical).
+"""
+function _assign_synthetic_addr!(addr_assigned::Dict{Symbol, UInt64},
+                                 addr_counter::Base.RefValue{UInt64},
+                                 gname::Symbol)::UInt64
+    haskey(addr_assigned, gname) && return addr_assigned[gname]
+    addr = _LAND_SYNTH_ADDR_BASE | addr_counter[]
+    addr_counter[] += UInt64(1)
+    addr_assigned[gname] = addr
+    return addr
+end
+
+"""
+Bennett-zxhg helper (Bennett-land extension). Flatten a `ConstantStruct`
+initializer into a flat little-endian `Vector{UInt8}` honoring ABI
+offset/padding via `LLVM.offsetof(dl, struct_ty, i)` and total size via
 `LLVM.abi_size(dl, struct_ty)`.
 
-Returns `nothing` (hard-reject) if ANY field has a type Bennett.jl can't
-materialise:
-  - PointerType / FloatType / VectorType / opaque / IntegerType wider than 64
+Returns `(nothing, provenance)` (hard-reject; provenance unchanged) if
+ANY field has a type or operand-shape Bennett.jl can't materialise:
+  - FloatType / VectorType / opaque / IntegerType wider than 64
+  - PointerType with non-zero addrspace (Bennett-land-addrspace follow-up)
+  - PointerType with size != 8 bytes (Bennett-land-ptrsize32 follow-up)
+  - PointerType with operand identity `(:addr, K)` (inttoptr-of-const) —
+    K could be a real allocator address (Bennett-land-inttoptr follow-up)
+  - PointerType with operand identity `nothing` (undef / unresolvable)
   - nested ConstantStruct that itself returns `nothing`
   - field operand of an unexpected kind (e.g. `undef`, ConstantExpr that's
     not a ConstantInt/ConstantDataArray/ConstantStruct/ConstantAggregateZero)
 
+Otherwise returns `(bytes, new_provenance_entries)` where
+`new_provenance_entries::Vector{Tuple{Int,Int}}` is the list of
+`(field_byte_offset, field_byte_width)` pairs (only populated for ptr
+fields with `(:named, ref)` or `(:null, 0)` identity). The CALLER
+(`_extract_const_globals`) folds these into the module-scope
+`synth_ptr_provenance` set under the global's name.
+
+`addr_assigned` and `addr_counter` thread the per-module synthetic-
+address state. Recursion preserves them so nested struct ptrs reuse the
+same address pool.
+
+Bennett-land scope:
+  - Bennett-zxhg hard-rejected ALL ptr fields by returning `nothing`
+    at the final `else` arm. land splits the ptr arm out: `(:named, _)`
+    and `(:null, 0)` materialise; `(:addr, _)` and `nothing` still
+    reject. The downstream G5 message still mentions
+    `Bennett-zxhg-ptrfield` for these residual reject cases but adds
+    `Bennett-land-ptrload` as the new escape-guard breadcrumb.
+
 Depth-limited at 8 to match `_global_root_and_offset` and prevent
 pathological recursion on hostile input.
-
-The ptr-field reject path is the one named in the doih G5 breadcrumb
-(`Bennett-zxhg-ptrfield`).
 """
 function _flatten_struct_to_bytes(init::LLVM.ConstantStruct,
                                   struct_ty::LLVM.StructType,
                                   dl::LLVM.DataLayout,
+                                  addr_assigned::Dict{Symbol, UInt64},
+                                  addr_counter::Base.RefValue{UInt64},
                                   depth::Int=0)
-    depth >= 8 && return nothing
+    depth >= 8 && return (nothing, Tuple{Int,Int}[])
     # Endianness assertion (cheap insurance for big-endian deployment).
     LLVM.byteorder(dl) == LLVM.API.LLVMLittleEndian ||
-        return nothing
+        return (nothing, Tuple{Int,Int}[])
 
     total_bytes = Int(LLVM.abi_size(dl, struct_ty))
     bytes = zeros(UInt8, total_bytes)
+    # Per-call ptr-provenance entries, returned to caller for folding
+    # into the module-scope synth_ptr_provenance set.
+    ptr_prov = Tuple{Int,Int}[]
 
     field_types = collect(LLVM.elements(struct_ty))
     field_vals  = LLVM.operands(init)
     nfields = length(field_types)
-    length(field_vals) == nfields || return nothing
+    length(field_vals) == nfields || return (nothing, Tuple{Int,Int}[])
 
     for i in 0:(nfields - 1)
         field_off = Int(LLVM.offsetof(dl, struct_ty, i))
@@ -274,7 +357,7 @@ function _flatten_struct_to_bytes(init::LLVM.ConstantStruct,
 
         if field_ty isa LLVM.IntegerType
             w = LLVM.width(field_ty)
-            (w in (8, 16, 32, 64)) || return nothing
+            (w in (8, 16, 32, 64)) || return (nothing, Tuple{Int,Int}[])
             # ConstantAggregateZero on a sub-int field is just zero —
             # bytes already zero, nothing to do.
             if field_val isa LLVM.ConstantAggregateZero
@@ -286,14 +369,14 @@ function _flatten_struct_to_bytes(init::LLVM.ConstantStruct,
                     bytes[field_off + k + 1] = UInt8((raw >> (8 * k)) & 0xff)
                 end
             else
-                return nothing
+                return (nothing, Tuple{Int,Int}[])
             end
 
         elseif field_ty isa LLVM.ArrayType
             elem_ty = LLVM.eltype(field_ty)
-            elem_ty isa LLVM.IntegerType || return nothing
+            elem_ty isa LLVM.IntegerType || return (nothing, Tuple{Int,Int}[])
             ew = LLVM.width(elem_ty)
-            (ew in (8, 16, 32, 64)) || return nothing
+            (ew in (8, 16, 32, 64)) || return (nothing, Tuple{Int,Int}[])
             arrlen = Int(LLVM.API.LLVMGetArrayLength(field_ty.ref))
             nb_per = div(ew, 8)
 
@@ -313,32 +396,85 @@ function _flatten_struct_to_bytes(init::LLVM.ConstantStruct,
                     end
                 end
             else
-                return nothing
+                return (nothing, Tuple{Int,Int}[])
             end
 
         elseif field_ty isa LLVM.StructType
             if field_val isa LLVM.ConstantAggregateZero
                 # bytes already zero
             elseif field_val isa LLVM.ConstantStruct
-                sub = _flatten_struct_to_bytes(field_val, field_ty, dl, depth + 1)
-                sub === nothing && return nothing
-                length(sub) == Int(LLVM.abi_size(dl, field_ty)) || return nothing
-                for (j, b) in enumerate(sub)
+                sub_bytes, sub_prov = _flatten_struct_to_bytes(
+                    field_val, field_ty, dl, addr_assigned, addr_counter, depth + 1)
+                sub_bytes === nothing && return (nothing, Tuple{Int,Int}[])
+                length(sub_bytes) == Int(LLVM.abi_size(dl, field_ty)) ||
+                    return (nothing, Tuple{Int,Int}[])
+                for (j, b) in enumerate(sub_bytes)
                     bytes[field_off + j] = b
                 end
+                # Lift nested ptr-prov entries up to outer-struct offsets.
+                for (sub_off, sub_w) in sub_prov
+                    push!(ptr_prov, (field_off + sub_off, sub_w))
+                end
             else
-                return nothing
+                return (nothing, Tuple{Int,Int}[])
+            end
+
+        elseif field_ty isa LLVM.PointerType
+            # Bennett-land: materialise narrow ptr-field operand shapes.
+            # Reject early on addrspace != 0 or pointer-size != 8.
+            LLVM.addrspace(field_ty) == 0 ||
+                return (nothing, Tuple{Int,Int}[])
+            ptr_size = Int(LLVM.pointersize(dl, 0))
+            ptr_size == 8 || return (nothing, Tuple{Int,Int}[])
+
+            if LLVM.API.LLVMGetValueKind(field_val.ref) ==
+               LLVM.API.LLVMConstantPointerNullValueKind
+                # 8 zero bytes — already zeroed. No counter bump (null is
+                # not allocated a synthetic address). Still record
+                # provenance: the load-escape guard MUST trip on a load
+                # from a struct-with-ptr-field even if THAT particular
+                # ptr happens to be null (the escape check is alloca-
+                # level, not field-level, in this MVP).
+                # NOTE: LLVM.jl 9 has no `ConstantPointerNull` wrapper —
+                # dispatch via raw value-kind enum.
+                push!(ptr_prov, (field_off, ptr_size))
+            else
+                # Reuse `_ptr_identity` (Bennett-cc0) for canonical
+                # identity. Returns:
+                #   (:named, ref)  → assign synthetic address
+                #   (:null,  0)    → 8 zero bytes (rare; covered above)
+                #   (:addr,  K)    → REJECT (allocator-dependent;
+                #                    Bennett-land-inttoptr follow-up)
+                #   nothing        → REJECT (undef / unresolvable)
+                ident = _ptr_identity(field_val.ref)
+                ident === nothing && return (nothing, Tuple{Int,Int}[])
+                kind, payload = ident
+                if kind === :null
+                    # 8 zero bytes; already zeroed.
+                    push!(ptr_prov, (field_off, ptr_size))
+                elseif kind === :named
+                    target_name = Symbol(LLVM.name(LLVM.Value(payload)))
+                    addr = _assign_synthetic_addr!(addr_assigned, addr_counter,
+                                                   target_name)
+                    for k in 0:(ptr_size - 1)
+                        bytes[field_off + k + 1] = UInt8((addr >> (8 * k)) & 0xff)
+                    end
+                    push!(ptr_prov, (field_off, ptr_size))
+                else
+                    # :addr (inttoptr-of-const) — REJECT in MVP.
+                    return (nothing, Tuple{Int,Int}[])
+                end
             end
 
         else
-            # PointerType / FloatType / VectorType / opaque / TokenType / etc.
+            # FloatType / VectorType / opaque / TokenType / etc.
             # — hard-reject via the Bennett-zxhg-ptrfield breadcrumb at the
             # downstream G5 call site.
-            return nothing
+            return (nothing, Tuple{Int,Int}[])
         end
     end
 
-    return bytes
+    return (bytes, ptr_prov)
 end
 
 """
@@ -367,6 +503,16 @@ with the precise breadcrumb fired downstream at
 """
 function _extract_const_globals(mod::LLVM.Module)
     out = Dict{Symbol, Tuple{Vector{UInt64}, Int}}()
+    # Bennett-land: per-module synthetic-address state for ptr-typed
+    # ConstantStruct fields. `addr_assigned` maps pointee global name to
+    # its assigned 64-bit synthetic address (idempotent — two ptrs to
+    # the same global pack to identical bytes). `addr_counter` is the
+    # monotonic source for new addresses. `synth_ptr_provenance` records
+    # which (struct_global, field_offset, field_width) tuples were
+    # materialised this way, for the downstream load-escape guard.
+    addr_assigned = Dict{Symbol, UInt64}()
+    addr_counter  = Ref(UInt64(0))
+    synth_ptr_provenance = Set{Tuple{Symbol, Int, Int}}()
     dl = LLVM.datalayout(mod)
     for g in LLVM.globals(mod)
         # Julia emits various globals (type references, aliases, dispatch tables)
@@ -412,9 +558,16 @@ function _extract_const_globals(mod::LLVM.Module)
         elseif init isa LLVM.ConstantStruct
             ty = LLVM.value_type(init)
             ty isa LLVM.StructType || continue
-            bytes = _flatten_struct_to_bytes(init, ty, dl, 0)
+            bytes, ptr_prov = _flatten_struct_to_bytes(
+                init, ty, dl, addr_assigned, addr_counter, 0)
             bytes === nothing && continue
-            out[Symbol(LLVM.name(g))] = (UInt64.(bytes), 8)
+            gname = Symbol(LLVM.name(g))
+            out[gname] = (UInt64.(bytes), 8)
+            # Bennett-land: fold this struct's ptr-field entries into the
+            # module-scope provenance set.
+            for (foff, fw) in ptr_prov
+                push!(synth_ptr_provenance, (gname, foff, fw))
+            end
 
         elseif init isa LLVM.ConstantAggregateZero
             ty = LLVM.value_type(init)
@@ -441,7 +594,7 @@ function _extract_const_globals(mod::LLVM.Module)
             continue
         end
     end
-    return out
+    return out, synth_ptr_provenance
 end
 
 """
