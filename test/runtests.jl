@@ -619,6 +619,10 @@ runfile("test_hashcons_feistel.jl")
 # §5 land. Safe to include unconditionally — `@test_throws` / `@test` failures
 # are the explicit RED contract.
 runfile("test_t5_p6_persistent_dispatch.jl")
+# Bennett-6883 — :okasaki persistent_impl dispatcher arm (2026-05-18).
+# Mirrors test_t5_p6_persistent_dispatch.jl testset 2 (3-key roundtrip)
+# but routes through Bennett.okasaki_pmap_* and persistent_impl=:okasaki.
+runfile("test_6883_okasaki_dispatch.jl")
 
 # T5 corpora — multi-language RED tests (T5-P2a/b/c).  All currently RED
 # via @test_throws; safe to include unconditionally.  C and Rust corpora

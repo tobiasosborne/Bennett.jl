@@ -390,14 +390,20 @@ end
 
     # -------------------------------------------------------------------------
     # Testset 6 — NYI kwargs fail loud. Per consensus §1 ("Impls in MVP")
-    # and §4 item 6: only `:linear_scan` + `hashcons=:none` are wired in
-    # this step. Every other (impl, hashcons) value must throw an
-    # ArgumentError, NOT silently fall through.
+    # and §4 item 6: only WIRED (impl, hashcons) values may succeed; every
+    # other combination must throw an ArgumentError, NOT silently fall
+    # through.
+    #
+    # Bennett-6883 (2026-05-18): :okasaki is now wired, so the probe was
+    # updated to a still-NYI impl (:hamt). When the :hamt / :cf follow-up
+    # beads land they will substitute the next still-NYI impl, or — once
+    # all four impls are wired — drop the impl probe and keep only the
+    # hashcons probe (hashcons :naive / :feistel remain NYI).
     # -------------------------------------------------------------------------
     @testset "6. NYI persistent_impl / hashcons kwargs throw ArgumentError" begin
         @test_throws ArgumentError reversible_compile(
             _z2dj_ls_demo, Int8, Int8, Int8, Int8, Int8, Int8, Int8;
-            mem=:persistent, persistent_impl=:okasaki)
+            mem=:persistent, persistent_impl=:hamt)
         @test_throws ArgumentError reversible_compile(
             _z2dj_ls_demo, Int8, Int8, Int8, Int8, Int8, Int8, Int8;
             mem=:persistent, hashcons=:naive)

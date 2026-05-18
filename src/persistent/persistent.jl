@@ -20,10 +20,18 @@ include("hashcons_feistel.jl")
 
 # Bennett-uoem / U54 — relocated to research/ (preserved, not loaded by
 # default; opt-in via include of src/persistent/research/<file>.jl):
-#   - okasaki_rbt.jl         (2026-04-25)
+#   - okasaki_rbt.jl         (2026-04-25) — promoted out of research-only
+#                                            on 2026-05-18 by Bennett-6883
+#                                            (wired into _resolve_persistent_impl).
 #   - cf_semi_persistent.jl  (2026-04-25)
 #   - hashcons_jenkins.jl    (2026-04-25)
 #   - hamt.jl + popcount.jl  (2026-04-25; popcount is HAMT-only)
+
+# Bennett-6883 (2026-05-18) — :okasaki persistent_impl arm wired into
+# the dispatcher. The file still lives under research/ for blame /
+# history continuity but is loaded unconditionally because the impl is
+# no longer research-tier once it's reachable from a public kwarg.
+include("research/okasaki_rbt.jl")
 
 # Public surface. Concrete impl helpers (`linear_scan_pmap_new` etc.) are
 # exported because tests (test_ivoa_harness_invariants.jl) reach for them
@@ -33,6 +41,8 @@ export AbstractPersistentMap, PersistentMapImpl,
        pmap_demo_oracle,
        LinearScanState, LINEAR_SCAN_IMPL,
        linear_scan_pmap_new, linear_scan_pmap_set, linear_scan_pmap_get,
+       OkasakiState, OKASAKI_IMPL,
+       okasaki_pmap_new, okasaki_pmap_set, okasaki_pmap_get,
        soft_feistel32, soft_feistel_int8
 
 end # module Persistent

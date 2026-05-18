@@ -114,11 +114,13 @@ const _CALLEES_MUX_EXCH_GUARDED = (
 )
 
 # Bennett-z2dj T5-P6: persistent-map callees for the :persistent_tree
-# alloca-strategy arm. Linear-scan stub today; :okasaki / :hamt / :cf wired
-# in follow-up beads. `pmap_new` is NOT registered — its all-zero output is
+# alloca-strategy arm. `pmap_new` is NOT registered — its all-zero output is
 # reached for free via WireAllocator's zero invariant (consensus §3+§4).
+# Bennett-6883 (2026-05-18): :okasaki arm wired in. Follow-up beads track
+# :hamt and :cf (byte-template duplicates of the okasaki wiring).
 const _CALLEES_PERSISTENT = (
     linear_scan_pmap_set, linear_scan_pmap_get,
+    okasaki_pmap_set, okasaki_pmap_get,
 )
 
 # Single source of truth: every group above is registered exactly once.

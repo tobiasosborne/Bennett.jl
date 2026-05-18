@@ -152,9 +152,9 @@ Base.@kwdef struct CompileOptions
     # Bennett-z2dj T5-P6: persistent-map dispatcher knobs. `mem=:auto` (the
     # default) is byte-identical to pre-z2dj behavior. `mem=:persistent`
     # opts dynamic-n allocas into the `:persistent_tree` arm; `persistent_impl`
-    # picks the impl (only `:linear_scan` wired today; `:okasaki`/`:hamt`/`:cf`
-    # in follow-up beads); `hashcons` selects hash-consing strategy
-    # (`:none` today; `:naive`/`:feistel` in follow-up beads).
+    # picks the impl (`:linear_scan` + `:okasaki` wired post-Bennett-6883;
+    # `:hamt`/`:cf` in follow-up beads); `hashcons` selects hash-consing
+    # strategy (`:none` today; `:naive`/`:feistel` in follow-up beads).
     mem::Symbol = :auto
     persistent_impl::Symbol = :linear_scan
     hashcons::Symbol = :none
