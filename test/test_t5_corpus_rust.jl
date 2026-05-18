@@ -53,11 +53,16 @@ have_rustc = !isempty(RUSTC_PATH) && isfile(RUSTC_PATH)
         # Source: test/fixtures/rust/t5_tr1_vec_push.rs
         # Reference: vec_push_sum(x) = x + (x+1) + (x+2) = 3x+3 (mod 256/i8)
         #
-        # Current error (2026-04-17):
-        #   UndefVarError: `extract_parsed_ir_from_ll` not defined
-        # Root cause: T5-P5a (extract_parsed_ir_from_ll) is not yet implemented.
-        # Once T5-P5a lands, error will shift to the lowering pipeline
-        # ("dynamic n_elems not supported") until T5-P6 (:persistent_tree) lands.
+        # Current error (refreshed 2026-05-18 — Bennett-25dm triage):
+        #   LLVM.LLVMException: "expected type" on `getelementptr inbounds nuw`
+        # Root cause: rustc ≥ 1.95 emits `inbounds nuw` (LLVM 19+ syntax) on GEP
+        #   instructions; the local LLVM-18 toolchain that loads the .ll cannot
+        #   parse it.  Extraction (T5-P5a) IS implemented and would succeed if
+        #   the .ll were parseable.  The downstream T5-P6 dispatcher is also
+        #   wired (`mem=:persistent, persistent_impl=:linear_scan`) but is never
+        #   reached.  Tracked as upstream LLVM-version skew; both proposers'
+        #   Bennett-z2dj write-ups identified this as a blocker (worklog/070
+        #   gotcha 6 — Bennett-land also hit it on t5_tr2 acceptance).
         # ─────────────────────────────────────────────────────────────────────
         @testset "TR1: Vec<i8> push×3 + iter sum" begin
             rs_src = joinpath(RUST_FIXTURES, "t5_tr1_vec_push.rs")
@@ -98,9 +103,13 @@ have_rustc = !isempty(RUSTC_PATH) && isfile(RUSTC_PATH)
         #   standard HashMap is used directly.  See test/fixtures/rust/README.md.
         # Reference: hashmap_roundtrip(k, v) == v  (lookup returns inserted value)
         #
-        # Current error (2026-04-17):
-        #   UndefVarError: `extract_parsed_ir_from_ll` not defined
-        # Root cause: same as TR1 — T5-P5a not yet implemented.
+        # Current error (refreshed 2026-05-18 — Bennett-25dm triage):
+        #   LLVM.LLVMException: "expected type" on `trunc nuw i8 %1 to i1`
+        # Root cause: same LLVM-version skew as TR1 — rustc ≥ 1.95 emits LLVM 19+
+        #   syntax that the local LLVM-18 toolchain cannot parse.  T5-P5a +
+        #   T5-P6 are both wired; never reached.  Even if the parse succeeded,
+        #   Bennett-land covers the `<{ ptr, [24 x i8] }>` global at line 153
+        #   (worklog/070 — synthetic-address materialization shipped 2026-05-16).
         # ─────────────────────────────────────────────────────────────────────
         @testset "TR2: HashMap<i8,i8> insert + get roundtrip" begin
             rs_src = joinpath(RUST_FIXTURES, "t5_tr2_hashmap.rs")
@@ -136,9 +145,10 @@ have_rustc = !isempty(RUSTC_PATH) && isfile(RUSTC_PATH)
         # Source: test/fixtures/rust/t5_tr3_box_list.rs
         # Reference: box_list(x) == x  (returns head node's val, which is x)
         #
-        # Current error (2026-04-17):
-        #   UndefVarError: `extract_parsed_ir_from_ll` not defined
-        # Root cause: same as TR1 — T5-P5a not yet implemented.
+        # Current error (refreshed 2026-05-18 — Bennett-25dm triage):
+        #   LLVM.LLVMException: "expected type" on `trunc nuw i64 %_5 to i1`
+        # Root cause: same LLVM-version skew as TR1/TR2.  T5-P5a + T5-P6 wired;
+        #   never reached.
         # ─────────────────────────────────────────────────────────────────────
         @testset "TR3: Box<Node> singly-linked list (3 nodes)" begin
             rs_src = joinpath(RUST_FIXTURES, "t5_tr3_box_list.rs")

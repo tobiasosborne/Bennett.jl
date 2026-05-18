@@ -3,10 +3,14 @@ using Bennett
 
 # T5 corpus — C via clang (T5-P2b)
 #
-# Post-T5-P5a (2026-04-21): `extract_parsed_ir_from_ll` now exists and
-# succeeds on each of TC1/TC2/TC3 — extraction produces a valid ParsedIR.
-# `reversible_compile(parsed)` still throws until T5-P6 lands; each test
-# asserts both facts.
+# Post-Bennett-5oyt / U15 (refreshed 2026-05-18 — Bennett-25dm triage):
+# extraction itself loud-errors on the unregistered `malloc` / `realloc`
+# callees BEFORE producing a ParsedIR, so each TC test now asserts that
+# `extract_parsed_ir_from_ll` throws.  T5-P5a (extractor) and T5-P6
+# (`:persistent_tree` dispatcher) are both wired — the blocker is the
+# unregistered-callee guard, not the dispatcher.  Local triage 2026-05-18
+# couldn't re-probe these (no clang on PATH); status carried forward from
+# the in-code expectations.
 #
 # Bucket mapping (Bennett-Memory-T5-PRD.md §3):
 #   T5 — universal fallback: unbounded dynamic memory
@@ -50,11 +54,13 @@ have_clang = !isempty(CLANG) && success(`bash -lc "$CLANG --version"`)
         # Source: test/fixtures/c/t5_tc1_malloc_idx.c
         # Reference: malloc_idx_inc(x, i) == x + (i & 7)
         #
-        # Current error (2026-04-17):
-        #   UndefVarError: `extract_parsed_ir_from_ll` not defined
-        # Root cause: T5-P5a (extract_parsed_ir_from_ll) is not yet implemented.
-        # Once T5-P5a lands, error will shift to the lowering pipeline
-        # ("dynamic n_elems not supported") until T5-P6 (:persistent_tree) lands.
+        # Current error (post-Bennett-5oyt / U15, carried 2026-05-18):
+        #   ErrorException: unregistered callee `malloc` (loud-error at extract)
+        # Root cause: clang's `malloc` call has no Bennett.jl callee binding;
+        #   the persistent-DS arms (T5-P6) cover dynamic-n Julia/Rust alloca
+        #   patterns but not C library calls.  A follow-up bead would register
+        #   `malloc` as a callee that lowers to a fresh persistent-map (or
+        #   shadow alloca for static-size).
         # ─────────────────────────────────────────────────────────────────────
         @testset "TC1: malloc + dynamic-idx array (malloc_idx_inc)" begin
             c_src = joinpath(C_FIXTURES, "t5_tc1_malloc_idx.c")
@@ -91,9 +97,10 @@ have_clang = !isempty(CLANG) && success(`bash -lc "$CLANG --version"`)
         # Source: test/fixtures/c/t5_tc2_realloc.c
         # Reference: realloc_buf(x) == x + (x+1) + (x+2) + (x+3) = 4x+6 (mod 256)
         #
-        # Current error (2026-04-17):
-        #   UndefVarError: `extract_parsed_ir_from_ll` not defined
-        # Root cause: same as TC1 — T5-P5a not yet implemented.
+        # Current error (post-Bennett-5oyt / U15, carried 2026-05-18):
+        #   ErrorException: unregistered callee `malloc`/`realloc` at extract
+        # Root cause: same as TC1 — neither `malloc` nor `realloc` are
+        #   registered Bennett callees.
         # ─────────────────────────────────────────────────────────────────────
         @testset "TC2: realloc growing buffer (realloc_buf)" begin
             c_src = joinpath(C_FIXTURES, "t5_tc2_realloc.c")
@@ -125,9 +132,9 @@ have_clang = !isempty(CLANG) && success(`bash -lc "$CLANG --version"`)
         # Source: test/fixtures/c/t5_tc3_malloc_list.c
         # Reference: malloc_list(x) == x + (x+1) + (x+2) = 3x+3 (mod 256)
         #
-        # Current error (2026-04-17):
-        #   UndefVarError: `extract_parsed_ir_from_ll` not defined
-        # Root cause: same as TC1 — T5-P5a not yet implemented.
+        # Current error (post-Bennett-5oyt / U15, carried 2026-05-18):
+        #   ErrorException: unregistered callee `malloc` at extract
+        # Root cause: same as TC1.
         # ─────────────────────────────────────────────────────────────────────
         @testset "TC3: malloc-based singly-linked list (malloc_list)" begin
             c_src = joinpath(C_FIXTURES, "t5_tc3_malloc_list.c")
