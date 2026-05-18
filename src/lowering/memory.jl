@@ -287,53 +287,78 @@ _V_bits(impl)::Int = sizeof(impl.V) * 8
 """
     _lower_store_via_persistent!(ctx, inst::IRStore, alloca_dest, block_label)
 
-Bennett-z2dj / T5-P6 Step 5 (consensus §5 + §3 R1). Map an LLVM
-`store v, ptr` whose `ptr` resolves through `ctx.ptr_provenance` to
-a single-origin `PtrOrigin` over a persistent slab (`alloca_dest` in
+Bennett-z2dj / T5-P6 Step 5 (consensus §5). Map an LLVM `store v, ptr`
+whose `ptr` resolves through `ctx.ptr_provenance` to a single-origin
+`PtrOrigin` over a persistent slab (`alloca_dest` in
 `ctx.persistent_info`) into one IRCall to `impl.pmap_set`. After the
 call, `ctx.vw[alloca_dest]` is rebound to the post-call state wires
 so subsequent loads through the same alloca see the updated state.
 
+**Bennett-smjd (2026-05-18)** — non-entry-block stores no longer refuse.
+When `block_label` is a non-entry block, dispatch into
+`_lower_store_via_persistent_guarded!` (output-MUX strategy): the IRCall
+to `impl.pmap_set` runs unconditionally to produce `post_state`, then a
+`lower_mux!` between `post_state` and `pre_state` keyed on the block's
+single-wire path predicate yields a `merged` vector that is rebound to
+`ctx.vw[alloca_dest]`. When the block predicate is 0 at runtime, the MUX
+returns `pre_state` (the IRCall's wires are still allocated but the
+visible state is unchanged); Bennett's reverse pass uncomputes both the
+IRCall and the MUX self-inversely, leaving all ancillae at zero.
+
 Refusal contracts:
-- **Non-entry-block store** (consensus §3 R1). Bennett's reverse pass
-  would see the store un-guarded by its branch predicate, risking
-  false-path sensitisation (CLAUDE.md §"Phi Resolution"). Refused
-  with a `:persistent` substring in the message so the test in
-  `test_t5_p6_persistent_dispatch.jl` testset 3 can match on it.
 - **Multi-origin pointer** (consensus §R4). A pointer-typed phi/
   select that merges two persistent slabs is NYI; refused loudly.
+- **Missing block predicate** (Bennett-smjd). If a non-entry block has
+  no `ctx.block_pred` entry (single-wire), refuse with an
+  `AssertionError` — the block-pred machinery upstream should have
+  populated this. Bennett-p94b invariant: single-wire predicates only.
 """
 function _lower_store_via_persistent!(ctx::LoweringCtx, inst::IRStore,
                                       alloca_dest::Symbol, block_label::Symbol)
-    # Consensus §3 R1 — non-entry-block persistent stores are unsafe under
-    # Bennett's reverse pass. Sentinel Symbol("") (direct lower_block_insts!
-    # callers without entry-block info) is treated as entry for backward
-    # compatibility, matching the shadow-store convention upstream.
-    if block_label !== ctx.entry_label && block_label !== Symbol("")
-        throw(ArgumentError(
-            "_lower_store_via_persistent!: persistent store in non-entry block " *
-            ":$(block_label) is refused (consensus §3 R1: would risk Bennett " *
-            "reverse-pass false-path sensitisation). Move the store into the " *
-            "entry block, or guard it with an explicit `if` that the " *
-            "block-predicate machinery handles, or file a bd issue for " *
-            "block-pred-guarded persistent store support."))
+    # Bennett-smjd: non-entry-block dispatch.
+    # Sentinel Symbol("") (direct lower_block_insts! callers without entry-block
+    # info) is still treated as entry for backward compatibility, matching the
+    # shadow-store convention upstream.
+    if block_label === ctx.entry_label || block_label === Symbol("")
+        return _emit_persistent_set_unconditional!(ctx, inst, alloca_dest)
     end
 
+    pred_wires = get(ctx.block_pred, block_label, Int[])
+    length(pred_wires) == 1 ||
+        throw(AssertionError("_lower_store_via_persistent!: expected single-wire " *
+              "predicate for non-entry block :$block_label, got " *
+              "$(length(pred_wires)) wires — block_pred machinery (Bennett-p94b) " *
+              "should have populated this (Bennett-smjd)."))
+    return _lower_store_via_persistent_guarded!(ctx, inst, alloca_dest,
+                                                 block_label, pred_wires[1])
+end
+
+"""
+    _emit_persistent_set_unconditional!(ctx, inst, alloca_dest)
+
+Bennett-z2dj entry-block fast path (factored out of
+`_lower_store_via_persistent!` for clarity once the guarded variant
+landed in Bennett-smjd). Emits a single `IRCall` to `impl.pmap_set` and
+rebinds `ctx.vw[alloca_dest]` to the post-call state wires. Refuses
+multi-origin pointers (consensus §R4) and width-mismatched stores.
+"""
+function _emit_persistent_set_unconditional!(ctx::LoweringCtx, inst::IRStore,
+                                              alloca_dest::Symbol)
     # Multi-origin refusal (consensus §R4). The caller (Step 6 dispatcher)
     # picks one PtrOrigin from the provenance list; we re-derive impl + key +
     # value widths here for self-contained validation.
     haskey(ctx.ptr_provenance, inst.ptr.name) ||
-        throw(AssertionError("_lower_store_via_persistent!: no provenance for ptr " *
+        throw(AssertionError("_emit_persistent_set_unconditional!: no provenance for ptr " *
               "%$(inst.ptr.name); persistent stores must target a known alloca"))
     origins = ctx.ptr_provenance[inst.ptr.name]
     length(origins) == 1 || throw(ArgumentError(
-        "_lower_store_via_persistent!: multi-origin pointer (n=$(length(origins))) " *
+        "_emit_persistent_set_unconditional!: multi-origin pointer (n=$(length(origins))) " *
         "into persistent slab :$alloca_dest is NYI " *
         "(consensus §R4 follow-up bead)."))
     origin = origins[1]
 
     haskey(ctx.persistent_info, alloca_dest) ||
-        throw(AssertionError("_lower_store_via_persistent!: alloca :$alloca_dest has " *
+        throw(AssertionError("_emit_persistent_set_unconditional!: alloca :$alloca_dest has " *
               "no persistent_info entry; dispatcher routed a non-persistent alloca here"))
     impl = ctx.persistent_info[alloca_dest]
     state_w = _state_len_bits(impl)
@@ -342,7 +367,7 @@ function _lower_store_via_persistent!(ctx::LoweringCtx, inst::IRStore,
 
     # Width sanity: the value being stored must match impl.V's width.
     inst.width == v_w ||
-        throw(DimensionMismatch("_lower_store_via_persistent!: store width=$(inst.width) " *
+        throw(DimensionMismatch("_emit_persistent_set_unconditional!: store width=$(inst.width) " *
               "doesn't match impl V width=$v_w (impl=$(typeof(impl)))"))
 
     # Fresh synthetic SSA name for the post-call state. Bennett-z2dj uses the
@@ -369,6 +394,97 @@ function _lower_store_via_persistent!(ctx::LoweringCtx, inst::IRStore,
     # state wires remain in ctx.vw under their original SSA name if anyone
     # captured them.)
     ctx.vw[alloca_dest] = ctx.vw[new_state_dest]
+    return nothing
+end
+
+"""
+    _lower_store_via_persistent_guarded!(ctx, inst, alloca_dest, block_label, pred_wire)
+
+Bennett-smjd (2026-05-18) — non-entry-block persistent store via
+output-MUX (Plan Option A). The IRCall to `impl.pmap_set` runs
+unconditionally to produce `post_state`; a `lower_mux!` between
+`post_state` (selected when `pred_wire == 1`) and `pre_state` (selected
+when `pred_wire == 0`) yields a `merged` wire vector that is rebound
+to `ctx.vw[alloca_dest]`. Subsequent loads through the same alloca see
+the merged state.
+
+Why output-MUX over the rejected alternatives:
+- **Option B (input-guarded set)** would have folded `pred_wire` into
+  the slab inputs before the call, but `pmap_set`'s branchless impl
+  writes to ALL slots — there's no clean way to "skip" the write
+  without corrupting the map invariant when `pred=0`.
+- **Option C (controlled-IRCall)** would have lifted the entire call
+  to a `ControlledCircuit` keyed on `pred_wire`, which works but
+  inflates every gate inside `pmap_set` to a guarded variant — much
+  larger than a single MUX at the call boundary.
+
+Bennett's reverse pass uncomputes the IRCall and the MUX
+self-inversely; all ancillae return to zero.
+
+Refusal contracts: same as `_emit_persistent_set_unconditional!`
+(multi-origin / missing persistent_info / width mismatch) plus a
+defensive missing-provenance assertion on the predicate wire.
+"""
+function _lower_store_via_persistent_guarded!(ctx::LoweringCtx, inst::IRStore,
+                                              alloca_dest::Symbol,
+                                              block_label::Symbol,
+                                              pred_wire::Int)
+    # Multi-origin refusal (consensus §R4) — same preflight as the
+    # unconditional path; kept inline rather than calling a shared helper
+    # because we need the impl widths and origin locally for the IRCall.
+    haskey(ctx.ptr_provenance, inst.ptr.name) ||
+        throw(AssertionError("_lower_store_via_persistent_guarded!: no provenance for ptr " *
+              "%$(inst.ptr.name); persistent stores must target a known alloca"))
+    origins = ctx.ptr_provenance[inst.ptr.name]
+    length(origins) == 1 || throw(ArgumentError(
+        "_lower_store_via_persistent_guarded!: multi-origin pointer (n=$(length(origins))) " *
+        "into persistent slab :$alloca_dest in non-entry block :$block_label is NYI " *
+        "(consensus §R4 + Bennett-smjd: multi-origin × non-entry intersection deferred)."))
+    origin = origins[1]
+
+    haskey(ctx.persistent_info, alloca_dest) ||
+        throw(AssertionError("_lower_store_via_persistent_guarded!: alloca :$alloca_dest has " *
+              "no persistent_info entry; dispatcher routed a non-persistent alloca here"))
+    impl = ctx.persistent_info[alloca_dest]
+    state_w = _state_len_bits(impl)
+    k_w     = _K_bits(impl)
+    v_w     = _V_bits(impl)
+
+    inst.width == v_w ||
+        throw(DimensionMismatch("_lower_store_via_persistent_guarded!: store width=$(inst.width) " *
+              "doesn't match impl V width=$v_w (impl=$(typeof(impl)))"))
+
+    # Capture pre-state wires BEFORE the IRCall (defensive copy — lower_call!
+    # rebinds ctx.vw entries and we need a stable snapshot for the MUX).
+    pre_state = copy(ctx.vw[alloca_dest])
+    length(pre_state) == state_w ||
+        throw(AssertionError("_lower_store_via_persistent_guarded!: pre_state has " *
+              "$(length(pre_state)) wires, expected $state_w (slab :$alloca_dest)"))
+
+    # Unconditional pmap_set IRCall — emits the post-state into a fresh SSA
+    # name so we can MUX it against pre_state without aliasing.
+    ctx.mux_counter[] += 1
+    new_state_dest = Symbol("__persistent_state_guarded_", alloca_dest, "_",
+                            ctx.mux_counter[])
+    call = IRCall(new_state_dest, impl.pmap_set,
+                  IROperand[SSAOperand(alloca_dest), origin.idx_op, inst.val],
+                  [state_w, k_w, v_w],
+                  state_w)
+    lower_call!(ctx.gates, ctx.wa, ctx.vw, call;
+                compact=ctx.compact_calls)
+    post_state = ctx.vw[new_state_dest]
+    length(post_state) == state_w ||
+        throw(AssertionError("_lower_store_via_persistent_guarded!: post_state has " *
+              "$(length(post_state)) wires, expected $state_w"))
+
+    # MUX-select: pred=1 → post_state, pred=0 → pre_state. lower_mux! takes
+    # `cond::Vector{Int}` (single-bit), `tv` (true-value), `fv` (false-value),
+    # `W` (width), and returns a freshly-allocated W-wire result.
+    merged = lower_mux!(ctx.gates, ctx.wa, [pred_wire], post_state, pre_state, state_w)
+    length(merged) == state_w ||
+        throw(AssertionError("_lower_store_via_persistent_guarded!: merged has " *
+              "$(length(merged)) wires, expected $state_w"))
+    ctx.vw[alloca_dest] = merged
     return nothing
 end
 
