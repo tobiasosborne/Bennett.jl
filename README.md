@@ -90,12 +90,23 @@ Requires Julia 1.10+ and LLVM.jl.
 | **MUX EXCH** | dynamic idx, (W=8, N∈{4,8}) | 7,122 / 14,026 gates | 7,514 / 9,590 gates | — |
 | **QROM** | read-only global constant table | — | 4(L-1) Toffoli + O(L·W) CNOT | Babbush-Gidney 2018 §III.C |
 | **Feistel hash** | reversible bijective key hash | — | 8·W Toffoli | Luby-Rackoff 1988 |
+| **Persistent-DS** | runtime-unbounded mutable memory (`mem=:persistent`) | ~1,152–1,444 gates (W=8, `:linear_scan`) | same | Okasaki 1998 / Conchon-Filliâtre 2007 |
+
+Pass `mem=:persistent` to `reversible_compile` to opt into the persistent-DS tier.
+The `persistent_impl` kwarg selects the backing implementation (`:linear_scan`
+[default], `:okasaki`, `:hamt`, `:cf`); `:linear_scan` wins every (W, depth) cell
+in the T5-P7a head-to-head benchmark and is the recommended default (see
+[BENCHMARKS.md](BENCHMARKS.md#persistent-ds-head-to-head-pareto-t5-p7a)).
 
 Strategies compose: a function with static-idx stores (shadow) followed by a dynamic-idx load (MUX EXCH) works end-to-end — the MUX reads the post-shadow-mutation primal state.
 
 ### Persistent-DS scaling — counterintuitive finding
 
-T5 epic (in progress) extends the dispatcher with a persistent-heap fallback for unbounded `Vector{T}` / `Dict{K,V}` patterns. Three candidate impls were measured against `linear_scan` baseline at workloads `K = max_n` (full structure population):
+T5 epic (complete as of 2026-05-20) extends the dispatcher with a persistent-heap
+fallback for unbounded `Vector{T}` / `Dict{K,V}` patterns. Four candidate impls
+were benchmarked in the T5-P7a head-to-head sweep (see BENCHMARKS.md); the early
+scaling sweep below measured impl candidates against `linear_scan` at workloads
+`K = max_n` (full structure population):
 
 | max_n | linear_scan | linear_scan per-set | CF semi-persistent | CF per-set |
 |---:|---:|---:|---:|---:|
@@ -187,6 +198,8 @@ Captures via `print<memoryssa>` pass-output parsing. Informs future lowering dec
 - **NTuple input**: pointer parameters handled via static memory flattening
 - **Ref**: scalar mutable state via shadow memory
 - **Mutable arrays**: `[x, y, z]` through the T3b.3 universal dispatcher
+- **Persistent-DS fallback**: `mem=:persistent` + `persistent_impl` for runtime-unbounded mutable memory; all four impls (`:linear_scan`, `:okasaki`, `:hamt`, `:cf`) wired and benchmarked
+- **Multi-language ingest**: `extract_parsed_ir_from_ll(path)` and `extract_parsed_ir_from_bc(path)` accept `.ll`/`.bc` files from any LLVM frontend (C via `clang -emit-llvm`, Rust via `rustc --emit=llvm-ir`, C++, Fortran); the reversible-compile pipeline is language-agnostic at the LLVM IR level
 - **Controlled circuits**: `controlled(circuit)` wraps every gate with a control bit
 - **Function inlining**: `register_callee!(f)` enables gate-level inlining of any pure Julia function
 - **Bounded loops**: explicit unrolling via `max_loop_iterations` kwarg
@@ -325,11 +338,19 @@ All papers downloaded to `docs/literature/` with claims verified against text.
 
 ## Project status
 
-**Memory plan critical path complete** (2026-04 mid): four memory strategies (MUX EXCH, QROM, Feistel, Shadow) plus universal dispatcher, MemorySSA ingest, and full SHA-256 (BC.3) shipped. See `WORKLOG.md` and `BENCHMARKS.md` for per-task detail.
+**Memory plan critical path complete** (2026-05-20): all five memory strategies
+(Shadow, MUX EXCH, QROM, Feistel hash, Persistent-DS) plus universal dispatcher,
+MemorySSA ingest, and full SHA-256 (BC.3) shipped. The T5 persistent-DS epic
+closed 2026-05-20 with the T5-P7a head-to-head Pareto benchmark confirming
+`:linear_scan` as the winning default. See `WORKLOG.md` and `BENCHMARKS.md` for
+per-task detail.
 
 **Active workstreams:**
 
-- **T5 — persistent hash-consed heap** (universal-fallback memory tier). Phases P3 (three persistent-map impls: Okasaki RBT, Bagwell HAMT, Conchon-Filliâtre semi-persistent), P4 (hash-cons compression: Mogensen Jenkins-96 + Feistel-perfect-hash), and P5 (multi-language LLVM IR ingest via `.ll` + `.bc`) all shipped. **P6 dispatcher is the current frontier** (`Bennett-z2dj`, in-progress) — gated on a delete-vs-archive ruling for losing-strategy impls (`Bennett-uoem` / U54).
+- **T5 open follow-ups** (post-epic): wide-W persistent callees (Bennett-8o70),
+  HAMT `optimize=false` compatibility (Bennett-7sb7), HAMT mod-32 key collision
+  (Bennett-2xws), Rust corpus LLVM-version skew (Bennett-n88f). The core T5
+  dispatcher (P6) and the head-to-head benchmark (P7a) are complete.
 - **Advanced-arithmetic primitives** — Draper-Kutin-Rains-Svore 2004 QCLA adder (`src/qcla.jl`) and Sun-Borissov 2026 polylogarithmic-depth multiplier (`src/mul_qcla_tree.jl` + `partial_products.jl` + `parallel_adder_tree.jl` + `fast_copy.jl`) all shipped.
 - **Catalogue grinding** — A 19-agent code review on 2026-04-21 produced a unified catalogue of 173 issues (`reviews/2026-04-21/UNIFIED_CATALOGUE.md`). ~40 closed; the rest range from snack-sized doc fixes to multi-session 3+1 refactors.
 

@@ -173,6 +173,74 @@ slot-preserve pattern lowers to `ifelse`/select chains, not `x+0`/`x*1`,
 so the peephole barely fires here. The micro-benchmark wins (`x*1`
 692 → 26 gates) ARE real but don't translate to this workload.
 
+## Persistent-DS head-to-head Pareto (T5-P7a)
+
+Generated 2026-05-20 (Bennett-ktt8). Full 64-cell `impl × W × depth` sweep via
+`benchmark/bc_t5_head_to_head.jl`. Each cell: `optimize=false`, per-cell
+`verify_reversibility` + oracle check. Results artifact:
+`benchmark/bc_t5_head_to_head_results.jsonl`.
+
+**Scope (W=8 only, depth ∈ {3, 8, 32, 128}):** Every wired `*_pmap_*` callee
+is hard-typed to `K = V = Int8` (W=8); the W∈{16,32,64} axis is structurally
+unreachable. The 48 wide-W cells are ERROR cells, tracked by **Bennett-8o70**
+(wide-W persistent callees NYI).
+
+### Green cells (W=8, all four depths, three impls)
+
+| impl | W | depth | gates | Toffoli | Toffoli-depth | ancillae | verified |
+|------|---|------:|------:|--------:|--------------:|---------:|:--------:|
+| linear_scan | 8 | 3 | 1,152 | 104 | 16 | 1,619 | ✓ |
+| linear_scan | 8 | 8 | 1,444 | 134 | 16 | 2,005 | ✓ |
+| linear_scan | 8 | 32 | 1,444 | 134 | 16 | 2,005 | ✓ |
+| linear_scan | 8 | 128 | 1,444 | 134 | 16 | 2,005 | ✓ |
+| okasaki | 8 | 3 | 53,682 | 4,918 | 46 | 118,320 | ✓ |
+| okasaki | 8 | 8 | 190,192 | 19,728 | 46 | 385,515 | ✓ |
+| okasaki | 8 | 32 | 845,440 | 90,816 | 46 | 1,668,051 | ✓ |
+| okasaki | 8 | 128 | 3,466,432 | 375,168 | 46 | 6,798,195 | ✓ |
+| cf | 8 | 3 | 9,594 | 564 | 16 | 12,625 | ✓ |
+| cf | 8 | 8 | 36,074 | 2,394 | 16 | 42,885 | ✓ |
+| cf | 8 | 32 | 193,106 | 23,706 | 64 | 188,133 | ✓ |
+| cf | 8 | 128 | 1,142,194 | 242,970 | 128 | 769,125 | ✓ |
+
+### Error cells
+
+- **hamt, W=8, depth ∈ {3,8,32}** (3 cells — won't compile under `optimize=false`):
+  `hamt_pmap_set`'s `@assert` (hamt.jl:144) leaves a `j_print_to_string` call in
+  the unoptimised IR that `ir_extract.jl` rejects. Under `optimize=true` LLVM DCEs
+  the assert — which is why `test_6883_hamt_dispatch.jl` passes — but `optimize=false`
+  is the house benchmark methodology. Tracked by **Bennett-7sb7**.
+
+- **hamt, W=8, depth=128** (1 cell): demo not pre-generated (not in
+  `FULL_DEPTHS`/`REDUCED_DEPTHS` for hamt). Recorded as a fail-loud ERROR cell.
+
+- **all impls, W∈{16,32,64}, all depths** (48 cells): `Int8`-only callees, tracked
+  by **Bennett-8o70**.
+
+### Verdict
+
+`:linear_scan` wins **every** (W,depth) cell by a large margin:
+
+| depth | linear_scan gates | cf gates (ratio) | okasaki gates (ratio) |
+|------:|------------------:|-----------------:|----------------------:|
+| 3 | 1,152 | 9,594 (8.3×) | 53,682 (47×) |
+| 8 | 1,444 | 36,074 (25×) | 190,192 (132×) |
+| 32 | 1,444 | 193,106 (134×) | 845,440 (585×) |
+| 128 | 1,444 | 1,142,194 (791×) | 3,466,432 (2,400×) |
+
+`:linear_scan` gate count is essentially **flat in depth** (its branchless
+slot-preserve lowering compresses to ~constant after the first few insertions
+fill the max_n=4 slots). `:cf` is 2nd; `:okasaki` worst.
+
+**Recommended default = `:linear_scan`.** This was already the T5-P6 default
+(`_resolve_persistent_impl` default arm) — no dispatcher change needed; these
+results confirm the 2026-04-20 `sweep_persistent_summary.md` conclusion.
+
+**Note on `optimize=false` vs `optimize=true`:** okasaki depth=3 is 26,386 gates
+under `optimize=true` (worklog/071 Bennett-6883 entry) vs 53,682 here
+(`optimize=false`). Both are correct — not a regression. All cross-impl comparisons
+in this table hold the `optimize=false` flag fixed; mixing regimes invalidates the
+comparison.
+
 ## Head-to-head vs published reversible compilers
 
 | Benchmark | Bennett.jl | ReVerC 2017 | Ratio |
@@ -204,10 +272,14 @@ so the peephole barely fires here. The micro-benchmark wins (`x*1`
   sweep showed `linear_scan` is at the per-`set` floor (~414 gates
   post-2026-04-27 refresh, constant in `max_n`; was ~1,400 in the
   initial 2026-04-20 sweep — see the persistent-DS section above).
-- ◐ T5-P6 — `_pick_alloca_strategy :persistent_tree` arm (Bennett-z2dj,
-  in_progress; CORE CHANGE per CLAUDE.md §2 → 3+1 protocol).
-- ○ T5-P7 — head-to-head Pareto front + paper outline
-  (Bennett-ktt8 / Bennett-2uas).
+- ✓ T5-P6 — `_pick_alloca_strategy :persistent_tree` arm (Bennett-z2dj, closed
+  2026-05-16) + non-entry-block guarded stores via output-MUX (Bennett-smjd,
+  2026-05-18) + all four `persistent_impl` arms wired: `:linear_scan`,
+  `:okasaki`, `:hamt`, `:cf` (Bennett-6883/d746/qi6c, 2026-05-18/20).
+- ✓ T5-P7a — head-to-head Pareto benchmark (Bennett-ktt8, 2026-05-20):
+  `:linear_scan` wins every (W,depth) cell — see table above.
+- ✓ T5-P7b — docs pass: BENCHMARKS.md Pareto table + paper outline §T5 +
+  README feature table (Bennett-2uas, 2026-05-20).
 
 **Bennett.jl is the first reversible compiler to support arbitrary LLVM
 `store`/`alloca` end-to-end, with five specialized lowering strategies

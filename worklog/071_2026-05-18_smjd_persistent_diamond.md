@@ -1,3 +1,61 @@
+## Session log — 2026-05-20 — Bennett-2uas T5-P7b docs pass (closes T5 epic)
+
+**Shipped:** Four deliverables — docs only, no source/test changes.
+
+1. **BENCHMARKS.md** — new `## Persistent-DS head-to-head Pareto (T5-P7a)` subsection
+   with the 12-row green-cells table (all numbers read directly from
+   `benchmark/bc_t5_head_to_head_results.jsonl`), error-cell explanations (Bennett-7sb7
+   for HAMT/optimize=false, Bennett-8o70 for wide-W), verdict table (linear_scan wins
+   every cell, flat in depth), and an optimize-regime note. Critical-path status list
+   updated: T5-P6 and T5-P7a/b promoted from ◐/○ to ✓.
+
+2. **Worklog** — This entry. All P5/P6/P7 chain entries were already present:
+   P5 in worklog/030 (lmkb+f2p9), P6 in worklog/070 (z2dj) + worklog/071
+   (smjd/6883/d746/qi6c entries), P7a in worklog/071 (ktt8 entry). Only gap was
+   the P7b docs session itself — this entry.
+
+3. **docs/paper_outline_T5.md** (NEW) — §T5 section for Bennett-6siy. Bullet-outline
+   structure covering: central contribution (tiered per-alloca-site dispatch),
+   Enzyme framing table, §T5 section outline (intro/prior work/MemorySSA
+   approach/tiered dispatch/benchmarks/conclusion), T5-P7a headline numbers,
+   data-source annotations for final-draft verification. No prose beyond framing
+   paragraphs and section descriptions.
+
+4. **README.md** — (a) Persistent-DS row added to the memory strategies table with
+   gate counts and `persistent_impl` kwarg docs. (b) Two new bullet points in
+   "Wider types and composability": persistent-DS fallback + multi-language ingest
+   (`extract_parsed_ir_from_ll` / `extract_parsed_ir_from_bc`). (c) T5 active
+   workstream updated from "P6 is the current frontier" to "T5 complete as of
+   2026-05-20" + open follow-ups list.
+
+**Gotchas / Lessons:**
+
+1. **BENCHMARKS.md critical path list had T5-P6 marked ◐ (in_progress) and T5-P7 as ○ (future).** All of z2dj/smjd/6883/d746/qi6c/ktt8 were closed BEFORE this docs pass — the status list was just stale. Updated to ✓ entries with accurate descriptions. **Take-home:** when a chain of beads closes sequentially over multiple sessions, the docs file that lists them can drift by 3–4 sessions before a dedicated docs pass catches up. Schedule a docs pass as the named deliverable of the final epic bead (as T5-P7b was), not as an afterthought.
+
+2. **README T5 section said "in progress" for an epic closed weeks prior.** The "T5 — persistent hash-consed heap (in progress)" phrasing was last updated mid-P6; by P7b the wording was stale. Updated "T5 epic (in progress)" → "T5 epic (complete as of 2026-05-20)".
+
+3. **No paper outline file existed yet for Bennett-6siy.** Searched `docs/`, `docs/prd/`, `docs/design/`, and root — only references in `Bennett-Memory-PRD.md` and worklog entries. Created `docs/paper_outline_T5.md` as a standalone §T5 section per the bead spec.
+
+**Verification:**
+- All gate counts in the BENCHMARKS table were read verbatim from `benchmark/bc_t5_head_to_head_results.jsonl` (each `ok:true` line).
+- The only `ok:true` cells are the 12 rows above (linear_scan/okasaki/cf × W=8 × depth ∈ {3,8,32,128}).
+- Error-cell counts verified from jsonl: hamt W=8 depth∈{3,8,32} = 3 cells with the j_print_to_string error; hamt W=8 depth=128 = 1 cell with demo-not-pre-generated error; W∈{16,32,64} all impls = 48 cells with Int8-only error (16 per W value × 3 values). Total = 52 ERROR cells, 12 green cells = 64 total cells.
+- No Julia run was performed (docs pass only).
+
+**Files changed:**
+- `BENCHMARKS.md` (+65 lines): new Pareto subsection + critical-path list update.
+- `docs/paper_outline_T5.md` (NEW, ~110 lines): §T5 paper outline.
+- `README.md` (~+20 lines, ~5 edited): memory strategy table row, two feature bullets, T5 status update.
+- `worklog/071_*.md` (this entry, +~55 lines).
+
+**Follow-up beads referenced (not filed here):**
+- Bennett-8o70 (wide-W persistent callees) — already open.
+- Bennett-7sb7 (HAMT optimize=false / assert-throw) — already open.
+- Bennett-2xws (HAMT mod-32 key collision) — already open.
+- Bennett-n88f (Rust corpus LLVM-version skew) — already open.
+
+---
+
 ## Session log — 2026-05-20 — Bennett-ktt8 T5-P7a head-to-head Pareto benchmark
 
 **Shipped:** `benchmark/bc_t5_head_to_head.jl` (520 LOC) — parameterized `impl × W × depth` persistent-map Pareto sweep. Each cell records gates/NOT/CNOT/Toffoli/Toffoli-depth/ancillae/wires/verify_reversibility/compile-seconds; cells that can't compile are fail-loud `ERROR` cells (CLAUDE.md §1) with the verbatim error, never silently skipped. Each green cell runs both `verify_reversibility` AND an oracle check (CLAUDE.md §4). Full 64-cell sweep ran → `benchmark/bc_t5_head_to_head_results.jsonl`.
