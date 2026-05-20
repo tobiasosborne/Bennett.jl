@@ -395,15 +395,17 @@ end
     # through.
     #
     # Bennett-6883 (2026-05-18): :okasaki is now wired, so the probe was
-    # updated to a still-NYI impl (:hamt). When the :hamt / :cf follow-up
-    # beads land they will substitute the next still-NYI impl, or — once
-    # all four impls are wired — drop the impl probe and keep only the
-    # hashcons probe (hashcons :naive / :feistel remain NYI).
+    # updated to a still-NYI impl (:hamt).
+    # Bennett-d746 (2026-05-20): :hamt is now wired too, so the probe was
+    # rotated to the last still-NYI impl (:cf). When the :cf follow-up
+    # bead lands the impl probe should be dropped (or re-targeted at a
+    # bogus symbol for symbol-validation), keeping only the hashcons
+    # probe (hashcons :naive / :feistel remain NYI).
     # -------------------------------------------------------------------------
     @testset "6. NYI persistent_impl / hashcons kwargs throw ArgumentError" begin
         @test_throws ArgumentError reversible_compile(
             _z2dj_ls_demo, Int8, Int8, Int8, Int8, Int8, Int8, Int8;
-            mem=:persistent, persistent_impl=:hamt)
+            mem=:persistent, persistent_impl=:cf)
         @test_throws ArgumentError reversible_compile(
             _z2dj_ls_demo, Int8, Int8, Int8, Int8, Int8, Int8, Int8;
             mem=:persistent, hashcons=:naive)

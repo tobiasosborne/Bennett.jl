@@ -623,6 +623,10 @@ runfile("test_t5_p6_persistent_dispatch.jl")
 # Mirrors test_t5_p6_persistent_dispatch.jl testset 2 (3-key roundtrip)
 # but routes through Bennett.okasaki_pmap_* and persistent_impl=:okasaki.
 runfile("test_6883_okasaki_dispatch.jl")
+# Bennett-d746 — :hamt persistent_impl dispatcher arm (2026-05-20).
+# Byte-template duplicate of test_6883_okasaki_dispatch.jl; routes
+# through Bennett.hamt_pmap_* and persistent_impl=:hamt.
+runfile("test_6883_hamt_dispatch.jl")
 
 # T5 corpora — multi-language RED tests (T5-P2a/b/c).  All currently RED
 # via @test_throws; safe to include unconditionally.  C and Rust corpora

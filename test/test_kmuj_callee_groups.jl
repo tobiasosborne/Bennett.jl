@@ -68,12 +68,12 @@ using Bennett
         # 25 g82n (soft_atanh, completes Tier C1 11/11), 26 0ulc
         # (soft_log1p, Tier C2.1), 27 o7cy (soft_expm1, Tier C2.2).)
         n_grouped = sum(length(g) for g in Bennett._CALLEE_GROUPS)
-        @test n_grouped == 99   # mq6f: +1 (soft_round_away); k2w6+p19b: +6 (_CALLEES_FP_MINMAX, new group); z2dj: +2 (_CALLEES_PERSISTENT, new group); 6883: +2 (okasaki_pmap_set/get)
+        @test n_grouped == 101  # mq6f: +1 (soft_round_away); k2w6+p19b: +6 (_CALLEES_FP_MINMAX, new group); z2dj: +2 (_CALLEES_PERSISTENT, new group); 6883: +2 (okasaki_pmap_set/get); d746: +2 (hamt_pmap_set/get)
 
         # _known_callees may contain more if anything else (test fixtures,
-        # other modules) registered, but it must contain at LEAST the 99
+        # other modules) registered, but it must contain at LEAST the 101
         # we register from the groups.
-        @test length(Bennett._known_callees) >= 99
+        @test length(Bennett._known_callees) >= 101
     end
 
     @testset "group sizes match the documented partition" begin
@@ -87,6 +87,6 @@ using Bennett
         @test length(Bennett._CALLEES_FP_TRANS)           == 27  # 582: 6→9 (log family); emv: 9→11 (pow+powi); jexo: 11→12 (soft_pow_julia); 3mo: 12→14 (soft_sin, soft_cos); s1zl: 14→15 (soft_tan); qpke: 15→16 (soft_atan); ckvj: 16→17 (soft_asin); bd7f: 17→18 (soft_acos); 7goc: 18→19 (soft_atan2); m2bv: 19→20 (soft_tanh); ky5n: 20→21 (soft_sinh); bybh: 21→22 (soft_cosh); sfx9: 22→23 (soft_asinh); eq9p: 23→24 (soft_acosh); g82n: 24→25 (soft_atanh); 0ulc: 25→26 (soft_log1p); o7cy: 26→27 (soft_expm1)
         @test length(Bennett._CALLEES_MUX_EXCH)           == 22  # nj6c: 12 → 22
         @test length(Bennett._CALLEES_MUX_EXCH_GUARDED)   == 11  # nj6c:  6 → 11
-        @test length(Bennett._CALLEES_PERSISTENT)         == 4   # z2dj NEW group: linear_scan_pmap_set/get; 6883: +okasaki_pmap_set/get
+        @test length(Bennett._CALLEES_PERSISTENT)         == 6   # z2dj NEW group: linear_scan_pmap_set/get; 6883: +okasaki_pmap_set/get; d746: +hamt_pmap_set/get
     end
 end

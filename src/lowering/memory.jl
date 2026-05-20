@@ -210,7 +210,7 @@ function _resolve_persistent_impl(impl::Symbol, hashcons::Symbol)
     # Validate impl symbol first.
     impl in (:linear_scan, :okasaki, :hamt, :cf) ||
         throw(ArgumentError("_resolve_persistent_impl: unknown persistent_impl :$impl; " *
-              "supported: :linear_scan, :okasaki (Bennett-6883 follow-ups track :hamt, :cf)"))
+              "supported: :linear_scan, :okasaki, :hamt (Bennett-d746 follow-up tracks :cf)"))
     hashcons in (:none, :naive, :feistel) ||
         throw(ArgumentError("_resolve_persistent_impl: unknown hashcons :$hashcons; " *
               "supported: :none (others NYI)"))
@@ -234,10 +234,22 @@ function _resolve_persistent_impl(impl::Symbol, hashcons::Symbol)
                   ":okasaki; only :none is wired " *
                   "(Bennett-z2dj follow-up beads track :naive, :feistel)"))
         end
+    elseif impl === :hamt
+        # Bennett-d746 (2026-05-20): :hamt arm wired (byte-template
+        # duplicate of the :okasaki wiring). hashcons remains NYI here;
+        # the hashcons layer is orthogonal and tracked separately
+        # (Bennett-z2dj followups :naive, :feistel).
+        if hashcons === :none
+            return Bennett.HAMT_IMPL
+        else
+            throw(ArgumentError("_resolve_persistent_impl: hashcons=:$hashcons NYI on " *
+                  ":hamt; only :none is wired " *
+                  "(Bennett-z2dj follow-up beads track :naive, :feistel)"))
+        end
     else
         throw(ArgumentError("_resolve_persistent_impl: persistent_impl=:$impl NYI; " *
-              ":linear_scan and :okasaki are wired " *
-              "(Bennett-6883 follow-up beads track :hamt, :cf)"))
+              ":linear_scan, :okasaki and :hamt are wired " *
+              "(Bennett-d746 follow-up bead tracks :cf)"))
     end
 end
 
