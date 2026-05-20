@@ -23,7 +23,8 @@ include("hashcons_feistel.jl")
 #   - okasaki_rbt.jl         (2026-04-25) — promoted out of research-only
 #                                            on 2026-05-18 by Bennett-6883
 #                                            (wired into _resolve_persistent_impl).
-#   - cf_semi_persistent.jl  (2026-04-25)
+#   - cf_semi_persistent.jl  (2026-04-25) — promoted out of research-only
+#                                            on 2026-05-20 by Bennett-qi6c.
 #   - hashcons_jenkins.jl    (2026-04-25)
 #   - hamt.jl + popcount.jl  (2026-04-25; popcount is HAMT-only) — promoted
 #                                            out of research-only on 2026-05-20
@@ -45,6 +46,16 @@ include("research/okasaki_rbt.jl")
 include("research/popcount.jl")
 include("research/hamt.jl")
 
+# Bennett-qi6c (2026-05-20) — :cf persistent_impl arm wired into the
+# dispatcher (byte-template duplicate of Bennett-6883's :okasaki and
+# Bennett-d746's :hamt wiring). cf_semi_persistent.jl has NO extra
+# dependency (it uses only PersistentMapImpl + `ifelse`); a plain
+# include suffices. The file still lives under research/ for blame /
+# history continuity but is loaded unconditionally now that :cf is
+# reachable from a public kwarg. This wires the LAST of the four
+# persistent_impl candidates.
+include("research/cf_semi_persistent.jl")
+
 # Public surface. Concrete impl helpers (`linear_scan_pmap_new` etc.) are
 # exported because tests (test_ivoa_harness_invariants.jl) reach for them
 # as `Bennett.linear_scan_pmap_*` after `using .Persistent` re-exports.
@@ -57,6 +68,8 @@ export AbstractPersistentMap, PersistentMapImpl,
        okasaki_pmap_new, okasaki_pmap_set, okasaki_pmap_get,
        HamtState, HAMT_IMPL,
        hamt_pmap_new, hamt_pmap_set, hamt_pmap_get,
+       CFState, CF_IMPL,
+       cf_pmap_new, cf_pmap_set, cf_pmap_get,
        soft_feistel32, soft_feistel_int8
 
 end # module Persistent

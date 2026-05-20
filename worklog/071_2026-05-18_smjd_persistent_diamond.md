@@ -1,3 +1,21 @@
+## Session log — 2026-05-20 — Bennett-qi6c :cf persistent_impl dispatcher arm — ALL FOUR IMPLS WIRED
+
+**Shipped:** `:cf` (Conchon-Filliâtre semi-persistent map) is now a wired `persistent_impl` arm — byte-template duplicate of d746/`:hamt` + 6883/`:okasaki`. With `:cf` landed, **all four `persistent_impl` candidates (`:linear_scan, :okasaki, :hamt, :cf`) are wired**; `_resolve_persistent_impl`'s unconditional NYI `else` branch is gone (the final `else` now handles `:cf`, guaranteed by the top-of-function symbol validation). `_CALLEES_PERSISTENT` 6-tuple → 8-tuple (`cf_pmap_set, cf_pmap_get`). New `test/test_6883_cf_dispatch.jl` (53/53). `test_kmuj_callee_groups.jl` n_grouped 101→103. `test_t5_p6_persistent_dispatch.jl` testset 6 **consolidated** — the impl-NYI probe rotation (z2dj→6883→d746→qi6c) is retired since no NYI impl symbol remains; replaced with a hashcons-NYI probe (`:naive`) + a defensive bogus-symbol probe (`persistent_impl=:nonsense`).
+
+**Why:** Last of the three Bennett-6883 follow-ups (d746 + qi6c). Not a 3+1 bead — registration/dispatch layer only. Solo implementer (opus subagent).
+
+**Gotchas / Lessons:**
+
+1. **CF correctness verified before wiring.** `verify_pmap_correctness(CF_IMPL)=true` — the Bennett-n3z4/U21 reroot-key=0 regression has NOT reappeared (the bit-63 was-allocated flag in `cf_pmap_set`'s diff index is the fix; `cf_reroot` no longer infers allocation from `old_key==0`). Per the qi6c bead caveat this check ran first; only after it passed did wiring proceed.
+2. **`cf_reroot` deliberately NOT registered as a callee.** `cf_semi_persistent.jl` is explicit that `cf_reroot` is an internal documentation/test helper, never a public entry point — `cf_pmap_get` does its own O(max_n) branchless Arr scan and never IRCalls `cf_reroot`. The Diff-chain unwind is handled by Bennett's reverse pass, not an explicit reroot IRCall. Registering it would be a dead no-op.
+3. **CF is collision-free** (true insertion-order persistent map, Arr+Diff — no hash slot), so unlike d746/`:hamt` no distinct-keys rejection sampler is needed; plain `rand(Int8)` keys work. CF 3-key demo gate count `total=2880 / Toffoli=308` — ~9× cheaper than okasaki (26386) and hamt (26440); a strong T5-P7a Pareto candidate. Not pinned.
+
+**Rejected alternatives:** none — wiring shape fully determined by the okasaki/hamt arms.
+
+**Next agent starts here:** the persistent_impl dispatch surface is complete (4/4 impls). Natural next pickup: **Bennett-ktt8** (T5-P7a head-to-head Pareto benchmark — can now compare all four impls; CF's 9×-cheaper gate count is a headline result). Open caveat for that bench: **Bennett-2xws** (HAMT mis-stores keys colliding mod 32 — HAMT head-to-head must restrict to collision-free key sets). Remaining NYI surface is purely the orthogonal `hashcons` layer (`:naive`/`:feistel`, tracked by Bennett-z2dj follow-ups).
+
+---
+
 ## Session log — 2026-05-20 — Bennett-d746 :hamt persistent_impl dispatcher arm (okasaki template)
 
 **Shipped:** `:hamt` is now a wired `persistent_impl` arm — byte-template duplicate of Bennett-6883's `:okasaki` wiring. `src/persistent/persistent.jl` gains `include("research/popcount.jl")` THEN `include("research/hamt.jl")` (ordering load-bearing — hamt's `_hamt_compressed_idx`/`hamt_pmap_get` call `soft_popcount32` from popcount.jl) + `HamtState, HAMT_IMPL, hamt_pmap_new/set/get` on the `Persistent` export list. `src/callees.jl` `_CALLEES_PERSISTENT` 4-tuple → 6-tuple (`hamt_pmap_set, hamt_pmap_get`; `hamt_pmap_new` NOT registered — all-zero state via WireAllocator zero invariant). `src/lowering/memory.jl` `_resolve_persistent_impl` gains `:hamt + hashcons=:none` arm. New `test/test_6883_hamt_dispatch.jl` (51/51) wired into runtests.jl. `test_kmuj_callee_groups.jl` n_grouped 99→101. `test_t5_p6_persistent_dispatch.jl` testset 6 NYI probe rotated `:hamt`→`:cf`.

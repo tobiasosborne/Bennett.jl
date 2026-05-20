@@ -389,25 +389,35 @@ end
     end
 
     # -------------------------------------------------------------------------
-    # Testset 6 — NYI kwargs fail loud. Per consensus §1 ("Impls in MVP")
-    # and §4 item 6: only WIRED (impl, hashcons) values may succeed; every
-    # other combination must throw an ArgumentError, NOT silently fall
-    # through.
+    # Testset 6 — NYI / invalid kwargs fail loud. Per consensus §1 ("Impls
+    # in MVP") and §4 item 6: only WIRED (impl, hashcons) values may
+    # succeed; every other combination must throw an ArgumentError, NOT
+    # silently fall through.
     #
-    # Bennett-6883 (2026-05-18): :okasaki is now wired, so the probe was
-    # updated to a still-NYI impl (:hamt).
-    # Bennett-d746 (2026-05-20): :hamt is now wired too, so the probe was
-    # rotated to the last still-NYI impl (:cf). When the :cf follow-up
-    # bead lands the impl probe should be dropped (or re-targeted at a
-    # bogus symbol for symbol-validation), keeping only the hashcons
-    # probe (hashcons :naive / :feistel remain NYI).
+    # ROTATION HISTORY (the impl-NYI probe ends here):
+    #   - Bennett-z2dj: probed :okasaki (the then-NYI impl).
+    #   - Bennett-6883: :okasaki wired → probe rotated to :hamt.
+    #   - Bennett-d746: :hamt wired → probe rotated to :cf.
+    #   - Bennett-qi6c (2026-05-20): :cf wired → ALL FOUR impls
+    #     (:linear_scan, :okasaki, :hamt, :cf) are now wired, so there
+    #     is no still-NYI impl symbol left to rotate to. The impl-NYI
+    #     probe is therefore RETIRED. In its place this testset now
+    #     keeps (i) the hashcons-NYI probe — :naive / :feistel are still
+    #     NYI — AND (ii) a defensive bogus-symbol probe: an unknown
+    #     persistent_impl symbol must still be rejected by the
+    #     `impl in (...)` symbol validation at the top of
+    #     _resolve_persistent_impl. The rotation pattern stops here.
     # -------------------------------------------------------------------------
-    @testset "6. NYI persistent_impl / hashcons kwargs throw ArgumentError" begin
-        @test_throws ArgumentError reversible_compile(
-            _z2dj_ls_demo, Int8, Int8, Int8, Int8, Int8, Int8, Int8;
-            mem=:persistent, persistent_impl=:cf)
+    @testset "6. NYI / invalid persistent_impl / hashcons kwargs throw ArgumentError" begin
+        # (i) hashcons :naive is still NYI on every wired impl.
         @test_throws ArgumentError reversible_compile(
             _z2dj_ls_demo, Int8, Int8, Int8, Int8, Int8, Int8, Int8;
             mem=:persistent, hashcons=:naive)
+        # (ii) a bogus persistent_impl symbol must be rejected by the
+        # top-of-function symbol validation in _resolve_persistent_impl,
+        # even though all four real impls are now wired.
+        @test_throws ArgumentError reversible_compile(
+            _z2dj_ls_demo, Int8, Int8, Int8, Int8, Int8, Int8, Int8;
+            mem=:persistent, persistent_impl=:nonsense)
     end
 end

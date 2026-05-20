@@ -210,7 +210,7 @@ function _resolve_persistent_impl(impl::Symbol, hashcons::Symbol)
     # Validate impl symbol first.
     impl in (:linear_scan, :okasaki, :hamt, :cf) ||
         throw(ArgumentError("_resolve_persistent_impl: unknown persistent_impl :$impl; " *
-              "supported: :linear_scan, :okasaki, :hamt (Bennett-d746 follow-up tracks :cf)"))
+              "supported: :linear_scan, :okasaki, :hamt, :cf (all four wired post-Bennett-qi6c)"))
     hashcons in (:none, :naive, :feistel) ||
         throw(ArgumentError("_resolve_persistent_impl: unknown hashcons :$hashcons; " *
               "supported: :none (others NYI)"))
@@ -246,10 +246,23 @@ function _resolve_persistent_impl(impl::Symbol, hashcons::Symbol)
                   ":hamt; only :none is wired " *
                   "(Bennett-z2dj follow-up beads track :naive, :feistel)"))
         end
-    else
-        throw(ArgumentError("_resolve_persistent_impl: persistent_impl=:$impl NYI; " *
-              ":linear_scan, :okasaki and :hamt are wired " *
-              "(Bennett-d746 follow-up bead tracks :cf)"))
+    else  # impl === :cf — guaranteed by the symbol validation above.
+        # Bennett-qi6c (2026-05-20): :cf arm wired (byte-template
+        # duplicate of the :okasaki / :hamt wiring) — the LAST of the
+        # four persistent_impl candidates. With all four impls wired,
+        # the unconditional NYI `else` branch is gone: the only
+        # remaining `else` handles :cf. Bogus impl symbols are still
+        # rejected by the `impl in (...)` check at the top of this
+        # function. hashcons remains NYI here; the hashcons layer is
+        # orthogonal and tracked separately (Bennett-z2dj followups
+        # :naive, :feistel).
+        if hashcons === :none
+            return Bennett.CF_IMPL
+        else
+            throw(ArgumentError("_resolve_persistent_impl: hashcons=:$hashcons NYI on " *
+                  ":cf; only :none is wired " *
+                  "(Bennett-z2dj follow-up beads track :naive, :feistel)"))
+        end
     end
 end
 

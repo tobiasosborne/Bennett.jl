@@ -627,6 +627,11 @@ runfile("test_6883_okasaki_dispatch.jl")
 # Byte-template duplicate of test_6883_okasaki_dispatch.jl; routes
 # through Bennett.hamt_pmap_* and persistent_impl=:hamt.
 runfile("test_6883_hamt_dispatch.jl")
+# Bennett-qi6c — :cf persistent_impl dispatcher arm (2026-05-20).
+# Byte-template duplicate of test_6883_okasaki_dispatch.jl; routes
+# through Bennett.cf_pmap_* and persistent_impl=:cf. Last of the four
+# persistent_impl candidates to be wired.
+runfile("test_6883_cf_dispatch.jl")
 
 # T5 corpora — multi-language RED tests (T5-P2a/b/c).  All currently RED
 # via @test_throws; safe to include unconditionally.  C and Rust corpora

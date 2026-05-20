@@ -117,12 +117,19 @@ const _CALLEES_MUX_EXCH_GUARDED = (
 # alloca-strategy arm. `pmap_new` is NOT registered — its all-zero output is
 # reached for free via WireAllocator's zero invariant (consensus §3+§4).
 # Bennett-6883 (2026-05-18): :okasaki arm wired in.
-# Bennett-d746 (2026-05-20): :hamt arm wired in. Follow-up bead tracks
-# :cf (byte-template duplicate of the okasaki / hamt wiring).
+# Bennett-d746 (2026-05-20): :hamt arm wired in.
+# Bennett-qi6c (2026-05-20): :cf arm wired in — last of the four
+# persistent_impl candidates. `cf_reroot` is NOT registered: it is an
+# isolated documentation/test helper, never IRCall'd from the dispatcher
+# path (cf_pmap_get does its own O(max_n) Arr scan; the Diff-chain
+# unwind is handled by Bennett's reverse pass, not by an explicit
+# cf_reroot call). See src/persistent/research/cf_semi_persistent.jl
+# §"CORRESPONDENCE EVALUATION".
 const _CALLEES_PERSISTENT = (
     linear_scan_pmap_set, linear_scan_pmap_get,
     okasaki_pmap_set, okasaki_pmap_get,
     hamt_pmap_set, hamt_pmap_get,
+    cf_pmap_set, cf_pmap_get,
 )
 
 # Single source of truth: every group above is registered exactly once.
