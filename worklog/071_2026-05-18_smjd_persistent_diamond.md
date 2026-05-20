@@ -1,3 +1,23 @@
+## Session log — 2026-05-20 — Bennett-ktt8 T5-P7a head-to-head Pareto benchmark
+
+**Shipped:** `benchmark/bc_t5_head_to_head.jl` (520 LOC) — parameterized `impl × W × depth` persistent-map Pareto sweep. Each cell records gates/NOT/CNOT/Toffoli/Toffoli-depth/ancillae/wires/verify_reversibility/compile-seconds; cells that can't compile are fail-loud `ERROR` cells (CLAUDE.md §1) with the verbatim error, never silently skipped. Each green cell runs both `verify_reversibility` AND an oracle check (CLAUDE.md §4). Full 64-cell sweep ran → `benchmark/bc_t5_head_to_head_results.jsonl`.
+
+**Why:** With all four `persistent_impl` arms wired (z2dj/6883/d746/qi6c), the cross-impl gate-count comparison is finally meaningful. Benchmark code only — not a 3+1 bead. Solo opus implementer; orchestrator scope-corrected the stale bead text and reviewed the measurement core.
+
+**Result:** `:linear_scan` wins **every** (W,depth) cell — ~1150–1450 gates, essentially flat in depth (its branchless slot-preserve lowering compresses to ~constant). `:cf` 2nd (~9.6k–36k gates). `:okasaki` worst (~54k at depth 3 → ~3.5M at depth 128). **Recommended default = `:linear_scan`** — already the T5-P6 default, so no dispatcher tweak needed; confirms the 2026-04-20 `sweep_persistent_summary.md` conclusion.
+
+**Gotchas / Lessons:**
+
+1. **The bead text (2026-04-17) was doubly stale.** It assumed "3 hashcons states × W∈{8,16,32,64}". Reality: (a) only `hashcons=:none` is wired — `:naive`/`:feistel` throw; the hashcons axis collapses to 1 state. (b) Every `*_pmap_set/get` callee is hard-typed `Int8` (W=8) — see `linear_scan.jl:47` — so W∈{16,32,64} is structurally unreachable. The tractable sweep is `4 impls × W=8 × depth{3,8,32,128}`. The 48 W>8 cells are recorded as fail-loud ERROR cells; filed **Bennett-8o70** (wide-W persistent callees NYI). **Take-home:** benchmark beads filed far ahead of implementation accrete stale axes — scope-check against what's actually wired before running.
+2. **HAMT is absent from the Pareto front — won't compile under `optimize=false`.** `hamt_pmap_set`'s `@assert` (hamt.jl:144) leaves a `j_print_to_string` call in the IR that `ir_extract.jl` rejects. Under `optimize=true` LLVM DCEs the assert (which is why `test_6883_hamt_dispatch.jl` passes). But `optimize=false` is the house benchmark/test methodology (CLAUDE.md §5). Filed **Bennett-7sb7**. HAMT's 4 cells are ERROR cells.
+3. **optimize regime changes the numbers ~2×.** okasaki 3-key demo: `optimize=true`=26386 gates (worklog/071 6883 entry) vs `optimize=false`=53682 (this benchmark). Both correct — not a regression. Any cross-impl comparison must hold the optimize flag fixed; this benchmark uses `optimize=false` throughout.
+
+**Rejected alternatives:** an `optimize=true` companion sweep to pull HAMT into the table — rejected: it would change every other impl's numbers too (regime must be held fixed), and HAMT is ~20× worse than linear_scan and carries the Bennett-2xws collision bug, so it cannot be the recommended default regardless. The recommendation is robust without it.
+
+**Next agent starts here:** **Bennett-2uas** (T5-P7b — append this Pareto table to BENCHMARKS.md, WORKLOG session-log entries, paper-outline §T5, README feature table). The `bc_t5_head_to_head_results.jsonl` artifact is the input. Also open: Bennett-7sb7 (HAMT optimize=false), Bennett-8o70 (wide-W callees), Bennett-2xws (HAMT mod-32 collisions).
+
+---
+
 ## Session log — 2026-05-20 — Bennett-qi6c :cf persistent_impl dispatcher arm — ALL FOUR IMPLS WIRED
 
 **Shipped:** `:cf` (Conchon-Filliâtre semi-persistent map) is now a wired `persistent_impl` arm — byte-template duplicate of d746/`:hamt` + 6883/`:okasaki`. With `:cf` landed, **all four `persistent_impl` candidates (`:linear_scan, :okasaki, :hamt, :cf`) are wired**; `_resolve_persistent_impl`'s unconditional NYI `else` branch is gone (the final `else` now handles `:cf`, guaranteed by the top-of-function symbol validation). `_CALLEES_PERSISTENT` 6-tuple → 8-tuple (`cf_pmap_set, cf_pmap_get`). New `test/test_6883_cf_dispatch.jl` (53/53). `test_kmuj_callee_groups.jl` n_grouped 101→103. `test_t5_p6_persistent_dispatch.jl` testset 6 **consolidated** — the impl-NYI probe rotation (z2dj→6883→d746→qi6c) is retired since no NYI impl symbol remains; replaced with a hashcons-NYI probe (`:naive`) + a defensive bogus-symbol probe (`persistent_impl=:nonsense`).
