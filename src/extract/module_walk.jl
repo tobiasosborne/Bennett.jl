@@ -155,7 +155,7 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
     # single-block ParsedIR. Under `mem=:auto` (default) `_detect_gc_preamble!`
     # returns an inert result immediately and this branch is skipped — the
     # default extraction path is byte-identical to pre-M1.
-    heap_skel = _detect_gc_preamble!(func, names, mem)
+    heap_skel = _detect_gc_preamble!(func, names, mem, counter)
     if heap_skel.recognised
         block = IRBasicBlock(:top, heap_skel.survivors, heap_skel.ret_inst)
         return ParsedIR(ret_width, args, [block], ret_elem_widths, globals,

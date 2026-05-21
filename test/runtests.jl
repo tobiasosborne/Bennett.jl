@@ -681,6 +681,9 @@ runfile("test_ir_extract.jl")
 # Bennett-gps7 / M1: Julia heap-memory support — GC/heap-skeleton recogniser.
 runfile("test_gps7_heap_m1.jl")
 
+# Bennett-kuza / M2: Julia heap-memory support — Array{T}(undef,N) re-rooting.
+runfile("test_kuza_heap_m2.jl")
+
 # Bennett-fidj / U217: liveness × :auto add dispatcher coverage.
 runfile("test_fidj_liveness_auto_dispatcher.jl")
 
