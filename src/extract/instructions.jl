@@ -718,7 +718,9 @@ destination. Two green cases:
     patterns. NO alloca/freshness check on this path; tightening would
     risk regressing unaudited Julia frontend output. Acknowledged §1
     hazard for c=0 on non-fresh dst — tracked under
-    Bennett-8bys-uncompute.
+    Bennett-8bys-uncompute. Also covers *volatile* c=0 memsets
+    (Bennett-8su4): Julia's heap-allocating frontend zero-inits the GC
+    frame with a volatile c=0 memset, which drops here as a no-op.
 
   - Case C (c != 0, fresh alloca-i8 dst): emit N byte-granular
     `IRPtrOffset + IRStore(ConstOperand(c), 8)` pairs.
@@ -730,12 +732,14 @@ Predicate cascade (earliest mismatch → most actionable error):
 
   1. addrspace 0 — `llvm.memset.p0.*` or `llvm.memset.inline.p0.*`
   2. operand count >= 5 (4 args + callee)
-  3. isvolatile (4th op) is `i1` ConstantInt 0
+  3. isvolatile (4th op) is a ConstantInt (malformed-IR guard)
   4. fill byte c (2nd op) is ConstantInt
   5. byte count N (3rd op) is ConstantInt
   6. N >= 0
   7. N == 0 → return `IRInst[]` (LangRef no-op)
   8. c == 0 → return `IRInst[]` (case A — preserve broad tolerance)
+  8b. isvolatile value == 0 (volatile c!=0 rejected; volatile c=0
+      already dropped at step 8 — Bennett-8su4)
   9. dst is named SSA in `names`
  10. dst is not a global variable
  11. dst alloca-rooted via `_alloca_root_ref`
@@ -763,17 +767,15 @@ function _handle_memset_arm(cname::AbstractString, inst::LLVM.Instruction,
     n_v   = ops[3]
     vol_v = ops[4]
 
-    # Predicate 3: isvolatile must be a ConstantInt with value 0.
+    # Predicate 3: isvolatile must be a ConstantInt (malformed-IR guard).
+    # The volatile *value* check is relocated below, after the c==0/N==0
+    # drop (Bennett-8su4) — but this constant-shape guard must stay early:
+    # it fails loud on malformed IR (§1) and must dominate the relocated
+    # `_const_int_as_int(vol_v)` call.
     vol_v isa LLVM.ConstantInt || _ir_error(inst,
         "$(cname): isvolatile arg is not an i1 immarg constant " *
         "(value=$(string(vol_v))). LangRef requires an immarg here; " *
         "malformed IR. (Bennett-9nwt Phase 2)")
-    _const_int_as_int(vol_v) == 0 || _ir_error(inst,
-        "$(cname): volatile memset is not supported. Bennett.jl's " *
-        "reversible model has no observable side-effect ordering for " *
-        "memory; volatile semantics cannot be honoured. Recompile " *
-        "without the volatile attribute, or wait on Bennett-8bys " *
-        "(catch-all). (Bennett-9nwt Phase 2)")
 
     # Predicate 4: fill byte must be a ConstantInt.
     c_v isa LLVM.ConstantInt || _ir_error(inst,
@@ -805,6 +807,19 @@ function _handle_memset_arm(cname::AbstractString, inst::LLVM.Instruction,
     # Bennett-8bys-uncompute.
     c_int = _const_int_as_int(c_v) & 0xFF
     c_int == 0 && return IRInst[]
+
+    # Predicate 8b: volatile value check (relocated here from before
+    # predicate 4 — Bennett-8su4). A c==0 or N==0 memset is already
+    # dropped above (predicates 7/8) and emits zero IRInsts regardless of
+    # volatility, so volatility is moot for it — this lets Julia's
+    # volatile c=0 GC-frame zero-init memset through. Control only
+    # reaches here when c!=0, so volatile c!=0 still fails loud.
+    _const_int_as_int(vol_v) == 0 || _ir_error(inst,
+        "$(cname): volatile memset is not supported. Bennett.jl's " *
+        "reversible model has no observable side-effect ordering for " *
+        "memory; volatile semantics cannot be honoured. Recompile " *
+        "without the volatile attribute, or wait on Bennett-8bys " *
+        "(catch-all). (Bennett-9nwt Phase 2)")
 
     # ---- c != 0 path: requires alloca-i8-backed fresh dst ----
 

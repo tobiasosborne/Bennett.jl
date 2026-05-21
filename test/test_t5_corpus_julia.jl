@@ -12,22 +12,27 @@ using Bennett
 #   T5 — universal fallback: unbounded dynamic memory
 #   (Vector, Dict, mutable recursive types with runtime dispatch)
 #
-# Current failure root cause for TJ1/TJ2/TJ3/TJ4 (refreshed 2026-05-18 — Bennett-25dm
-# triage post-z2dj+smjd):
-#   TJ1, TJ2, TJ4 — "llvm.memset.p0.i64: volatile memset is not supported."
-#     All three Julia-source dynamic-memory functions emit a volatile
-#     (`i1 true`) `llvm.memset` of the GC frame as the first instruction in
-#     %top.  Bennett-9nwt Phase 2 (2026-05-03 — landed AFTER the original
-#     2026-04-17 comments below) tightened the memset handler to reject
-#     volatile memsets at predicate 3, BEFORE the silent-drop fast path
-#     (predicate 8) that used to swallow GC-frame zeroing.  This is now the
-#     first error encountered — the old root causes (LLVMGlobalAliasValueKind
-#     for TJ1/TJ2; thread_ptr GEP for TJ4) still exist downstream but the
-#     pipeline never gets that far.  Tracked as Bennett-9nwt-volatile
-#     follow-up; the downstream blockers (TJ1/TJ2 LLVMGlobalAlias, TJ4
-#     thread_ptr) remain tracked by Bennett-cc0.5.  The `@test_throws
-#     ErrorException` contract still holds — both old and new errors are
-#     `ErrorException` — but the precise message has changed.
+# Current failure root cause for TJ1/TJ2/TJ3/TJ4 (refreshed 2026-05-21 — Bennett-8su4
+# de-risking spike):
+#   TJ1, TJ2, TJ4 — "inline-asm call is not supported (Bennett-5oyt / U15)".
+#     Bennett-8su4 (2026-05-21) relocated the memset volatile-value check so
+#     the volatile (`i1 true`) c=0 GC-frame zero-init memset is now silently
+#     dropped — that wall is GONE.  The NEW first error for all three
+#     functions is the x86-64 TLS read `%thread_ptr = call ptr asm
+#     "movq %fs:0, $0"`, caught by the inline-asm guard (Bennett-5oyt/U15).
+#     Walls downstream of that (confirmed by the 8su4 spike, in order):
+#       (2) `@ijl_gc_small_alloc` — returns a GC-managed heap pointer with no
+#           alloca root; Bennett's wire model cannot track it without new
+#           machinery.
+#       (3) irreversible Julia runtime callees — `j_#_growend!` (array
+#           realloc) for TJ1, `j_setindex!` (hash mutation) for TJ2.
+#     SROA-dissolution is NOT a factor: Vector/Dict/Array survive as live
+#     heap allocations (SROA only dissolves NTuple value-types).  TJ4 is a
+#     store-to-load MIRAGE — its `a[i]=x; a[i]` folds to `ret x`, so even a
+#     fully-fixed pipeline would compile it to identity (Bennett-890r).
+#     Bennett-cc0.5's own description is stale: it cites a `thread_ptr` GEP
+#     error, but the actual first wall is the inline-asm read above.  The
+#     `@test_throws ErrorException` contract still holds.
 #   TJ3      — GREEN since Bennett-cc0.4 (2026-04-21).  See the testset
 #     header below for the current oracle.
 
@@ -37,17 +42,16 @@ using Bennett
     # TJ1 — Vector{Int8} push×3 + reduce(+, v)
     #
     # Pattern: dynamic n_elems (unbounded Vector).
-    # Current error (refreshed 2026-05-18 — Bennett-25dm triage):
-    #   ErrorException: "llvm.memset.p0.i64: volatile memset is not supported"
-    # Surface root cause: Julia's GC-frame initialization emits a volatile
-    #   (`i1 true`) `llvm.memset` of `%gcframe1`, which Bennett-9nwt Phase 2
-    #   now rejects at predicate 3.  Both `mem=:auto` AND
-    #   `mem=:persistent, persistent_impl=:linear_scan` hit the same wall —
-    #   extraction fails before the persistent dispatcher is ever reached.
-    # Downstream root cause (unchanged from 2026-04-17): even if the volatile
-    #   memset were silent-dropped, `jl_array_push` / `jl_array_del_beg`
-    #   produce `LLVMGlobalAliasValueKind` operands that ir_extract.jl does
-    #   not yet handle.
+    # Current error (refreshed 2026-05-21 — Bennett-8su4 spike):
+    #   ErrorException: "inline-asm call is not supported (Bennett-5oyt / U15)"
+    # Surface root cause: Julia's GC/TLS preamble emits `%thread_ptr =
+    #   call ptr asm "movq %fs:0, $0"` — an x86-64 TLS read. The volatile
+    #   GC-frame memset that used to fail first is now silent-dropped (8su4).
+    #   Both `mem=:auto` AND `mem=:persistent, persistent_impl=:linear_scan`
+    #   hit this wall — extraction fails before the dispatcher is reached.
+    # Downstream root causes (confirmed by the 8su4 spike): past the
+    #   inline-asm wall lies `@ijl_gc_small_alloc` (heap pointer, no alloca
+    #   root) and then `j_#_growend!` (irreversible array realloc).
     # ─────────────────────────────────────────────────────────────────────────
     @testset "TJ1: Vector{Int8} push×3 + reduce(+, v)" begin
         f_tj1(x::Int8) = let v = Int8[]
@@ -57,7 +61,7 @@ using Bennett
             reduce(+, v)
         end
 
-        # RED: today this throws on the volatile GC-frame memset (see above).
+        # RED: today this throws on the inline-asm TLS wall (see above).
         # Pre-9nwt the message was "Unknown value kind LLVMGlobalAliasValueKind".
         @test_throws ErrorException reversible_compile(f_tj1, Int8)
 
@@ -75,12 +79,12 @@ using Bennett
     # TJ2 — Dict{Int8,Int8} insert + lookup roundtrip
     #
     # Pattern: dynamic n_elems + hashing (unbounded Dict).
-    # Current error (refreshed 2026-05-18 — Bennett-25dm triage):
-    #   ErrorException: "llvm.memset.p0.i64: volatile memset is not supported"
-    # Surface root cause: same Julia GC-frame volatile memset as TJ1, rejected
-    #   at Bennett-9nwt Phase 2 predicate 3.
-    # Downstream root cause (unchanged): jl_dict_setindex_r / jl_dict_getindex
-    #   produce LLVMGlobalAlias operands.
+    # Current error (refreshed 2026-05-21 — Bennett-8su4 spike):
+    #   ErrorException: "inline-asm call is not supported (Bennett-5oyt / U15)"
+    # Surface root cause: same x86-64 `thread_ptr` TLS-read inline-asm as TJ1
+    #   (the volatile GC-frame memset is now silent-dropped — 8su4).
+    # Downstream root cause: past the inline-asm wall, `@ijl_gc_small_alloc`
+    #   then `j_setindex!` (irreversible hash-table mutation).
     # ─────────────────────────────────────────────────────────────────────────
     @testset "TJ2: Dict{Int8,Int8} insert + lookup" begin
         f_tj2(k::Int8, v::Int8) = let d = Dict{Int8,Int8}()
@@ -88,7 +92,7 @@ using Bennett
             get(d, k, Int8(0))
         end
 
-        # RED: today this throws on the volatile GC-frame memset (see TJ1 above).
+        # RED: today this throws on the inline-asm TLS wall (see TJ1 above).
         # Pre-9nwt the message was "Unknown value kind LLVMGlobalAliasValueKind".
         @test_throws ErrorException reversible_compile(f_tj2, Int8, Int8)
 
@@ -173,14 +177,17 @@ end
     #   Julia runtime allocator emits `thread_ptr` GEPs that are outside the
     #   tracked wire set.
     #
-    # Current error (refreshed 2026-05-18 — Bennett-25dm triage):
-    #   ErrorException: "llvm.memset.p0.i64: volatile memset is not supported"
-    # Surface root cause: same Julia GC-frame volatile memset as TJ1/TJ2,
-    #   rejected at Bennett-9nwt Phase 2 predicate 3.
-    # Downstream root cause (unchanged from 2026-04-20 / Bennett-cc0.5):
-    #   "lower_var_gep!: GEP base thread_ptr not found in variable wires" —
-    #   the `thread_ptr` intrinsic (Julia's TLS / task-local allocator) is
-    #   not a tracked variable wire.  cc0.5 IN-PROGRESS.
+    # Current error (refreshed 2026-05-21 — Bennett-8su4 spike):
+    #   ErrorException: "inline-asm call is not supported (Bennett-5oyt / U15)"
+    # Surface root cause: same x86-64 `thread_ptr` TLS-read inline-asm as
+    #   TJ1/TJ2 (the volatile GC-frame memset is now silent-dropped — 8su4).
+    # MIRAGE WARNING (Bennett-890r): even with the whole pipeline fixed,
+    #   `a[i]=x; a[i]` is store-to-load-forwarded by LLVM to `ret x` — TJ4
+    #   would compile to an identity circuit and NOT actually exercise array
+    #   indexing.  A faithful test needs distinct store/load indices.
+    # Downstream root cause: past the inline-asm wall, `@ijl_gc_small_alloc`
+    #   (heap pointer, no alloca root).  cc0.5's "thread_ptr GEP" description
+    #   is stale — the actual first wall is the inline-asm read above.
     # ─────────────────────────────────────────────────────────────────────────
     @testset "TJ4: Array{Int8}(undef, 256) dynamic-idx store+load" begin
         f_tj4(x::Int8, i::Int8) = let a = Array{Int8}(undef, 256)
@@ -188,7 +195,7 @@ end
             a[mod(i, 256) + 1]
         end
 
-        # RED: today this throws on the volatile GC-frame memset (see above).
+        # RED: today this throws on the inline-asm TLS wall (see above).
         # Pre-9nwt the message was "lower_var_gep!: GEP base thread_ptr not
         # found in variable wires" (cc0.5 root cause, still in-progress).
         @test_throws ErrorException reversible_compile(f_tj4, Int8, Int8)

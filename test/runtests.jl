@@ -180,6 +180,11 @@ runfile("test_37mt_memcpy_const_aligned.jl")
 # for alloca-i8-backed dst (byte-granular IRStore-of-ConstOperand).
 # Replaces benign-allowlist silent-drop with explicit case discrimination.
 runfile("test_9nwt_memset_const.jl")
+# Bennett-8su4: relocate the memset volatile-value check to AFTER the
+# c==0/N==0 drop, so Julia's volatile c=0 GC-frame zero-init memset
+# (`llvm.memset(... i8 0 ... i1 true)`) passes through as a no-op.
+# Volatile c!=0 still rejects.
+runfile("test_8su4_volatile_c0_memset.jl")
 # Bennett-munq (Bennett-8bys sub-bead 1): extract `[N x i8]` ArrayType
 # allocas as IRAlloca(elem_w=8, n_elems=N). Unblocks t5_tr2_hashmap.ll
 # corpus for the existing 37mt/9nwt paths.

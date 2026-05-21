@@ -5,6 +5,80 @@
 
 ---
 
+## Session log — 2026-05-21 — Bennett-8su4 close + heap-memory de-risking spike (orchestrated)
+
+**Mode:** orchestrated effort — user asked for the "next most consequential
+work" delegated to opus subagents, serial, one at a time; sonnet for
+reading/grunt work. Orchestrator picked **Phase 1 of the heap-memory unblock**:
+land the one tractable fix (`Bennett-8su4`), then run an empirical de-risking
+spike to decide whether the rest of the cluster is worth scheduling.
+
+### What shipped — Bennett-8su4 CLOSED (3+1 protocol)
+
+Julia heap-allocating functions (`Vector`/`Dict`/`Array{T}(undef,N)`) emit a
+volatile `c=0` GC-frame zero-init memset at function entry. Bennett's
+`_handle_memset_arm` (`src/extract/instructions.jl`) rejected it: the
+volatile-reject predicate fired *before* the `c==0` silent-drop predicate.
+
+Fix (full 3+1 — 2 Plan proposers / opus implementer / orchestrator review;
+proposers **independently converged** on the same design): split predicate 3 —
+keep the malformed-IR guard (`vol_v isa LLVM.ConstantInt`) early, **relocate
+only the volatile-value check to after the `c==0` drop**. A `c==0` memset emits
+zero IRInsts regardless of volatility, so volatility is moot for it; volatile
+`c!=0` still fails loud (control only reaches the relocated check when `c!=0`).
+Error string kept byte-identical. ~6 lines move, no new logic.
+
+New test `test_8su4_volatile_c0_memset.jl` (24/24) — positive case-A drop +
+`verify_reversibility` + oracle; volatile-`c!=0` still rejects; malformed
+isvolatile still rejects. Research finding: a non-constant isvolatile arg IS
+constructible in valid `.ll` if the `declare` omits `immarg` — the third
+sub-test exercises that. Regressions all green (9nwt 87/87, ixiz, munq, q04a,
+37mt, lqif, t5_corpus 258/258).
+
+### The de-risking spike — heap memory is deeper than the bead map said
+
+After 8su4, a sonnet agent ran `code_llvm` + `reversible_compile` on TJ1/TJ2/TJ4.
+Findings, all evidence-backed:
+
+1. **SROA-dissolution fear REFUTED.** worklog/071 gotcha 2 claimed Julia's SROA
+   would dissolve the `Vector`/`Dict` before Bennett sees a heap alloc. FALSE —
+   SROA only dissolves `NTuple` value-types. `Vector`/`Dict`/`Array` are
+   heap-managed, escape the frame, survive as live `@ijl_gc_small_alloc` calls.
+2. **The next wall is NOT a GEP — it's inline asm.** `Bennett-cc0.5`'s bead
+   description ("GEP base thread_ptr not found in variable wires") is **stale**.
+   The actual first error post-8su4 is the x86-64 TLS read
+   `%thread_ptr = call ptr asm "movq %fs:0, $0"`, caught by the inline-asm
+   guard (Bennett-5oyt/U15).
+3. **Past that lie 2 more deep walls:** `@ijl_gc_small_alloc` returns a
+   GC-managed heap pointer with no alloca root (Bennett's wire model can't track
+   it without new machinery); then *irreversible* Julia runtime callees —
+   `j_#_growend!` (array realloc) for TJ1, `j_setindex!` (hash mutation) for TJ2.
+4. **TJ4 is a store-to-load MIRAGE.** `a[i]=x; a[i]` (same index) folds to
+   `ret x`. Even a fully-fixed pipeline compiles TJ4 to an identity circuit —
+   a green TJ4 would be a false positive. Filed `Bennett-890r` (redesign with
+   distinct store/load indices).
+
+### Verdict / scheduling decision
+
+**Making Julia `Vector`/`Dict`/`Array(undef)` compile to green corpus fixtures
+is a multi-effort research program, not a single orchestratable task.**
+`Bennett-cc0.5` as scoped (~500 LOC, thread_ptr) would only move the wall one
+step (inline-asm → heap-alloc) and leave a mirage. **Not scheduling a delegated
+push for it.** Phase 1 delivered: a real fix (8su4), the SROA fear refuted, and
+an accurate wall map. Stale comments in `test_t5_corpus_julia.jl` (header + TJ1
++ TJ2 + TJ4) refreshed to name the inline-asm wall. `Bennett-cc0.5` /
+`Bennett-25dm` should be re-triaged against this wall map before any further
+heap-memory work.
+
+**Beads:** `Bennett-8su4` closed; `Bennett-890r` filed (TJ4 mirage, P3).
+**Orchestration lesson:** the 3+1 proposers converging independently on the
+identical design is a strong signal the fix was well-posed; the de-risking
+spike (cheap sonnet investigation) was worth far more than its cost — it
+converted a tempting-but-stall-prone multi-week effort into a one-fix +
+evidence-based stop.
+
+---
+
 ## Session log — 2026-05-21 — QROM optimization paper assessment (Motlagh-Pocrnic + Low-Kliuchnikov-Schaeffer)
 
 **Trigger:** user flagged a newly-landed paper, "Halving the cost of QROM"
