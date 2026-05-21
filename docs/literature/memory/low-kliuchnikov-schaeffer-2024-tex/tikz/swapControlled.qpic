@@ -1,0 +1,11 @@
+PREAMBLE \providecommand{\ket}[1]{\left|#1\right\rangle} 
+DEFINE XT G length=20
+DEFINE xSpace breadth=7
+c W \ket{z} \ket{z}
+a0 W 
+b0 W 
+a0 b0 SWAP c
+=
++a0 b0
++b0 a0 c
++a0 b0

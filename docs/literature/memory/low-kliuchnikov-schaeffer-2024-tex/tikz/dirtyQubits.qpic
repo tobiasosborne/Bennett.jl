@@ -1,0 +1,29 @@
+PREAMBLE \providecommand{\ket}[1]{\left|#1\right\rangle} 
+DEPTHPAD 3
+DEFINE XT G length=20
+DEFINE xSpace breadth=7
+DEFINE myswap top dirty G:operator=\rotatebox{90}{$\textsc{Swap}$} +r op=/
+DEFINE myswapdag top dirty G:operator=\rotatebox{90}{$\textsc{Swap}^\dag$} +r op=/
+DEFINE mysel top dirty G:operator=\rotatebox{90}{$\textsc{Select}$} +q op=/
+DEFINE myseldag top dirty G:operator=\rotatebox{90}{$\textsc{Select}^\dag$} +q op=/
+q W \ket{q} \ket{q}
+r W \ket{r} \ket{r}
+clean W {$\ket{0}$} \ket{a_{q\lambda + r}}
+top W
+...tmp W
+dirty W
+top dirty W {$\ket{\phi}\;\;$} {$\;\;\ket{\phi}$}
+r / 
+q /
+clean / b
+top / b
+dirty / b
+mysel
+myswap
++clean top
+myswapdag
+myseldag
+myswap
++clean top
+myswapdag
+CUT 3 4 6 7 8

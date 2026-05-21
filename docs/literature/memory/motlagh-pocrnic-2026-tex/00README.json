@@ -1,0 +1,29 @@
+{
+   "sources" : [
+      {
+         "usage" : "toplevel",
+         "filename" : "main.tex"
+      },
+      {
+         "usage" : "ignore",
+         "filename" : "figures/berry_qroam.tikz"
+      },
+      {
+         "usage" : "ignore",
+         "filename" : "figures/iterative_qrom.tikz"
+      },
+      {
+         "usage" : "ignore",
+         "filename" : "figures/qroam.tikz"
+      },
+      {
+         "usage" : "ignore",
+         "filename" : "figures/restore.tikz"
+      }
+   ],
+   "spec_version" : 1,
+   "texlive_version" : "2025",
+   "process" : {
+      "compiler" : "pdflatex"
+   }
+}

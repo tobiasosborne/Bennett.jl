@@ -1,0 +1,36 @@
+PREAMBLE \providecommand{\ket}[1]{\left|#1\right\rangle} 
+DEPTHPAD 2.6
+DEFINE XT G length=20
+DEFINE xSpace breadth=7
+DEFINE myswap top dirty G:operator=\rotatebox{90}{$\textsc{Swap}$}:height=40 +r op=/
+DEFINE myswapdag top dirty G:operator=\rotatebox{90}{$\textsc{Swap}^\dag$}:height=40 +r op=/
+DEFINE mysel top dirty G:operator=\rotatebox{90}{$\textsc{Select}$}:height=40 +q op=/
+DEFINE myseldag top dirty G:operator=\rotatebox{90}{$\textsc{Select}^\dag$}:height=40 +q op=/
+q W
+r W 
+target W \ket{z} {$e^{i2\pi \theta_x Z}\ket{z}$}
+top W
+dirty W
+top dirty W {$\ket{\phi}$}< >{$\ket{\phi}$}
+clean W {$\ket{0}$} \ket{0}
+grad W \ket{\mathcal{F}}  \ket{\mathcal{F}}
+r / 
+q r W \ket{x}< >\ket{x}
+q /
+grad / b
+clean / b
+top / b
+dirty /
+myswap
++clean top
+myswapdag
+mysel
+myswap
++clean top
+grad clean G:operator=\rotatebox{90}{$\textsc{Add}$} target
++clean top
+myswapdag
+myseldag
+myswap
++clean top
+myswapdag

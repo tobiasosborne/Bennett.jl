@@ -1,0 +1,16 @@
+PREAMBLE \providecommand{\ket}[1]{\left|#1\right\rangle} 
+DEFINE XT G length=20
+DEFINE xSpace breadth=7
+x0 x1 W \ket{x}< >\ket{x} xSpace 
+a0 a1 a2 a3 W \ket{0}^{\otimes bN}
+a0 W \ket{a_x}
+a1 a2 a3 W
+
+#x0 x1 a0 a1 a2 a3 G \rotatebox{90}{$\textsc{SWAP}$}
+#=
+a0 XT $X^{a_0}$
+a1 XT $X^{a_1}$
+a2 XT $X^{a_2}$
+a3 XT $X^{a_3}$
+
+a0 a1 SWAP x1 ; a2 a3 SWAP x1 ; a0 a2 SWAP x0

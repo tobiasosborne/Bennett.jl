@@ -1,0 +1,11 @@
+PREAMBLE \providecommand{\ket}[1]{\left|#1\right\rangle} 
+DEFINE XT G length=20
+DEFINE xSpace breadth=7
+c W \ket{z} \ket{z}
+a0 W \ket{\psi}_0
+b0 W \ket{\phi}_0
+...gap W
+a1 W \ket{\psi}_{n-1}
+b1 W \ket{\phi}_{n-1}
+a0 b0 SWAP c
+a1 b1 SWAP c

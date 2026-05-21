@@ -1,0 +1,18 @@
+PREAMBLE \providecommand{\ket}[1]{\left|#1\right\rangle} 
+DEFINE XT G length=20
+DEFINE xSpace breadth=7
+c W 
+a0 W
+a1 W
+a2 W
+a3 W
++a0 +a1 +a2 +a3 c
+=
++a3 a1
++a2 a0
++a1 a0
++a0 c
++a1 a0
++a2 a0
++a3 a1
+CUT 3 4 5 6 8

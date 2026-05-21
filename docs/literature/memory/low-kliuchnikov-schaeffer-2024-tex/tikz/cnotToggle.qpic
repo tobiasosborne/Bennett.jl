@@ -1,0 +1,11 @@
+PREAMBLE \providecommand{\ket}[1]{\left|#1\right\rangle} 
+DEFINE XT G length=20
+DEFINE xSpace breadth=7
+c W \ket{z} \ket{z}
+a0 W \ket{x} \ket{x\oplus z}
+d W \ket{d} \ket{d}
++a0 c
+=
++a0 d
++d c
++a0 d

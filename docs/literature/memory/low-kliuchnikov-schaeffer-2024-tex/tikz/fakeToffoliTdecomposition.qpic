@@ -1,0 +1,18 @@
+PREAMBLE \providecommand{\ket}[1]{\left|#1\right\rangle} 
+DEPTHPAD 2
+DEFINE XT G length=20
+DEFINE xSpace breadth=7
+DEFINE Tdag G $G^\dag$
+DEFINE Tgate G $G$
+c0 W 
+c1 W
+t W
++t c0 c1
+= {$\approx$}
+t Tdag
++t c1
+t Tdag
++t c0
+t Tgate
++t c1
+t Tgate

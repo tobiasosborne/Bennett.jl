@@ -1,0 +1,20 @@
+PREAMBLE \providecommand{\ket}[1]{\left|#1\right\rangle} 
+DEFINE XT G length=20
+DEFINE xSpace breadth=7
+c W \ket{z} \ket{z}
+a0 W \ket{x_0} \ket{x_0 \oplus z}
+a1 W \ket{x_1} \ket{x_1 \oplus z}
+a2 W \ket{x_2} \ket{x_2 \oplus z}
+a3 W \ket{x_3} \ket{x_3 \oplus z}
++a0 +a1 +a2 +a3 c
+=
++a3 a2
++a2 a1
++a1 a0
++a0 c
++a1 a0
++a2 a1
++a3 a2
+@ 0 0 %% ${\textsc{Cnot}_4}$
+@ 2 4 %% ${\textsc{Ladder}^\dag_4}$
+@ 6 8 %% ${\textsc{Ladder}_4}$

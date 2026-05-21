@@ -1,0 +1,13 @@
+PREAMBLE \providecommand{\ket}[1]{\left|#1\right\rangle} 
+DEFINE XT G length=20
+DEFINE xSpace breadth=7
+DEFINE myswap a0 a1 a2 a3 G:operator=\rotatebox{90}{$\textsc{Swap}$} +x0 +x1 op=/
+WIREPAD 0
+x0 x1 W \ket{x}< >\ket{x} 
+a0 W {$\ket{\phi_0}_0$} {$\ket{\phi_x}_0$}
+a1 W {$\ket{\phi_1}_1$}
+a2 W {$\ket{\phi_2}_2$}
+a3 W {$\ket{\phi_3}_3$}
+myswap
+=
+a0 a1 SWAP x1 ; a2 a3 SWAP x1 ; a0 a2 SWAP x0

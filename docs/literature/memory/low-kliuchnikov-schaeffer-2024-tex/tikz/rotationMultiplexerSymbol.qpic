@@ -1,0 +1,6 @@
+PREAMBLE \providecommand{\ket}[1]{\left|#1\right\rangle} 
+DEFINE XT G length=20
+DEFINE xSpace breadth=7
+r W \ket{x} \ket{x}
+target W \ket{z} {$e^{i2\pi \theta_x Z}\ket{z}$}
+target G:operator=$R_z$ +r op=/

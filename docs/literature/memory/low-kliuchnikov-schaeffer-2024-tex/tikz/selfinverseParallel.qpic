@@ -1,0 +1,24 @@
+PREAMBLE \providecommand{\ket}[1]{\left|#1\right\rangle} 
+DEFINE XT G length=20
+DEFINE xSpace breadth=7
+c W \ket{z} \ket{z}
+a0 W  
+d0 W 
+a1 W 
+d1 W
+... tmp W
+an W
+dn W
+a0 /
+a1 /
+an /
+a0 G $V$ a1 G $V$ an G $V$ c
+=
+a0 G $V$ d0
+a1 G $V$ d1
+an G $V$ dn
++d0 +d1 +dn c
+a0 G $V$ d0
+a1 G $V$ d1
+an G $V$ dn
++d0 +d1 +dn c

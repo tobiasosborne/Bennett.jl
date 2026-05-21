@@ -1,0 +1,61 @@
+\begin{tikzpicture}
+	\begin{pgfonlayer}{nodelayer}
+		\node [style=none] (0) at (-6.5, 3) {$\ket{q}$};
+		\node [style=none] (1) at (-6.5, 2) {$\ket{r}$};
+		\node [style=none] (2) at (-6.5, 1) {$\ket{0}$};
+		\node [style=none] (3) at (-6.625, 0) {$\ket{\phi_1}$};
+		\node [style=none] (4) at (-6, 3) {};
+		\node [style=none] (5) at (-6, 2) {};
+		\node [style=none] (6) at (-6, 1) {};
+		\node [style=none] (7) at (-6, 0) {};
+		\node [style=none] (8) at (11, 3) {};
+		\node [style=none] (9) at (11, 2) {};
+		\node [style=none] (10) at (11, 1) {};
+		\node [style=none] (11) at (11, 0) {};
+		\node [style=none] (12) at (-7, -2) {$\ket{\phi_{\lambda-1}}$};
+		\node [style=none] (13) at (-6, -2) {};
+		\node [style=none] (14) at (11, -2) {};
+		\node [style=none] (15) at (-6.75, -1) {$\vdots$};
+		\node [style=big gate] (17) at (1, -0.5) {\textsc{Swap}};
+		\node [style=cnot ctrl] (20) at (-1, 3) {};
+		\node [style=cnot ctrl] (21) at (1, 2) {};
+		\node [style=none] (24) at (-1, 1) {};
+		\node [style=none] (27) at (1, 1) {};
+		\node [style=none] (34) at (12, 0) {};
+		\node [style=none] (35) at (12.125, -2) {$\ket{\phi_{\lambda-1}}$};
+		\node [style=none] (36) at (11.975, 0) {};
+		\node [style=none] (37) at (11.725, 0) {$\ket{\phi_1}$};
+		\node [style=none] (38) at (12.025, 1) {$\ket{f(x)}$};
+		\node [style=none] (39) at (11.5, 3) {$\ket q$};
+		\node [style=none] (40) at (11.5, 2) {$\ket r$};
+		\node [style=none] (41) at (12, -1) {$\vdots$};
+		\node [style=gate] (42) at (-5, 1) {$H$};
+		\node [style=big gate] (43) at (-3, -0.5) {\textsc{Swap}};
+		\node [style=cnot ctrl] (44) at (-3, 2) {};
+		\node [style=none] (45) at (-3, 1) {};
+		\node [style=gate] (46) at (2.925, 1) {$H$};
+		\node [style=big gate] (47) at (9, -0.5) {\textsc{Swap}};
+		\node [style=cnot ctrl] (48) at (7, 3) {};
+		\node [style=cnot ctrl] (49) at (9, 2) {};
+		\node [style=none] (50) at (7, 1) {};
+		\node [style=none] (51) at (9, 1) {};
+		\node [style=big gate] (53) at (4.975, -0.5) {\textsc{Swap}};
+		\node [style=cnot ctrl] (54) at (4.975, 2) {};
+		\node [style=none] (55) at (4.975, 1) {};
+		\node [style=big gate] (56) at (-1, -0.5) {\textsc{Sel}};
+		\node [style=big gate] (57) at (7, -0.5) {\textsc{Sel}};
+	\end{pgfonlayer}
+	\begin{pgfonlayer}{edgelayer}
+		\draw (4.center) to (8.center);
+		\draw (5.center) to (9.center);
+		\draw (6.center) to (10.center);
+		\draw (7.center) to (11.center);
+		\draw (13.center) to (14.center);
+		\draw (20) to (24.center);
+		\draw (21) to (27.center);
+		\draw (44) to (45.center);
+		\draw (48) to (50.center);
+		\draw (49) to (51.center);
+		\draw (54) to (55.center);
+	\end{pgfonlayer}
+\end{tikzpicture}

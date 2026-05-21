@@ -1,0 +1,12 @@
+PREAMBLE \providecommand{\ket}[1]{\left|#1\right\rangle} 
+DEFINE XT G length=18
+DEFINE xSpace breadth=7
+DEPTHPAD 1
+DEFINE mysel a0 G:width=35:operator=$\textsc{Select}$ +x0 +x1 +c op=/
+x0 x1 W \ket{x}< >\ket{x} xSpace 
+c W \ket{0} \ket{0} xSpace
+a0 W breadth=30 \ket{0}^{\otimes b} \ket{a_x}
+mysel
+
+=
+-x0 -x1 +c ; a0 XT $X^{a_0}$ c ; -x0 -x1 +c ;-x0 x1 +c ; a0 XT $X^{a_1}$ c ; -x0 x1 +c ;x0 -x1 +c ; a0 XT $X^{a_2}$ c ; x0 -x1 +c ;x0 x1 +c ; a0 XT $X^{a_3}$ c ; x0 x1 +c

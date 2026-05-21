@@ -1,0 +1,12 @@
+PREAMBLE \providecommand{\ket}[1]{\left|#1\right\rangle} 
+DEFINE XT G length=20
+DEFINE xSpace breadth=7
+c W \ket{z}
+a0 W 
+d W 
+a0 G $V$ c
+=
+a0 G $V$ d
++d c
+a0 G $V$ d
++d c

@@ -1,0 +1,12 @@
+PREAMBLE \providecommand{\ket}[1]{\left|#1\right\rangle} 
+DEFINE XT G length=18
+DEFINE xSpace breadth=7
+DEFINE mysel a0 G:width=35:operator=$\textsc{Select}$ +x0 +x1 +c op=/
+x0 W \ket{0}
+x1 W \ket{0}
+x2 W \ket{0}
+x0 x1 x2 W >\ket{\psi}
+
+x0 G:operator=$R_y$
+x1 G:operator=$R_y$ +x0 op=/
+x2 G:operator=$R_y$ +x0 +x1 op=/
