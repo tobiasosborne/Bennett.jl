@@ -5,6 +5,82 @@
 
 ---
 
+## Session log — 2026-05-21 — Backlog stocktake + LLVM opcode stocktake + next-agent handoff
+
+**Mode:** orchestration close-out — backlog triage, an LLVM-opcode coverage
+stocktake, and a handoff for the next agent. No source code changed.
+
+### Handoff directive (now in the WORKLOG.md banner)
+
+**Upcoming work is aimed at the dynamic-memory frontier** — making genuine
+heap-allocated memory compile. It is the one coherent program left with real
+user-facing value. **Start: `Bennett-gf3n` Milestone M1** (GC-preamble
+recognition + dead-skeleton liveness proof + `mem=:heap` mode; design validated
+this session, see the design-effort entry below). M1 needs its own 3+1.
+
+**Recommendation — retire `Bennett-cc0.5`.** It is stale and superseded: its
+premise ("handle thread_ptr GEP base") was disproven by the 2026-05-21 heap
+de-risking spike — the actual wall is an inline-asm TLS read, not a GEP — and
+`Bennett-gf3n` re-scopes the entire problem. The next agent should
+`bd close Bennett-cc0.5 --reason="superseded by Bennett-gf3n"`. `Bennett-25dm`
+is an acceptance umbrella, not pickup work.
+
+### Backlog stocktake (2026-05-21)
+
+~47 active items (44 open + 3 in-progress; 9 P2, 27 P3, 11 P4). Project is
+~89 % closed (464/522). **No P0/P1, no critical bugs.** Shape: one coherent
+program (dynamic memory — `gf3n`/`800b`/`glh`/`25dm` + C-Rust ingest) plus a
+long tail with no internal structure — memcpy edge-cases (`hao`/`8bys` + ~5 P3
++ 7 P4 `land`/`doih` follow-ups, the largest cluster), deferred research
+(`p4ch`/`6c6f`/`8guh` QROAM, `nw1` hash-consing), circuit-cost optimisations
+(`9wmk`/`q22p`/`pzft`/`vt0a`/`que`), persistent-DS follow-ups
+(`8o70`/`7sb7`/`2xws`), opcode gaps (`vb2`/`e283`), the `@linear` path
+(`k4q3`/`e5ke`), and hygiene (`tzrs`/`7kzr`/`fg2`/`qjet`/`ponm`/`n5n`/`6siy`).
+The P4 tier is almost entirely edge-case follow-ups from shipped work — a
+candidate for batch-defer.
+
+### LLVM opcode coverage stocktake
+
+Verified against `src/extract/instructions.jl` + `vectors.jl` (not the README).
+Handled by category: terminators 4/11 (`ret`/`br`/`switch`/`unreachable`;
+`indirectbr` is a deliberate fail-loud hard-stop; 6 exception terminators
+unhandled); integer arithmetic 13/13; `fneg` as a raw opcode; float arithmetic
+`fadd`/`fsub`/`fmul`/`fdiv` via the SoftFloat-callee path (no raw-opcode arm —
+a gap for non-Julia `.ll`/`.bc` ingest); conversions 8/13 as opcodes
+(`fpext`/`fptrunc` callee-only; `ptrtoint`/`inttoptr`/`addrspacecast`
+unhandled); memory 4/7 (`alloca`/`load`/`store`/`getelementptr`; atomics +
+`fence` unhandled); aggregate 2/2 (ArrayType-only); vector 3/3
+(constant-index); `icmp`/`fcmp`/`phi`/`select`/`freeze`/`call` all handled.
+Intrinsics: full transcendental suite (22 — exp/log/pow family, all trig,
+inverse trig, hyperbolics, `expm1`/`log1p`), all rounding + min/max (12), all
+bit ops (12), all 17 `llvm.vector.reduce.*`, `fma`/`fmuladd`/`sqrt`,
+`memcpy`/`memset` (const forms), benign GC/lifetime/debug allowlist.
+
+**Genuine remaining gaps** (all deliberate hard-stops or narrow unfilled
+gaps): exception handling + atomics (deliberate — no semantics in a reversible
+model); `indirectbr` (deliberate, Bennett-4eu); `frem`, `va_arg`,
+`ptrtoint`/`inttoptr`/`addrspacecast` instruction forms, raw float opcodes from
+non-Julia IR, `.with.overflow` intrinsics (fail-loud via the StructType
+`extractvalue` guard) — unfilled but narrow.
+
+**README is materially stale** (`README.md:67-81`): its "Missing opcodes" list
+still names `sqrt`/`sin`/`cos`/`log`/`exp`/`pow`, all vector ops, and the
+round/min-max intrinsics — **all of which are handled now** (added across the
+kh6n/k2w6/mq6f/p19b/pg5/lx5h/3mo/582/emv/1pb/transcendental-tier work). The
+"38 core opcodes" count and "`fcmp` 6 predicates" (actually 14) are also stale.
+This is concrete grist for `Bennett-7kzr` (docs refresh) — the corrected
+coverage data is in this stocktake; 7kzr should adopt it rather than re-derive.
+
+### Take-home
+
+The compiler's opcode coverage is effectively complete for pure deterministic
+code from any LLVM frontend — the remaining gaps are deliberate hard-stops
+(exceptions, atomics, indirectbr) or narrow (`frem`, raw float opcodes for
+non-Julia ingest). The frontier is no longer *opcode* coverage; it is
+*dynamic memory* (`gf3n`) and multi-language *ingest* polish.
+
+---
+
 ## Session log — 2026-05-21 — Heap-memory support: 3+1 design effort (orchestrated, design-only)
 
 **Mode:** orchestrated design effort (user-directed continuation of the
