@@ -5,6 +5,79 @@
 
 ---
 
+## Session log — 2026-05-21 — Heap-memory support: 3+1 design effort (orchestrated, design-only)
+
+**Mode:** orchestrated design effort (user-directed continuation of the
+heap-memory work). DESIGN ONLY — no implementation code. Output: a validated
+consensus design + a 4-milestone implementation roadmap.
+
+**Process:** sonnet compiled a design problem brief
+(`docs/design/heap_memory_design_brief_2026-05-21.md`); two opus `Plan`
+architects produced **independent** designs (B did not see A); orchestrator
+synthesised (+1); a sonnet validation spike tested the load-bearing hypothesis
+before anything was committed.
+
+### The two designs
+
+- **Architect A:** new `IRHeapAlloc` IR node + model the `Memory{T}` struct
+  layout + a `_recognised_collection_ops` table intercepting `push!`/`reduce`
+  as semantic ops. A flagged its own biggest risk: `push!` may be inlined,
+  leaving no callee to intercept.
+- **Architect B:** dumped the actual optimized IR and found the decisive fact —
+  for statically-shaped heap usage the optimizer has **already** compiled the
+  collection into plain constant-offset `store`/`load`; the GC machinery
+  (inline-asm TLS read, `@ijl_gc_small_alloc`, `j_#_growend!`, size counters,
+  `memoryref` arithmetic) is **dead w.r.t. the return value**. Strategy:
+  recognise the skeleton, prove it dead, strip it, re-root surviving
+  stores/loads onto a synthetic constant-capacity `IRAlloca` → compile with the
+  *existing* `:shadow` lowering. Extraction-only; no new IR node; no lowering
+  change.
+
+### Synthesis: adopt B
+
+B's empirical observation **dissolves A's biggest risk** — after `push!` is
+inlined there is no callee, but the residue is exactly the constant-offset
+pattern B recognises. B is the smaller, more defensible design (reuses the
+most-tested `:shadow` machinery; zero lowering change). Kept from A: milestone
+granularity (constant-N `Array(undef)` as a separate early milestone), `reduce`
+flagged as a risk surface, the opt-in `mem=` mode.
+
+### The validation spike (the cc0.5-style de-risk gate)
+
+Both architects demanded the "dead-skeleton hypothesis" be verified before
+implementation. A sonnet spike dumped `optimize=true` IR for 5 shapes:
+**CONFIRMED** for f1-f4 (push-then-read, TJ1 3-elem+reduce, push-in-branch,
+const-capacity-array-runtime-index); **correctly REJECTED** f5 (runtime-loop
+`push!` — no static shape). The skeleton is dead w.r.t. the return in every
+static case. Spike also found: under `--check-bounds=yes`, the non-heap test
+function `cond_pair` emits an f4-identical skeleton — once the recogniser lands
+it will *engage* on `cond_pair` and (skeleton being dead) compile it correctly;
+its current `@test_throws` assertion will flip. Benign — folded into M4.
+
+### Deliverables
+
+- `docs/design/heap_memory_design_brief_2026-05-21.md` — problem statement.
+- `docs/design/heap_memory_consensus_design_2026-05-21.md` — the consensus
+  design (verdict, architecture, Q1-Q6 answers, 4-milestone roadmap, scope,
+  risks).
+- **`Bennett-gf3n`** filed (P2 feature epic) — the implementation, 4 milestones
+  M1-M4, each a future delegated coding task (M1-M3 each need their own 3+1).
+  TJ1 goes genuinely green at M3; `Dict` (TJ2) explicitly out of scope.
+
+### Verdict & lesson
+
+Verdict (c): partially tractable — statically-shaped `Vector`/`Array` is
+shippable extraction-only; unbounded growth and `Dict` are rejected fail-loud.
+**Orchestration lesson:** the two architects diverged on a *factual* question
+(does the optimizer compile the collection away?) — B resolved it by reading
+real IR, A guessed. Having one architect ground the design in `code_llvm`
+output, then a separate spike *verify the load-bearing claim before any code*,
+is what kept this from repeating the cc0.5 mis-scoping. The biggest remaining
+risk — soundness of the dead-skeleton liveness proof — is explicitly carried
+into M1's 3+1.
+
+---
+
 ## Session log — 2026-05-21 — Bennett-8su4 close + heap-memory de-risking spike (orchestrated)
 
 **Mode:** orchestrated effort — user asked for the "next most consequential
