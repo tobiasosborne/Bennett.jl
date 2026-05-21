@@ -43,14 +43,20 @@ end
 # behaviour when called with no selector, and routes to the core walker on
 # a selected function.
 function _module_to_parsed_ir(mod::LLVM.Module;
-                              entry_function::Union{Nothing, AbstractString}=nothing)
+                              entry_function::Union{Nothing, AbstractString}=nothing,
+                              mem::Symbol=:auto)
     func = _find_entry_function(mod, entry_function)
-    return _module_to_parsed_ir_on_func(mod, func)
+    return _module_to_parsed_ir_on_func(mod, func; mem=mem)
 end
 
 # Core walker: `mod` provides module-scope globals / constants; `func` is the
 # entry point (already picked by `_find_entry_function`).
-function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function)
+#
+# `mem` (Bennett-gps7 / M1): when `:heap`, the GC/heap-skeleton recogniser
+# runs after the naming pass. Under any other value (`:auto` default) the
+# recogniser does NOT run — the walk is byte-identical to pre-M1 behaviour.
+function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
+                                      mem::Symbol=:auto)
     counter = Ref(0)
 
     # T1c.2: extract compile-time-constant global arrays so lower_var_gep! can
@@ -141,6 +147,20 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function)
     # _operand() can resolve SSA references.
     sret_writes = sret_info === nothing ? nothing :
                   _collect_sret_writes(func, sret_info, names)
+
+    # Bennett-gps7 / M1: GC/heap-skeleton recogniser. Runs ONLY when
+    # `mem === :heap`. When it recognises + proves a dead heap skeleton it
+    # short-circuits the whole walk: the surviving non-skeleton slice is
+    # straight-line by M1 condition 4, so the function collapses to a
+    # single-block ParsedIR. Under `mem=:auto` (default) `_detect_gc_preamble!`
+    # returns an inert result immediately and this branch is skipped — the
+    # default extraction path is byte-identical to pre-M1.
+    heap_skel = _detect_gc_preamble!(func, names, mem)
+    if heap_skel.recognised
+        block = IRBasicBlock(:top, heap_skel.survivors, heap_skel.ret_inst)
+        return ParsedIR(ret_width, args, [block], ret_elem_widths, globals,
+                        nothing, synth_ptr_provenance)
+    end
 
     # Convert blocks (second pass)
     blocks = IRBasicBlock[]

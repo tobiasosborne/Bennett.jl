@@ -223,6 +223,13 @@ When `mem !== :persistent`, this is a no-op — the other two kwargs are ignored
 """
 function validate_persistent_config(mem::Symbol, persistent_impl::Symbol,
                                     hashcons::Symbol)
+    # Bennett-gps7 / M1: accept `:heap` as a known `mem` value. `:heap` is an
+    # extraction-phase flag (it enables the GC/heap-skeleton recogniser); it
+    # has no persistent-map meaning, so it falls through this validator
+    # untouched. Reject any value that is neither :auto/:persistent/:heap.
+    mem in (:auto, :persistent, :heap) || throw(ArgumentError(
+        "reversible_compile: unknown mem :$mem; supported: :auto, " *
+        ":persistent, :heap (Bennett-gps7 / M1)"))
     if mem === :persistent
         # _resolve_persistent_impl lives in src/lowering/memory.jl and throws
         # ArgumentError on NYI (impl, hashcons) combos. We discard the return.
@@ -339,7 +346,14 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
 
     # Expression path (also base for :auto). Extract IR once; the cost model
     # inspects it to decide whether to redirect to tabulate.
-    parsed = extract_parsed_ir(f, arg_types; optimize)
+    #
+    # Bennett-gps7 / M1: `mem=:heap` is an EXTRACTION-phase flag — it enables
+    # the GC/heap-skeleton recogniser in the IR walker. By the time the
+    # ParsedIR is built the dead skeleton is already gone, so `:heap` has no
+    # meaning for `lower()`; we normalise it to `:auto` for the lowering call
+    # below (`lower()` only knows :auto / :persistent).
+    parsed = extract_parsed_ir(f, arg_types; optimize, mem)
+    lower_mem = mem === :heap ? :auto : mem
 
     if strategy === :auto && _tabulate_auto_picks(parsed, arg_types, bit_width)
         widths = _tabulate_input_widths(arg_types, bit_width)
@@ -353,7 +367,7 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     end
     lr = lower(parsed; max_loop_iterations, compact_calls, add, mul,
                fold_constants, target, auto_self_reversing,
-               mem, persistent_impl, hashcons)
+               mem=lower_mem, persistent_impl, hashcons)
     return bennett(lr)
 end
 

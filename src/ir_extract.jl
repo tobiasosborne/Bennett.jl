@@ -10,6 +10,7 @@ include("extract/errors.jl")        # _ir_error / _ir_error_msg + _LLVM_OPCODE_N
 include("extract/sret.jl")          # sret detection + writes collection + synthesis (Bennett-dv1z)
 include("extract/module_walk.jl")   # _find_entry_function / _module_to_parsed_ir / _extract_const_globals / _expand_switches
 include("extract/instructions.jl")  # _handle_intrinsic + _convert_instruction (the IR → IRInst dispatcher)
+include("extract/heap.jl")          # Bennett-gps7 / M1: GC/heap-skeleton recogniser (_detect_gc_preamble!)
 include("extract/constexpr.jl")     # cc0.3 GlobalAlias + cc0.4 ConstantExpr operand folding
 include("extract/vectors.jl")       # cc0.7 vector SSA scalarisation + _convert_vector_instruction
 include("extract/helpers.jl")       # _get_deref_bytes / _operand / _iwidth / _type_width + _OPCODE_MAP / _PRED_MAP

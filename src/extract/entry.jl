@@ -42,7 +42,8 @@ function extract_parsed_ir(f, arg_types::Type{<:Tuple};
                            optimize::Bool=true,
                            preprocess::Bool=false,
                            passes::Vector{String}=String[],
-                           use_memory_ssa::Bool=false)
+                           use_memory_ssa::Bool=false,
+                           mem::Symbol=:auto)
     ir_string = sprint(io -> code_llvm(io, f, arg_types; debuginfo=:none, optimize, dump_module=true))
 
     effective_passes = String[]
@@ -76,7 +77,7 @@ function extract_parsed_ir(f, arg_types::Type{<:Tuple};
         if !isempty(effective_passes)
             _run_passes!(mod, effective_passes)
         end
-        result = _module_to_parsed_ir(mod)
+        result = _module_to_parsed_ir(mod; mem=mem)
         dispose(mod)
     end
     # Stamp memssa into the result if requested
