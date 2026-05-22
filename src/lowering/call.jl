@@ -73,12 +73,18 @@ output wires become the caller's result wires.
 """
 function lower_call!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                      vw::Dict{Symbol,Vector{Int}}, inst::IRCall;
-                     compact::Bool=false)
+                     compact::Bool=false,
+                     loop_guards::Vector{LoopGuard}=LoopGuard[])
     # Pre-compile the callee function. Bennett-atf4: arg types derived from
     # methods() not hardcoded UInt64 — unblocks aggregate callees.
     arg_types = _callee_arg_types(inst)
     _assert_arg_widths_match(inst, arg_types)
     callee_parsed = _extract_parsed_ir_cached(inst.callee, arg_types)
+    # Bennett-s0tn: the hardcoded max_loop_iterations=64 here is a known
+    # smell (filed as a follow-up bead). If the callee has a data-dependent
+    # loop, its `loop_guards` reference callee-numbered convergence wires;
+    # they MUST be wire-offset-remapped and appended to the caller's
+    # accumulator below — never silently dropped.
     callee_lr = lower(callee_parsed; max_loop_iterations=64)
 
     if compact
@@ -108,6 +114,16 @@ function lower_call!(gates::Vector{ReversibleGate}, wa::WireAllocator,
         # The callee's output wires (remapped) are the Bennett copy wires
         result_wires = [w + wire_offset for w in callee_circuit.output_wires]
         vw[inst.dest] = result_wires
+
+        # Bennett-s0tn: the callee circuit's loop-check wires (post-bennett
+        # `conv_copy`) carry the convergence bit, set by the loop-copy CNOT
+        # inside `callee_circuit.gates` which we just inlined. Remap by the
+        # wire offset and append to the caller's accumulator so the caller's
+        # `simulate` checks them. Never drop them.
+        for lg in callee_circuit.loop_check_wires
+            push!(loop_guards, LoopGuard(lg.wire + wire_offset,
+                                         lg.header_label, lg.K))
+        end
     else
         # Original behavior: insert only forward gates, caller's Bennett handles cleanup
         wire_offset = wire_count(wa)
@@ -132,6 +148,17 @@ function lower_call!(gates::Vector{ReversibleGate}, wa::WireAllocator,
         # The callee's output wires (remapped) become the result
         result_wires = [w + wire_offset for w in callee_lr.output_wires]
         vw[inst.dest] = result_wires
+
+        # Bennett-s0tn: the callee LR's loop guards reference callee-
+        # numbered forward-pass convergence wires. We just inlined the
+        # callee's forward gates with `wire_offset` — including the
+        # `lower_loop!`-emitted convergence CNOT — so each `conv_w` now
+        # lives at `lg.wire + wire_offset` in the caller's wire space. The
+        # caller's Bennett wrap will copy it out. Append remapped guards.
+        for lg in callee_lr.loop_guards
+            push!(loop_guards, LoopGuard(lg.wire + wire_offset,
+                                         lg.header_label, lg.K))
+        end
     end
 end
 

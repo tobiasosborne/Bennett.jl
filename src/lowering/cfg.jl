@@ -264,7 +264,14 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
                                # dispatcher state — shared across iterations via
                                # the same opts.persistent_info dict.
                                opts.mem, opts.persistent_impl, opts.hashcons,
-                               opts.persistent_info)
+                               opts.persistent_info,
+                               # Bennett-s0tn: shared loop-guard accumulator so
+                               # an IRCall in a loop body whose callee itself
+                               # has a data-dependent loop still records its
+                               # guard. (Nested while-loops are rejected by
+                               # _collect_loop_body_blocks; this path is for
+                               # a callee-with-loop inlined inside a loop body.)
+                               opts.loop_guards)
 
         # (a1) Lower header's non-phi instructions through the canonical
         # dispatcher. `header_body_insts` is in source order (collected at
@@ -332,6 +339,9 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
         end
 
         # (c) Exit condition — always reuses the wire computed at (a2).
+        # `exit_cond_wire[1]` has "1 = loop exited / done" semantics; it
+        # feeds the MUX at (e). Bennett-s0tn: the convergence check is NOT
+        # this wire — see the post-loop (K+1)-th check-only pass below.
         exit_cond_wire = raw_cond_wire
         if !exit_on_true
             exit_cond_wire = lower_not1!(gates, wa, exit_cond_wire)
@@ -351,6 +361,52 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
         end
 
     end
+
+    # Bennett-s0tn: fail-loud loop-overflow detection.
+    #
+    # DEVIATION FROM CONSENSUS DESIGN (reported to orchestrator): the
+    # design claimed iteration K's `exit_cond_wire` already holds the
+    # convergence bit. It does NOT — `exit_cond_wire` from iteration K is
+    # the exit condition evaluated at the START of iteration K, on the
+    # post-(K-1) loop-carried state. The unrolled K-iteration circuit is
+    # CORRECT iff the loop would have exited AFTER iteration K — i.e. the
+    # exit condition is true on the POST-K state. Example: countdown(4)
+    # with K=4 runs n: 4→3→2→1→0; iteration 4's start condition (n=1>0) is
+    # "not done" yet the loop genuinely converged. Convergence must be
+    # checked on the post-K phi-frozen values.
+    #
+    # Fix: run ONE more "check-only" evaluation of the header-body
+    # instructions + the header's exit condition AFTER the K-th MUX, using
+    # the frozen phi values. No body, no latch, no MUX — this is the
+    # (K+1)-th condition check. Its result is the true convergence bit.
+    conv_block_pred = Dict{Symbol,Vector{Int}}()
+    conv_block_pred[hlabel] = opts.block_pred[hlabel]
+    conv_ctx = LoweringCtx(gates, wa, vw, Dict{Symbol,Vector{Symbol}}(),
+                           Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}(),
+                           block_order, conv_block_pred,
+                           Dict{Symbol,Int}(), Ref(0),
+                           opts.compact_calls,
+                           opts.alloca_info, opts.ptr_provenance, Ref(0),
+                           opts.globals, :ripple, opts.mul, opts.entry_label,
+                           Ref(false),
+                           opts.mem, opts.persistent_impl, opts.hashcons,
+                           opts.persistent_info, opts.loop_guards)
+    for inst in header_body_insts
+        opts.inst_counter[] += 1
+        _lower_inst!(conv_ctx, inst, hlabel)
+    end
+    postk_cond = resolve!(gates, wa, vw, term.cond, 1)
+    # `postk_cond[1]==1` ⇔ header branch would take the body again.
+    # Convergence ⇔ branch would take the EXIT instead.
+    conv_cond = exit_on_true ? postk_cond : lower_not1!(gates, wa, postk_cond)
+
+    # Copy the convergence bit into a fresh dedicated wire `conv_w`
+    # (forward block). `bennett`'s copy-out then copies `conv_w` into a
+    # fourth-class loop-check wire that survives the reverse pass;
+    # `simulate` errors loud when it reads 0 (overflow).
+    conv_w = allocate!(wa, 1)[1]
+    push!(gates, CNOTGate(conv_cond[1], conv_w))
+    push!(opts.loop_guards, LoopGuard(conv_w, hlabel, K))
 
     push!(get!(preds, exit_label, Symbol[]), hlabel)
 end

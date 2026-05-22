@@ -113,6 +113,12 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
     # Computed during lowering, used for phi resolution.
     block_pred = Dict{Symbol, Vector{Int}}()
 
+    # Bennett-s0tn: shared loop-guard accumulator. `lower_loop!` pushes one
+    # LoopGuard per data-dependent loop header. The same vector instance is
+    # threaded into every per-block BlockLoweringOpts so guards accumulate
+    # across all loops in this function.
+    loop_guards = LoopGuard[]
+
     ret_values = Tuple{Vector{Int}, Symbol}[]
 
     for label in order
@@ -162,6 +168,8 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
             ptr_provenance = ptr_provenance,
             entry_label    = order[1],
             loop_headers   = loop_headers,
+            # Bennett-s0tn: shared accumulator (same vector every block).
+            loop_guards    = loop_guards,
             # Bennett-z2dj / T5-P6 (Step 2): forward dispatcher kwargs +
             # per-function persistent_info dict so every LoweringCtx in
             # this function sees the same state.
@@ -242,17 +250,21 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
     # `lr.self_reversing == true`.
     lr = LoweringResult(gates, wire_count(wa), input_wires, output_wires,
                          input_widths, parsed.ret_elem_widths,
-                         gate_groups, false)
+                         gate_groups, false, loop_guards)
 
     if auto_self_reversing
         # The entry-block predicate NOTGate (driver.jl:104) leaves `pw[1]=1`
         # at the end of the forward pass — that's the only "expected dirty"
         # wire at the LR level. Pull its allowlist from `block_pred[order[1]]`.
+        # Bennett-s0tn: a function with a data-dependent loop always branches,
+        # so `_infer_self_reversing` already returns false for it; loop_guards
+        # is threaded through here defensively for the (impossible) promote.
         trusted = get(block_pred, order[1], Int[])
         if _infer_self_reversing(lr, trusted)
             lr = LoweringResult(lr.gates, lr.n_wires, lr.input_wires,
                                  lr.output_wires, lr.input_widths,
-                                 lr.output_elem_widths, lr.gate_groups, true)
+                                 lr.output_elem_widths, lr.gate_groups, true,
+                                 lr.loop_guards)
         end
     end
 
@@ -384,9 +396,13 @@ function _fold_constants(lr::LoweringResult)
         end
     end
 
-    # Rebuild gate groups (invalidated by folding — clear them)
+    # Rebuild gate groups (invalidated by folding — clear them).
+    # Bennett-s0tn: `_fold_constants` does NOT renumber wires (only deletes
+    # / simplifies gates; n_wires preserved), so the convergence wire
+    # indices in `loop_guards` stay valid — thread them through unchanged.
     return LoweringResult(folded, lr.n_wires, lr.input_wires, lr.output_wires,
-                          lr.input_widths, lr.output_elem_widths)
+                          lr.input_widths, lr.output_elem_widths,
+                          GateGroup[], false, lr.loop_guards)
 end
 
 # Bennett-x2iw / U88: optional state bundled in `opts::BlockLoweringOpts`.
@@ -405,7 +421,8 @@ function lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_orde
                       Ref(false),   # Bennett-h0ai producer-tag side-channel
                       # Bennett-z2dj / T5-P6 (Step 2): persistent_tree dispatcher
                       opts.mem, opts.persistent_impl, opts.hashcons,
-                      opts.persistent_info)
+                      opts.persistent_info,
+                      opts.loop_guards)   # Bennett-s0tn loop-guard accumulator
     for inst in block.instructions
         opts.inst_counter[] += 1
         _ws = wa.next_wire

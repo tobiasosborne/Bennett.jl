@@ -22,6 +22,30 @@ struct ToffoliGate <: ReversibleGate
 end
 
 """
+    LoopGuard
+
+Bennett-s0tn: one data-dependent loop's convergence-detection wire.
+`wire` holds 1 at end of the forward pass iff the loop reached its exit
+condition within `K` unrolled iterations. `header_label` and `K` are
+carried only for the fail-loud error message.
+
+Two contexts:
+- inside `LoweringResult.loop_guards`, `wire` is the forward-pass
+  convergence wire (`conv_w`);
+- inside `ReversibleCircuit.loop_check_wires`, `wire` is the post-bennett
+  copy-out wire (`conv_copy`) that survives the reverse pass.
+
+Defined here (rather than in `src/lowering/types.jl` alongside
+`LoweringResult`) because `gates.jl` loads first and `ReversibleCircuit`
+needs `Vector{LoopGuard}` resolvable at struct-definition time.
+"""
+struct LoopGuard
+    wire::Int             # convergence wire; 1 ⇔ loop converged within K
+    header_label::Symbol  # loop header block label (diagnostics)
+    K::Int                # max_loop_iterations this loop was unrolled to
+end
+
+"""
     ReversibleCircuit
 
 A reversible circuit: a sequence of NOT/CNOT/Toffoli gates operating on wires.
@@ -62,6 +86,12 @@ struct ReversibleCircuit
     ancilla_wires::Vector{WireIndex}
     input_widths::Vector{Int}
     output_elem_widths::Vector{Int}  # e.g. [8] for Int8, [8,8] for Tuple{Int8,Int8}
+    # Bennett-s0tn: fourth wire-partition class — one LoopGuard per
+    # data-dependent loop. `wire` holds the post-bennett convergence
+    # copy-out; `simulate` errors loud if it reads 0 (loop overflowed
+    # max_loop_iterations). Disjoint from input/output/ancilla. Empty
+    # for every loop-free circuit (all pinned gate-count baselines).
+    loop_check_wires::Vector{LoopGuard}
 
     # Bennett-6azb / U58: validate the wire partition at construction
     # time. `ancilla ∩ input` or `ancilla ∩ output` would make the
@@ -70,15 +100,21 @@ struct ReversibleCircuit
     # permitted — self-reversing primitives (soft-float, QROM tabulate)
     # legitimately write results back onto input wires. `union` must
     # cover `1:n_wires` so no wire escapes classification.
+    #
+    # Bennett-s0tn: the partition is now a FOUR-set partition — the
+    # `loop_check` class must be disjoint from input, output, AND
+    # ancilla, or the convergence check would alias a data wire.
     function ReversibleCircuit(n_wires::Int, gates::Vector{ReversibleGate},
                                input_wires::Vector{WireIndex},
                                output_wires::Vector{WireIndex},
                                ancilla_wires::Vector{WireIndex},
                                input_widths::Vector{Int},
-                               output_elem_widths::Vector{Int})
+                               output_elem_widths::Vector{Int},
+                               loop_check_wires::Vector{LoopGuard}=LoopGuard[])
         in_set = Set(input_wires)
         out_set = Set(output_wires)
         anc_set = Set(ancilla_wires)
+        lc_set  = Set(lg.wire for lg in loop_check_wires)
 
         bad_in_anc = intersect(in_set, anc_set)
         isempty(bad_in_anc) || throw(AssertionError(
@@ -92,12 +128,29 @@ struct ReversibleCircuit
             "overlap output wires — the ancilla-zero check in `simulate` " *
             "would depend on f(x)"))
 
-        covered = union(in_set, out_set, anc_set)
+        # Bennett-s0tn: loop-check class disjoint from all three others.
+        bad_lc_in = intersect(lc_set, in_set)
+        isempty(bad_lc_in) || throw(AssertionError(
+            "ReversibleCircuit: loop-check wires $(sort!(collect(bad_lc_in))) " *
+            "overlap input wires — the loop-convergence check in `simulate` " *
+            "would alias an input value (Bennett-s0tn)"))
+        bad_lc_out = intersect(lc_set, out_set)
+        isempty(bad_lc_out) || throw(AssertionError(
+            "ReversibleCircuit: loop-check wires $(sort!(collect(bad_lc_out))) " *
+            "overlap output wires — the loop-convergence check would alias " *
+            "f(x) (Bennett-s0tn)"))
+        bad_lc_anc = intersect(lc_set, anc_set)
+        isempty(bad_lc_anc) || throw(AssertionError(
+            "ReversibleCircuit: loop-check wires $(sort!(collect(bad_lc_anc))) " *
+            "overlap ancilla wires — the ancilla-zero check would fire on a " *
+            "loop-check value (Bennett-s0tn)"))
+
+        covered = union(in_set, out_set, anc_set, lc_set)
         expected = Set(1:n_wires)
         missing_wires = setdiff(expected, covered)
         isempty(missing_wires) || throw(AssertionError(
             "ReversibleCircuit: wires $(sort!(collect(missing_wires))) are " *
-            "not classified as input, output, or ancilla " *
+            "not classified as input, output, ancilla, or loop-check " *
             "(n_wires=$n_wires)"))
 
         stray = setdiff(covered, expected)
@@ -106,7 +159,7 @@ struct ReversibleCircuit
             "n_wires=$n_wires"))
 
         return new(n_wires, gates, input_wires, output_wires, ancilla_wires,
-                   input_widths, output_elem_widths)
+                   input_widths, output_elem_widths, loop_check_wires)
     end
 end
 

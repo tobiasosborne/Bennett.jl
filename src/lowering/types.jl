@@ -70,6 +70,11 @@ groups; they must refuse branching `LoweringResult`s and fall back to full
 """
 _has_branching(lr) = count(_is_pred_group, lr.gate_groups) >= 2
 
+# Bennett-s0tn: `LoopGuard` is defined in src/gates.jl (loaded before
+# this file) because `ReversibleCircuit` there carries a
+# `Vector{LoopGuard}` field — the struct-definition-time field type must
+# resolve. It is re-used here as `LoweringResult.loop_guards`.
+
 struct LoweringResult
     gates::Vector{ReversibleGate}
     n_wires::Int
@@ -82,6 +87,10 @@ struct LoweringResult
     # (e.g. Sun-Borissov `lower_mul_qcla_tree!`). `bennett()` honors this
     # by returning the forward gates only — no copy-out, no reverse.
     self_reversing::Bool
+    # Bennett-s0tn: one LoopGuard per data-dependent loop header. `wire`
+    # is the forward-pass convergence wire. Empty ⇔ no data-dependent
+    # loops (every non-loop function).
+    loop_guards::Vector{LoopGuard}
 end
 
 # Bennett-7xng + Bennett-8h41 / U87: 6-arg convenience — gate_groups
@@ -89,10 +98,18 @@ end
 # gate_groups + default false self_reversing) was removed; no current
 # callers used it. Callers needing explicit gate_groups must pass the
 # full 8-arg form (gate_groups, self_reversing) for clarity.
+# Bennett-s0tn: loop_guards defaults empty in every convenience form.
 LoweringResult(gates, n_wires, input_wires, output_wires,
                input_widths, output_elem_widths) =
     LoweringResult(gates, n_wires, input_wires, output_wires,
-                   input_widths, output_elem_widths, GateGroup[], false)
+                   input_widths, output_elem_widths, GateGroup[], false,
+                   LoopGuard[])
+
+LoweringResult(gates, n_wires, input_wires, output_wires,
+               input_widths, output_elem_widths, gate_groups, self_reversing) =
+    LoweringResult(gates, n_wires, input_wires, output_wires,
+                   input_widths, output_elem_widths, gate_groups,
+                   self_reversing, LoopGuard[])
 
 """Bundles shared lowering state for instruction dispatch."""
 struct LoweringCtx
@@ -158,6 +175,11 @@ struct LoweringCtx
     # src/Bennett.jl:32 vs :58). Step 9 will add a `validate_persistent_config`
     # pass that type-checks each value as `PersistentMapImpl`.
     persistent_info::Dict{Symbol, Any}
+    # Bennett-s0tn: shared loop-guard accumulator (same vector as
+    # `BlockLoweringOpts.loop_guards`). `lower_call!` appends remapped
+    # callee loop guards here when inlining a callee with a data-dependent
+    # loop, so an inner-function loop overflow is never silently dropped.
+    loop_guards::Vector{LoopGuard}
 end
 
 # Bennett-tbm6 (2026-04-27): the 11-arg / 12-arg / 13-arg backward-compat
@@ -196,6 +218,10 @@ Base.@kwdef struct BlockLoweringOpts
     ptr_provenance::Dict{Symbol,Vector{PtrOrigin}}      = Dict{Symbol,Vector{PtrOrigin}}()
     entry_label::Symbol                                 = Symbol("")
     loop_headers::Set{Symbol}                           = Set{Symbol}()
+    # Bennett-s0tn: shared accumulator for loop convergence guards.
+    # `lower()` constructs ONE BlockLoweringOpts with a fresh vector and
+    # reuses that instance across all blocks; `lower_loop!` pushes onto it.
+    loop_guards::Vector{LoopGuard}                       = LoopGuard[]
     # Bennett-z2dj / T5-P6 (Step 2): persistent_tree dispatcher arm.
     # Forwarded from `lower(parsed; mem=..., ...)` and into each
     # `LoweringCtx(...)`. Step 2 wires only; handlers land in Steps 3-9.
@@ -249,7 +275,8 @@ _lower_inst!(ctx::LoweringCtx, inst::IRInsertValue, ::Symbol) =
     lower_insertvalue!(ctx.gates, ctx.wa, ctx.vw, inst)
 
 _lower_inst!(ctx::LoweringCtx, inst::IRCall, ::Symbol) =
-    lower_call!(ctx.gates, ctx.wa, ctx.vw, inst; compact=ctx.compact_calls)
+    lower_call!(ctx.gates, ctx.wa, ctx.vw, inst; compact=ctx.compact_calls,
+                loop_guards=ctx.loop_guards)   # Bennett-s0tn
 
 _lower_inst!(::LoweringCtx, inst::IRInst, ::Symbol) =
     error("_lower_inst!: unhandled IR instruction type: $(typeof(inst)) — $(inst)")

@@ -70,7 +70,12 @@
         for K in (1, 2, 4)
             lr = lower(parsed; max_loop_iterations=K)
             c  = bennett(lr)
-            @test verify_reversibility(c; n_tests=4)
+            # Bennett-s0tn: `verify_reversibility` randomises all 64 input
+            # bits — a random `n` overflows the K∈(1,2,4) unroll bound and
+            # the loop-overflow guard correctly throws. The explicit
+            # `simulate` calls below use n ∈ {0,1,K} which all converge;
+            # `simulate` runs the same ancilla-zero + input-preservation
+            # invariant checks internally, so coverage is preserved.
             for (x, y, n) in [(UInt64(10), UInt64(3), UInt64(0)),
                               (UInt64(10), UInt64(3), UInt64(1)),
                               (UInt64(10), UInt64(3), UInt64(K)),
@@ -141,14 +146,22 @@
         # `_pick_add_strategy(:auto)` returns `:ripple` post-U27 and
         # `ssa_liveness` is empty (so Cuccaro's op2_dead heuristic doesn't
         # fire either way). Pinned values measured on main pre-patch.
+        # Bennett-s0tn (2026-05-22): baselines bumped 14074/2320/8868 →
+        # 14673/2412/9276. The loop-overflow guard adds a one-time (K+1)-th
+        # check-only re-lowering of the header's exit-condition
+        # instructions + 2 convergence CNOTs + 1 loop-check wire. This is a
+        # per-bead regression pin (NOT a CLAUDE.md §6 explicit-strategy
+        # baseline — those live in test_gate_count_regression.jl and are
+        # loop-free, hence unchanged).
         c = reversible_compile(collatz_steps, Int8; max_loop_iterations=20)
         gc = gate_count(c)
-        @test gc.total == 14074
-        @test gc.Toffoli == 2320
-        @test ancilla_count(c) == 8868
+        @test gc.total == 14673
+        @test gc.Toffoli == 2412
+        @test ancilla_count(c) == 9276
         for x in Int8(1):Int8(30)
             @test simulate(c, Int8, x) == collatz_steps(x)
         end
+        # Collatz self-caps at steps<20 ⇒ every Int8 converges within K=20.
         @test verify_reversibility(c; n_tests=16)
     end
 

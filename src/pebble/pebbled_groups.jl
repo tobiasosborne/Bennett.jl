@@ -284,6 +284,9 @@ function _pebbled_group_bennett_impl(lr::LoweringResult; max_pebbles::Int=0)
                               lr.output_wires, lr)
     end
 
+    # Bennett-s0tn: loop-guard copy-out lives only in `_bennett_default`.
+    isempty(lr.loop_guards) || return _bennett_default(lr)
+
     groups = lr.gate_groups
     if isempty(groups)
         return bennett(lr)
@@ -385,6 +388,9 @@ function _checkpoint_bennett_impl(lr::LoweringResult)
         return _build_circuit(lr.gates, lr.n_wires, lr.input_wires,
                               lr.output_wires, lr)
     end
+
+    # Bennett-s0tn: loop-guard copy-out lives only in `_bennett_default`.
+    isempty(lr.loop_guards) || return _bennett_default(lr)
 
     groups = lr.gate_groups
     isempty(groups) && return bennett(lr)

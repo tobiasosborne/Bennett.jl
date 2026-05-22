@@ -100,10 +100,14 @@ function controlled(circuit::ReversibleCircuit)
     inner_input_wires  = pushfirst!(copy(circuit.input_wires), ctrl_wire)
     inner_input_widths = pushfirst!(copy(circuit.input_widths), 1)
 
+    # Bennett-s0tn: propagate loop-check wires. `controlled()` only appends
+    # ctrl_wire / anc_wire at n_wires+1 / +2 — it never renumbers existing
+    # wires — so the inner loop-check wire indices stay valid as-is.
     inner = ReversibleCircuit(total, new_gates,
                               inner_input_wires, circuit.output_wires,
                               new_anc, inner_input_widths,
-                              circuit.output_elem_widths)
+                              circuit.output_elem_widths,
+                              copy(circuit.loop_check_wires))
     return ControlledCircuit(inner, ctrl_wire)
 end
 

@@ -205,6 +205,23 @@ function _simulate_with_buffer!(bits::Vector{Bool}, circuit::ReversibleCircuit,
         apply!(bits, gate)
     end
 
+    # Bennett-s0tn: fail-loud loop-overflow detection. Each loop-check wire
+    # holds 1 iff its data-dependent loop converged within K unrolled
+    # iterations. A 0 means the input needed more than K iterations and the
+    # circuit silently returned the after-K state — error LOUD instead.
+    # Placed BEFORE the ancilla-zero check: loop overflow is the
+    # user-actionable root cause; an undersized K can also leave ancillae
+    # dirty, and that downstream symptom must not mask the real diagnosis.
+    for lg in circuit.loop_check_wires
+        bits[lg.wire] || error(
+            "simulate: data-dependent loop with header block :$(lg.header_label) " *
+            "did not converge within max_loop_iterations=$(lg.K) for this " *
+            "input ($(inputs)). The compiled circuit unrolls the loop to " *
+            "exactly $(lg.K) iterations; this input needs more. Recompile " *
+            "with a larger max_loop_iterations (e.g. " *
+            "max_loop_iterations=$(2 * lg.K)).")
+    end
+
     for w in circuit.ancilla_wires
         bits[w] && error("Ancilla wire $w not zero post-circuit — uncomputation " *
                           "invariant violated. The circuit may have been built " *
@@ -347,6 +364,17 @@ function diagnose_nonzero(circuit::ReversibleCircuit, inputs::Tuple{Vararg{Integ
         end
     end
 
+    # Bennett-s0tn: report loop-overflow violations alongside ancilla /
+    # input ones — a 0 loop-check wire means that data-dependent loop did
+    # not converge within K iterations for this input.
+    loop_violations = NamedTuple[]
+    for lg in circuit.loop_check_wires
+        if !bits[lg.wire]
+            push!(loop_violations, (header_label=lg.header_label,
+                                     wire_index=lg.wire, K=lg.K))
+        end
+    end
+
     widths_align = !isempty(inputs) && !isempty(circuit.output_elem_widths) &&
                    all(w == circuit.input_widths[1] for w in circuit.input_widths) &&
                    all(w == circuit.input_widths[1] for w in circuit.output_elem_widths)
@@ -357,6 +385,7 @@ function diagnose_nonzero(circuit::ReversibleCircuit, inputs::Tuple{Vararg{Integ
     return (
         ancilla_violations = ancilla_violations,
         input_violations   = input_violations,
+        loop_violations    = loop_violations,   # Bennett-s0tn
         output             = output,
         n_gates            = length(circuit.gates),
         n_wires            = circuit.n_wires,

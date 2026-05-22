@@ -147,6 +147,9 @@ function _pebbled_bennett_impl(lr::LoweringResult; max_pebbles::Int=0)
                               lr.output_wires, lr)
     end
 
+    # Bennett-s0tn: loop-guard copy-out lives only in `_bennett_default`.
+    isempty(lr.loop_guards) || return _bennett_default(lr)
+
     copy_wires, total = _allocate_copy_wires(lr)
     n_out = length(lr.output_wires)
 

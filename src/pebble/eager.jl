@@ -67,6 +67,13 @@ function _eager_bennett_impl(lr::LoweringResult)
                               lr.output_wires, lr)
     end
 
+    # Bennett-s0tn: a loop LR carries loop_guards whose convergence wires
+    # must be copied out parallel to the output copy-out. Only
+    # `_bennett_default` implements that copy-out, so any LR with loop
+    # guards falls back to it — keeping the loop-guard plumbing to one
+    # implementation site. (A loop LR also always branches.)
+    isempty(lr.loop_guards) || return _bennett_default(lr)
+
     gates = lr.gates
     N = length(gates)
     input_set  = Set(lr.input_wires)

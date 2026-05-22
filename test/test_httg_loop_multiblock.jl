@@ -55,10 +55,15 @@ end
         c = reversible_compile(_u05_accumulator, Int8, Int8;
                                max_loop_iterations=6, optimize=false)
         # The circuit truncates at K=6 iterations; match native up to n<=6.
+        # Bennett-s0tn: `verify_reversibility`'s random 8-bit sweep would
+        # hit n>6 inputs that genuinely overflow K=6 — and the new
+        # loop-overflow guard correctly throws on those. Verify the Bennett
+        # invariants on the in-range (converging) inputs explicitly via
+        # `simulate`, which runs the same ancilla-zero + input-preservation
+        # assertions internally.
         for x in Int8(-3):Int8(3), n in Int8(0):Int8(6)
             @test simulate(c, (x, n)) == _u05_accumulator(x, n)
         end
-        @test verify_reversibility(c; n_tests=16)
     end
 
     @testset "T2: max_loop_iterations actually scales gate count" begin
@@ -106,6 +111,18 @@ end
             @test simulate(c, x) == collatz_steps(x)
         end
         @test verify_reversibility(c; n_tests=16)
+    end
+
+    @testset "T6: Bennett-s0tn — undersized K throws instead of silent wrong" begin
+        # _u05_accumulator(x, n) runs exactly n iterations. With K=3 an
+        # input n=6 needs more iterations than the unroll bound — the
+        # loop-overflow guard must make simulate throw loud rather than
+        # return the after-3-iterations state.
+        c = reversible_compile(_u05_accumulator, Int8, Int8;
+                               max_loop_iterations=3, optimize=false)
+        @test !isempty(c.loop_check_wires)
+        @test simulate(c, (Int8(2), Int8(3))) == _u05_accumulator(Int8(2), Int8(3))
+        @test_throws ErrorException simulate(c, (Int8(2), Int8(6)))
     end
 
     @testset "T5: gate-count regression baselines unchanged (i8 x+1 = 58/12)" begin

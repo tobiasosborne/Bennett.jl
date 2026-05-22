@@ -70,10 +70,17 @@ end
         end
     end
 
-    @testset "T1b: branching body — verify_reversibility" begin
+    @testset "T1b: branching body — Bennett invariants on converging inputs" begin
+        # Bennett-s0tn: `verify_reversibility` random-sweeps all 8 bits of
+        # `n`; a random n > K=5 overflows the unroll bound and the
+        # loop-overflow guard correctly throws. Verify the ancilla-zero +
+        # input-preservation invariants on the in-range (converging)
+        # inputs — `simulate` runs exactly those assertions internally.
         c = reversible_compile(_jepw_branching_body, Int8, Int8;
                                max_loop_iterations=5, optimize=false)
-        @test verify_reversibility(c; n_tests=16)
+        for x in Int8(-3):Int8(3), n in Int8(0):Int8(5)
+            @test simulate(c, (x, n)) == _jepw_branching_body(x, n)
+        end
     end
 
     @testset "T2: diamond used locally — Julia oracle agreement" begin
@@ -82,7 +89,9 @@ end
         for x in Int8(-3):Int8(3), n in Int8(0):Int8(4)
             @test simulate(c, (x, n)) == _jepw_diamond_used_locally(x, n)
         end
-        @test verify_reversibility(c; n_tests=16)
+        # Bennett-s0tn: bare verify_reversibility random-sweeps would hit
+        # n > K=4 (overflow → loud throw); the in-range `simulate` loop
+        # above already runs the ancilla/input-preservation invariants.
     end
 
     @testset "T3: diamond noop-merge — Julia oracle agreement" begin
@@ -91,7 +100,7 @@ end
         for x in Int8(-3):Int8(3), n in Int8(0):Int8(4)
             @test simulate(c, (x, n)) == _jepw_diamond_noop_merge(x, n)
         end
-        @test verify_reversibility(c; n_tests=16)
+        # Bennett-s0tn: see T2 — in-range simulate already covers invariants.
     end
 
     @testset "T4: gate count scales with K (no silent body drop)" begin
@@ -119,7 +128,7 @@ end
         for x in Int8(-3):Int8(3), n in Int8(0):Int8(6)
             @test simulate(c, (x, n)) == _u05_accumulator(x, n)
         end
-        @test verify_reversibility(c; n_tests=16)
+        # Bennett-s0tn: see T2 — in-range simulate already covers invariants.
     end
 
     @testset "T6: regression — non-loop sanity (i8 x+1 baseline pinned)" begin

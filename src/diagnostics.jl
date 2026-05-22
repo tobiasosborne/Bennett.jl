@@ -251,6 +251,18 @@ function verify_reversibility(c::ReversibleCircuit; n_tests::Int=100)
 
         for g in c.gates; apply!(bits, g); end
 
+        # Bennett-s0tn: loop-overflow check first — an undersized K leaves
+        # the loop-check wire at 0 AND can leave ancillae dirty; surface
+        # the convergence failure as the actionable root cause instead of
+        # crashing on the downstream ancilla symptom.
+        for lg in c.loop_check_wires
+            bits[lg.wire] || error(
+                "verify_reversibility (test $t): data-dependent loop with " *
+                "header :$(lg.header_label) did not converge within " *
+                "max_loop_iterations=$(lg.K) for the random probe input — " *
+                "recompile with a larger max_loop_iterations")
+        end
+
         for w in c.ancilla_wires
             bits[w] && error("verify_reversibility (test $t): ancilla wire $w not zero after forward pass — Bennett ancilla-clean invariant violated")
         end

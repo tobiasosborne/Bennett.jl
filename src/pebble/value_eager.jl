@@ -40,6 +40,9 @@ function _value_eager_bennett_impl(lr::LoweringResult)
                               lr.output_wires, lr)
     end
 
+    # Bennett-s0tn: loop-guard copy-out lives only in `_bennett_default`.
+    isempty(lr.loop_guards) || return _bennett_default(lr)
+
     groups = lr.gate_groups
     if isempty(groups)
         return bennett(lr)

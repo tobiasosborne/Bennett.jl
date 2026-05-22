@@ -320,6 +320,10 @@ runfile("test_prtp_pebbled_branching.jl")
 # canonical _lower_inst! dispatcher AND walks body blocks outside the
 # header. Linear multi-block bodies work; diamond-in-body deferred.
 runfile("test_httg_loop_multiblock.jl")
+# Bennett-s0tn — fail-loud loop-overflow detection: lower_loop! emits a
+# convergence wire copied out parallel to Bennett's output copy-out;
+# simulate errors loud when an input needs more than max_loop_iterations.
+runfile("test_s0tn_loop_overflow.jl")
 # Bennett-k286 / U07 — soft_fpext force-quiets signalling-NaN inputs per
 # IEEE 754-2019 §5.4.1 (bit 51 of the Float64 result).
 runfile("test_k286_fpext_snan_quiet.jl")

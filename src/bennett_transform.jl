@@ -1,17 +1,33 @@
-"""Compute ancilla wire list: all wires not in input or output sets."""
-function _compute_ancillae(total::Int, input_wires, output_wires)
+"""
+Compute ancilla wire list: all wires not in input, output, or loop-check
+sets. Bennett-s0tn: `loop_check` wires are a fourth class — they hold a
+deliberate post-bennett convergence bit and must NOT be checked as
+ancillae (a healthy circuit ends with a loop-check wire at 1).
+"""
+function _compute_ancillae(total::Int, input_wires, output_wires,
+                           loop_check_wires=LoopGuard[])
     in_set  = Set(input_wires)
     out_set = Set(output_wires)
-    return [w for w in 1:total if !(w in in_set) && !(w in out_set)]
+    lc_set  = Set(lg.wire for lg in loop_check_wires)
+    return [w for w in 1:total
+            if !(w in in_set) && !(w in out_set) && !(w in lc_set)]
 end
 
-"""Build a ReversibleCircuit from gates, input/output wires, and metadata."""
+"""
+Build a ReversibleCircuit from gates, input/output wires, and metadata.
+Bennett-s0tn: `loop_check_wires` (post-bennett convergence copy-out wires)
+default empty; they are excluded from the ancilla set and form the fourth
+wire-partition class.
+"""
 function _build_circuit(all_gates::Vector{ReversibleGate}, total::Int,
                         input_wires::Vector{Int}, output_wires::Vector{Int},
-                        lr::LoweringResult)
-    ancillae = _compute_ancillae(total, input_wires, output_wires)
+                        lr::LoweringResult,
+                        loop_check_wires::Vector{LoopGuard}=LoopGuard[])
+    ancillae = _compute_ancillae(total, input_wires, output_wires,
+                                 loop_check_wires)
     return ReversibleCircuit(total, all_gates, input_wires, output_wires,
-                             ancillae, lr.input_widths, lr.output_elem_widths)
+                             ancillae, lr.input_widths, lr.output_elem_widths,
+                             loop_check_wires)
 end
 
 """
@@ -289,6 +305,15 @@ function _bennett_default(lr::LoweringResult)
     # contract before trusting it; silent acceptance of a broken
     # self_reversing primitive would poison every downstream circuit.
     if lr.self_reversing
+        # Bennett-s0tn: a self-reversing primitive is a closed self-cleaning
+        # gate sequence — it cannot contain an unrolled data-dependent loop
+        # (a loop LR always branches, and `_infer_self_reversing` rejects
+        # branching LRs). A non-empty loop_guards here is a contradiction.
+        isempty(lr.loop_guards) || error(
+            "bennett: lr.self_reversing=true but lr.loop_guards is non-empty " *
+            "($(length(lr.loop_guards)) guard(s)) — a self-reversing primitive " *
+            "cannot contain a data-dependent loop. The lowering is inconsistent " *
+            "(Bennett-s0tn).")
         _validate_self_reversing!(lr)
         # Bennett-nj5r / U200: pass lr.gates directly. ReversibleCircuit
         # stores the array but does not mutate it; no caller mutates
@@ -301,16 +326,39 @@ function _bennett_default(lr::LoweringResult)
 
     copy_wires, total = _allocate_copy_wires(lr)
 
+    # Bennett-s0tn: allocate one extra post-bennett wire per loop guard,
+    # appended after the output copy wires. The forward-pass convergence
+    # wire `lg.wire` is copied into `conv_copy` by a CNOT placed parallel
+    # to the output copy-out — it survives the reverse pass exactly as
+    # f(x) does.
+    n_loop = length(lr.loop_guards)
+    loop_copy_start = total + 1
+    loop_check_wires = LoopGuard[
+        LoopGuard(loop_copy_start + (i - 1), lr.loop_guards[i].header_label,
+                  lr.loop_guards[i].K)
+        for i in 1:n_loop]
+    total += n_loop
+
     all_gates = ReversibleGate[]
-    sizehint!(all_gates, 2 * length(lr.gates) + length(lr.output_wires))
+    sizehint!(all_gates,
+              2 * length(lr.gates) + length(lr.output_wires) + n_loop)
 
     append!(all_gates, lr.gates)
     _emit_copy_gates!(all_gates, lr.output_wires, copy_wires)
+    # Bennett-s0tn: copy-out the convergence bits parallel to the output
+    # copy-out. Placed BEFORE the reverse pass so the reverse uncomputes
+    # `lr.loop_guards[i].wire` back to 0 while `loop_check_wires[i].wire`
+    # stays frozen with the convergence value.
+    for i in 1:n_loop
+        push!(all_gates, CNOTGate(lr.loop_guards[i].wire,
+                                  loop_check_wires[i].wire))
+    end
     for i in length(lr.gates):-1:1
         push!(all_gates, lr.gates[i])
     end
 
-    return _build_circuit(all_gates, total, lr.input_wires, copy_wires, lr)
+    return _build_circuit(all_gates, total, lr.input_wires, copy_wires, lr,
+                          loop_check_wires)
 end
 
 """
