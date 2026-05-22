@@ -206,6 +206,11 @@ julia --project -e 'using Pkg; Pkg.test()'
 # Run a single test file
 julia --project test/test_increment.jl
 
+# Run a single test file the way Pkg.test() does (--check-bounds=yes forces
+# every @boundscheck ON; some tests behave differently — see Bennett-2mj3).
+# A per-file "green" claim is only meaningful if it matches the suite mode:
+julia --project --check-bounds=yes test/test_increment.jl
+
 # Quick REPL check
 julia --project -e 'using Bennett; c = reversible_compile(x -> x + Int8(1), Int8); println(gate_count(c))'
 

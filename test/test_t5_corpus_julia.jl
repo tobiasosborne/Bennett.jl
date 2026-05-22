@@ -1,5 +1,6 @@
 using Test
 using Bennett
+using LLVM   # Bennett-2mj3: TJ1 is driven off a .ll fixture (see its testset)
 
 # T5 corpus — Julia (T5-P2a)
 #
@@ -72,7 +73,22 @@ using Bennett
         @test_throws ErrorException reversible_compile(f_tj1, Int8)
 
         # GREEN under mem=:heap (Bennett-5ikt / M3).
-        c = reversible_compile(f_tj1, Int8; mem=:heap)
+        #
+        # Bennett-2mj3: driven off the PRE-CAPTURED heap_m3_tj1.ll fixture, not
+        # `code_llvm`'d in-suite. `Pkg.test()` runs `--check-bounds=yes`, which
+        # forces `@boundscheck` ON — f_tj1's IR then carries an
+        # `@ijl_bounds_error_int` call the heap recogniser (correctly, FAIL-
+        # LOUD) rejects, so it cannot be compiled from source inside the
+        # suite. heap_m3_tj1.ll was captured under DEFAULT check-bounds (the
+        # IR shape the recogniser was designed for) by
+        # `scripts/gen_heap_fixtures.jl`. The oracle sweep is unchanged.
+        local c
+        LLVM.Context() do _ctx
+            mod = parse(LLVM.Module,
+                        read(joinpath(@__DIR__, "fixtures", "heap_m3_tj1.ll"), String))
+            parsed = Bennett._module_to_parsed_ir(mod; mem=:heap)
+            c = Bennett.bennett(Bennett.lower(parsed))
+        end
         @test verify_reversibility(c)
         for x in typemin(Int8):typemax(Int8)
             expected = f_tj1(x)  # x + (x+1) + (x+2) = 3x + 3 (mod 256)

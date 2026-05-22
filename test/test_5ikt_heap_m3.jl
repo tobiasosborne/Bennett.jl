@@ -80,65 +80,68 @@ end
 
 @testset "Bennett-5ikt / M3 — push!-built Vector, static count" begin
 
-    @testset "f_tj1 — push×3 + reduce, oracle 3x+3" begin
-        c = reversible_compile(f_tj1, Int8; mem=:heap)
+    # Bennett-2mj3: the happy-path subjects are driven off PRE-CAPTURED .ll
+    # fixtures, not `code_llvm`'d in-suite. `Pkg.test()` runs `--check-bounds=
+    # yes`, which forces every `@boundscheck` ON — the heap functions' IR then
+    # carries an `@ijl_bounds_error_int` call the recogniser (correctly, FAIL-
+    # LOUD) rejects, so they cannot be compiled from source inside the suite.
+    # heap_m3_tj1.ll / heap_m3_tj1_2push.ll were captured under DEFAULT check-
+    # bounds (the IR shape the recogniser was designed for) by
+    # `scripts/gen_heap_fixtures.jl`. The oracle sweeps below are unchanged.
+    @testset "f_tj1 — push×3 + reduce, oracle 3x+3 (.ll fixture)" begin
+        c = _m3_compile_ll("heap_m3_tj1.ll")
         @test verify_reversibility(c)
         for x in Int8(-128):Int8(127)
-            @test simulate(c, x) == f_tj1(x)
+            @test simulate(c, x) == f_tj1(x)   # oracle: 3x+3 (mod 256)
         end
     end
 
-    @testset "f_tj1_2push — push×2 + reduce, oracle 2x+1" begin
-        c = reversible_compile(f_tj1_2push, Int8; mem=:heap)
+    @testset "f_tj1_2push — push×2 + reduce, oracle 2x+1 (.ll fixture)" begin
+        c = _m3_compile_ll("heap_m3_tj1_2push.ll")
         @test verify_reversibility(c)
         for x in Int8(-128):Int8(127)
-            @test simulate(c, x) == f_tj1_2push(x)
+            @test simulate(c, x) == f_tj1_2push(x)   # oracle: 2x+1 (mod 256)
         end
     end
 
-    @testset "reject — runtime-count push! in a loop" begin
-        # `for k in 1:x; push!(v,k)` — the heap alloc / growend! sit on a loop
-        # body. The back-edge guard (Bennett-gps7 / M1) rejects loud before
-        # any M3 logic. Message pinned so a future M3 change cannot silently
-        # reroute this case through a different (wrong) reject.
-        floop(x::Int8) = let v = Int8[]
-            for k in Int8(1):x
-                push!(v, k)
-            end
-            reduce(+, v)
-        end
-        _m3_assert_rejects(() -> reversible_compile(floop, Int8; mem=:heap),
+    # Bennett-2mj3: the three source-driven reject cases below are driven off
+    # PRE-CAPTURED .ll fixtures. Under `Pkg.test()`'s `--check-bounds=yes`,
+    # `code_llvm`'ing these from source injects an `@ijl_bounds_error_int`
+    # call, so the recogniser rejects on that BOUNDS reason instead of the
+    # intended one — making the pinned substring non-deterministic. Driving
+    # off fixtures captured under DEFAULT check-bounds (by
+    # `scripts/gen_heap_fixtures.jl`) makes the reject reason stable. The
+    # Julia reference functions are kept above for documentation/provenance.
+    @testset "reject — runtime-count push! in a loop (.ll fixture)" begin
+        # heap_reject_floop.ll = `for k in 1:x; push!(v,k)`. The heap alloc /
+        # growend! sit on a loop body; the back-edge guard (Bennett-gps7 / M1)
+        # rejects loud before any M3 logic. Message pinned so a future M3
+        # change cannot silently reroute this through a different reject.
+        _m3_assert_rejects(() -> _m3_compile_ll("heap_reject_floop.ll"),
                            "back-edge")
     end
 
-    @testset "reject — push! inside a runtime if" begin
-        # A real user `if` guarding a push! → a surviving non-growend,
-        # non-bounds conditional branch. It rejects EARLY, via the M2 helper
-        # `_collapse_bounds_diamond` ("not a bounds-check diamond ... general
-        # control flow is out of M2 scope") — NOT via M3's G1. G1
-        # diamond-completeness is a valid backstop for this class, but it is
-        # unreachable here because the M2 bounds-diamond collapse runs first
-        # and already rejects the surviving user branch.
-        fif(x::Int8) = let v = Int8[]
-            push!(v, x)
-            if x > Int8(0)
-                push!(v, x + Int8(1))
-            end
-            reduce(+, v)
-        end
-        _m3_assert_rejects(() -> reversible_compile(fif, Int8; mem=:heap),
+    @testset "reject — push! inside a runtime if (.ll fixture)" begin
+        # heap_reject_fif.ll = a real user `if` guarding a push! → a surviving
+        # non-growend, non-bounds conditional branch. It rejects EARLY, via
+        # the M2 helper `_collapse_bounds_diamond` ("not a bounds-check
+        # diamond ... general control flow is out of M2 scope") — NOT via
+        # M3's G1. G1 diamond-completeness is a valid backstop for this class,
+        # but it is unreachable here because the M2 bounds-diamond collapse
+        # runs first and already rejects the surviving user branch.
+        _m3_assert_rejects(() -> _m3_compile_ll("heap_reject_fif.ll"),
                            "not a bounds-check diamond")
     end
 
-    @testset "reject — escaping vector whose reduce loops" begin
-        # `_m3_escape` passes the vector to a non-inlined callee `_m3_sink`.
-        # The escape forces `reduce` to lower as a runtime loop, so the FIRST
-        # obligation hit is the M1 back-edge guard — NOT the M3 G2
-        # pointer-family no-escape obligation. (G2 itself is currently
-        # unreachable: M2-O5's escape check already covers the whole
-        # `data_roots` family that G2 re-scans — see the session log /
-        # orchestrator review for Bennett-5ikt M3.)
-        _m3_assert_rejects(() -> reversible_compile(_m3_escape, Int8; mem=:heap),
+    @testset "reject — escaping vector whose reduce loops (.ll fixture)" begin
+        # heap_reject_escape.ll = `_m3_escape`: the vector is passed to a
+        # non-inlined callee `_m3_sink`. The escape forces `reduce` to lower
+        # as a runtime loop, so the FIRST obligation hit is the M1 back-edge
+        # guard — NOT the M3 G2 pointer-family no-escape obligation. (G2
+        # itself is currently unreachable: M2-O5's escape check already covers
+        # the whole `data_roots` family that G2 re-scans — see the session
+        # log / orchestrator review for Bennett-5ikt M3.)
+        _m3_assert_rejects(() -> _m3_compile_ll("heap_reject_escape.ll"),
                            "back-edge")
     end
 

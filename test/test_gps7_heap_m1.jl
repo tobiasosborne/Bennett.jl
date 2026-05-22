@@ -20,11 +20,35 @@
 
 using Test
 using Bennett
+using LLVM
 
 # ---------------------------------------------------------------------------
 # The M1 reference function. f1 builds a heap Int8 vector, pushes x, returns
 # v[1] — which is x. f1 is the identity on Int8.
+#
+# Bennett-2mj3: f1 is now driven off a PRE-CAPTURED .ll fixture rather than
+# `code_llvm`'d in-suite. `Pkg.test()` runs `--check-bounds=yes`, which forces
+# every `@boundscheck` ON — f1's IR then carries an `@ijl_bounds_error_int`
+# call the heap recogniser (correctly, FAIL-LOUD) rejects, so f1 cannot be
+# compiled from source inside the suite. heap_m1_f1.ll was captured under
+# DEFAULT check-bounds (the IR shape the recogniser was designed for) by
+# `scripts/gen_heap_fixtures.jl`. The oracle check (f1 == identity) is
+# unchanged — fixture conversion replaces only the IR-gen step.
 f1(x::Int8) = let v = Int8[]; push!(v, x); v[1] end
+
+const _GPS7_FIX = joinpath(@__DIR__, "fixtures")
+
+# Compile a hand-written/captured .ll fixture under mem=:heap. Same idiom as
+# `_m3_compile_ll` in test_5ikt_heap_m3.jl.
+function _gps7_compile_ll(name::AbstractString)
+    ir = read(joinpath(_GPS7_FIX, name), String)
+    LLVM.Context() do _ctx
+        mod = parse(LLVM.Module, ir)
+        parsed = Bennett._module_to_parsed_ir(mod; mem=:heap)
+        lr = Bennett.lower(parsed)
+        Bennett.bennett(lr)
+    end
+end
 
 # Stress shapes (see consensus §6 risk surface). Each is dumped + studied as
 # real optimize=true IR; the assertions below are pinned to observed
@@ -53,19 +77,25 @@ f_vec_tuples(x::Int8) = let v = Tuple{Int8,Int8}[]; push!(v, (x, x)); v[1][1] en
 # (zero @ijl_gc_small_alloc) and compilation must be byte-identical to default.
 g_nonheap(x::Int8) = x + Int8(1)
 
-# cond_pair: under default Julia check-bounds this lowers with a stack
-# `alloca [3 x i64]` and NO GC skeleton. Under mem=:heap the recogniser is
-# therefore inert and behaviour is identical to default. The M1 contract is
-# "never MISCOMPILE cond_pair" — a loud reject is acceptable.
-const _gps7_cond_pair = (x::Int8,) -> [x, -x][1 + Int(x < Int8(0))]
+# cond_pair: `[x, -x][1 + (x<0)]` — selects x when x≥0, -x when x<0, i.e.
+# it computes abs(x) (note -(-128) wraps to -128). The vector literal lowers
+# to a small heap `Vector{Int8}`, so the GC skeleton IS present and the
+# mem=:heap recogniser DOES run on it. The M1 contract is "never MISCOMPILE
+# cond_pair": whatever the recogniser does, the result must be oracle-correct.
+#
+# Bennett-2mj3: the lambda has ONE positional arg `x::Int8` — earlier the test
+# called it as `_gps7_cond_pair((x,))` (a 1-tuple), which is a plain bug. It
+# is now called `_gps7_cond_pair(x)`.
+const _gps7_cond_pair = (x::Int8) -> [x, -x][1 + Int(x < Int8(0))]
 
 @testset "Bennett-gps7 / M1 — heap-memory support" begin
 
-    @testset "f1 compiles under mem=:heap" begin
-        c = reversible_compile(f1, Int8; mem=:heap)
+    @testset "f1 compiles under mem=:heap (.ll fixture)" begin
+        # Driven off heap_m1_f1.ll — see the f1 header note (Bennett-2mj3).
+        c = _gps7_compile_ll("heap_m1_f1.ll")
         @test verify_reversibility(c)
         for x in typemin(Int8):typemax(Int8)
-            @test simulate(c, x) == f1(x)
+            @test simulate(c, x) == f1(x)   # oracle: f1 is the identity
         end
     end
 
@@ -99,26 +129,21 @@ const _gps7_cond_pair = (x::Int8,) -> [x, -x][1 + Int(x < Int8(0))]
     end
 
     @testset "stress: cond_pair never miscompiles under mem=:heap" begin
-        # cond_pair has no GC skeleton; recogniser inert; behaviour ==
-        # default. Whatever happens, it must NOT silently produce a wrong
-        # circuit. Default rejects (stack-alloca width mismatch); mem=:heap
-        # must reject identically.
-        default_threw = false
-        try
-            reversible_compile(_gps7_cond_pair, Int8)
-        catch
-            default_threw = true
-        end
-        if default_threw
-            @test_throws Exception reversible_compile(_gps7_cond_pair, Int8; mem=:heap)
-        else
-            # If default ever starts compiling cond_pair, mem=:heap must
-            # produce an oracle-correct circuit (never a miscompile).
-            c = reversible_compile(_gps7_cond_pair, Int8; mem=:heap)
-            @test verify_reversibility(c)
-            for x in typemin(Int8):typemax(Int8)
-                @test simulate(c, x) == _gps7_cond_pair((x,))
-            end
+        # The M1 contract is "never MISCOMPILE cond_pair". Under mem=:heap the
+        # `[x,-x]` vector literal's GC skeleton is recognised and collapsed,
+        # and cond_pair compiles to a circuit that must be oracle-correct.
+        #
+        # Bennett-2mj3: this is asserted DIRECTLY — the test no longer branches
+        # on whether the default path throws. (The default mem=:auto path's
+        # behaviour differs by check-bounds mode: under `--check-bounds=yes`,
+        # which `Pkg.test()` uses, it rejects on the U15 inline-asm wall;
+        # under default check-bounds it compiles. That brittle mode-dependence
+        # was the old test's bug — and it is irrelevant to the M1 contract,
+        # which is about the mem=:heap path being correct.)
+        c = reversible_compile(_gps7_cond_pair, Int8; mem=:heap)
+        @test verify_reversibility(c)
+        for x in typemin(Int8):typemax(Int8)
+            @test simulate(c, x) == _gps7_cond_pair(x)
         end
     end
 end

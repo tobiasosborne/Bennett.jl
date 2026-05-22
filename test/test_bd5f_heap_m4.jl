@@ -124,18 +124,20 @@ end
             "back-edge")
     end
 
-    @testset "reject — runtime-loop push!" begin
+    @testset "reject — runtime-loop push! (.ll fixture)" begin
         # `for k in 1:x; push!(v,k)` — the heap alloc / growend! sit on a loop
         # body. The back-edge guard rejects loud (also covered by M3's
         # test_5ikt_heap_m3.jl; pinned here against the sharpened message).
-        floop(x::Int8) = let v = Int8[]
-            for k in Int8(1):x
-                push!(v, k)
-            end
-            reduce(+, v)
-        end
+        #
+        # Bennett-2mj3: driven off heap_reject_floop.ll (shared with
+        # test_5ikt_heap_m3.jl). `Pkg.test()` runs `--check-bounds=yes`, which
+        # makes `code_llvm`'ing `floop` from source inject an
+        # `@ijl_bounds_error_int` call — the recogniser then rejects on that
+        # bounds reason, NOT the intended back-edge. The fixture (captured
+        # under DEFAULT check-bounds by `scripts/gen_heap_fixtures.jl`) makes
+        # the reject reason deterministic.
         _m4_assert_rejects(
-            () -> reversible_compile(floop, Int8; mem=:heap),
+            () -> _m4_compile_ll("heap_reject_floop.ll"),
             "back-edge")
     end
 
