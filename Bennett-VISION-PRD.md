@@ -8,6 +8,16 @@ transforms arbitrary programs into optimized gradients.
 
 ---
 
+> **North star for the next major version — the reversible-VM backend.**
+> A fixed reversible *circuit* has no loop construct and no runtime-sized
+> memory, so it cannot represent a terminating computation of
+> statically-unknown length (an unbounded loop, a runtime-sized data
+> structure). The next-version direction is a **second lowering target** — a
+> reversible abstract machine, selected via the existing `target=` dispatch —
+> that emits a reversible *program* rather than a circuit, the same
+> architectural choice that lets Enzyme handle dynamic control flow and
+> dynamic memory. See **`Bennett-ReversibleVM-PRD.md`** (bead `Bennett-spqu`).
+
 ## 1. Vision
 
 **Enzyme showed that automatic differentiation belongs at the LLVM level.**
