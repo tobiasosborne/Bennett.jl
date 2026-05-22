@@ -687,6 +687,9 @@ runfile("test_kuza_heap_m2.jl")
 # Bennett-5ikt / M3: Julia heap-memory support — push!-built Vector, static count.
 runfile("test_5ikt_heap_m3.jl")
 
+# Bennett-bd5f / M4: Julia heap-memory support — fail-loud scope hardening.
+runfile("test_bd5f_heap_m4.jl")
+
 # Bennett-fidj / U217: liveness × :auto add dispatcher coverage.
 runfile("test_fidj_liveness_auto_dispatcher.jl")
 

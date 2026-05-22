@@ -91,6 +91,15 @@ using Bennett
     #   (the volatile GC-frame memset is now silent-dropped — 8su4).
     # Downstream root cause: past the inline-asm wall, `@ijl_gc_small_alloc`
     #   then `j_setindex!` (irreversible hash-table mutation).
+    #
+    # OUT-OF-SCOPE for the gf3n heap-memory milestones (Bennett-bd5f / M4):
+    #   a Dict is an irreversible hash-table mutation with no fixed-width
+    #   element layout — it is NOT a heap-memory case. Under `mem=:heap` the
+    #   M4 scope guard rejects a Dict precisely (naming Dict + the j_setindex!
+    #   callee). Dict support is a separate research workstream — see
+    #   Bennett-800b. The dedicated precise-message regression lives in
+    #   test_bd5f_heap_m4.jl; this corpus test stays a plain @test_throws to
+    #   avoid duplicating that coverage.
     # ─────────────────────────────────────────────────────────────────────────
     @testset "TJ2: Dict{Int8,Int8} insert + lookup" begin
         f_tj2(k::Int8, v::Int8) = let d = Dict{Int8,Int8}()
@@ -187,10 +196,11 @@ end
     #   ErrorException: "inline-asm call is not supported (Bennett-5oyt / U15)"
     # Surface root cause: same x86-64 `thread_ptr` TLS-read inline-asm as
     #   TJ1/TJ2 (the volatile GC-frame memset is now silent-dropped — 8su4).
-    # MIRAGE WARNING (Bennett-890r): even with the whole pipeline fixed,
-    #   `a[i]=x; a[i]` is store-to-load-forwarded by LLVM to `ret x` — TJ4
-    #   would compile to an identity circuit and NOT actually exercise array
-    #   indexing.  A faithful test needs distinct store/load indices.
+    # MIRAGE WARNING (Bennett-890r — store-to-load mirage redesign): even with
+    #   the whole pipeline fixed, `a[i]=x; a[i]` is store-to-load-forwarded by
+    #   LLVM to `ret x` — TJ4 would compile to an identity circuit and NOT
+    #   actually exercise array indexing.  A faithful test needs distinct
+    #   store/load indices; that redesign is tracked in Bennett-890r.
     # Downstream root cause: past the inline-asm wall, `@ijl_gc_small_alloc`
     #   (heap pointer, no alloca root).  cc0.5's "thread_ptr GEP" description
     #   is stale — the actual first wall is the inline-asm read above.

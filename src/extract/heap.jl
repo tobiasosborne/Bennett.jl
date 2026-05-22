@@ -247,6 +247,118 @@ function _heap_is_allowlisted_callee(name::AbstractString)
 end
 
 # ---------------------------------------------------------------------------
+# Bennett-bd5f / M4 — fail-loud scope hardening.
+#
+# M4 is the LAST gf3n milestone: it adds NO extraction / partition / lowering
+# logic. It is purely a set of PRECISE, signpost rejects placed AHEAD of the
+# generic recognition rejects, so a user/agent who hits a scope wall is told
+# exactly WHAT is unsupported and WHERE to look. Every case M4 names already
+# rejected loud before M4 (correctness was fine); M4 only sharpens the message
+# and rejects a few lines earlier.
+#
+# CRITICAL — name-matching discipline (the M1 `growend!` false-positive
+# lesson, §5/§10): M4 matches against callee FUNCTION names only (via
+# `_heap_callee_name`) with ANCHORED regexes. The Julia mangled forms below
+# were extracted from the actual `dump_module=true` recogniser IR (NOT
+# guessed): the `_NNN` suffix is a per-JIT-session counter and varies per
+# session, so it is matched as `\d+`, never literally.
+# ---------------------------------------------------------------------------
+
+function _m4_error(reason::AbstractString)
+    error("ir_extract.jl: heap-memory recogniser: $reason (Bennett-bd5f / M4)")
+end
+
+# Anchored callee-name regexes for the M4 scope-boundary cases. Each is the
+# real Julia mangled form observed in the recogniser's entry-function IR.
+#
+#   `j_setindex!_NNN`  — `Dict`'s `setindex!` (`d[k] = v`). A Dict reaches the
+#                        recogniser with this callee plus three
+#                        `@ijl_gc_small_alloc` calls; the generic 3-alloc
+#                        count guard would otherwise reject it with a message
+#                        that says nothing about Dict.
+#   `j__growat!_NNN`   — `insert!(v, i, x)` mid-array insert.
+#   `j__deleteat!_NNN` — `deleteat!(v, i)` mid-array delete.
+const _M4_DICT_SETINDEX_RE  = r"^j_setindex!_\d+$"
+const _M4_GROWAT_CALLEE_RE  = r"^j__growat!_\d+$"
+const _M4_DELETEAT_CALLEE_RE = r"^j__deleteat!_\d+$"
+
+# C / Rust heap allocators. Matched EXACT (anchored, no session suffix — these
+# are external C symbols, not Julia-mangled). Used only when no
+# `@ijl_gc_small_alloc` is present (a pure C/Rust heap function).
+const _M4_C_ALLOCATOR_NAMES = ("malloc", "calloc", "realloc")
+
+"""
+    _m4_scope_guard(func, has_julia_alloc)
+
+M4 scope-boundary pre-pass. Runs ONLY under `mem === :heap` (its sole caller
+`_detect_gc_preamble!` is already gated). Scans the entry function's callee
+names and rejects the M4 scope-boundary cases with a precise, signpost
+message — AHEAD of the generic recognition rejects so the user sees the
+actionable message, not a downstream symptom.
+
+`has_julia_alloc` is true iff the function contains ≥1 `@ijl_gc_small_alloc`
+(the Julia GC allocator). The C/Rust-allocator reject fires only when it is
+false — a function with the Julia allocator is a normal heap function and any
+incidental `malloc` symbol is out of scope for a different reason.
+
+Purely additive: every case here already rejected loud pre-M4. No algorithm
+change, no IR mutation.
+"""
+function _m4_scope_guard(func::LLVM.Function, has_julia_alloc::Bool)
+    for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
+        cname = _heap_callee_name(inst)
+        isempty(cname) && continue
+
+        # ----- Dict (irreversible hash-table mutation) --------------------
+        if occursin(_M4_DICT_SETINDEX_RE, cname)
+            _m4_error("`Dict` detected — call to `@$cname` " *
+                      "($(_heap_vname(inst))) is `setindex!` on a Julia " *
+                      "`Dict`. A Dict is an irreversible hash-table mutation " *
+                      "(rehash, probe-sequence reorder, ndel bookkeeping) " *
+                      "with no fixed-width element layout; it is out of " *
+                      "heap-memory (gf3n M1-M4) scope. Dict support is a " *
+                      "separate research workstream — see Bennett-800b")
+        end
+
+        # ----- mid-array insert! ------------------------------------------
+        if occursin(_M4_GROWAT_CALLEE_RE, cname)
+            _m4_error("mid-array `insert!` detected — call to `@$cname` " *
+                      "($(_heap_vname(inst))) is Julia's `_growat!`. " *
+                      "`insert!(v, i, x)` shifts every element above index i; " *
+                      "M3 recognises only `push!`-at-the-end growth. " *
+                      "Mid-array insert!/deleteat! is out of heap-memory " *
+                      "(gf3n M1-M4) scope")
+        end
+
+        # ----- mid-array deleteat! ----------------------------------------
+        if occursin(_M4_DELETEAT_CALLEE_RE, cname)
+            _m4_error("mid-array `deleteat!` detected — call to `@$cname` " *
+                      "($(_heap_vname(inst))) is Julia's `_deleteat!`. " *
+                      "`deleteat!(v, i)` shifts every element above index i " *
+                      "down and shrinks the array; M1-M3 recognise only " *
+                      "monotone `push!`-at-the-end growth. Mid-array " *
+                      "insert!/deleteat! is out of heap-memory (gf3n M1-M4) " *
+                      "scope")
+        end
+
+        # ----- C / Rust heap allocator ------------------------------------
+        # Only when there is NO Julia GC allocator: a pure C/Rust heap
+        # function. (The C-malloc function also rejects upstream via the U15
+        # callee guard; M4 rejects earlier with a heap-specific signpost.)
+        if !has_julia_alloc && cname in _M4_C_ALLOCATOR_NAMES
+            _m4_error("C/Rust heap allocator `@$cname` " *
+                      "($(_heap_vname(inst))) detected with NO " *
+                      "`@ijl_gc_small_alloc` present. The heap-memory " *
+                      "recogniser models ONLY the Julia GC allocator " *
+                      "`@ijl_gc_small_alloc`; `malloc`/`calloc`/`realloc` " *
+                      "from C or Rust have no recognised GC skeleton and are " *
+                      "out of heap-memory (gf3n M1-M4) scope")
+        end
+    end
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
 # Entry point: _detect_gc_preamble!
 # ---------------------------------------------------------------------------
 
@@ -278,6 +390,15 @@ function _detect_gc_preamble!(func::LLVM.Function,
     for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
         _heap_callee_name(inst) == "ijl_gc_small_alloc" && push!(allocs, inst)
     end
+
+    # ---- Bennett-bd5f / M4 — precise scope-boundary rejects. ----
+    # Runs BEFORE the inert-return and BEFORE the ≥3-alloc count guard so the
+    # Dict / insert! / deleteat! / C-malloc cases reject with a signpost
+    # message rather than a generic downstream symptom. Gated behind
+    # `mem === :heap` by the entry-point gate above. Purely additive — every
+    # case it names already rejected loud pre-M4.
+    _m4_scope_guard(func, !isempty(allocs))
+
     isempty(allocs) && return _HeapSkeleton()
     # Bennett-kuza / M2: a heap *array* allocates a Memory backing object plus
     # (for `Array{T}(undef,N)`) an Array wrapper — two `@ijl_gc_small_alloc`.
@@ -400,8 +521,11 @@ function _heap_assert_no_backedge(func::LLVM.Function, alloc::LLVM.Instruction)
             j != 0 && j <= i &&
                 _heap_error("control-flow back-edge detected (block " *
                             "%$(LLVM.name(bb)) branches to earlier block " *
-                            "%$(LLVM.name(succ))); a heap allocation inside a " *
-                            "loop body is out of M1 scope")
+                            "%$(LLVM.name(succ))); a heap allocation reachable " *
+                            "on a loop body — e.g. a runtime-count `push!` or " *
+                            "a runtime-N `Array{T}(undef,n)` — is out of " *
+                            "M1/M3 scope (M1-M3 recognise straight-line + a " *
+                            "fully-skeleton / bounds-check diamond only)")
         end
     end
     return nothing
