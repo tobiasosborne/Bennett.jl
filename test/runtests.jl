@@ -684,6 +684,9 @@ runfile("test_gps7_heap_m1.jl")
 # Bennett-kuza / M2: Julia heap-memory support — Array{T}(undef,N) re-rooting.
 runfile("test_kuza_heap_m2.jl")
 
+# Bennett-5ikt / M3: Julia heap-memory support — push!-built Vector, static count.
+runfile("test_5ikt_heap_m3.jl")
+
 # Bennett-fidj / U217: liveness × :auto add dispatcher coverage.
 runfile("test_fidj_liveness_auto_dispatcher.jl")
 

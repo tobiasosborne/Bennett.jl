@@ -12,7 +12,15 @@ using Bennett
 #   T5 — universal fallback: unbounded dynamic memory
 #   (Vector, Dict, mutable recursive types with runtime dispatch)
 #
-# Current failure root cause for TJ1/TJ2/TJ3/TJ4 (refreshed 2026-05-21 — Bennett-8su4
+# TJ1 CLOSED GREEN (Bennett-5ikt / heap-memory Milestone M3, 2026-05-22):
+#   a push!-built `Vector{Int8}` with a statically-inferable element count
+#   now compiles under `mem=:heap` — the growend! capacity diamonds are
+#   recognised as dead skeleton and collapsed, N is inferred from the
+#   constant element-store offsets, the element traffic re-roots onto a
+#   synthetic alloca. The default `mem=:auto` path still rejects (M3 is
+#   opt-in). TJ2/TJ3/TJ4 unchanged. See the TJ1 testset header.
+#
+# Current failure root cause for TJ2/TJ3/TJ4 (refreshed 2026-05-21 — Bennett-8su4
 # de-risking spike):
 #   TJ1, TJ2, TJ4 — "inline-asm call is not supported (Bennett-5oyt / U15)".
 #     Bennett-8su4 (2026-05-21) relocated the memset volatile-value check so
@@ -41,17 +49,16 @@ using Bennett
     # ─────────────────────────────────────────────────────────────────────────
     # TJ1 — Vector{Int8} push×3 + reduce(+, v)
     #
-    # Pattern: dynamic n_elems (unbounded Vector).
-    # Current error (refreshed 2026-05-21 — Bennett-8su4 spike):
-    #   ErrorException: "inline-asm call is not supported (Bennett-5oyt / U15)"
-    # Surface root cause: Julia's GC/TLS preamble emits `%thread_ptr =
-    #   call ptr asm "movq %fs:0, $0"` — an x86-64 TLS read. The volatile
-    #   GC-frame memset that used to fail first is now silent-dropped (8su4).
-    #   Both `mem=:auto` AND `mem=:persistent, persistent_impl=:linear_scan`
-    #   hit this wall — extraction fails before the dispatcher is reached.
-    # Downstream root causes (confirmed by the 8su4 spike): past the
-    #   inline-asm wall lies `@ijl_gc_small_alloc` (heap pointer, no alloca
-    #   root) and then `j_#_growend!` (irreversible array realloc).
+    # Pattern: push!-built Vector with a statically-inferable element count.
+    # CLOSED GREEN by Bennett-5ikt / heap-memory Milestone M3 (2026-05-22):
+    #   `reversible_compile(f_tj1, Int8; mem=:heap)` now compiles. M3
+    #   recognises the `@j_#_growend!` capacity-check diamonds as dead
+    #   skeleton, collapses them, infers N=3 from the constant element-store
+    #   offset set {0,1,2}, and re-roots the element traffic onto a synthetic
+    #   3-element alloca. The `reduce(+, v)` element loads cross the
+    #   skeleton↔live-data boundary as taint sinks (M3-D) so the sum survives.
+    # The DEFAULT `mem=:auto` path still rejects (M3 is strictly opt-in via
+    #   `mem=:heap`) — the heap recogniser does not run under :auto.
     # ─────────────────────────────────────────────────────────────────────────
     @testset "TJ1: Vector{Int8} push×3 + reduce(+, v)" begin
         f_tj1(x::Int8) = let v = Int8[]
@@ -61,18 +68,17 @@ using Bennett
             reduce(+, v)
         end
 
-        # RED: today this throws on the inline-asm TLS wall (see above).
-        # Pre-9nwt the message was "Unknown value kind LLVMGlobalAliasValueKind".
+        # Default mem=:auto still rejects — M3 is opt-in (zero blast radius).
         @test_throws ErrorException reversible_compile(f_tj1, Int8)
 
-        # POST-T5-P6 GREEN (uncomment when :persistent_tree arm lands):
-        # c = reversible_compile(f_tj1, Int8)
-        # for x in typemin(Int8):typemax(Int8)
-        #     expected = f_tj1(x)  # x + (x+1) + (x+2) = 3x + 3 (mod 256)
-        #     @test simulate(c, Int8(x)) == expected
-        # end
-        # @test verify_reversibility(c; n_tests=3)
-        # println("  TJ1: ", gate_count(c))
+        # GREEN under mem=:heap (Bennett-5ikt / M3).
+        c = reversible_compile(f_tj1, Int8; mem=:heap)
+        @test verify_reversibility(c)
+        for x in typemin(Int8):typemax(Int8)
+            expected = f_tj1(x)  # x + (x+1) + (x+2) = 3x + 3 (mod 256)
+            @test simulate(c, Int8(x)) == expected
+        end
+        println("  TJ1: ", gate_count(c))
     end
 
     # ─────────────────────────────────────────────────────────────────────────

@@ -319,10 +319,31 @@ function _detect_gc_preamble!(func::LLVM.Function,
         end
     end
     if has_growend
-        # M1 path — dynamic heap vector, proven wholly dead. UNCHANGED.
-        _prove_skeleton_dead(func, skel, names)
-        ret_inst, survivors = _build_surviving_slice(func, skel, names)
-        return _HeapSkeleton(true, skel, ret_inst, survivors)
+        # The function carries `@j_#_growend!` calls — a `push!`-built dynamic
+        # heap vector. Two sub-cases, discriminated by whether the heap
+        # collection is LIVE w.r.t. the return:
+        #
+        #   - heap DEAD  → M1 path (UNCHANGED, byte-identical): no SKEL
+        #     instruction is a ret-ancestor; the whole collection drops.
+        #   - heap LIVE  → M3 path: element data feeds the return (a
+        #     `reduce`/index reads back the pushed elements). The growend!
+        #     diamonds are dead skeleton; the element traffic re-roots onto a
+        #     synthetic constant-capacity alloca, exactly as M2.
+        #
+        # `_heap_return_ancestors` is the M1-style backward operand walk; if
+        # ANY skeleton instruction is a ret-ancestor the heap is LIVE. (Any
+        # function M1 succeeds on today has no SKEL ret-ancestor by
+        # construction, so this discriminator is non-regressing for M1.)
+        ret_ancestors = _heap_return_ancestors(func)
+        heap_live = any(a -> a in skel, ret_ancestors)
+        if !heap_live
+            # M1 path — dynamic heap vector, proven wholly dead. UNCHANGED.
+            _prove_skeleton_dead(func, skel, names)
+            ret_inst, survivors = _build_surviving_slice(func, skel, names)
+            return _HeapSkeleton(true, skel, ret_inst, survivors)
+        end
+        # M3 path — push!-built vector with statically-inferable count.
+        return _m3_compile(func, allocs, skel, names, counter)
     end
 
     # ---- Bennett-kuza / M2: recognise the heap array + partition SKEL. ----
@@ -922,11 +943,28 @@ the element bit width.
 """
 struct _HeapArray
     memory_obj::_LLVMRef                 # the @ijl_gc_small_alloc Memory result
-    data_ptr::_LLVMRef                   # the unique GEP(memory_obj, 16)
+    data_ptr::_LLVMRef                   # the CANONICAL data-region base — the
+                                         # unique GEP(memory_obj, 16); used as the
+                                         # synthetic-alloca replacement target and
+                                         # in error messages.
+    data_roots::Set{_LLVMRef}            # Bennett-5ikt / M3 step 1 — the SET of
+                                         # ALL refs to be classified as a
+                                         # data-region buffer base. For M1/M2 this
+                                         # is the singleton Set([data_ptr]); M3
+                                         # (step 2) populates it with a phi family.
     wrapper::Union{Nothing,_LLVMRef}     # the Array wrapper alloc result, or nothing
     capacity::Int                        # static N (length field)
     elem_width::Int                      # element bit width (from store/load values)
 end
+
+# True iff `harr.memory_obj` is a REAL Julia `Memory` backing object (M1/M2),
+# whose `GEP(memory_obj, ≥16)` addresses the element data region. On the M3
+# path `memory_obj === wrapper` is a SENTINEL (the 32-byte Array wrapper);
+# element data is reached via `data_roots`, NEVER via a memory_obj-relative
+# GEP — and `GEP(wrapper,16)` is the *size counter*, not data. So the
+# `gi.base === memory_obj && coff≥16` "data region" rule must only fire when
+# `memory_obj !== wrapper`. Bennett-5ikt / M3.
+_heap_mem_obj_is_real(harr::_HeapArray) = harr.memory_obj !== harr.wrapper
 
 # Find the unique `GEP(base, byte_offset)` whose constant byte offset equals
 # `want`. Returns the GEP instruction ref, or `nothing`.
@@ -1027,7 +1065,12 @@ function _recognise_heap_array(func::LLVM.Function,
     # Capacity + element width are derived after the partition; placeholders
     # here, filled by _infer_capacity / the partition.
     capacity = _infer_capacity(func, mem_alloc, wrap_alloc)
-    return _HeapArray(mem_alloc, data_ptr, wrap_alloc, capacity, 0)
+    # Bennett-5ikt / M3 step 1: `data_roots` is the set of refs treated as a
+    # data-region buffer base. For M1/M2 it is the singleton {data_ptr} — a
+    # `in data_roots` membership test is then logically identical to the old
+    # `=== data_ptr` identity test. M3 step 2 populates it with a phi family.
+    return _HeapArray(mem_alloc, data_ptr, Set{_LLVMRef}([data_ptr]),
+                      wrap_alloc, capacity, 0)
 end
 
 # ---------------------------------------------------------------------------
@@ -1232,8 +1275,8 @@ function _partition_skeleton(func::LLVM.Function, skel::Set{_LLVMRef},
         inst.ref in dropped && continue
         _heap_is_gep(inst) || continue
         gi = _heap_gep_info(inst)
-        if gi.base === data_ptr
-            # GEP off the data pointer.
+        if gi.base in harr.data_roots
+            # GEP off a data-region buffer base.
             gi.simple ||
                 _heap_m2_error("non-simple GEP off the data pointer " *
                                "$(_heap_vname(inst)) — unsupported addressing")
@@ -1246,7 +1289,14 @@ function _partition_skeleton(func::LLVM.Function, skel::Set{_LLVMRef},
             else
                 elem_gep_index[inst.ref] = gi.ridx
             end
-        elseif gi.base === mem_obj && gi.simple && gi.coff !== nothing
+        elseif mem_obj !== wrapper && gi.base === mem_obj &&
+               gi.simple && gi.coff !== nothing
+            # M2 only: a GEP rooted at the real Memory backing object. (On
+            # the M3 path `memory_obj === wrapper` is a sentinel — element
+            # GEPs always root at a `data_roots` member, never at the
+            # wrapper; wrapper header GEPs fall through to `else → machinery`
+            # below. Guarding on `mem_obj !== wrapper` keeps this M2-specific
+            # Memory-layout branch from misreading a wrapper GEP. Bennett-5ikt.)
             c = gi.coff
             if c == 16
                 # This is `data_ptr` itself — buffer base, element index 0.
@@ -1262,10 +1312,11 @@ function _partition_skeleton(func::LLVM.Function, skel::Set{_LLVMRef},
                 # c == -1 (tag) or a header offset → GC machinery.
                 push!(gc_machinery, inst.ref)
             end
-        elseif gi.base === mem_obj && !gi.simple
+        elseif mem_obj !== wrapper && gi.base === mem_obj && !gi.simple
             # struct GEP `{i64,ptr},%M,0,1` (memory_ptr) → GC machinery.
             push!(gc_machinery, inst.ref)
-        elseif gi.base === mem_obj && gi.simple && gi.coff === nothing
+        elseif mem_obj !== wrapper && gi.base === mem_obj &&
+               gi.simple && gi.coff === nothing
             # runtime GEP off raw memory_obj — reject (runtime reads must root
             # at data_ptr).
             _heap_m2_error("runtime-indexed GEP off the raw Memory object " *
@@ -1276,8 +1327,15 @@ function _partition_skeleton(func::LLVM.Function, skel::Set{_LLVMRef},
             push!(gc_machinery, inst.ref)
         end
     end
-    # data_ptr itself is element traffic (buffer base, index 0).
-    elem_gep_index[data_ptr] = 0
+    # Every data-region buffer base is element traffic at index 0 — a store/
+    # load addressing a `data_roots` member directly (no GEP) accesses
+    # element 0. For M1/M2 `data_roots == {data_ptr}` so this is the single
+    # `elem_gep_index[data_ptr] = 0`; for M3 `data_roots` is the whole
+    # buffer-base phi family and EACH member must be registered (push1 stores
+    # `i8 %x` straight into a data-ptr phi). Bennett-5ikt / M3.
+    for r in harr.data_roots
+        elem_gep_index[r] = 0
+    end
 
     # Second pass — classify every SKEL ∖ dropped instruction.
     for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
@@ -1395,7 +1453,7 @@ end
 # memory_obj+16. Walks GEP/cast chains backward.
 function _heap_addr_roots_at_data(func::LLVM.Function, addr::_LLVMRef,
                                   harr::_HeapArray)
-    addr === harr.data_ptr && return true
+    addr in harr.data_roots && return true
     seen = Set{_LLVMRef}()
     work = _LLVMRef[addr]
     inst_by_ref = Dict{_LLVMRef,LLVM.Instruction}()
@@ -1406,14 +1464,17 @@ function _heap_addr_roots_at_data(func::LLVM.Function, addr::_LLVMRef,
         r = pop!(work)
         r in seen && continue
         push!(seen, r)
-        r === harr.data_ptr && return true
+        r in harr.data_roots && return true
         inst = get(inst_by_ref, r, nothing)
         inst === nothing && continue
         opc = LLVM.opcode(inst)
         if opc == LLVM.API.LLVMGetElementPtr
             gi = _heap_gep_info(inst)
-            # GEP rooted at memory_obj with offset >= 16 → data region.
-            if gi.base === harr.memory_obj && gi.simple &&
+            # GEP rooted at the REAL Memory object with offset >= 16 → data
+            # region. (Suppressed on M3 where memory_obj is the wrapper
+            # sentinel — `GEP(wrapper,16)` is the size counter, not data.)
+            if _heap_mem_obj_is_real(harr) &&
+               gi.base === harr.memory_obj && gi.simple &&
                gi.coff !== nothing && gi.coff >= 16
                 return true
             end
@@ -1430,12 +1491,13 @@ end
 # Collect the refs of every element GEP (rooted at data_ptr, or at memory_obj
 # with a constant offset ≥ 16). `data_ptr` itself is included.
 function _heap_elem_gep_refs(func::LLVM.Function, harr::_HeapArray)
-    refs = Set{_LLVMRef}([harr.data_ptr])
+    refs = Set{_LLVMRef}(harr.data_roots)
     for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
         _heap_is_gep(inst) || continue
         gi = _heap_gep_info(inst)
-        if gi.base === harr.data_ptr ||
-           (gi.base === harr.memory_obj && gi.simple && gi.coff !== nothing &&
+        if gi.base in harr.data_roots ||
+           (_heap_mem_obj_is_real(harr) &&
+            gi.base === harr.memory_obj && gi.simple && gi.coff !== nothing &&
             gi.coff >= 16)
             push!(refs, inst.ref)
         end
@@ -1470,7 +1532,7 @@ function _heap_m2_return_ancestors(func::LLVM.Function, harr::_HeapArray)
         ref = pop!(worklist)
         ref in ancestors && continue
         push!(ancestors, ref)
-        ref === harr.data_ptr && continue   # buffer base — re-rooted, stop
+        ref in harr.data_roots && continue   # buffer base — re-rooted, stop
         inst = get(inst_by_ref, ref, nothing)
         inst === nothing && continue
         if ref in elem_geps
@@ -1567,8 +1629,9 @@ function _prove_partition_sound(func::LLVM.Function, skel::Set{_LLVMRef},
         inst === nothing && continue
         if LLVM.opcode(inst) == LLVM.API.LLVMGetElementPtr
             gi = _heap_gep_info(inst)
-            if gi.base === harr.data_ptr ||
-               (gi.base === harr.memory_obj && gi.simple &&
+            if gi.base in harr.data_roots ||
+               (_heap_mem_obj_is_real(harr) &&
+                gi.base === harr.memory_obj && gi.simple &&
                 gi.coff !== nothing && gi.coff >= 16)
                 a in skel ||
                     _heap_m2_error("M2-O4: a data-region GEP feeding the " *
@@ -1583,15 +1646,20 @@ function _prove_partition_sound(func::LLVM.Function, skel::Set{_LLVMRef},
     # element-data GEP / data_ptr / memory_obj / wrapper may be a call argument
     # of a non-allowlisted call, and memory_obj/wrapper must not be a
     # ret-ancestor.
-    array_refs = Set{_LLVMRef}([harr.memory_obj, harr.data_ptr])
+    # The full set of array-identity pointers: the Memory object, the whole
+    # `data_roots` buffer-base family (singleton {data_ptr} for M1/M2), and
+    # the Array wrapper.
+    array_refs = Set{_LLVMRef}([harr.memory_obj])
+    union!(array_refs, harr.data_roots)
     harr.wrapper !== nothing && push!(array_refs, harr.wrapper)
     # Collect element-GEP refs.
     elem_gep_refs = Set{_LLVMRef}()
     for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
         _heap_is_gep(inst) || continue
         gi = _heap_gep_info(inst)
-        if gi.base === harr.data_ptr ||
-           (gi.base === harr.memory_obj && gi.simple && gi.coff !== nothing &&
+        if gi.base in harr.data_roots ||
+           (_heap_mem_obj_is_real(harr) &&
+            gi.base === harr.memory_obj && gi.simple && gi.coff !== nothing &&
             gi.coff >= 16)
             push!(elem_gep_refs, inst.ref)
         end
@@ -1616,9 +1684,13 @@ function _prove_partition_sound(func::LLVM.Function, skel::Set{_LLVMRef},
                                "not isolable")
         end
     end
-    # memory_obj / wrapper must not feed the return.
+    # memory_obj / wrapper must not feed the return. A `data_roots` buffer-
+    # base member legitimately appears in `ret_ancestors` (the re-rooted
+    # element load addresses it and `_heap_m2_return_ancestors` records it
+    # then stops) — exclude the whole family, not just the canonical
+    # `data_ptr`.
     for a in ret_ancestors
-        a in array_refs && a !== harr.data_ptr &&
+        a in array_refs && !(a in harr.data_roots) &&
             _heap_m2_error("M2-O5: the Memory object / Array wrapper feeds " *
                            "the function return — returning the heap array " *
                            "itself is out of M2 scope")
@@ -1764,13 +1836,14 @@ function _build_rerooted_slice(func::LLVM.Function,
     for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
         _heap_is_gep(inst) || continue
         gi = _heap_gep_info(inst)
-        if gi.base === harr.data_ptr ||
-           (gi.base === harr.memory_obj && gi.simple && gi.coff !== nothing &&
+        if gi.base in harr.data_roots ||
+           (_heap_mem_obj_is_real(harr) &&
+            gi.base === harr.memory_obj && gi.simple && gi.coff !== nothing &&
             gi.coff >= 16)
             push!(elem_gep_refs, inst.ref)
         end
     end
-    push!(elem_gep_refs, harr.data_ptr)
+    union!(elem_gep_refs, harr.data_roots)
 
     ret_inst::Union{Nothing,IRInst} = nothing
 
@@ -1880,4 +1953,778 @@ function _build_rerooted_slice(func::LLVM.Function,
     ret_inst === nothing &&
         _heap_m2_error("no surviving `ret` found after the M2 partition")
     return ret_inst, survivors
+end
+
+# ===========================================================================
+# Bennett-5ikt / M3 — push!-built Vector with a statically-inferable count.
+#
+# M3 handles the remaining heap case: a `Vector{T}` built by a fixed,
+# compile-time-countable number of `push!`es, whose element data is LIVE into
+# the return (a `reduce` / index reads the elements back).
+#
+# Unlike M2, the IR has NO Memory `@ijl_gc_small_alloc` and NO constant-N
+# Memory length store: `Int8[]` allocates Julia's shared empty-Memory module
+# global (capacity 0); the only heap `gc_small_alloc` is the 32-byte Array
+# WRAPPER. Each `push!` emits a `@j_#_growend!` capacity-check DIAMOND
+# (header `icmp slt` capacity test → SLOW realloc arm / FAST fall-through →
+# JOIN with skeleton ptr/offset phis). M3 recognises the array structurally,
+# collapses every growend! diamond, infers the element count N from the
+# constant element-store offset set, and re-roots the element traffic onto a
+# synthetic `IRAlloca(_, W, N)` — reusing M2's `_partition_skeleton` /
+# `_build_rerooted_slice` (both already `data_roots`-aware).
+#
+# CLAUDE.md §1: the catastrophe is a SILENT MISCOMPILE — a live element
+# load/store dropped, or a "dead" growend! arm that is actually live feeding
+# the return. Every M3 obligation bails LOUD. The silent-miscompile-prevention
+# argument is the comment block on `_prove_growend_partition_sound`.
+# ===========================================================================
+
+function _m3_error(reason::AbstractString)
+    error("ir_extract.jl: heap-memory recogniser: $reason (Bennett-5ikt / M3)")
+end
+
+# ---------------------------------------------------------------------------
+# M3-A — structural recognition of the push!-built array.
+#
+# `_recognise_growend_array` builds an `_HeapArray` from scratch (M2's
+# `_recognise_heap_array` cannot run — no Memory `gc_small_alloc`, no constant
+# length store). The load-bearing field is `data_roots`: the CLOSURE of every
+# ref that names the element-buffer base pointer (offset 0).
+#
+# data_roots seed = every i8-width element store/load address, with one
+# leading constant `getelementptr i8` stripped (push2/push3 address the
+# buffer through `GEP(base, const)`; push1 addresses the base directly).
+#
+# data_roots closure = under PHI merging: a `phi ptr` is a data-root iff its
+# result OR any of its pointer incomings is already a data-root; when a phi is
+# a root, ALL its pointer incomings become roots. This pulls in the initial
+# `%memory_data` (load off `@jl_global`) and the post-growend! data reloads
+# (`load ptr, %"new::Array"`), but NEVER the offset-arithmetic `%memory_dataN`
+# loads (those are never an element-access base and never a root-phi incoming).
+# ---------------------------------------------------------------------------
+
+# The 32-byte Array WRAPPER alloc — the sole `@ijl_gc_small_alloc` in a
+# push!-built-vector function. Reject if there is not exactly one.
+function _m3_find_wrapper_alloc(allocs::Vector{LLVM.Instruction})
+    length(allocs) == 1 ||
+        _m3_error("a push!-built heap vector must have exactly one " *
+                  "`@ijl_gc_small_alloc` (the 32-byte Array wrapper); found " *
+                  "$(length(allocs)) — multi-array heap code is out of M3 scope")
+    return allocs[1].ref
+end
+
+# Strip ONE leading constant `getelementptr i8` (1-byte stride) off `addr`,
+# returning the base ref and the byte offset (== element index for i8). If
+# `addr` is not such a GEP, returns `(addr, 0)` (the address IS the base).
+# A non-simple or runtime-index GEP returns `(addr, nothing)` — caller rejects.
+function _m3_strip_const_gep(func::LLVM.Function, addr::_LLVMRef)
+    _heap_ref_is_instruction(addr) || return (addr, 0)
+    inst_by_ref = Dict{_LLVMRef,LLVM.Instruction}()
+    for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
+        inst_by_ref[inst.ref] = inst
+    end
+    inst = get(inst_by_ref, addr, nothing)
+    inst === nothing && return (addr, 0)
+    _heap_is_gep(inst) || return (addr, 0)
+    gi = _heap_gep_info(inst)
+    gi.simple || return (addr, nothing)
+    gi.coff === nothing && return (addr, nothing)   # runtime index
+    return (gi.base, gi.coff)
+end
+
+# True iff `inst` is a `phi` of pointer type.
+function _m3_is_ptr_phi(inst::LLVM.Instruction)
+    LLVM.opcode(inst) == LLVM.API.LLVMPHI || return false
+    return LLVM.value_type(inst) isa LLVM.PointerType
+end
+
+# Collect every element store/load (i8-width — the element width W is uniform
+# and inferred here from the FIRST element store). Returns the inferred W and
+# the set of element-access *address* refs.
+function _m3_element_accesses(func::LLVM.Function)
+    # An element store is `store iW v, addr` whose value is an integer of the
+    # element width and whose address roots (after stripping a const GEP) is
+    # NOT a known skeleton scratch/header pointer. We cannot yet know W or the
+    # roots, so collect ALL integer stores/loads and let the data_roots
+    # closure + partition decide. To seed, we take every `store`/`load` of an
+    # integer value narrower than 64 bits (element data; the GC skeleton only
+    # ever stores i64 / ptr through its header & scratch buffers).
+    addrs = Set{_LLVMRef}()
+    for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
+        opc = LLVM.opcode(inst)
+        if opc == LLVM.API.LLVMStore
+            _heap_num_operands(inst) >= 2 || continue
+            # The store value operand may be a GlobalAlias (`store ptr
+            # @"jl_global", ...` header store) — `LLVM.Value(...)` crashes on
+            # those. Read the type from the raw ref via `LLVMTypeOf`.
+            w = _m3_raw_int_width(_heap_operand_ref(inst, 1))
+            (w !== nothing && w < 64) || continue
+            push!(addrs, _heap_operand_ref(inst, 2))
+        elseif opc == LLVM.API.LLVMLoad
+            _heap_num_operands(inst) >= 1 || continue
+            lty = LLVM.value_type(inst)
+            lty isa LLVM.IntegerType || continue
+            LLVM.width(lty) < 64 || continue
+            push!(addrs, _heap_operand_ref(inst, 1))
+        end
+    end
+    return addrs
+end
+
+# Integer bit width of a raw value ref, or `nothing` if it is not an integer
+# type. Uses `LLVMTypeOf` + `LLVMGetTypeKind` — safe on GlobalAlias / constant
+# / inline-asm refs that `LLVM.Value(...)` would crash on.
+function _m3_raw_int_width(ref::_LLVMRef)
+    tref = LLVM.API.LLVMTypeOf(ref)
+    tref == C_NULL && return nothing
+    LLVM.API.LLVMGetTypeKind(tref) == LLVM.API.LLVMIntegerTypeKind || return nothing
+    return Int(LLVM.API.LLVMGetIntTypeWidth(tref))
+end
+
+# Build the `data_roots` closure (see M3-A header). `wrapper` is the Array
+# wrapper alloc ref.
+function _m3_data_roots(func::LLVM.Function, wrapper::_LLVMRef)
+    inst_by_ref = Dict{_LLVMRef,LLVM.Instruction}()
+    for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
+        inst_by_ref[inst.ref] = inst
+    end
+
+    # Seed: element-access addresses with one leading const GEP stripped.
+    roots = Set{_LLVMRef}()
+    for addr in _m3_element_accesses(func)
+        base, off = _m3_strip_const_gep(func, addr)
+        off === nothing && continue   # runtime-index access — handled later
+        push!(roots, base)
+    end
+    isempty(roots) &&
+        _m3_error("no element-buffer base pointer found — the function has " *
+                  "no recognisable element store/load. M3 requires the " *
+                  "push!ed element data to be live into the return")
+
+    # Closure under phi merging.
+    changed = true
+    while changed
+        changed = false
+        for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
+            _m3_is_ptr_phi(inst) || continue
+            n = _heap_num_operands(inst)
+            # PHI operands: a `phi` instruction's operands are the incoming
+            # values; the incoming blocks are NOT operands. So every operand
+            # ref is a pointer incoming value.
+            incomings = _LLVMRef[_heap_operand_ref(inst, i) for i in 1:n]
+            phi_is_root = inst.ref in roots ||
+                          any(r -> r in roots, incomings)
+            if phi_is_root
+                inst.ref in roots || (push!(roots, inst.ref); changed = true)
+                for r in incomings
+                    r in roots || (push!(roots, r); changed = true)
+                end
+            end
+        end
+    end
+
+    # The wrapper alloc itself must NOT be a data-root (it is the Array
+    # header object, not the element buffer). If the closure pulled it in,
+    # the recogniser is confused — reject loud.
+    wrapper in roots &&
+        _m3_error("the Array wrapper object was classified as an " *
+                  "element-buffer base pointer — unrecognised heap shape")
+    return roots
+end
+
+# Recognise the push!-built array structurally. Returns an `_HeapArray` whose
+# `data_roots` is the whole buffer-base phi family, `memory_obj` is the Array
+# wrapper (a sentinel — not load-bearing for M3; M3 never addresses the raw
+# Memory object), `data_ptr` is a chosen canonical representative, and
+# `capacity` is filled by `_infer_growend_capacity`.
+function _recognise_growend_array(func::LLVM.Function,
+                                  allocs::Vector{LLVM.Instruction})
+    wrapper = _m3_find_wrapper_alloc(allocs)
+    data_roots = _m3_data_roots(func, wrapper)
+    # Canonical data_ptr — any deterministic representative. Pick the
+    # element-access base that appears first in program order so error
+    # messages and the (M2-shared) `data_ptr` field are stable.
+    pos = Dict{_LLVMRef,Int}()
+    let p = 0
+        for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
+            p += 1
+            pos[inst.ref] = p
+        end
+    end
+    data_ptr = first(data_roots)
+    best = get(pos, data_ptr, typemax(Int))
+    for r in data_roots
+        pr = get(pos, r, typemax(Int))
+        if pr < best
+            best = pr
+            data_ptr = r
+        end
+    end
+    # `memory_obj` = the wrapper (sentinel). `data_roots` carries the whole
+    # family. `capacity` is a `typemax` PLACEHOLDER — M3 infers the real N
+    # from the constant store-offset set AFTER the partition runs (M2 infers
+    # capacity before the partition; M3 cannot, there is no length store).
+    # `typemax` makes the partition's `idx < N` range guard a no-op; the real
+    # bound is enforced by `_infer_growend_capacity`'s dense-prefix check.
+    return _HeapArray(wrapper, data_ptr, data_roots, wrapper,
+                      typemax(Int), 0)
+end
+
+# ---------------------------------------------------------------------------
+# M3-B — growend! capacity-diamond collapse.
+#
+# `_collapse_growend_diamond` recognises every `@j_#_growend!` capacity-check
+# diamond and returns the set of instruction refs to DROP, plus a value-phi
+# redirect map (obligation G3). It is non-mutating — it produces data, it does
+# not edit the LLVM module.
+#
+# A growend! diamond is a `br i1 %cond, %SLOW, %JOIN` where:
+#   - `%cond` is a skeleton `icmp` on a capacity value;
+#   - the SLOW arm contains exactly one `@j_#_growend!` call, every
+#     non-terminator instruction in it is skeleton (else G1 SLOW-arm purity
+#     rejects loud), and it `br`s unconditionally to JOIN;
+#   - the FAST arm falls through to JOIN;
+#   - JOIN carries phis: skeleton (offset / memory-obj / data-ptr) phis are
+#     dropped; a phi with a NON-skeleton, NON-data-root incoming is a
+#     value-phi (handled by G3 in `_m3_compile`).
+# ---------------------------------------------------------------------------
+
+# True iff `bb` contains a `@j_#_growend!` call.
+function _m3_block_has_growend(bb::LLVM.BasicBlock)
+    for inst in LLVM.instructions(bb)
+        cname = _heap_callee_name(inst)
+        isempty(cname) || (occursin(_GC_GROWEND_CALLEE_RE, cname) && return true)
+    end
+    return false
+end
+
+# True iff `inst` is an element-DATA instruction that must be preserved even
+# when it sits inside a growend! SLOW arm: a `data_roots` member (a buffer-
+# base ptr reload), an element GEP (base ∈ data_roots), or an element-data
+# load. LLVM's load-PRE hoists the reduce/index element load up into a
+# growend! SLOW predecessor (the `.phi.trans.insert` GEP) — that hoisted load
+# is LIVE element traffic, NOT dead skeleton, and must be left for the
+# partition to capture rather than dropped with the rest of the SLOW arm.
+function _m3_is_slow_arm_elem_data(func::LLVM.Function, inst::LLVM.Instruction,
+                                   data_roots::Set{_LLVMRef})
+    inst.ref in data_roots && return true
+    opc = LLVM.opcode(inst)
+    if opc == LLVM.API.LLVMGetElementPtr
+        gi = _heap_gep_info(inst)
+        return gi.base in data_roots
+    elseif opc == LLVM.API.LLVMLoad
+        _heap_num_operands(inst) >= 1 || return false
+        return _m3_is_elem_addr(func, _heap_operand_ref(inst, 1), data_roots)
+    end
+    return false
+end
+
+"""
+    _collapse_growend_diamond(func, skel, data_roots) -> Set{_LLVMRef}
+
+Recognise and collapse every `@j_#_growend!` capacity-check diamond. Returns
+the set of "dropped" instruction refs (SLOW-arm skeleton instructions + the
+guarding conditional `br`). Element-data instructions hoisted into a SLOW arm
+(see `_m3_is_slow_arm_elem_data`) are NOT dropped — they are left for the
+partition to capture. Skeleton JOIN phis are NOT added here — they are dropped
+by the partition as GC machinery / by G3 as redirected value-phis.
+
+Rejects loud on ANY structural deviation: a growend! call not on a SLOW arm,
+a SLOW arm with a non-`br` terminator, a non-skeleton non-element-data
+instruction in a SLOW arm (SLOW-arm purity, obligation G1).
+"""
+function _collapse_growend_diamond(func::LLVM.Function, skel::Set{_LLVMRef},
+                                   data_roots::Set{_LLVMRef})
+    dropped = Set{_LLVMRef}()
+    blocks = collect(LLVM.blocks(func))
+    block_index = Dict{_LLVMRef,Int}()
+    for (i, bb) in enumerate(blocks)
+        block_index[bb.ref] = i
+    end
+
+    for bb in blocks
+        term = LLVM.terminator(bb)
+        term === nothing && continue
+        LLVM.opcode(term) == LLVM.API.LLVMBr || continue
+        _heap_num_operands(term) == 1 && continue   # unconditional — not a diamond
+
+        cond = _heap_operand_ref(term, 1)
+        # A growend! diamond's condition is a skeleton icmp. A non-skeleton
+        # condition is either a bounds diamond (handled elsewhere) or a real
+        # user branch (G1 rejects). Leave non-skeleton-condition branches for
+        # `_collapse_bounds_diamond` / the G1 completeness check.
+        (_heap_ref_is_instruction(cond) && cond in skel) || continue
+
+        succs = collect(LLVM.successors(term))
+        length(succs) == 2 ||
+            _m3_error("growend! capacity diamond with $(length(succs)) " *
+                      "successors — expected a 2-way branch")
+        # Exactly one successor is a SLOW arm (contains the growend! call).
+        slow_idx = 0
+        for (k, s) in enumerate(succs)
+            if _m3_block_has_growend(s)
+                slow_idx == 0 ||
+                    _m3_error("both arms of a capacity branch contain a " *
+                              "growend! call — unrecognised control flow")
+                slow_idx = k
+            end
+        end
+        slow_idx == 0 && continue   # skeleton-cond branch with no growend! arm
+                                    # — left to the bounds/M1 machinery.
+
+        slow_bb = succs[slow_idx]
+        # The SLOW arm must be `br`-terminated to a single JOIN block.
+        slow_term = LLVM.terminator(slow_bb)
+        slow_term === nothing &&
+            _m3_error("growend! SLOW arm has no terminator")
+        LLVM.opcode(slow_term) == LLVM.API.LLVMBr &&
+            _heap_num_operands(slow_term) == 1 ||
+            _m3_error("growend! SLOW arm $(LLVM.name(slow_bb)) is not " *
+                      "terminated by an unconditional branch to the JOIN block")
+        # SLOW-arm purity: every non-terminator SLOW instruction must be
+        # skeleton. A live (non-skeleton) computation in a growend! slow arm
+        # would be silently dropped — reject loud (obligation G1). EXCEPTION:
+        # element-data instructions (a buffer-base reload, an element GEP, a
+        # hoisted element-data load — see `_m3_is_slow_arm_elem_data`) are
+        # LIVE element traffic; they are NOT dropped, they are left for the
+        # partition to capture. They are still in `skel` so purity holds.
+        ngrowend = 0
+        for inst in LLVM.instructions(slow_bb)
+            inst.ref === slow_term.ref && continue
+            cname = _heap_callee_name(inst)
+            if !isempty(cname) && occursin(_GC_GROWEND_CALLEE_RE, cname)
+                ngrowend += 1
+            end
+            inst.ref in skel ||
+                _m3_error("growend! SLOW arm $(LLVM.name(slow_bb)) contains a " *
+                          "live (non-skeleton) instruction " *
+                          "$(_heap_vname(inst)) — a push! capacity-realloc " *
+                          "arm must be wholly dead skeleton")
+            _m3_is_slow_arm_elem_data(func, inst, data_roots) && continue
+            push!(dropped, inst.ref)
+        end
+        ngrowend == 1 ||
+            _m3_error("growend! SLOW arm $(LLVM.name(slow_bb)) has $ngrowend " *
+                      "growend! calls — expected exactly one")
+        push!(dropped, slow_term.ref)
+        push!(dropped, term.ref)
+    end
+    return dropped
+end
+
+# ---------------------------------------------------------------------------
+# M3-C — capacity inference from the constant element-store offset set.
+# ---------------------------------------------------------------------------
+
+# Infer N from the captured element-STORE offsets. Every element store must
+# have a compile-time-constant offset; the offsets must form a DENSE
+# contiguous prefix {0,1,...,N-1}. Cross-check (G4): the number of growend!
+# calls == N. A runtime store offset rejects loud (runtime-count push! / loop).
+function _infer_growend_capacity(func::LLVM.Function,
+                                 elem_traffic::Vector{_ElemAccess})
+    store_offsets = Int[]
+    for ea in elem_traffic
+        ea.kind === :store || continue
+        ea.index isa Int ||
+            _m3_error("element store at a runtime offset " *
+                      "$(_heap_vname(_heap_value_for_ref(func, ea.inst))) — " *
+                      "M3 requires a statically-inferable element count; a " *
+                      "runtime-count push! (e.g. in a loop) is out of scope")
+        push!(store_offsets, ea.index)
+    end
+    isempty(store_offsets) &&
+        _m3_error("no element stores captured — cannot infer the push! count")
+    sort!(store_offsets)
+    N = length(store_offsets)
+    for (k, off) in enumerate(store_offsets)
+        off == k - 1 ||
+            _m3_error("element-store offsets are not a dense contiguous " *
+                      "prefix {0,...,N-1}: got $(store_offsets) — a gap or a " *
+                      "duplicate push! offset is out of M3 scope")
+    end
+    # Cross-check the load offsets are all < N (no read of an undef slot).
+    for ea in elem_traffic
+        ea.kind === :load || continue
+        ea.index isa Int || continue
+        0 <= ea.index < N ||
+            _m3_error("element load at offset $(ea.index) is outside the " *
+                      "inferred capacity [0,$N) — reading an uninitialised " *
+                      "slot is rejected")
+    end
+    return N
+end
+
+# ---------------------------------------------------------------------------
+# M3-D — the M3 skeleton closure with element-data loads as TAINT SINKS.
+#
+# SOUNDNESS-CRITICAL (CLAUDE.md §1). The standard `_recognise_skeleton`
+# forward taint closure folds an element load's RESULT-consumers into SKEL:
+# an element load addresses a skeleton (data_roots) pointer, so the load is
+# skeleton, so `reduce`'s `add` instructions consuming it would taint into
+# SKEL → `_partition_skeleton` would file them as gc_machinery →
+# `_build_rerooted_slice` would DROP them → the entire `reduce` sum + `ret`
+# value silently deleted. THAT is the worst bug class.
+#
+# FIX: `_m3_skeleton` builds its OWN closure in which an element-data load
+# (address ∈ data_roots, or `GEP(data_roots-member, const)`) is IN the
+# skeleton but is a TAINT SINK — its result does NOT propagate taint forward.
+# `%52/%53/%47` (the reduce arithmetic + value-phi) are then NOT skeleton;
+# `_partition_skeleton` skips them; `_build_rerooted_slice` routes them
+# through `_convert_instruction` as ordinary user arithmetic. This is exactly
+# the M2 model: an element load IS the skeleton↔live-data boundary.
+#
+# BACKSTOP: obligation O3 (machinery-dead) runs on the M3 path. If the
+# taint-sink fix is ever wrong and a reduce `add` lands in gc_machinery, O3
+# rejects LOUD (it is a ret-ancestor) — never a miscompile.
+# ---------------------------------------------------------------------------
+
+# True iff `addr` is an element-data address: a data_roots member, or a
+# constant `getelementptr i8` off a data_roots member.
+function _m3_is_elem_addr(func::LLVM.Function, addr::_LLVMRef,
+                          data_roots::Set{_LLVMRef})
+    addr in data_roots && return true
+    base, off = _m3_strip_const_gep(func, addr)
+    off === nothing && return false
+    return base in data_roots && base !== addr
+end
+
+# Build the M3 skeleton set. Seeds == `_recognise_skeleton`'s seeds. The
+# forward taint closure is identical EXCEPT: an element-data load is added to
+# the skeleton (it has a skeleton address) but is registered as a TAINT SINK
+# — its result ref does not taint forward.
+function _m3_skeleton(func::LLVM.Function,
+                      allocs::Vector{LLVM.Instruction},
+                      data_roots::Set{_LLVMRef})
+    # Start from the M1 structural seeds + closure (the GC frame chain,
+    # growend! scratch, header stores, capacity icmps).
+    skel = _recognise_skeleton(func, allocs)
+
+    # The M1 closure already folded the reduce `add`s into SKEL (they consume
+    # element loads whose addresses are skeleton). Re-derive a SINK-AWARE
+    # closure from scratch so those `add`s come back OUT of SKEL.
+    sink_skel = Set{_LLVMRef}()
+    # Seeds: every M1 seed that is NOT downstream of an element-data load.
+    # The cleanest construction: rebuild the closure but mark element-data
+    # loads as sinks. Re-collect the seeds from `_heap_seed_set` + the alloc
+    # results + inline-asm + intrinsic calls (mirrors `_recognise_skeleton`).
+    for s in _heap_seed_set(func)
+        push!(sink_skel, s)
+    end
+    for a in allocs
+        push!(sink_skel, a.ref)
+    end
+    for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
+        if _heap_is_inline_asm_call(inst) && _heap_is_allowlisted_tls_asm(inst)
+            push!(sink_skel, inst.ref)
+        end
+        cname = _heap_callee_name(inst)
+        if !isempty(cname) && (startswith(cname, "llvm.memset.") ||
+           cname == "ijl_gc_small_alloc" ||
+           occursin(_GC_GROWEND_CALLEE_RE, cname))
+            push!(sink_skel, inst.ref)
+        end
+    end
+
+    # Identify the element-data loads — they ARE skeleton (skeleton address)
+    # but are taint sinks.
+    sink_loads = Set{_LLVMRef}()
+    for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
+        LLVM.opcode(inst) == LLVM.API.LLVMLoad || continue
+        _heap_num_operands(inst) >= 1 || continue
+        addr = _heap_operand_ref(inst, 1)
+        _m3_is_elem_addr(func, addr, data_roots) || continue
+        push!(sink_loads, inst.ref)
+        push!(sink_skel, inst.ref)
+    end
+
+    # Forward taint closure — but a sink load does NOT propagate.
+    changed = true
+    while changed
+        changed = false
+        for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
+            inst.ref in sink_skel && continue
+            opc = LLVM.opcode(inst)
+            (opc == LLVM.API.LLVMRet || opc == LLVM.API.LLVMBr ||
+             opc == LLVM.API.LLVMSwitch || opc == LLVM.API.LLVMIndirectBr ||
+             opc == LLVM.API.LLVMUnreachable) && continue
+            tainted = false
+            for opref in _heap_operand_refs(inst)
+                # A sink load's result is NOT a taint source.
+                opref in sink_loads && continue
+                if opref in sink_skel
+                    tainted = true
+                    break
+                end
+            end
+            if tainted
+                push!(sink_skel, inst.ref)
+                changed = true
+            end
+        end
+    end
+
+    # An element STORE addresses a skeleton (data_roots) pointer, so the M1
+    # closure folded it in; the sink-aware closure does too (the address is a
+    # skeleton operand). Element stores stay IN sink_skel — the partition then
+    # captures them as element traffic. Good.
+    #
+    # Sanity: sink_skel ⊆ skel (the sink-aware closure is a subset of the M1
+    # closure — it only ever REMOVES the load-consumers). If sink_skel has a
+    # ref not in skel the construction is inconsistent — reject loud.
+    for r in sink_skel
+        r in skel ||
+            _m3_error("internal: M3 sink-aware skeleton is not a subset of " *
+                      "the M1 skeleton closure (taint-sink construction bug)")
+    end
+    return sink_skel, sink_loads
+end
+
+# ---------------------------------------------------------------------------
+# M3-E — the M3 soundness proof.
+#
+# SILENT-MISCOMPILE-PREVENTION ARGUMENT.  A silent miscompile would be a
+# wrong circuit that nonetheless passes `verify_reversibility` (all ancillae
+# zero). For M3 the only ways to produce one are:
+#   (a) DROP a live element store/load   → caught by M2-O1 / M2-O2: every
+#       data-region store/load must be captured element traffic.
+#   (b) DROP a live reduce `add` / the ret value → caught by M2-O3
+#       (machinery-dead): no gc_machinery instruction may be a ret-ancestor.
+#       This is the BACKSTOP for the M3-D taint-sink fix — if a reduce `add`
+#       were ever misfiled as machinery, O3 rejects loud.
+#   (c) treat a LIVE growend! arm as dead → caught by G1 (SLOW-arm purity:
+#       every SLOW instruction must be skeleton) + the diamond-completeness
+#       check (every conditional branch is a recognised growend / bounds
+#       diamond — no surviving user branch).
+#   (d) re-root onto the WRONG capacity → caught by G4 (growend!-count == N)
+#       and `_infer_growend_capacity`'s dense-prefix check.
+#   (e) a value-phi that does not actually equal the captured element value
+#       → caught by G3 (value-phi equality).
+#   (f) the array ESCAPING into a callee → caught by M2-O5 (which the
+#       data_roots refactor generalised to the whole buffer-base family).
+# The partition is closed-world: `_partition_skeleton` already rejects any
+# SKEL instruction it cannot positively classify. Every obligation below is a
+# LOUD reject; none degrades to a silent `nothing`.
+# ---------------------------------------------------------------------------
+
+# G3 — value-phi equality. After diamond collapse the slice is straight-line;
+# a surviving `phi` is wrong. For each ptr/int phi that is NOT a skeleton
+# ptr-phi: it must merge a captured element load (at index i) with operands
+# that are each syntactically the stored value of the captured element store
+# at the SAME index i. Returns a redirect map  phi_ref → store-value ref  /
+# load-dest ref  so downstream consumers resolve correctly.
+function _m3_value_phi_redirects(func::LLVM.Function,
+                                 skel::Set{_LLVMRef},
+                                 data_roots::Set{_LLVMRef},
+                                 elem_traffic::Vector{_ElemAccess},
+                                 dropped::Set{_LLVMRef})
+    # index → captured load inst ref ; index → captured store value ref.
+    load_at = Dict{Int,_LLVMRef}()
+    store_val_at = Dict{Int,_LLVMRef}()
+    for ea in elem_traffic
+        if ea.kind === :load && ea.index isa Int
+            load_at[ea.index] = ea.inst
+        elseif ea.kind === :store && ea.index isa Int
+            store_val_at[ea.index] = ea.value
+        end
+    end
+
+    redirects = Dict{_LLVMRef,_LLVMRef}()
+    for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
+        LLVM.opcode(inst) == LLVM.API.LLVMPHI || continue
+        inst.ref in dropped && continue
+        # A skeleton ptr-phi (data-root phi or offset phi) is dropped by the
+        # partition — skip. data_roots membership covers the data-ptr phis.
+        inst.ref in data_roots && continue
+        n = _heap_num_operands(inst)
+        incomings = _LLVMRef[_heap_operand_ref(inst, i) for i in 1:n]
+        # Discriminator: a VALUE-phi has a captured element load among its
+        # incomings; anything else (memory-object phi, offset phi, data-ptr
+        # phi) is a skeleton/machinery phi the partition already classified.
+        # A skeleton phi is simply DROPPED here (step 7 of `_m3_compile`
+        # drops every non-redirected phi) — the soundness BACKSTOP is M2-O3:
+        # if a machinery phi were actually live (a ret-ancestor) O3 rejects
+        # loud. So `_m3_value_phi_redirects` only ever needs to handle phis
+        # that genuinely carry an element value.
+        load_idx = -1
+        load_ref = C_NULL
+        for r in incomings
+            for (idx, lref) in load_at
+                if r === lref
+                    load_idx >= 0 &&
+                        _m3_error("value-phi $(_heap_vname(inst)) merges two " *
+                                  "captured element loads — unrecognised")
+                    load_idx = idx
+                    load_ref = lref
+                end
+            end
+        end
+        # No captured-load incoming → a skeleton/machinery phi; drop it (not
+        # a reject — O3 backstops a live machinery phi).
+        load_idx >= 0 || continue
+        haskey(store_val_at, load_idx) ||
+            _m3_error("value-phi $(_heap_vname(inst)) reads element index " *
+                      "$load_idx but no element store at that index was " *
+                      "captured")
+        sv = store_val_at[load_idx]
+        for r in incomings
+            r === load_ref && continue
+            r === sv ||
+                _m3_error("value-phi $(_heap_vname(inst)) has an incoming " *
+                          "$(_heap_vname(_heap_value_for_ref(func, r))) that " *
+                          "is not the value stored at element index " *
+                          "$load_idx — the phi does not provably equal the " *
+                          "captured element value")
+        end
+        # Redirect the phi to the captured load: downstream consumers resolve
+        # to the re-rooted load's dest (the load keeps its own name in
+        # `_build_rerooted_slice`).
+        redirects[inst.ref] = load_ref
+    end
+    return redirects
+end
+
+"""
+    _prove_growend_partition_sound(func, skel, harr, elem_traffic,
+                                   gc_machinery, dropped, allocs)
+
+The M3 soundness proof. Runs M2's seven obligations (O1-O7, `data_roots`-aware
+via the shared helpers) PLUS the M3-specific obligations G1, G3, G4. Every
+obligation is a LOUD reject. (There is no separate M3 escape obligation:
+escape of an element-buffer pointer is M2-O5, which the `data_roots` refactor
+generalised from a single `data_ptr` to the whole buffer-base family — hence
+the G1→G3 label gap.) See the M3-E header for the silent-miscompile-prevention
+argument.
+"""
+function _prove_growend_partition_sound(func::LLVM.Function,
+                                        skel::Set{_LLVMRef},
+                                        harr::_HeapArray,
+                                        elem_traffic::Vector{_ElemAccess},
+                                        gc_machinery::Set{_LLVMRef},
+                                        dropped::Set{_LLVMRef})
+    # ----- M2 obligations O1-O7 (data_roots-aware). -----------------------
+    # `_prove_partition_sound` already consults `harr.data_roots` in O1/O2/O4/
+    # O5 via `_heap_addr_roots_at_data` / `_heap_elem_gep_refs` /
+    # `_heap_m2_return_ancestors`. O3 (machinery-dead) is the BACKSTOP for the
+    # M3-D taint-sink fix. Run it verbatim.
+    _prove_partition_sound(func, skel, harr, elem_traffic, gc_machinery,
+                           dropped)
+
+    # ----- G1 — diamond completeness + SLOW-arm purity. -------------------
+    # Every conditional branch in the function must be a recognised+collapsed
+    # growend! diamond (its guarding `br` ∈ dropped) OR a bounds-check
+    # diamond. A surviving conditional branch is a real user branch (push! in
+    # an `if`) → out of M3 scope. (SLOW-arm purity was already enforced inside
+    # `_collapse_growend_diamond`.)
+    for bb in LLVM.blocks(func)
+        term = LLVM.terminator(bb)
+        term === nothing && continue
+        LLVM.opcode(term) == LLVM.API.LLVMBr || continue
+        _heap_num_operands(term) == 1 && continue   # unconditional
+        if term.ref in dropped
+            continue   # collapsed growend! / bounds diamond
+        end
+        # Not collapsed — must be a bounds-check diamond (one arm a throw
+        # block). Anything else is a surviving user branch.
+        succs = collect(LLVM.successors(term))
+        is_bounds = length(succs) == 2 &&
+                    any(s -> _heap_is_throw_block(s, skel), succs)
+        is_bounds ||
+            _m3_error("G1: a conditional branch $(_heap_vname(term)) survived " *
+                      "the diamond collapse and is not a bounds-check " *
+                      "diamond — a real user branch (e.g. push! inside an " *
+                      "`if`) is out of M3 scope")
+    end
+
+    # (Escape of an element-buffer pointer is obligation M2-O5 — the
+    # `data_roots` refactor generalised O5 from a single `data_ptr` to the
+    # whole buffer-base family (`array_refs = {memory_obj} ∪ data_roots ∪
+    # {wrapper}`), so a separate M3 obligation is redundant. This is why the
+    # label sequence jumps G1 → G3.)
+
+    # ----- G3 — value-phi equality is enforced in `_m3_value_phi_redirects`,
+    # which `_m3_compile` runs before this proof; any failure already threw.
+
+    # ----- G4 — growend!-count == N. --------------------------------------
+    ngrowend = 0
+    for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
+        cname = _heap_callee_name(inst)
+        isempty(cname) || (occursin(_GC_GROWEND_CALLEE_RE, cname) &&
+            (ngrowend += 1))
+    end
+    ngrowend == harr.capacity ||
+        _m3_error("G4: the function makes $ngrowend `@j_#_growend!` calls " *
+                  "but the inferred element count is N=$(harr.capacity) — a " *
+                  "growend!-count / element-store-count mismatch means the " *
+                  "push! sequence is not statically countable")
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+# M3-F — the M3 orchestrator.
+# ---------------------------------------------------------------------------
+
+# Compile the M3 path: a push!-built vector with a statically-inferable count.
+function _m3_compile(func::LLVM.Function,
+                     allocs::Vector{LLVM.Instruction},
+                     m1_skel::Set{_LLVMRef},
+                     names::Dict{_LLVMRef,Symbol},
+                     counter::Ref{Int})
+    # (1) Structural recognition — _HeapArray + the data_roots phi family.
+    harr0 = _recognise_growend_array(func, allocs)
+
+    # (2) Collapse the growend! capacity diamonds.
+    diamond_dropped = _collapse_growend_diamond(func, m1_skel,
+                                                harr0.data_roots)
+
+    # (3) The M3 sink-aware skeleton — element-data loads are taint sinks so
+    #     the reduce arithmetic stays OUT of SKEL.
+    skel, _sink_loads = _m3_skeleton(func, allocs, harr0.data_roots)
+
+    # Collapse bounds diamonds too (a push!-built vector that is also indexed
+    # may carry one). The combined drop set:
+    bounds_dropped = _collapse_bounds_diamond(func, skel)
+    dropped = union(diamond_dropped, bounds_dropped)
+
+    # (4) Partition SKEL ∖ dropped into element traffic ∪ GC machinery.
+    elem_traffic, gc_machinery = _partition_skeleton(func, skel, harr0, dropped)
+    isempty(elem_traffic) &&
+        _m3_error("no element traffic captured on the M3 path — the push!ed " *
+                  "data is not reachable as element store/load")
+
+    # (5) Infer the element count N from the constant store-offset set.
+    N = _infer_growend_capacity(func, elem_traffic)
+    harr = _HeapArray(harr0.memory_obj, harr0.data_ptr, harr0.data_roots,
+                      harr0.wrapper, N, harr0.elem_width)
+
+    # (6) G3 — value-phi equality + the redirect map. Skeleton ptr-phis and
+    #     pure-skeleton phis are NOT redirected (the partition drops them).
+    redirects = _m3_value_phi_redirects(func, skel, harr.data_roots,
+                                        elem_traffic, dropped)
+    # Apply the redirects to `names`: a consumer of a value-phi now resolves
+    # to the captured load's dest. The load keeps its own name in
+    # `_build_rerooted_slice`, so `names[phi] := names[load]`.
+    for (phi_ref, load_ref) in redirects
+        haskey(names, load_ref) ||
+            _m3_error("internal: redirected element load has no name")
+        names[phi_ref] = names[load_ref]
+        # The value-phi itself must be dropped from the surviving slice.
+        push!(dropped, phi_ref)
+    end
+    # Every remaining (non-redirected) phi must be a skeleton phi the
+    # partition drops — drop the data-root phis explicitly so the re-rooter's
+    # straight-line check does not trip on them.
+    for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
+        LLVM.opcode(inst) == LLVM.API.LLVMPHI || continue
+        inst.ref in dropped && continue
+        push!(dropped, inst.ref)
+    end
+
+    # (7) Soundness proof — M2 O1-O7 + M3 G1/G3/G4 (escape is M2-O5).
+    _prove_growend_partition_sound(func, skel, harr, elem_traffic,
+                                   gc_machinery, dropped)
+
+    # (8) Re-root onto a synthetic IRAlloca — reuse M2's builder verbatim.
+    ret_inst, survivors = _build_rerooted_slice(
+        func, names, counter, harr, elem_traffic, gc_machinery, dropped)
+    return _HeapSkeleton(true, skel, ret_inst, survivors)
 end
