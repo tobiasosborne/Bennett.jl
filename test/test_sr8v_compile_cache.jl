@@ -11,19 +11,25 @@ using Bennett
 
 @testset "Bennett-sr8v: reversible_compile(::ParsedIR) cache" begin
 
-    _fix = joinpath(@__DIR__, "fixtures", "ll", "eq9p_acosh_intrinsic.ll")
-    _parsed = Bennett.extract_parsed_ir_from_ll(_fix; entry_function="acosh_intr")
+    # Bennett-1eyg: testsets 1-3 use the tiny x+1 Int8 ParsedIR (58-gate
+    # circuit, CLAUDE.md §6 baseline) rather than the 2.4M-gate eq9p_acosh
+    # fixture used originally. Cache identity is circuit-size-independent;
+    # the heavy fixture cost 270s in the full suite for tests that only
+    # need to prove `c1 === c2`.
+    Bennett._clear_parsed_ir_cache!()
+    _f_tiny = x -> x + Int8(1)
+    _parsed = Bennett._extract_parsed_ir_cached(_f_tiny, Tuple{Int8})
 
     @testset "identity hit returns ===-same circuit" begin
         Bennett._clear_compile_cache!()
         c1 = reversible_compile(_parsed)
         c2 = reversible_compile(_parsed)
         @test c1 === c2
-        # Defense-in-depth: cached circuit must still verify and have a
-        # non-trivial gate count — guards against caching a wrong/empty result.
+        # Defense-in-depth: cached circuit must still verify and match the
+        # pinned baseline — guards against caching a wrong/empty result.
         @test verify_reversibility(c1)
-        # gate_count returns a NamedTuple (total, NOT, CNOT, Toffoli); use .total.
-        @test gate_count(c1).total > 1000
+        # CLAUDE.md §6 pinned baseline: i8 x+1 = 58 gates (add=:ripple, fold_constants=true).
+        @test gate_count(c1).total == 58
     end
 
     @testset "different kwargs bust cache" begin
