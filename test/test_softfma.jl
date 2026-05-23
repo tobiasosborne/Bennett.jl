@@ -169,21 +169,24 @@ using Random
     end
 
     @testset "random normal-range sweep (50 000)" begin
+        # Bennett-4lij: pre-generate inputs (preserves RNG order across thread counts),
+        # then Threads.@threads the pure soft_fma / Base.fma calls; sequential reduce.
         rng = Random.MersenneTwister(0xFA42)
-        failures = 0
-        for _ in 1:50_000
-            a = (rand(rng) * 200 - 100)
-            b = (rand(rng) * 200 - 100)
-            c = (rand(rng) * 1000 - 500)
-            ab = reinterpret(UInt64, a)
-            bb = reinterpret(UInt64, b)
-            cb = reinterpret(UInt64, c)
-            result_bits = soft_fma(ab, bb, cb)
-            expected_bits = reinterpret(UInt64, Base.fma(a, b, c))
-            if result_bits != expected_bits
+        N = 50_000
+        inputs = [(rand(rng)*200 - 100, rand(rng)*200 - 100, rand(rng)*1000 - 500) for _ in 1:N]
+        results = Vector{Tuple{UInt64,UInt64}}(undef, N)
+        Threads.@threads for i in 1:N
+            (a, b, c) = inputs[i]
+            ab = reinterpret(UInt64, a); bb = reinterpret(UInt64, b); cb = reinterpret(UInt64, c)
+            results[i] = (soft_fma(ab, bb, cb), reinterpret(UInt64, Base.fma(a, b, c)))
+        end
+        failures = 0; shown = 0
+        for (rb, eb) in results
+            if rb != eb
                 failures += 1
-                if failures <= 5
-                    @test result_bits == expected_bits
+                if shown < 5
+                    @test rb == eb
+                    shown += 1
                 end
             end
         end
@@ -193,26 +196,27 @@ using Random
     @testset "random raw-UInt64 sweep (25 000) — covers all regions" begin
         # Uniform UInt64 → reinterpret as Float64 covers all subnormals,
         # NaNs, Infs, signed zeros, normal, and boundary regions.
+        # Bennett-4lij: pre-generate + Threads.@threads.
         rng = Random.MersenneTwister(0xD00D)
-        failures = 0
-        for _ in 1:25_000
-            ab = rand(rng, UInt64)
-            bb = rand(rng, UInt64)
-            cb = rand(rng, UInt64)
-            a = reinterpret(Float64, ab)
-            b = reinterpret(Float64, bb)
-            c = reinterpret(Float64, cb)
-            result_bits = soft_fma(ab, bb, cb)
+        N = 25_000
+        inputs = [(rand(rng, UInt64), rand(rng, UInt64), rand(rng, UInt64)) for _ in 1:N]
+        # (result_bits, expected_bits, expected_is_nan)
+        results = Vector{Tuple{UInt64,UInt64,Bool}}(undef, N)
+        Threads.@threads for i in 1:N
+            (ab, bb, cb) = inputs[i]
+            a = reinterpret(Float64, ab); b = reinterpret(Float64, bb); c = reinterpret(Float64, cb)
             expected = Base.fma(a, b, c)
-            expected_bits = reinterpret(UInt64, expected)
-            if isnan(expected)
-                isnan(reinterpret(Float64, result_bits)) || (failures += 1)
-            else
-                if result_bits != expected_bits
-                    failures += 1
-                    if failures <= 5
-                        @test result_bits == expected_bits
-                    end
+            results[i] = (soft_fma(ab, bb, cb), reinterpret(UInt64, expected), isnan(expected))
+        end
+        failures = 0; shown = 0
+        for (rb, eb, exp_nan) in results
+            if exp_nan
+                isnan(reinterpret(Float64, rb)) || (failures += 1)
+            elseif rb != eb
+                failures += 1
+                if shown < 5
+                    @test rb == eb
+                    shown += 1
                 end
             end
         end
@@ -220,30 +224,36 @@ using Random
     end
 
     @testset "subnormal-input sweep (10 000) — Bennett-fnxg rule" begin
+        # Bennett-4lij: same pre-gen + Threads.@threads pattern; the 4 rand()
+        # calls per iter (which + 3 operands) happen serially in pre-gen, so
+        # the MT19937 stream matches the unthreaded version bit-for-bit.
         rng = Random.MersenneTwister(0x5AB9)
-        failures = 0
-        # Force at least one operand to be subnormal each iteration.
-        for _ in 1:10_000
-            # Random subnormal-ish UInt64: exponent field cleared, random fraction
-            mk_subnormal = () -> (rand(rng, UInt64) & UInt64(0x800FFFFFFFFFFFFF))
+        N = 10_000
+        mk_sub_bits = r -> (r & UInt64(0x800FFFFFFFFFFFFF))
+        inputs = Vector{NTuple{3,UInt64}}(undef, N)
+        for i in 1:N
             which = rand(rng, 1:3)
-            ab = which == 1 ? mk_subnormal() : rand(rng, UInt64)
-            bb = which == 2 ? mk_subnormal() : rand(rng, UInt64)
-            cb = which == 3 ? mk_subnormal() : rand(rng, UInt64)
-            a = reinterpret(Float64, ab)
-            b = reinterpret(Float64, bb)
-            c = reinterpret(Float64, cb)
-            result_bits = soft_fma(ab, bb, cb)
+            ab = which == 1 ? mk_sub_bits(rand(rng, UInt64)) : rand(rng, UInt64)
+            bb = which == 2 ? mk_sub_bits(rand(rng, UInt64)) : rand(rng, UInt64)
+            cb = which == 3 ? mk_sub_bits(rand(rng, UInt64)) : rand(rng, UInt64)
+            inputs[i] = (ab, bb, cb)
+        end
+        results = Vector{Tuple{UInt64,UInt64,Bool}}(undef, N)
+        Threads.@threads for i in 1:N
+            (ab, bb, cb) = inputs[i]
+            a = reinterpret(Float64, ab); b = reinterpret(Float64, bb); c = reinterpret(Float64, cb)
             expected = Base.fma(a, b, c)
-            if isnan(expected)
-                isnan(reinterpret(Float64, result_bits)) || (failures += 1)
-            else
-                expected_bits = reinterpret(UInt64, expected)
-                if result_bits != expected_bits
-                    failures += 1
-                    if failures <= 5
-                        @test result_bits == expected_bits
-                    end
+            results[i] = (soft_fma(ab, bb, cb), reinterpret(UInt64, expected), isnan(expected))
+        end
+        failures = 0; shown = 0
+        for (rb, eb, exp_nan) in results
+            if exp_nan
+                isnan(reinterpret(Float64, rb)) || (failures += 1)
+            elseif rb != eb
+                failures += 1
+                if shown < 5
+                    @test rb == eb
+                    shown += 1
                 end
             end
         end
@@ -253,22 +263,29 @@ using Random
     @testset "cancellation sweep (10 000)" begin
         # Draw a, b random, then choose c ≈ -a*b to stress the cancellation
         # / renormalization path (Berkeley's most precision-sensitive regime).
+        # Bennett-4lij: pre-gen (3 rand() per iter) + Threads.@threads.
         rng = Random.MersenneTwister(0xCAFE)
-        failures = 0
-        for _ in 1:10_000
-            a = rand(rng) * 200 - 100
-            b = rand(rng) * 200 - 100
+        N = 10_000
+        inputs = Vector{NTuple{3,Float64}}(undef, N)
+        for i in 1:N
+            a = rand(rng)*200 - 100
+            b = rand(rng)*200 - 100
             perturb = (rand(rng) - 0.5) * 1e-10 * abs(a * b)
-            c = -a * b + perturb
-            ab = reinterpret(UInt64, a)
-            bb = reinterpret(UInt64, b)
-            cb = reinterpret(UInt64, c)
-            result_bits = soft_fma(ab, bb, cb)
-            expected_bits = reinterpret(UInt64, Base.fma(a, b, c))
-            if result_bits != expected_bits
+            inputs[i] = (a, b, -a*b + perturb)
+        end
+        results = Vector{Tuple{UInt64,UInt64}}(undef, N)
+        Threads.@threads for i in 1:N
+            (a, b, c) = inputs[i]
+            ab = reinterpret(UInt64, a); bb = reinterpret(UInt64, b); cb = reinterpret(UInt64, c)
+            results[i] = (soft_fma(ab, bb, cb), reinterpret(UInt64, Base.fma(a, b, c)))
+        end
+        failures = 0; shown = 0
+        for (rb, eb) in results
+            if rb != eb
                 failures += 1
-                if failures <= 5
-                    @test result_bits == expected_bits
+                if shown < 5
+                    @test rb == eb
+                    shown += 1
                 end
             end
         end

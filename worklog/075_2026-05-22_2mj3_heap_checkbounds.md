@@ -6,6 +6,70 @@
 
 ---
 
+## Session log — 2026-05-23 — Bennett-2mj3 verified GREEN + Bennett-4lij — test threading + suite-time map
+
+**Bennett-2mj3 verification.** Ran `JULIA_NUM_THREADS=32 julia --project
+-e 'using Pkg; Pkg.test()'` on commit `b779fe6` (the WIP, UNVERIFIED
+heap-fixture work). Result: **688188 Pass / 3 Broken / 0 Failed / 0
+Errored** in **27m59s**. The 3 broken are the pre-existing
+`@test_broken` markers (unchanged). Bennett-2mj3 is now closeable —
+the heap-test `.ll` fixture-driven refactor is correct.
+
+**Bennett-4lij — test threading (test-only).** User has 64 threads.
+Investigated whether multithreading the suite would help. Findings:
+
+  - `runtests.jl` already has the `runfile()` per-file progress
+    instrumentation (Bennett-zy4u / U104) with `flush(stderr)` — no
+    verbose-mode change needed.
+  - Engine is thread-ready: `register_callee!` + parsed-IR cache use
+    `ReentrantLock` (Bennett-7stg / U26); `simulate()` only mutates a
+    local `Vector{Bool}`; the `test_7stg` test already exercises
+    concurrent compile from 8 spawned tasks.
+  - Patched 2 files (`test_softfma.jl`, `test_division.jl`) to
+    pre-generate inputs (preserves RNG order across thread counts) +
+    `Threads.@threads` the simulate/soft-float calls + reduce
+    sequentially. Five-file plan (per initial investigation) collapsed
+    once measurement showed the softfloat random sweeps are 0.2–1.3s
+    each — NOT the bottleneck.
+  - Real suite cost map (this run, captured from `runfile()` markers):
+    **65% of wall-time is in 12 `test_*_llvm_*_dispatch.jl` files**
+    (47–126s each, ~1100s total). These are compile-bound — each
+    builds a circuit for a transcendental's LLVM-intrinsic dispatch
+    path. Threading individual `simulate` sweeps would not help.
+    Filed **Bennett-hybr** (P2) for the LLVM-dispatch hot-spot
+    optimization (circuit caching / batched compile).
+
+**Gotcha for future agents.** The "X is hot, thread the sweep" instinct
+is wrong for this codebase. The cost shape is COMPILE-bound, not
+SIMULATE-bound, because `reversible_compile()` builds circuits with
+2.4M+ gates (e.g. `soft_exp2`) and is single-threaded internally
+(LLVM's codegen uses a few threads — observed user/wall ≈ 2.7).
+Threading `simulate()` sweeps gives single-digit-second wins; real
+gains require circuit-caching across testsets or batched compile.
+
+**Files changed (test-only — zero src/ changes):**
+  - `test/test_softfma.jl`         — 4 random sweeps → pre-gen + `Threads.@threads`
+  - `test/test_division.jl`        — 2 large Cartesian sweeps → pre-gen + `Threads.@threads`
+  - `worklog/075_*.md`             — this session log
+
+**Verified suite shape (run 1, JULIA_NUM_THREADS=32, `--check-bounds=yes`):**
+  Top hot files (>40s each, all compile-bound):
+    125.9s  test_eq9p_llvm_acosh_dispatch.jl
+    123.3s  test_sfx9_llvm_asinh_dispatch.jl
+    121.5s  test_s1zl_llvm_tan_dispatch.jl
+    116.4s  test_g82n_llvm_atanh_dispatch.jl
+    115.2s  test_m2bv_llvm_tanh_dispatch.jl
+    107.0s  test_3mo_llvm_sincos_dispatch.jl
+    101.0s  test_emv_llvm_pow_dispatch.jl
+     70.8s  test_hygiene_aqua_jet.jl  (Aqua/JET, package-level)
+     60.4s  test_ky5n_llvm_sinh_dispatch.jl
+     59.2s  test_bybh_llvm_cosh_dispatch.jl
+     56.6s  test_0ulc_llvm_log1p_dispatch.jl
+     47.1s  test_582_llvm_log_dispatch.jl
+     38.1s  test_float_circuit.jl
+
+---
+
 ## Session log — 2026-05-22 — Bennett-2mj3 — heap tests green under --check-bounds=yes
 
 > **⚠️ STATUS: UNVERIFIED WIP — DO NOT TRUST AS GREEN.** This work was done
