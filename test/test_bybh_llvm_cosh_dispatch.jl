@@ -14,14 +14,18 @@ using Bennett
 
 @testset "Bennett-bybh: llvm.cosh direct dispatch" begin
 
+    # Bennett-hybr: compile the llvm.cosh.f64 intrinsic fixture ONCE and share
+    # the resulting circuit across the two testsets that exercise it.
+    _cosh_intr_path = joinpath(@__DIR__, "fixtures", "ll", "bybh_cosh_intrinsic.ll")
+    _cosh_intr_parsed = Bennett.extract_parsed_ir_from_ll(_cosh_intr_path; entry_function="cosh_intr")
+    _cosh_intr_c = reversible_compile(_cosh_intr_parsed)
+
     @testset "callee registered" begin
         @test Bennett._lookup_callee("soft_cosh") === Bennett.soft_cosh
     end
 
     @testset "llvm.cosh.f64 via .ll ingest — three regimes" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "bybh_cosh_intrinsic.ll")
-        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="cosh_intr")
-        c = reversible_compile(parsed)
+        c = _cosh_intr_c
         @test verify_reversibility(c)
         for x in (0.0, 0.1, 0.5, 1.0, 1.5, -0.3, -3.0, 100.0, -100.0, 710.0, -710.0)
             xu = reinterpret(UInt64, x)
@@ -37,9 +41,7 @@ using Bennett
     end
 
     @testset "llvm.cosh.f64 special cases (bit-exact)" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "bybh_cosh_intrinsic.ll")
-        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="cosh_intr")
-        c = reversible_compile(parsed)
+        c = _cosh_intr_c
         # ±0 → 1.0 (NOT ±0 — cosh discards sign).
         @test simulate(c, (reinterpret(UInt64,  0.0),)) == reinterpret(UInt64, 1.0)
         @test simulate(c, (reinterpret(UInt64, -0.0),)) == reinterpret(UInt64, 1.0)

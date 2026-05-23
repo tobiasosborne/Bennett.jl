@@ -6,14 +6,18 @@ using Bennett
 
 @testset "Bennett-0ulc: llvm.log1p direct dispatch" begin
 
+    # Bennett-hybr: compile the llvm.log1p.f64 intrinsic fixture ONCE and share
+    # the resulting circuit across the two testsets that exercise it.
+    _log1p_intr_path = joinpath(@__DIR__, "fixtures", "ll", "0ulc_log1p_intrinsic.ll")
+    _log1p_intr_parsed = Bennett.extract_parsed_ir_from_ll(_log1p_intr_path; entry_function="log1p_intr")
+    _log1p_intr_c = reversible_compile(_log1p_intr_parsed)
+
     @testset "callee registered" begin
         @test Bennett._lookup_callee("soft_log1p") === Bennett.soft_log1p
     end
 
     @testset "llvm.log1p.f64 via .ll ingest — both regimes" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "0ulc_log1p_intrinsic.ll")
-        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="log1p_intr")
-        c = reversible_compile(parsed)
+        c = _log1p_intr_c
         @test verify_reversibility(c)
         for x in (0.0, 1e-100, 0.001, 0.1, 0.5, 1.0, 10.0, -0.001, -0.1, -0.5, -0.99)
             xu = reinterpret(UInt64, x)
@@ -30,9 +34,7 @@ using Bennett
     end
 
     @testset "llvm.log1p.f64 special cases (bit-exact)" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "0ulc_log1p_intrinsic.ll")
-        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="log1p_intr")
-        c = reversible_compile(parsed)
+        c = _log1p_intr_c
         @test simulate(c, (reinterpret(UInt64,  0.0),)) == reinterpret(UInt64,  0.0)
         @test simulate(c, (reinterpret(UInt64, -0.0),)) == reinterpret(UInt64, -0.0)
         @test simulate(c, (reinterpret(UInt64, -1.0),)) == reinterpret(UInt64, -Inf)

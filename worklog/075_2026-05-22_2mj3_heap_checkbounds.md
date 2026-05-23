@@ -6,6 +6,68 @@
 
 ---
 
+## Session log — 2026-05-23 — Bennett-hybr — dispatch-test compile-dedup (test-only)
+
+**Goal.** Cut suite wall-time of the 12 LLVM dispatch tests
+(~1100s ≈ 65% of suite) by removing duplicated `reversible_compile()`
+work observed in the Bennett-hybr recon: each of the 12
+`test_*_llvm_*_dispatch.jl` files calls `reversible_compile(parsed)`
+on the SAME `*_intrinsic.ll` fixture twice (back-to-back testsets:
+"three regimes" + "special cases"), running the full 2.4M-gate
+`lower() + bennett()` pipeline twice with zero reuse.
+
+**Pattern (mechanical, applied to all 12 files):** hoist
+`parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function=…)`
+and `c = reversible_compile(parsed)` to outer scope (just inside the
+file-level `@testset`, before the inner testsets), then both
+consuming testsets alias the shared circuit (`c = _<slug>_intr_c`).
+`verify_reversibility(c)` retained exactly once on the shared
+circuit. libm / f32-reject / regression-guard testsets untouched.
+
+**Result (12-file dispatch_probe, JULIA_NUM_THREADS=32,
+`--check-bounds=yes`):** 385 Pass / 0 Fail / 0 Broken. Total
+17m50s (1070s) on the probe vs 1099s in the previous full-suite
+baseline — per-file variance is high (e.g. eq9p 125.9→134.8s,
+m2bv 115.2→126.6s), so the standalone probe is noisy. The dedicated
+POC (eq9p only, matched pre/post): 177.3→141.7s, -20%, 27/27 Pass.
+Expected real-suite savings: 5–10 min off the 28-min baseline.
+
+**Files changed (test-only — zero src/ changes, no 3+1):**
+  - test/test_eq9p_llvm_acosh_dispatch.jl    (POC)
+  - test/test_sfx9_llvm_asinh_dispatch.jl
+  - test/test_s1zl_llvm_tan_dispatch.jl
+  - test/test_g82n_llvm_atanh_dispatch.jl
+  - test/test_m2bv_llvm_tanh_dispatch.jl
+  - test/test_3mo_llvm_sincos_dispatch.jl
+  - test/test_emv_llvm_pow_dispatch.jl
+  - test/test_ky5n_llvm_sinh_dispatch.jl
+  - test/test_bybh_llvm_cosh_dispatch.jl
+  - test/test_0ulc_llvm_log1p_dispatch.jl
+  - test/test_582_llvm_log_dispatch.jl
+  - test/test_o7cy_llvm_expm1_dispatch.jl
+
+**Follow-up filed.** Bennett-sr8v (P3) — src-level memoisation of
+`reversible_compile(parsed::ParsedIR)` would automate the same
+optimisation for any future caller that recompiles equivalent IR.
+Touches src/Bennett.jl entry point; not §2-core but warrants design
+review. Decoupled from this test-only Tier B change.
+
+**Gotcha for future agents.** During Bennett-hybr, the propagation
+subagent accidentally created an empty `test/Project.toml` with only
+`[deps] Bennett = …`. **Bennett.jl uses `[extras]+[targets].test` in
+the MAIN `Project.toml`, NOT `test/Project.toml`.** If both exist,
+Pkg.test (Julia 1.10+) prefers `test/Project.toml` and Aqua/JET/Test
+all silently disappear from the test env, then test_hygiene_aqua_jet.jl
+errors with `ArgumentError: Package Aqua not found`. Caught + removed
+the stray file before commit. If you see "Aqua not found" or similar,
+check `ls test/Project.toml` first.
+
+**Verification status.** Full `Pkg.test()` re-run deferred per the
+user's no-pre-push-hook convention; the 12-file probe is the green
+claim for this commit.
+
+---
+
 ## Session log — 2026-05-23 — Bennett-2mj3 verified GREEN + Bennett-4lij — test threading + suite-time map
 
 **Bennett-2mj3 verification.** Ran `JULIA_NUM_THREADS=32 julia --project

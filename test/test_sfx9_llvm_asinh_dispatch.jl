@@ -6,14 +6,18 @@ using Bennett
 
 @testset "Bennett-sfx9: llvm.asinh direct dispatch" begin
 
+    # Bennett-hybr: compile the llvm.asinh.f64 intrinsic fixture ONCE and share
+    # the resulting circuit across the two testsets that exercise it.
+    _asinh_intr_path = joinpath(@__DIR__, "fixtures", "ll", "sfx9_asinh_intrinsic.ll")
+    _asinh_intr_parsed = Bennett.extract_parsed_ir_from_ll(_asinh_intr_path; entry_function="asinh_intr")
+    _asinh_intr_c = reversible_compile(_asinh_intr_parsed)
+
     @testset "callee registered" begin
         @test Bennett._lookup_callee("soft_asinh") === Bennett.soft_asinh
     end
 
     @testset "llvm.asinh.f64 via .ll ingest — three regimes" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "sfx9_asinh_intrinsic.ll")
-        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="asinh_intr")
-        c = reversible_compile(parsed)
+        c = _asinh_intr_c
         @test verify_reversibility(c)
         for x in (0.0, 0.1, 0.5, 1.0, 2.0, -0.3, -3.0, 100.0, -100.0, 1e10)
             xu = reinterpret(UInt64, x)
@@ -30,9 +34,7 @@ using Bennett
     end
 
     @testset "llvm.asinh.f64 special cases (bit-exact)" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "sfx9_asinh_intrinsic.ll")
-        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="asinh_intr")
-        c = reversible_compile(parsed)
+        c = _asinh_intr_c
         @test simulate(c, (reinterpret(UInt64,  0.0),)) == reinterpret(UInt64,  0.0)
         @test simulate(c, (reinterpret(UInt64, -0.0),)) == reinterpret(UInt64, -0.0)
         @test simulate(c, (reinterpret(UInt64,  Inf),)) == reinterpret(UInt64,  Inf)

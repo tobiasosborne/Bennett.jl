@@ -10,15 +10,21 @@
 
 @testset "Bennett-emv: llvm.pow / llvm.powi direct dispatch" begin
 
+    # Bennett-hybr: compile the llvm.pow.f64 fixture ONCE and share the
+    # resulting circuit across the two testsets that exercise it
+    # (accuracy + special-cases). llvm.powi.f64.i32 is a separate fixture
+    # used in only one testset so left in-place.
+    _pow_f64_path = joinpath(@__DIR__, "fixtures", "ll", "emv_pow_f64.ll")
+    _pow_f64_parsed = Bennett.extract_parsed_ir_from_ll(_pow_f64_path; entry_function="pow_f64")
+    _pow_f64_c = reversible_compile(_pow_f64_parsed)
+
     @testset "callees registered" begin
         @test Bennett._lookup_callee("soft_pow")  === Bennett.soft_pow
         @test Bennett._lookup_callee("soft_powi") === Bennett.soft_powi
     end
 
     @testset "llvm.pow.f64 via .ll ingest" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "emv_pow_f64.ll")
-        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="pow_f64")
-        c = reversible_compile(parsed)
+        c = _pow_f64_c
         @test verify_reversibility(c)
         for (x, y) in [(2.0, 3.0), (3.0, 4.0), (10.0, 2.0), (2.0, 0.5),
                        (1.5, 2.5), (1.0, 100.0), (5.0, 0.0), (0.0, 2.0),
@@ -41,9 +47,7 @@
     end
 
     @testset "llvm.pow.f64 special cases via .ll ingest" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "emv_pow_f64.ll")
-        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="pow_f64")
-        c = reversible_compile(parsed)
+        c = _pow_f64_c
         function call_pow(x::Float64, y::Float64)
             r = simulate(c, (reinterpret(UInt64, x), reinterpret(UInt64, y)))
             reinterpret(Float64, UInt64(r))

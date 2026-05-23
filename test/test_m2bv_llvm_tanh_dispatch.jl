@@ -25,14 +25,18 @@ using Bennett
 
 @testset "Bennett-m2bv: llvm.tanh direct dispatch" begin
 
+    # Bennett-hybr: compile the llvm.tanh.f64 intrinsic fixture ONCE and share
+    # the resulting circuit across the two testsets that exercise it.
+    _tanh_intr_path = joinpath(@__DIR__, "fixtures", "ll", "m2bv_tanh_intrinsic.ll")
+    _tanh_intr_parsed = Bennett.extract_parsed_ir_from_ll(_tanh_intr_path; entry_function="tanh_intr")
+    _tanh_intr_c = reversible_compile(_tanh_intr_parsed)
+
     @testset "callee registered" begin
         @test Bennett._lookup_callee("soft_tanh") === Bennett.soft_tanh
     end
 
     @testset "llvm.tanh.f64 via .ll ingest — three regimes" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "m2bv_tanh_intrinsic.ll")
-        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="tanh_intr")
-        c = reversible_compile(parsed)
+        c = _tanh_intr_c
         @test verify_reversibility(c)
         # Polynomial regime + exp-formula + saturate, both signs.
         for x in (0.0, 0.1, 0.5, 1.0, 2.0, -0.3, -1.5, 22.5, -22.5, 100.0)
@@ -49,9 +53,7 @@ using Bennett
     end
 
     @testset "llvm.tanh.f64 special cases (bit-exact)" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "m2bv_tanh_intrinsic.ll")
-        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="tanh_intr")
-        c = reversible_compile(parsed)
+        c = _tanh_intr_c
         # Sign-preserving zero.
         @test simulate(c, (reinterpret(UInt64,  0.0),)) == reinterpret(UInt64,  0.0)
         @test simulate(c, (reinterpret(UInt64, -0.0),)) == reinterpret(UInt64, -0.0)

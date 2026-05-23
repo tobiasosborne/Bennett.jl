@@ -18,6 +18,14 @@
 
 @testset "Bennett-582: llvm.log / llvm.log2 / llvm.log10 direct dispatch" begin
 
+    # Bennett-hybr: compile the llvm.log.f64 fixture ONCE and share the
+    # resulting circuit across the two testsets that exercise it (accuracy
+    # + special-cases). log2 and log10 each appear in only one testset, so
+    # they remain in-place.
+    _log_f64_path = joinpath(@__DIR__, "fixtures", "ll", "582_log_f64.ll")
+    _log_f64_parsed = Bennett.extract_parsed_ir_from_ll(_log_f64_path; entry_function="log_f64")
+    _log_f64_c = reversible_compile(_log_f64_parsed)
+
     @testset "callees registered" begin
         @test Bennett._lookup_callee("soft_log")   === Bennett.soft_log
         @test Bennett._lookup_callee("soft_log2")  === Bennett.soft_log2
@@ -25,9 +33,7 @@
     end
 
     @testset "llvm.log.f64 via .ll ingest" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "582_log_f64.ll")
-        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="log_f64")
-        c = reversible_compile(parsed)
+        c = _log_f64_c
         @test verify_reversibility(c)
         for x in (1.0, 2.0, 0.5, ℯ, 10.0, 100.0, 0.1, 1.5, 0.99, 1.01)
             xf = Float64(x)
@@ -86,9 +92,7 @@
     end
 
     @testset "llvm.log.f64 special cases via .ll ingest" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "582_log_f64.ll")
-        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="log_f64")
-        c = reversible_compile(parsed)
+        c = _log_f64_c
         # log(1) = 0 bit-exact (the only mathematically exact identity)
         @test simulate(c, reinterpret(UInt64, 1.0)) == reinterpret(UInt64, 0.0)
         # log(0) = -Inf

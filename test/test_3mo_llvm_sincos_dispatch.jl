@@ -17,15 +17,23 @@ using Bennett
 
 @testset "Bennett-3mo: llvm.sin / llvm.cos direct dispatch" begin
 
+    # Bennett-hybr: compile the llvm.sin.f64 / llvm.cos.f64 fixtures ONCE each
+    # and share each circuit across the two testsets that exercise it
+    # (accuracy + special-cases).
+    _sin_f64_path = joinpath(@__DIR__, "fixtures", "ll", "3mo_sin_f64.ll")
+    _sin_f64_parsed = Bennett.extract_parsed_ir_from_ll(_sin_f64_path; entry_function="sin_f64")
+    _sin_f64_c = reversible_compile(_sin_f64_parsed)
+    _cos_f64_path = joinpath(@__DIR__, "fixtures", "ll", "3mo_cos_f64.ll")
+    _cos_f64_parsed = Bennett.extract_parsed_ir_from_ll(_cos_f64_path; entry_function="cos_f64")
+    _cos_f64_c = reversible_compile(_cos_f64_parsed)
+
     @testset "callees registered" begin
         @test Bennett._lookup_callee("soft_sin") === Bennett.soft_sin
         @test Bennett._lookup_callee("soft_cos") === Bennett.soft_cos
     end
 
     @testset "llvm.sin.f64 via .ll ingest" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "3mo_sin_f64.ll")
-        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="sin_f64")
-        c = reversible_compile(parsed)
+        c = _sin_f64_c
         @test verify_reversibility(c)
         for x in (1.0, 2.0, 0.5, 0.1, 100.0, 0.78539816, 1e6, 1e10)
             xf = Float64(x)
@@ -43,9 +51,7 @@ using Bennett
     end
 
     @testset "llvm.cos.f64 via .ll ingest" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "3mo_cos_f64.ll")
-        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="cos_f64")
-        c = reversible_compile(parsed)
+        c = _cos_f64_c
         @test verify_reversibility(c)
         for x in (0.0, 1.0, 2.0, 0.5, 0.1, 100.0, 0.78539816, 1e6, 1e10)
             xf = Float64(x)
@@ -63,9 +69,7 @@ using Bennett
     end
 
     @testset "llvm.sin.f64 special cases" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "3mo_sin_f64.ll")
-        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="sin_f64")
-        c = reversible_compile(parsed)
+        c = _sin_f64_c
         # sin(0) = 0 bit-exact, sin(-0) = -0 (sign-preserving)
         @test simulate(c, reinterpret(UInt64,  0.0)) == reinterpret(UInt64,  0.0)
         @test simulate(c, reinterpret(UInt64, -0.0)) == reinterpret(UInt64, -0.0)
@@ -75,9 +79,7 @@ using Bennett
     end
 
     @testset "llvm.cos.f64 special cases" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "3mo_cos_f64.ll")
-        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="cos_f64")
-        c = reversible_compile(parsed)
+        c = _cos_f64_c
         # cos(±0) = 1.0 bit-exact
         @test simulate(c, reinterpret(UInt64,  0.0)) == reinterpret(UInt64, 1.0)
         @test simulate(c, reinterpret(UInt64, -0.0)) == reinterpret(UInt64, 1.0)

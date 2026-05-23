@@ -13,14 +13,18 @@ using Bennett
 
 @testset "Bennett-s1zl: llvm.tan direct dispatch" begin
 
+    # Bennett-hybr: compile the llvm.tan.f64 fixture ONCE and share the
+    # resulting circuit across the two testsets that exercise it.
+    _tan_f64_path = joinpath(@__DIR__, "fixtures", "ll", "s1zl_tan_f64.ll")
+    _tan_f64_parsed = Bennett.extract_parsed_ir_from_ll(_tan_f64_path; entry_function="tan_f64")
+    _tan_f64_c = reversible_compile(_tan_f64_parsed)
+
     @testset "callee registered" begin
         @test Bennett._lookup_callee("soft_tan") === Bennett.soft_tan
     end
 
     @testset "llvm.tan.f64 via .ll ingest" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "s1zl_tan_f64.ll")
-        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="tan_f64")
-        c = reversible_compile(parsed)
+        c = _tan_f64_c
         @test verify_reversibility(c)
         for x in (1.0, 2.0, 0.5, 0.1, 0.6744, 0.7, 0.78539816, 100.0, 1e6, 1e10)
             xf = Float64(x)
@@ -38,9 +42,7 @@ using Bennett
     end
 
     @testset "llvm.tan.f64 special cases" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "s1zl_tan_f64.ll")
-        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="tan_f64")
-        c = reversible_compile(parsed)
+        c = _tan_f64_c
         # tan(±0) = ±0 bit-exact (sign-preserving).
         @test simulate(c, reinterpret(UInt64,  0.0)) == reinterpret(UInt64,  0.0)
         @test simulate(c, reinterpret(UInt64, -0.0)) == reinterpret(UInt64, -0.0)

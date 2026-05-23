@@ -6,14 +6,18 @@ using Bennett
 
 @testset "Bennett-o7cy: llvm.expm1 direct dispatch" begin
 
+    # Bennett-hybr: compile the llvm.expm1.f64 intrinsic fixture ONCE and share
+    # the resulting circuit across the two testsets that exercise it.
+    _expm1_intr_path = joinpath(@__DIR__, "fixtures", "ll", "o7cy_expm1_intrinsic.ll")
+    _expm1_intr_parsed = Bennett.extract_parsed_ir_from_ll(_expm1_intr_path; entry_function="expm1_intr")
+    _expm1_intr_c = reversible_compile(_expm1_intr_parsed)
+
     @testset "callee registered" begin
         @test Bennett._lookup_callee("soft_expm1") === Bennett.soft_expm1
     end
 
     @testset "llvm.expm1.f64 via .ll ingest — three regimes" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "o7cy_expm1_intrinsic.ll")
-        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="expm1_intr")
-        c = reversible_compile(parsed)
+        c = _expm1_intr_c
         @test verify_reversibility(c)
         for x in (0.0, 1e-100, 0.001, 0.1, 0.5, 1.0, 5.0, 100.0, -0.5, -1.0, -50.0, -1000.0, 700.0)
             xu = reinterpret(UInt64, x)
@@ -30,9 +34,7 @@ using Bennett
     end
 
     @testset "llvm.expm1.f64 special cases (bit-exact)" begin
-        path = joinpath(@__DIR__, "fixtures", "ll", "o7cy_expm1_intrinsic.ll")
-        parsed = Bennett.extract_parsed_ir_from_ll(path; entry_function="expm1_intr")
-        c = reversible_compile(parsed)
+        c = _expm1_intr_c
         @test simulate(c, (reinterpret(UInt64,  0.0),)) == reinterpret(UInt64,  0.0)
         @test simulate(c, (reinterpret(UInt64, -0.0),)) == reinterpret(UInt64, -0.0)
         @test simulate(c, (reinterpret(UInt64,  Inf),)) == reinterpret(UInt64,  Inf)
