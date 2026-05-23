@@ -6,6 +6,95 @@
 
 ---
 
+## Session log — 2026-05-23 — Bennett-7kzr + Bennett-jefu — docs refresh sweep
+
+**Goal.** User-requested last task before stopping: full docs refresh.
+Most important: README capabilities update + explicit
+"architectural limits" section covering the loops constraint
+(currently fail-loud on unbounded loops; nested-loop behaviour;
+v-next Reversible-VM target).
+
+**Orchestration.** Three parallel Sonnet recon agents:
+  1. Capabilities audit — what compiles today (commit `5731cec`).
+  2. Loops-behaviour audit — confirm fail-loud, locate guards.
+  3. README + docs drift audit — find stale claims.
+
+All three returned detailed reports. Synthesis below.
+
+**Loops confirmation (per recon 2):** fail-loud is REAL and has TWO
+guards:
+  - Compile-time: `src/lowering/driver.jl:81` —
+    `if !isempty(back_edges) && max_loop_iterations <= 0` throws
+    ArgumentError when a back-edge is found with no K specified.
+  - Simulation-time: `src/simulator.jl:215-222` — the Bennett-s0tn
+    `LoopGuard` convergence wire fires `ErrorException` naming the
+    bound and suggesting `max_loop_iterations=2K` when an input
+    needs more iterations than K.
+  - True nested loops (inner loop header inside outer body) →
+    rejected at compile time, `src/lowering/cfg.jl:111`.
+  - Sequential loops + callee-with-loop work. Caveat: callee
+    loops are inlined with a HARDCODED `max_loop_iterations=64`
+    regardless of outer caller's kwarg (`src/lowering/call.jl:88`)
+    — gate count blows up as O(K × callee_gates), not obvious from
+    source.
+
+**README edits (the bulk of the work):**
+  - Top code example: `144 gates` → `146 gates` for QROM L=8.
+  - Benchmark headlines table: L=4 56→70 gates (134×→107×);
+    L=8 144→146 gates.
+  - Memory-strategies table: linear_scan per-set "~1,152–1,444" →
+    "~414 gates per set (asymptotic)".
+  - Persistent-DS scaling table: refreshed all numbers per
+    BENCHMARKS.md Bennett-1xub refresh (N=1000 1.4M→414K).
+  - "Wider types and composability": added heap-memory recogniser
+    bullet (M1–M4) + cross-link from "Bounded loops" to the new
+    Architectural limits section.
+  - NEW SECTION: `## Architectural limits` after Quick start,
+    before Build & test. Three subsections: "Loops must be
+    statically bounded" (all four guards documented with file:line
+    cites), "Memory must be statically sized" (M1–M4 scope, Dict
+    rejection), "Coming in v-next: the Bennett-VM target"
+    (Reversible-VM pitch + Bennett-spqu / PRD link). Closes
+    Bennett-jefu.
+  - Build & test paragraph: "~5 min cold / 143 files / ~67k
+    assertions" → "~28 min cold / 274 files / 688k assertions
+    under JULIA_NUM_THREADS=32". Notes the compile-cache workstream
+    (Bennett-{hybr, sr8v, uiaq}, 2026-05-23) as the recent suite-
+    perf change.
+  - Contributing section: `(~5 min cold)` → `(~28 min cold)`,
+    prefix with `JULIA_NUM_THREADS=32`.
+
+**CLAUDE.md edits (critical agent-bug fix):**
+  - **§0 worklog reference**: hardcoded `worklog/038_*.md` (37
+    chunks stale!) → "check `ls worklog/ | sort -r | head -1`
+    (as of 2026-05-23: chunk `075_*.md`)". This was the most
+    operationally dangerous stale claim — agents reading the rule
+    literally would have written to a 3-month-old chunk. Also
+    added explicit DO-NOT-run guard on `scripts/shard_worklog.py`
+    per `feedback_shard_worklog_pitfall` memory (the script is
+    destructive).
+  - File-structure counts: worklog "38 sharded" → 77; test
+    "143 .jl files" → 274; softfloat "(17)" → 35; public
+    soft_* "32" → 39.
+
+**Drift NOT fixed (deferred to Bennett-c4gh):** VISION-PRD has
+several high-severity stale claims (Okasaki labelled "primary
+research direction" while T5 chose linear_scan; Tier 3 "research"
+items for store/alloca/GEP all shipped; pebbling strategies marked
+[future] though wired). Memory-PRD + T5-PRD status headers stale.
+Filed Bennett-c4gh (P3) with the full audit list.
+
+**Beads this round.** Closed: Bennett-7kzr (docs refresh sweep,
+README + CLAUDE.md portions complete), Bennett-jefu (architectural
+constraint documented). Filed: Bennett-c4gh (PRD-side drift
+follow-up, P3).
+
+**Verification.** README edits are prose; no test changes; no src
+changes. Did not re-run Pkg.test (already validated earlier today).
+CLAUDE.md changes are documentation; no behaviour impact.
+
+---
+
 ## Session log — 2026-05-23 — Cumulative measurement + Bennett-1eyg hotfix
 
 **Full-suite re-run post-{hybr,sr8v,uiaq}:** 688216 Pass / 3 Broken /

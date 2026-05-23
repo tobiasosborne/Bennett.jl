@@ -12,7 +12,7 @@ Full PRDs: `Bennett-PRD.md` (v0.1), `BennettIR-PRD.md` (v0.2), `BennettIR-v03-PR
 
 These are NON-NEGOTIABLE. Every agent, every session, every commit.
 
-0. **MAINTAIN THE WORKLOG.** Every step, every session: prepend a `## Session log — YYYY-MM-DD — ...` block to the **current top chunk** under `worklog/` (today: `worklog/038_*.md`; the highest-numbered file is always the most recent). When that file passes ~280 lines, start a new chunk with the next sequential `NNN_` prefix and prepend there. The root `WORKLOG.md` is now a thin **index** (sharded out of a 9,774-line monolith per Bennett-fyni / U70). Capture gotchas, learnings, surprising decisions, LLVM IR quirks, test failures and their root causes — anything a future agent would wish it knew, that's not derivable from the diff. This is the project's institutional memory. If you hit something non-obvious, write it down before moving on. Re-run `python3 scripts/shard_worklog.py` if structure drifts.
+0. **MAINTAIN THE WORKLOG.** Every step, every session: prepend a `## Session log — YYYY-MM-DD — ...` block to the **current top chunk** under `worklog/` — i.e. the file with the **highest** `NNN_` prefix. Do NOT hardcode the chunk number from this rule; check `ls worklog/ | sort -r | head -1` (as of 2026-05-23: chunk `075_*.md`). When that file passes ~280 lines, start a new chunk with the next sequential `NNN_` prefix and prepend there. The root `WORKLOG.md` is a thin **index** (sharded out of a 9,774-line monolith per Bennett-fyni / U70). Capture gotchas, learnings, surprising decisions, LLVM IR quirks, test failures and their root causes — anything a future agent would wish it knew, that's not derivable from the diff. This is the project's institutional memory. If you hit something non-obvious, write it down before moving on. **DO NOT run `python3 scripts/shard_worklog.py`** — per the user's `feedback_shard_worklog_pitfall` memory, the script is destructive: it wipes all existing chunk files. Edit chunks by hand.
 
 1. **FAIL FAST, FAIL LOUD.** Assertions, not silent returns. Crashes, not corrupted state. `error()` with a clear message, not a quiet `nothing`. If a wire is unmapped, if an SSA name is missing, if an instruction is unsupported — crash immediately with context.
 
@@ -85,7 +85,7 @@ Bennett.jl/                         # Project root. PRDs and CLAUDE.md live alon
   CLAUDE.md                         # this file — non-negotiable project rules
   README.md                         # public-facing intro
   WORKLOG.md                        # thin index pointing at sharded chunks under worklog/ (per §0)
-  worklog/                          # 38 sharded session-log files, ~200-300 lines each, NNN_YYYY-MM-DD_<slug>.md
+  worklog/                          # 77 sharded session-log files (as of 2026-05-23), ~200-300 lines each, NNN_YYYY-MM-DD_<slug>.md
                                     #   highest NNN = most recent; prepend new sessions to the top chunk
   BENCHMARKS.md                     # canonical gate-count + Toffoli-depth baselines (T5 Pareto front)
   Bennett-VISION-PRD.md             # long-term v1.0 roadmap (Enzyme analogy)
@@ -143,8 +143,8 @@ Bennett.jl/                         # Project root. PRDs and CLAUDE.md live alon
     # ---- Crypto / hash ----
     feistel.jl                      # reversible Feistel network for bijective hashing
 
-    softfloat/                      # 17 files: IEEE 754 binary64 in pure integer arithmetic (bit-exact vs Julia native)
-                                    # Bennett-iwv5 / U90: wrapped in `module SoftFloatLib`; 32 public soft_*
+    softfloat/                      # 35 files: IEEE 754 binary64 in pure integer arithmetic (bit-exact vs Julia native)
+                                    # Bennett-iwv5 / U90: wrapped in `module SoftFloatLib`; 39 public soft_*
                                     # primitives re-exported via `using .SoftFloatLib` in Bennett.jl. Internal
                                     # helpers (_add128, _sf_normalize_to_bit52, _EXP_TAB, …) and bit-pattern
                                     # constants (EXP_MASK, IMPLICIT, INDEF, QNAN) stay module-private. Module
@@ -173,7 +173,7 @@ Bennett.jl/                         # Project root. PRDs and CLAUDE.md live alon
         hashcons_jenkins.jl         # Mogensen Jenkins-96 reversible hash
         popcount.jl                 # pure-integer popcount (HAMT helper)
 
-  test/                             # 143 test/*.jl files / ~67k assertions / ~200 testsets / ~5 min cold Pkg.test
+  test/                             # 274 test/*.jl files / 688k assertions / ~200 testsets / ~28 min cold Pkg.test under JULIA_NUM_THREADS=32 (as of 2026-05-23)
     runtests.jl                     # canonical registration order
                                     # Conventions:
                                     #   test_<beadid>_*.jl    per-bead regression file (~50 files)

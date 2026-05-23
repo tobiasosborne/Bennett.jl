@@ -31,7 +31,7 @@ circuit_f = reversible_compile(g, Float64)
 h(x::UInt8) = let tbl = (UInt8(0x63), UInt8(0x7c), UInt8(0x77), UInt8(0x7b))
     tbl[(x & UInt8(0x3)) + 1]
 end
-circuit_tbl = reversible_compile(h, UInt8)   # 144 gates (MUX fallback would be ~7,500)
+circuit_tbl = reversible_compile(h, UInt8)   # 146 gates (MUX fallback would be ~7,500)
 
 # Mutable arrays with dynamic indexing — handled automatically
 k(x::Int8, y::Int8, i::Int8) = let a = Ref(x)
@@ -90,7 +90,7 @@ Requires Julia 1.10+ and LLVM.jl.
 | **MUX EXCH** | dynamic idx, (W=8, N∈{4,8}) | 7,122 / 14,026 gates | 7,514 / 9,590 gates | — |
 | **QROM** | read-only global constant table | — | 4(L-1) Toffoli + O(L·W) CNOT | Babbush-Gidney 2018 §III.C |
 | **Feistel hash** | reversible bijective key hash | — | 8·W Toffoli | Luby-Rackoff 1988 |
-| **Persistent-DS** | runtime-unbounded mutable memory (`mem=:persistent`) | ~1,152–1,444 gates (W=8, `:linear_scan`) | same | Okasaki 1998 / Conchon-Filliâtre 2007 |
+| **Persistent-DS** | runtime-unbounded mutable memory (`mem=:persistent`) | ~414 gates per set (W=8, `:linear_scan`, asymptotic) | same | Okasaki 1998 / Conchon-Filliâtre 2007 |
 
 Pass `mem=:persistent` to `reversible_compile` to opt into the persistent-DS tier.
 The `persistent_impl` kwarg selects the backing implementation (`:linear_scan`
@@ -108,15 +108,15 @@ were benchmarked in the T5-P7a head-to-head sweep (see BENCHMARKS.md); the early
 scaling sweep below measured impl candidates against `linear_scan` at workloads
 `K = max_n` (full structure population):
 
-| max_n | linear_scan | linear_scan per-set | CF semi-persistent | CF per-set |
+| max_n | linear_scan total | linear_scan per-set | CF semi-persistent | CF per-set |
 |---:|---:|---:|---:|---:|
-| 4 | 6,350 gates | 1,587 | 61,728 | 15,432 |
-| 16 | 22,902 | 1,431 | 1,077,452 | 67,341 |
-| 64 | 89,302 | 1,395 | 17,458,600 | 272,791 |
-| 256 | 355,158 | 1,387 | OOM-skipped (~280M predicted) | — |
-| 1000 | **1,384,726** | **1,385** | OOM-skipped (~4.5B predicted) | — |
+| 4 | ~1,900 gates | ~475 | 61,728 | 15,432 |
+| 16 | ~7,000 | ~440 | 1,077,452 | 67,341 |
+| 64 | ~27,000 | ~420 | 17,458,600 | 272,791 |
+| 256 | ~107,000 | ~417 | OOM-skipped (~280M predicted) | — |
+| 1000 | **414,028** | **~414** | OOM-skipped (~4.5B predicted) | — |
 
-**linear_scan per-set cost is constant in max_n.** Bennett.jl's lowering compresses the branchless "preserve N-1 slots, write 1" pattern into ~1,400 gates per set regardless of N. CF's variable-depth Diff-write doesn't compress, giving O(N²) total. HAMT/Okasaki cannot beat linear_scan because their per-set work strictly includes more arithmetic (popcount alone is 2,782 gates standalone — 2× linear_scan's measured per-set floor). N=1000 reaches 1.4M gates / 312K Toffoli / 3.4 GB compile RSS via linear_scan.
+**linear_scan per-set cost is constant in max_n** (asymptotically ~414 gates/set after the Bennett-1xub refresh — 3.3× lower than the 2026-04-20 baseline of ~1,400). Bennett.jl's lowering compresses the branchless "preserve N-1 slots, write 1" pattern regardless of N. CF's variable-depth Diff-write doesn't compress, giving O(N²) total. HAMT/Okasaki cannot beat linear_scan because their per-set work strictly includes more arithmetic (popcount alone is 2,782 gates standalone — 6.7× linear_scan's measured per-set floor). N=1000 reaches **414K gates** via linear_scan.
 
 **Why this contradicts CPU intuition**: CPU-cheap primitives (popcount, pointer deref, tree balance) are gate-expensive. The right reversible DS is one whose per-op pattern matches what Bennett.jl can compress: a single target slot with N-1 no-op preserves. See [`docs/memory/persistent_ds_scaling.md`](docs/memory/persistent_ds_scaling.md) for the full sweep methodology and cost-model derivation.
 
@@ -124,8 +124,8 @@ scaling sweep below measured impl candidates against `linear_scan` at workloads
 
 | Benchmark | Bennett.jl | Baseline | Ratio |
 |-----------|------------|----------|-------|
-| QROM lookup L=4, W=8 | 56 gates | MUX tree 7,514 | **134× smaller** |
-| QROM lookup L=8, W=8 | 144 gates | MUX tree 9,590 | **66× smaller** |
+| QROM lookup L=4, W=8 | 70 gates | MUX tree 7,514 | **107× smaller** |
+| QROM lookup L=8, W=8 | 146 gates | MUX tree 9,590 | **66× smaller** |
 | Shadow store W=8 | 24 CNOT | MUX EXCH 7,122 | **297× smaller** |
 | Feistel hash W=32 | 480 gates | Okasaki 3-node insert 71,000 | **148× smaller** |
 | MD5 full (64 steps, extrap.) | ~48k Toffoli | ReVerC 2017 eager 27.5k | 1.75× |
@@ -202,7 +202,8 @@ Captures via `print<memoryssa>` pass-output parsing. Informs future lowering dec
 - **Multi-language ingest**: `extract_parsed_ir_from_ll(path)` and `extract_parsed_ir_from_bc(path)` accept `.ll`/`.bc` files from any LLVM frontend (C via `clang -emit-llvm`, Rust via `rustc --emit=llvm-ir`, C++, Fortran); the reversible-compile pipeline is language-agnostic at the LLVM IR level
 - **Controlled circuits**: `controlled(circuit)` wraps every gate with a control bit
 - **Function inlining**: `register_callee!(f)` enables gate-level inlining of any pure Julia function
-- **Bounded loops**: explicit unrolling via `max_loop_iterations` kwarg
+- **Bounded loops**: explicit unrolling via `max_loop_iterations` kwarg — see [Architectural limits](#architectural-limits) for what this implies (and the v-next Reversible-VM target that lifts the restriction)
+- **Heap-memory recogniser** (opt-in `mem=:heap`): M1 dead-vector slices, M2 statically-sized `Array{T}(undef, N)`, M3 `push!`-built `Vector{T}` with static count, M4 fail-loud scope hardening for `Dict` / runtime-N. Default `mem=:auto` does not run the recogniser — touching Julia's GC stack hits the U15 inline-asm wall
 
 ## Quick start
 
@@ -227,6 +228,30 @@ simulate(cc, true, Int8(42))  # => 43 (control = true)
 simulate(cc, false, Int8(42)) # => 42 (control = false)
 ```
 
+## Architectural limits
+
+Bennett.jl compiles to a **fixed gate sequence** — every operation, every branch, every loop iteration is decided at compile time. This is the same constraint every quantum oracle has: a circuit has no runtime program counter, no runtime-sized memory, no dynamic dispatch. Two consequences follow directly.
+
+### Loops must be statically bounded
+
+LLVM resolves loops with compile-time-constant trip counts (`for i in 1:4`) before Bennett ever sees them — no configuration needed. Data-dependent loops (`while n > 0`, Collatz iteration) survive LLVM as back-edges; you must pass `max_loop_iterations=K` to `reversible_compile`, and Bennett unrolls the body K times with MUX gates that freeze the loop-carried state on exit.
+
+- **Missing `max_loop_iterations`** when a back-edge exists → compile fails immediately with `ArgumentError` ([`src/lowering/driver.jl:81`](src/lowering/driver.jl)).
+- **K too small at simulation time** → `simulate` throws `ErrorException` naming the bound and suggesting `max_loop_iterations=2K` (Bennett-s0tn convergence guard, [`src/simulator.jl:215-222`](src/simulator.jl)). **Never a silent wrong answer.**
+- **True nested loops** (a loop whose body contains another loop at the LLVM level) → rejected at compile time with `"nested loops not supported"` ([`src/lowering/cfg.jl:111`](src/lowering/cfg.jl)).
+- **Sequential loops** in the same function → supported; each unrolls independently. Gate count is additive.
+- **A callee that itself contains a loop, called from inside a loop body** → works, but the callee is inlined with a **hardcoded inner `max_loop_iterations=64`** regardless of the outer caller's kwarg ([`src/lowering/call.jl:88`](src/lowering/call.jl)). Gate count grows as O(K × callee_gates) — this can be very large and is not obvious from the source. Tracked as a known smell.
+
+### Memory must be statically sized
+
+Every `alloca`, every `Vector{T}`, every persistent-DS instance has a known shape (width × count) at compile time. The opt-in `mem=:heap` recogniser (Bennett-gps7 → Bennett-bd5f, milestones M1–M4) extends what Bennett can prove to be statically-sized — but a `Dict{K,V}` (Bennett-800b) or a runtime-sized `Array{T}(undef, n)` is rejected at extraction with a precise signpost message naming the offending pattern.
+
+### Coming in v-next: the Bennett-VM target
+
+The fixed-circuit constraint is **architectural, not a bug**. A quantum oracle running on a Bennett-circuit-based backend needs that fixed sequence. But for classical reversible programs — and for dynamic quantum circuits with mid-circuit measurement + classical feedforward — the constraint is unnecessary.
+
+The next major version adds a second lowering target: a **reversible abstract machine** with a program counter and reversible state transitions. On that target, a `while` loop simply runs, dynamically, as many times as the input demands; the existing Bennett pebbling/checkpoint machinery handles its uncomputation. The circuit target stays — both are first-class via the existing `target=` kwarg. See [`Bennett-ReversibleVM-PRD.md`](Bennett-ReversibleVM-PRD.md) for the design (tracked as Bennett-spqu); no implementation exists at the time of this README.
+
 ## Build & test
 
 ```bash
@@ -234,7 +259,7 @@ cd Bennett.jl
 julia --project=. -e 'using Pkg; Pkg.test()'
 ```
 
-The test suite runs ~67,000 assertions across 143 test files (~200 testsets) in about 5 minutes (291s wall-clock on a typical dev machine, not counting cold Julia precompile of `LLVM.jl`/`Pkg`). Time is spread broadly — no single testset exceeds ~5s. Set `BENNETT_T5_TESTS=0` to skip the multi-language corpus subset (Julia / C via `clang` / Rust via `rustc`); the `clang` and `rustc` corpora self-skip when their compilers are absent.
+The test suite runs 688k assertions across 275 test files (~200 testsets) in about **28 minutes** wall-clock under `JULIA_NUM_THREADS=32` on a 64-thread dev machine (cold), not counting Julia precompile of `LLVM.jl`/`Pkg`. The 12 `test_*_llvm_*_dispatch.jl` files dominate (~65% of wall-time, compile-bound — each builds a 2.4M-gate circuit for a transcendental's LLVM-intrinsic dispatch path). The compile-cache workstream (Bennett-hybr / sr8v / uiaq, 2026-05-23) added an identity-keyed `reversible_compile` cache so re-compiles within a session are free. Set `BENNETT_T5_TESTS=0` to skip the multi-language corpus subset (Julia / C via `clang` / Rust via `rustc`); the `clang` and `rustc` corpora self-skip when their compilers are absent.
 
 ## Architecture
 
@@ -380,7 +405,7 @@ Good first beads are typically tagged P3 with type `task` and clear "Sites:" poi
 **Run the tests** — Bennett.jl runs all quality gates locally; the project deliberately has no GitHub Actions CI (CLAUDE.md §14):
 
 ```bash
-julia --project -e 'using Pkg; Pkg.test()'   # full suite (~5 min cold)
+JULIA_NUM_THREADS=32 julia --project -e 'using Pkg; Pkg.test()'   # full suite (~28 min cold)
 julia --project test/test_increment.jl       # single file
 BENNETT_CI=1 julia --project -e 'using Pkg; Pkg.test()'  # promote toolchain skips to errors
 ```
