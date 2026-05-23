@@ -6,6 +6,65 @@
 
 ---
 
+## Session log — 2026-05-23 — Cumulative measurement + Bennett-1eyg hotfix
+
+**Full-suite re-run post-{hybr,sr8v,uiaq}:** 688216 Pass / 3 Broken /
+0 Failed in **35m06s** — *slower* than the 27m59s baseline by ~7 min.
+
+**Root cause:** the new `test/test_sr8v_compile_cache.jl` used the
+2.4M-gate `eq9p_acosh_intrinsic.ll` fixture for testsets 1-3 — 5
+compiles of a huge circuit just to prove `c1 === c2`. Total file
+cost: **270.2s** — the single biggest hot file in the entire suite.
+
+**Hotfix Bennett-1eyg.** Replaced the eq9p fixture with the
+CLAUDE.md §6 baseline x+1 Int8 ParsedIR (58 gates via
+`_extract_parsed_ir_cached(_f_tiny, Tuple{Int8})`). Cache identity
+is circuit-size-independent — the heavy fixture proved nothing the
+tiny one doesn't. Defense-in-depth `gate_count > 1000` assertion
+tightened to `== 58` (pinned baseline). **Standalone: 270.2s → 1.0s**,
+13/13 still GREEN. Suite-level recovery: ~4.5 min, predicted
+post-hotfix wall-time ≈ 30m37s (still ~3 min above baseline).
+
+**Honest verdict on the compile-cache workstream.** The 12 dispatch
+tests held flat in this measurement (sum 1095s vs baseline 1071s,
++24s — within run-to-run noise). The POC-matched-conditions -20%
+on eq9p (177→142s) did NOT replicate at the full-suite level — single
+sample is noisy, and the post-hybr file may have re-warmed differently
+across runs. The DURABLE value of hybr+sr8v+uiaq is architectural:
+any future `reversible_compile` caller with identical kwargs auto-hits
+the cache. The suite's per-call recompile workload was already
+manually deduped by Bennett-hybr's test-side hoist, so sr8v+uiaq
+add no incremental gain on the SUITE's current shape — but anything
+new (extra dispatch tests, batch-compile workflows, T5 corpus when
+unblocked) gets the cache for free.
+
+**Per-file deltas (12 dispatch tests, this measurement only):**
+
+| File | Baseline 27m59s | Post-orch 35m06s | Δ |
+|------|---|---|---|
+| eq9p | 125.9 | 151.2 | +25.3 |
+| sfx9 | 123.3 | 133.1 | +9.8 |
+| s1zl | 121.5 | 111.9 | -9.6 |
+| g82n | 116.4 | 121.6 | +5.2 |
+| m2bv | 115.2 | 133.1 | +17.9 |
+| 3mo  | 107.0 |  77.2 | -29.8 |
+| emv  | 101.0 |  97.6 | -3.4 |
+| ky5n |  60.4 |  65.0 | +4.6 |
+| bybh |  59.2 |  63.7 | +4.5 |
+| 0ulc |  56.6 |  59.3 | +2.7 |
+| 582  |  47.1 |  41.2 | -5.9 |
+| o7cy |  37.5 |  39.9 | +2.4 |
+
+**Gotcha for future agents.** When writing a test for a CACHE
+mechanism, the fixture's compile cost is irrelevant to what the test
+PROVES. Use the smallest available ParsedIR (e.g. x+1 Int8) — the
+cache returns identical objects regardless of circuit size. The
+270s mistake was choosing a fixture by "this is the file I've been
+working with" rather than "what does the test need to prove". This
+heuristic applies to any future cache/dispatch/registry test.
+
+---
+
 ## Session log — 2026-05-23 — Bennett-uiaq — transparent sr8v wiring (compile-cache workstream complete)
 
 **Goal.** After Bennett-sr8v shipped, callers of `reversible_compile(f, T)`
