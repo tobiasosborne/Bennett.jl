@@ -25,22 +25,37 @@ end
 # package — the cache is small (one entry per distinct (callee, arg_types)
 # pair) and never grows after warm-up. Avoids worsening the LoweringCtx
 # back-compat-constructor sprawl tracked in Bennett-ehoa / U43.
-const _parsed_ir_cache = Dict{Tuple{Function, Type}, ParsedIR}()
+#
+# Bennett-uiaq: cache key extended to include `optimize` and `mem` so the
+# top-level `reversible_compile(f, arg_types)` overload can route its
+# `extract_parsed_ir(f, arg_types; optimize, mem)` call through this
+# helper and auto-hit the Bennett-sr8v compile cache on repeat calls,
+# WITHOUT silently dropping non-default extraction kwargs. The old
+# no-kwargs call shape (e.g. src/lowering/call.jl:82) is preserved via
+# the kwarg defaults `optimize=true, mem=:auto` — matches the old
+# `extract_parsed_ir(f, arg_types)` defaults exactly.
+const _parsed_ir_cache = Dict{Tuple{Function, Type, Bool, Symbol}, ParsedIR}()
 const _parsed_ir_cache_lock = ReentrantLock()
 
 """
-    _extract_parsed_ir_cached(f, arg_types) -> ParsedIR
+    _extract_parsed_ir_cached(f, arg_types; optimize=true, mem=:auto) -> ParsedIR
 
-Memoised wrapper over `extract_parsed_ir(f, arg_types)`. On a cache hit
-returns the previously-extracted `ParsedIR` by identity; on a miss
-extracts, stores, and returns. `ParsedIR` is immutable and the lowering
-pipeline only reads from it, so sharing across compiles is safe.
+Memoised wrapper over `extract_parsed_ir(f, arg_types; optimize, mem)`.
+On a cache hit returns the previously-extracted `ParsedIR` by identity;
+on a miss extracts, stores, and returns. `ParsedIR` is immutable and
+the lowering pipeline only reads from it, so sharing across compiles
+is safe.
+
+The key is `(f, arg_types, optimize, mem)` so distinct extraction
+kwargs do not collide on the same cache slot.
 """
-function _extract_parsed_ir_cached(f::Function, arg_types::Type{<:Tuple})::ParsedIR
-    key = (f, arg_types)
+function _extract_parsed_ir_cached(f::Function, arg_types::Type{<:Tuple};
+                                    optimize::Bool=true,
+                                    mem::Symbol=:auto)::ParsedIR
+    key = (f, arg_types, optimize, mem)
     lock(_parsed_ir_cache_lock) do
         haskey(_parsed_ir_cache, key) && return _parsed_ir_cache[key]
-        pir = extract_parsed_ir(f, arg_types)
+        pir = extract_parsed_ir(f, arg_types; optimize, mem)
         _parsed_ir_cache[key] = pir
         return pir
     end

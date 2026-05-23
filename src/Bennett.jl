@@ -352,7 +352,12 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     # ParsedIR is built the dead skeleton is already gone, so `:heap` has no
     # meaning for `lower()`; we normalise it to `:auto` for the lowering call
     # below (`lower()` only knows :auto / :persistent).
-    parsed = extract_parsed_ir(f, arg_types; optimize, mem)
+    # Bennett-uiaq: route through `_extract_parsed_ir_cached` so repeat
+    # `reversible_compile(f, arg_types)` calls auto-hit the Bennett-sr8v
+    # compile cache (which keys on `objectid(parsed)`). The cache key
+    # includes `optimize` and `mem` so non-default extraction kwargs do
+    # not collide.
+    parsed = _extract_parsed_ir_cached(f, arg_types; optimize, mem)
     lower_mem = mem === :heap ? :auto : mem
 
     if strategy === :auto && _tabulate_auto_picks(parsed, arg_types, bit_width)
@@ -365,10 +370,17 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     if bit_width > 0
         parsed = _narrow_ir(parsed, bit_width)
     end
-    lr = lower(parsed; max_loop_iterations, compact_calls, add, mul,
-               fold_constants, target, auto_self_reversing,
-               mem=lower_mem, persistent_impl, hashcons)
-    return bennett(lr)
+    # Bennett-uiaq: route the final lower+bennett through the ParsedIR
+    # overload so the Bennett-sr8v compile cache (keyed on
+    # `objectid(parsed)` + all 10 kwargs) auto-hits on repeat calls.
+    # The parsed-IR cache above ensures the same `parsed` instance is
+    # returned for the same (f, arg_types, optimize, mem) tuple, so
+    # back-to-back `reversible_compile(g, Int8)` calls produce
+    # `===`-identical `ReversibleCircuit` results.
+    return reversible_compile(parsed;
+        max_loop_iterations, compact_calls, add, mul,
+        fold_constants, target, auto_self_reversing,
+        mem=lower_mem, persistent_impl, hashcons)
 end
 
 const _PARSED_OVERLOAD_KWARGS = (:max_loop_iterations, :compact_calls,

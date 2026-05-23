@@ -6,6 +6,60 @@
 
 ---
 
+## Session log — 2026-05-23 — Bennett-uiaq — transparent sr8v wiring (compile-cache workstream complete)
+
+**Goal.** After Bennett-sr8v shipped, callers of `reversible_compile(f, T)`
+still missed the compile cache because the (f, types) overload at
+`src/Bennett.jl:~269` called `extract_parsed_ir(f, types)` directly
+(not the cached helper) AND terminated with `lower + bennett` directly
+(not via the ParsedIR overload). Bennett-uiaq makes both routes hit.
+
+**Two-step change.**
+
+1. **`src/extract/callees.jl`** — extended `_extract_parsed_ir_cached`
+   signature to accept `optimize::Bool=true` and `mem::Symbol=:auto`
+   kwargs, key extended to `(f, arg_types, optimize, mem)`. Defaults
+   preserve backward compat with the existing call site at
+   `src/lowering/call.jl:82` (positional, no kwargs).
+
+2. **`src/Bennett.jl:355`** — replaced bare `extract_parsed_ir(f, arg_types; optimize, mem)`
+   with `_extract_parsed_ir_cached(f, arg_types; optimize, mem)`.
+   Also (load-bearing!) replaced the tail
+   `lr = lower(parsed; ...); return bennett(lr)` with
+   `return reversible_compile(parsed; ..., mem=lower_mem, ...)`. The
+   tail routing is what actually engages sr8v — without it, the (f, T)
+   path constructs a fresh circuit by direct lower+bennett even with a
+   cached `parsed`. Smart catch by the implementer.
+
+**Test.** `test/test_uiaq_compile_cache_transparent.jl` (NEW, 5
+testsets): sr8v auto-hit on repeat `reversible_compile(g, Int8)`,
+`optimize` busts, `mem=:heap` busts vs default `:auto`,
+`_clear_compile_cache!` busts, backward-compat for positional/
+no-kwargs helper call. Plus 4 `haskey` assertions in
+`test_ej4n_callee_ir_cache.jl` updated to the new 4-tuple key shape
+(mechanical sync, no behavioural change).
+
+**RED→GREEN evidence.** Pre-impl (helper alone, no tail routing):
+test 1 RED, `c1 !== c2` (12 pass / 2 fail). First impl (helper +
+line 355 only): still RED — tail bypass. Final impl (helper + line
+355 + tail routing): **47/47 GREEN** across uiaq + sr8v + ej4n
+combined probe. The 47 includes uiaq's 14, sr8v's 13, ej4n's ~20.
+
+**Compile-cache workstream complete.** hybr (test-side hoist) +
+sr8v (durable cache) + uiaq (transparent wiring) form a coherent
+trio. Any caller of either `reversible_compile(parsed)` OR
+`reversible_compile(f, T)` now auto-hits the cache on repeat calls
+with identical kwargs.
+
+**Files changed:**
+  - src/extract/callees.jl (+18 LOC: signature + key shape + docstring)
+  - src/Bennett.jl (+13 LOC: 2 routings)
+  - test/runtests.jl (+1 registration)
+  - test/test_uiaq_compile_cache_transparent.jl (NEW)
+  - test/test_ej4n_callee_ir_cache.jl (4 key-shape updates)
+
+---
+
 ## Session log — 2026-05-23 — Bennett-25dm un-claimed + Bennett-sr8v shipped
 
 **Bennett-25dm (un-claimed).** T5 corpus tracking-bead — Sonnet recon
