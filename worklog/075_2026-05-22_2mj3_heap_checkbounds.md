@@ -6,6 +6,54 @@
 
 ---
 
+## Session log — 2026-05-23 — Bennett-25dm un-claimed + Bennett-sr8v shipped
+
+**Bennett-25dm (un-claimed).** T5 corpus tracking-bead — Sonnet recon
+revealed all 9 sub-tests blocked by upstream issues, none fixable in
+this round: TJ1 mem=:auto is by-design RED (mem=:heap already green);
+TJ2 needs Bennett-800b (Dict research); TJ3 already green; TJ4 needs
+Bennett-890r (store-to-load mirage) + U15/5oyt (inline-asm); TC1-3
+need Bennett-3jvg (new — malloc/realloc callees) + clang install;
+TR1-3 need Bennett-n88f (LLVM-version skew — confirmed: installed
+rustc 1.93.1 already emits `inbounds nuw` in 7 places, not >=1.95
+as the bead claimed). Updated 25dm notes with consolidated blocker
+map, moved to OPEN. Filed Bennett-3jvg (P3, C malloc/realloc).
+
+**Bennett-sr8v (shipped).** Durable src-side memoisation of
+`reversible_compile(parsed::ParsedIR)` at src/Bennett.jl:394. Follows
+the existing `_extract_parsed_ir_cached` pattern verbatim (Dict +
+ReentrantLock, check-then-populate). Key: `(objectid(parsed), 10
+compile kwargs)`. Added `Bennett._clear_compile_cache!()` escape
+hatch. Test file `test/test_sr8v_compile_cache.jl` with 13 assertions
+across 4 testsets (identity hit, kwarg-bust, clear, opt-in path).
+RED→GREEN evidence captured: pre-impl 4 testsets error with
+`UndefVarError: _clear_compile_cache! not defined`; post-impl 13/13
+pass. eq9p dispatch test: 138s post-sr8v (≈ same as 142s post-hybr,
+as expected — hybr already shares the local `c`, so sr8v offers no
+incremental gain on those files; the value is durable for future
+callers).
+
+**Important nuance discovered.** `reversible_compile(f, types)` at
+src/Bennett.jl:355 calls `extract_parsed_ir(f, types)` DIRECTLY, not
+`_extract_parsed_ir_cached(f, types)`. So back-to-back `(f, types)`
+compiles produce different ParsedIR objectids and miss sr8v at the
+top level. Callers can opt-in via
+`parsed = Bennett._extract_parsed_ir_cached(f, types); c = reversible_compile(parsed)`
+but transparent wiring is a multi-file follow-up. Filed
+**Bennett-uiaq** (P3) for the transparent wiring change (touches
+narrow_ir + tabulate fast-path + mem-normalisation paths).
+
+**Files changed (one src + one test + runtests.jl):**
+  - src/Bennett.jl (+60 LOC: cache + clear + docstring)
+  - test/runtests.jl (+1 registration line)
+  - test/test_sr8v_compile_cache.jl (NEW, 73 LOC)
+
+**Bead state this round.** Closed: Bennett-sr8v. Filed:
+Bennett-3jvg, Bennett-uiaq. Un-claimed: Bennett-25dm (now blocked-on
+tracking bead).
+
+---
+
 ## Session log — 2026-05-23 — Bennett-hybr — dispatch-test compile-dedup (test-only)
 
 **Goal.** Cut suite wall-time of the 12 LLVM dispatch tests

@@ -89,6 +89,8 @@ runfile("test_extractvalue.jl")
 runfile("test_general_call.jl")
 runfile("test_division.jl")
 runfile("test_salb_div_by_zero.jl")
+# Bennett-sr8v: durable src-side memoisation of reversible_compile(::ParsedIR).
+runfile("test_sr8v_compile_cache.jl")
 runfile("test_y986_loop_header_dispatch.jl")
 runfile("test_gboa_dirty_bit_hygiene.jl")
 runfile("test_d77b_fcmp_predicates.jl")

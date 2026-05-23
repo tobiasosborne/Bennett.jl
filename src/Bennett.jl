@@ -380,6 +380,26 @@ const _PARSED_OVERLOAD_KWARGS = (:max_loop_iterations, :compact_calls,
 # loudly if sent to the ParsedIR overload.
 const _PARSED_OVERLOAD_CROSS_REJECT = (:optimize, :bit_width, :strategy)
 
+# Bennett-sr8v: durable src-side memoisation of compiled circuits.
+# Mirrors the `_extract_parsed_ir_cached` / `_parsed_ir_cache` pattern in
+# src/extract/callees.jl: Dict + ReentrantLock, check-then-populate inside
+# the lock. Key is identity on `parsed` plus all 10 compile kwargs — see
+# the docstring on `reversible_compile(::ParsedIR; ...)` below for why we
+# use `objectid` instead of structural equality.
+const _compile_cache = Dict{Tuple, ReversibleCircuit}()
+const _compile_cache_lock = ReentrantLock()
+
+"""Empty the `_compile_cache`. For tests, and as a manual escape hatch
+after `register_callee!` redefines a callee that was already lowered into
+a cached circuit (otherwise the next compile would return the stale
+pre-register circuit by identity hit)."""
+function _clear_compile_cache!()
+    lock(_compile_cache_lock) do
+        empty!(_compile_cache)
+    end
+    return nothing
+end
+
 """
     reversible_compile(parsed::ParsedIR; max_loop_iterations=0,
                        compact_calls=false, add=:auto, mul=:auto,
@@ -390,6 +410,30 @@ Compile a pre-extracted `ParsedIR` (e.g. from
 circuit. This path skips IR extraction and the `strategy=:tabulate` /
 `bit_width` pre-processing that only apply to Julia-function inputs;
 passing `optimize`, `bit_width`, or `strategy` here raises `ArgumentError`.
+
+## Caching (Bennett-sr8v)
+
+The compiled `ReversibleCircuit` is memoised in a module-scoped cache
+keyed on `(objectid(parsed), max_loop_iterations, compact_calls, add,
+mul, fold_constants, target, auto_self_reversing, mem, persistent_impl,
+hashcons)` — i.e. identity on `parsed` plus all 10 compile kwargs.
+`objectid` is used (not structural equality) because `ParsedIR` has no
+custom `==`/`hash`; the hit pattern is the post-Bennett-hybr workflow
+where callers hoist `extract_parsed_ir_from_ll(...)` once and reuse the
+same `ParsedIR` instance across compiles. The `reversible_compile(f,
+arg_types)` overload calls `extract_parsed_ir` directly and so does NOT
+hit this cache across repeat calls — callers who want top-level
+memoisation across `(f, types)` compiles should route through
+`_extract_parsed_ir_cached(f, types)` and then `reversible_compile(parsed)`.
+
+**`ReversibleCircuit` is effectively immutable** — callers MUST NOT
+mutate `.gates`, `.input_wires`, or any other field of the returned
+value after this function returns. The cached entry is shared with all
+future callers; in-place mutation would corrupt subsequent compiles.
+
+Use `Bennett._clear_compile_cache!()` to invalidate (e.g. after
+`register_callee!` for a custom callee that was lowered into a cached
+circuit).
 """
 function reversible_compile(parsed::ParsedIR;
                             max_loop_iterations::Int=_DEFAULT_COMPILE_OPTIONS.max_loop_iterations,
@@ -407,10 +451,19 @@ function reversible_compile(parsed::ParsedIR;
                            _PARSED_OVERLOAD_CROSS_REJECT, kwargs)
     # Bennett-z2dj T5-P6 (Step 9): front-load NYI errors at the surface.
     validate_persistent_config(mem, persistent_impl, hashcons)
-    lr = lower(parsed; max_loop_iterations, compact_calls, add, mul,
-               fold_constants, target, auto_self_reversing,
-               mem, persistent_impl, hashcons)
-    return bennett(lr)
+    # Bennett-sr8v: identity-key the compile cache on parsed + all kwargs.
+    key = (objectid(parsed), max_loop_iterations, compact_calls, add, mul,
+           fold_constants, target, auto_self_reversing, mem, persistent_impl,
+           hashcons)
+    lock(_compile_cache_lock) do
+        haskey(_compile_cache, key) && return _compile_cache[key]
+        lr = lower(parsed; max_loop_iterations, compact_calls, add, mul,
+                   fold_constants, target, auto_self_reversing,
+                   mem, persistent_impl, hashcons)
+        c = bennett(lr)
+        _compile_cache[key] = c
+        return c
+    end
 end
 
 # ---- CompileOptions overloads (Bennett-u71l / U161) ----
