@@ -8,6 +8,22 @@ transforms arbitrary programs into optimized gradients.
 
 ---
 
+> **The north-north star — the wider toolchain.** Bennett.jl and its sibling
+> BennettVM.jl are the **classical-oracle-synthesis core of a taint-driven
+> quantum compiler toolchain**. Upstream (owned by others, in active
+> development), minimal source-language extensions to C / Rust / … introduce
+> *quantum taints*; clang / LLVM propagate them and optimise the classical
+> remainder around them. **We own everything from the tainted LLVM opcodes on
+> down**: tainted opcodes are compiled to reversible form — by Bennett.jl for
+> the bounded, straight-line slice, by BennettVM.jl for the rest that is
+> possible at all (jumps, unbounded loops, runtime memory) — targeting a
+> *quantum* version of the Bennett VM, which is the common compilation target
+> for quantum languages and is itself lowered to hardware backends. The litmus
+> property: **the toolchain is the identity on untainted code** — if nothing is
+> tainted, the program stays classical (the half-joking "compile the Linux
+> kernel for the quantum VM" thought experiment). See §1.1. The reversible-VM
+> direction below is the next concrete step toward this.
+
 > **North star for the next major version — the reversible-VM backend.**
 > A fixed reversible *circuit* has no loop construct and no runtime-sized
 > memory, so it cannot represent a terminating computation of
@@ -41,6 +57,81 @@ verified zero. The circuit is correct by construction and can be used for:
   for adiabatic/reversible CMOS
 - **Space-optimized quantum oracles**: Grover, phase estimation, QSVT all
   need reversible implementations of classical functions
+
+### 1.1 The larger picture: classical-oracle core of a quantum compiler toolchain
+
+The reversible circuit is not the end product — it is the **classical-oracle
+layer** of a larger, taint-driven quantum compiler toolchain. The full
+pipeline:
+
+1. **Minimal source-language extensions** (C, Rust, … — *owned upstream, in
+   active development*) introduce **quantum taints**: markers that a value or
+   computation is quantum (in superposition / entangled).
+2. **clang / LLVM** propagate the taints and optimise the classical code
+   around them.
+3. LLVM opcodes are emitted; a **taint analysis** marks the affected ones.
+4. **Tainted opcodes are compiled to reversible form** — by Bennett.jl for the
+   bounded, straight-line slice, and by **BennettVM.jl** for everything else
+   that is possible at all (jumps, unbounded loops, runtime-sized memory).
+5. The target is a **quantum version of the Bennett VM** — "the quantum VM."
+6. The quantum VM is the **common compilation target for quantum languages**.
+7. The quantum VM is **realised on hardware backends**.
+
+**Our scope boundary: from the tainted LLVM opcodes on down.** The front-end
+taint-marking and the (control-dependence-aware) taint-propagation pass are
+owned upstream. Our input contract is a *tainted slice* of LLVM opcodes
+(classical inputs treated as known / constant wires); our job is rock-solid
+reversible compilation of that slice. This implies a *fragment-compile* entry
+mode alongside today's whole-function `reversible_compile` — a tainted sub-DAG,
+not always a complete `f`.
+
+**The defining property — identity on untainted code.** Because only the
+tainted slice is reversibilised, an empty taint set means no transformation:
+the program stays classical. This is what makes the half-joking ambition —
+*compile the Linux kernel for the quantum VM* — coherent: if nothing is
+tainted, it is just a classical binary.
+
+### 1.2 Operating order: reversible first, then recycle for quantum
+
+The plan is deliberately sequenced: **get classical reversible compilation
+excellent first, then reuse the learnings and recycle the results for the
+quantum layer.** Quantum is a later phase that builds on a trusted substrate,
+not a parallel track. Reversible-first is also the lower-risk path: bijectivity
+and ancilla-zero are decidable and exhaustively testable
+(`verify_reversibility`), whereas the quantum criteria are strictly harder to
+validate.
+
+Almost everything recycles directly:
+
+- **Results recycle as-is** — the Toffoli libraries, branchless soft-float, the
+  memory strategies, and BennettVM's history / pebbling layer *are* the
+  classical-oracle layer of the quantum VM.
+- **Learnings recycle as intuition** — the phi-resolution / false-path-
+  sensitization discipline is the same hazard the taint boundary hits; the
+  uncomputation discipline is one tightening away from quantum disentanglement.
+
+**Quantum-phase walls to remember (not problems for the reversible phase):**
+
+1. **Reversible ≠ unitary.** Bennett emits Toffoli networks = permutation
+   matrices, a strict subset of unitaries — no phase, no superposition-
+   creation. The genuinely-quantum gates (H, S, T, entanglers) come from the
+   *quantum source language*, not from reversibilising C. Bennett / VM
+   synthesise the classical-oracle slice; they are necessary, not sufficient,
+   for "quantum" (this is why §10's "not a general-purpose quantum compiler"
+   remains literally true).
+2. **Tainted control flow can't run on a classical program counter.** A loop
+   bound or branch that depends on a qubit cannot be decided by a classical PC
+   — that case falls back to bound-and-unroll (the circuit target) or
+   repeat-until-success. BennettVM's dynamic-PC model covers *untainted control
+   flow over tainted data*; *tainted* control flow is a genuine wall, distinct
+   from the non-termination wall.
+3. **Quantum uncomputation must disentangle, not merely zero.** Ancillae must
+   return to |0⟩ *and* leave no which-path entanglement — strictly stronger
+   than classical ancilla-zero. Keep cleanup expressed as a per-wire
+   postcondition (as `verify_reversibility` already does) so it can later be
+   tightened without redesign; avoid strategies that rely on leaving
+   correlated-but-zeroed scratch. Maps to the Unqomp / Reqomp / Qurts
+   uncomputation literature already collected in BennettVM.jl.
 
 ---
 
@@ -451,13 +542,19 @@ v1.0, this section becomes a roadmap. Until then, it is a compass.
 
 ## 10. Non-Goals
 
-- **Not a general-purpose quantum compiler.** Bennett.jl compiles classical
-  functions to reversible circuits. Quantum algorithms (superposition,
-  measurement, entanglement) are Sturm.jl's domain.
+- **Not the quantum-magic layer — but the classical-oracle core of one.**
+  Bennett.jl + BennettVM compile *classical* functions to reversible form. The
+  genuinely-quantum operations — superposition, measurement, entanglement,
+  interference — come from the quantum source language and live natively in the
+  quantum VM (and in Sturm.jl). This non-goal remains literally true even now
+  that the two repos are positioned as the classical-oracle-synthesis core of
+  the wider quantum compiler toolchain (§1.1): they synthesise the reversible
+  oracles the quantum layer controls, not the quantum gates themselves.
 
 - **Not a hardware synthesizer.** Bennett.jl produces gate-level Toffoli
   networks. Mapping to specific hardware (ion traps, superconducting qubits)
-  is out of scope.
+  is out of scope — in the toolchain of §1.1, hardware lowering of the quantum
+  VM is a downstream stage owned elsewhere.
 
 - **Not a replacement for hand-optimized circuits.** For critical kernels
   (SHA-2, AES, elliptic curve), hand-optimized circuits will always be smaller.
