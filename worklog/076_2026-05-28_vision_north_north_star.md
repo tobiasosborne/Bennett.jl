@@ -1,5 +1,58 @@
 # Worklog chunk 076 — 2026-05-28
 
+## Session log — 2026-05-31 — target=:reversible_vm dispatch arm (Bennett-33zr; BennettVM keystone)
+
+**What changed.** Added the `target=:reversible_vm` dispatch arm to
+`src/Bennett.jl` — the keystone letting `reversible_compile(f; target=
+:reversible_vm)` route to the BennettVM backend (BennettVM bead `bennettvm-a5j`;
+design in BennettVM `docs/adr/0003-target-reversible-vm-dispatch.md`). Cross-repo
+change driven from BennettVM; per-diff user-approved 2026-05-31 (Rule 14).
+
+**Mechanism — a registration hook, NOT a direct call.** BennettVM depends on
+Bennett (path dep `../Bennett.jl`), so Bennett MUST NOT name BennettVM — a
+reverse hard-dep is a forbidden cycle. So: new `const _REVERSIBLE_VM_BACKEND =
+Ref{Any}(nothing)` next to `_compile_cache`; `reversible_compile(parsed::ParsedIR)`
+intercepts `target===:reversible_vm` BEFORE the cache lock (errors if the Ref is
+unset — "`using BennettVM`" message — else returns `_REVERSIBLE_VM_BACKEND[](parsed)`,
+a `VMProgram`, bypassing the `ReversibleCircuit`-typed cache); BennettVM's
+`__init__` writes `lower_vm` into the Ref at load (the arrow points UP only).
+
+**Load-bearing subtlety (hostile-review catch).** The two tabulate short-circuits
+in `reversible_compile(f, ::Type)` (`return bennett(lr)` for explicit
+`strategy=:tabulate` and for the `:auto` cost-model pick on small-width mul/div)
+run BEFORE the ParsedIR-overload delegation. Unguarded, a small mul/div fn
+compiled with `target=:reversible_vm` would SILENTLY return a circuit (Rule-1
+fail-silent). Fixed by guarding both with `target !== :reversible_vm`, so a VM
+compile falls through to the delegation where the intercept fires. No `driver.jl`
+change — the intercept returns before `lower()` sees `:reversible_vm`, so the
+`:gate_count`/`:depth` whitelist is untouched and `target=:nonsense` still raises.
+
+**Tests.** New `test/test_reversible_vm_dispatch.jl` — STUB-driven (Bennett.jl
+gains NO BennettVM test-dep; the stub returns a sentinel tuple, an `isa` catches
+any circuit-path leak): (1) hook-inert→errors both overloads; (2) hook-set→routes
+both overloads; (3) both tabulate triggers (`strategy=:tabulate` AND
+`bit_width=2,x*x`) route to the hook, complementary circuit-target compiles still
+produce circuits; (4) circuit path byte-unchanged + unknown-target rejected.
+20/20 in isolation (`--check-bounds=yes`). Full `Pkg.test()`: GREEN —
+688498 Pass / 2 Broken (pre-existing `@test_broken`) / 0 fail / 0 error,
+26m47s; `test_reversible_vm_dispatch.jl ✓` ran in-suite and `test_hygiene_aqua_jet.jl ✓`
+(the new `_REVERSIBLE_VM_BACKEND` Ref + the dispatch arm trip neither Aqua's
+export/ambiguity checks nor JET's static analysis of the `Ref{Any}` dynamic
+call). Circuit path byte-unchanged.
+
+**Process.** 3+1: 3 read-only research agents (dispatch surface / ParsedIR
+contract / Bennett-spqu mandate) → ADR 0003 consensus design → hostile review
+(3 defects folded in: tabulate bypass; `:circuit` alias deferred to doc-only;
+`lower_vm` stdout digest gated to `@debug`) → 2 convergent proposers → this
+implementation; orchestrator as reviewer (+1).
+
+**Gotcha for next agent.** Bennett.jl's `bd` hit a Dolt-remote corruption on
+auto-push (`fatal: bad object refs/dolt/remotes/origin/...`) when creating
+`Bennett-33zr` — the bead landed in the LOCAL Dolt DB (`.beads/embeddeddolt/`,
+git-tracked) but `bd dolt push` to the dolt remote failed. Pre-existing infra;
+local DB + git-bundled `.beads/embeddeddolt/` are intact. Needs a separate
+`bd dolt` repair — do NOT `bd init --force`.
+
 ## Session log — 2026-05-28 — Vision PRD: north-north-star (quantum-taint toolchain)
 
 **What changed.** Updated `Bennett-VISION-PRD.md` to fold in a broader vision

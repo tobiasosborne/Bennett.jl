@@ -334,7 +334,11 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
 
     # Explicit tabulate: evaluate f classically on all 2^W inputs and emit as
     # a QROM lookup. Skip IR extraction entirely.
-    if strategy === :tabulate
+    # Bennett-33zr: a `target=:reversible_vm` compile MUST NOT be captured by
+    # this circuit short-circuit (it returns a ReversibleCircuit, silently
+    # swallowing the VM request); fall through to the ParsedIR delegation below
+    # where the VM hook fires (CLAUDE.md Rule 1: no fail-silent).
+    if strategy === :tabulate && target !== :reversible_vm
         ok, reason = _tabulate_applicable(arg_types, bit_width)
         ok || throw(ArgumentError(
             "reversible_compile: strategy=:tabulate not applicable — $reason"))
@@ -360,7 +364,10 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     parsed = _extract_parsed_ir_cached(f, arg_types; optimize, mem)
     lower_mem = mem === :heap ? :auto : mem
 
-    if strategy === :auto && _tabulate_auto_picks(parsed, arg_types, bit_width)
+    # Bennett-33zr: same `:reversible_vm` carve-out as the explicit-tabulate
+    # branch above — the :auto cost model must not divert a VM compile to QROM.
+    if strategy === :auto && target !== :reversible_vm &&
+       _tabulate_auto_picks(parsed, arg_types, bit_width)
         widths = _tabulate_input_widths(arg_types, bit_width)
         out_width = bit_width > 0 ? bit_width : sizeof(arg_types.parameters[1]) * 8
         lr = lower_tabulate(f, arg_types, widths; out_width, auto_self_reversing)
@@ -400,6 +407,14 @@ const _PARSED_OVERLOAD_CROSS_REJECT = (:optimize, :bit_width, :strategy)
 # use `objectid` instead of structural equality.
 const _compile_cache = Dict{Tuple, ReversibleCircuit}()
 const _compile_cache_lock = ReentrantLock()
+
+# Bennett-33zr / BennettVM ADR 0003: registration hook for the
+# `target=:reversible_vm` backend. BennettVM depends on Bennett, so Bennett MUST
+# NOT name BennettVM (a reverse hard-dep is a forbidden cycle); BennettVM's
+# `__init__` writes its `lower_vm` entry point here at load time. Write-once at
+# load, lock-free read (set before any user compile). `nothing` until
+# `using BennettVM`, so the circuit path is byte-unchanged when the VM is absent.
+const _REVERSIBLE_VM_BACKEND = Ref{Any}(nothing)
 
 """Empty the `_compile_cache`. For tests, and as a manual escape hatch
 after `register_callee!` redefines a callee that was already lowered into
@@ -463,6 +478,20 @@ function reversible_compile(parsed::ParsedIR;
                            _PARSED_OVERLOAD_CROSS_REJECT, kwargs)
     # Bennett-z2dj T5-P6 (Step 9): front-load NYI errors at the surface.
     validate_persistent_config(mem, persistent_impl, hashcons)
+    # Bennett-33zr / BennettVM ADR 0003: the `target=:reversible_vm` dispatch
+    # arm. Single funnel for the Julia-fn route (the Tuple overload delegates
+    # here after its `target!==:reversible_vm`-guarded tabulate short-circuits)
+    # AND direct ParsedIR callers (.ll/.bc route). Intercept BEFORE the
+    # `_compile_cache` lock: that cache is `Dict{Tuple,ReversibleCircuit}` and the
+    # VM arm returns a `VMProgram`, so it bypasses the cache (VM-program
+    # memoisation is a later bead). Inert until `using BennettVM`.
+    if target === :reversible_vm
+        _REVERSIBLE_VM_BACKEND[] === nothing && error(
+            "reversible_compile(target=:reversible_vm) requires the BennettVM " *
+            "backend to be loaded: `using BennettVM` registers it. (Bennett.jl " *
+            "does not depend on BennettVM — the VM backend plugs in.)")
+        return _REVERSIBLE_VM_BACKEND[](parsed)   # → BennettVM.VMProgram
+    end
     # Bennett-sr8v: identity-key the compile cache on parsed + all kwargs.
     key = (objectid(parsed), max_loop_iterations, compact_calls, add, mul,
            fold_constants, target, auto_self_reversing, mem, persistent_impl,

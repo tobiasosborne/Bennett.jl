@@ -702,6 +702,9 @@ runfile("test_bd5f_heap_m4.jl")
 # Bennett-fidj / U217: liveness × :auto add dispatcher coverage.
 runfile("test_fidj_liveness_auto_dispatcher.jl")
 
+# Bennett-33zr / BennettVM ADR 0003: target=:reversible_vm dispatch arm.
+runfile("test_reversible_vm_dispatch.jl")
+
 # Bennett-gk1h / U210: package hygiene gates (Aqua.jl + JET.jl).
 runfile("test_hygiene_aqua_jet.jl")
 
