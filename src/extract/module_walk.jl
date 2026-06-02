@@ -148,6 +148,67 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
     sret_writes = sret_info === nothing ? nothing :
                   _collect_sret_writes(func, sret_info, names)
 
+    # ADR 0013 §D-4.2 — the `mem=:vm` extraction arm (BennettVM Case A/B feed).
+    #
+    # `:vm` is a RECOGNISED-BUT-UNFINISHED mode: it must NOT silently alias
+    # `:auto` (which would walk straight into the TLS read and reject with a
+    # generic U15 message, hiding the real scope wall). The `:vm` recogniser
+    # that this gate guards has to (1) bypass the `movq %fs:0` /
+    # `julia.get_pgcstack` TLS read (D-4.1; the allowlist helper
+    # `_heap_is_allowlisted_tls_asm` exists in heap.jl), (2) recognise the
+    # Julia-1.12 `jl_alloc_genericmemory_unchecked` runtime-N allocation as a
+    # dynamic `IRAlloca(n_elems=SSAOperand)`, (3) see through the
+    # `julia.gc_loaded` data-pointer launder + the `Array` wrapper
+    # (`julia.gc_alloc_obj` + the `{ptr,ptr,size}` stores) and the
+    # `Memory{T}`-header GEPs to the element data region, (4) map the
+    # runtime-indexed element writes/reads to `IRVarGEP` + `IRStore`/`IRLoad`,
+    # (5) COLLAPSE the GenericMemory-size-check and `Int8(i)`-inexact and
+    # bounds-check throw diamonds, and crucially (6) PRESERVE the element-write
+    # loop's CFG (a MULTI-block ParsedIR, like `frtN`) — i.e. lift the heap
+    # recogniser's straight-line / no-back-edge / single-block-collapse
+    # assumptions. That recogniser is a distinct Core-tier build from the
+    # `:heap` one (which is constant-N, `ijl_gc_small_alloc`, loop-free, and
+    # collapses to one block); it is NOT yet implemented. Fail loud (Bennett.jl
+    # Rule 1 / CLAUDE.md §1) rather than emit a skeleton-laden ParsedIR that
+    # `lower_vm` would silently miscompile. The plumbing (`mem=:vm` threaded
+    # through `extract_parsed_ir` / `_from_ll` / `_from_bc`) IS in place so the
+    # recogniser, once written, is reachable from every emitter path.
+    if mem === :vm
+        # SC9 Case B — Dict-as-reversible-map (ADR 0008 / 0013 §D-3). If the
+        # function mutates a Julia `Dict` (a recognised setindex!/getindex/
+        # delete! callee is present), route to the Dict recogniser
+        # (`src/extract/dict_vm.jl`): it drops the GC + Dict-alloc skeleton
+        # (the Dict becomes the opaque RevMap) and rewrites the surviving Dict
+        # callees into the language-neutral `IRMapInsert`/`IRMapGet`/
+        # `IRMapDelete` ops, returning a single-block ParsedIR. The bare-`d[k]`
+        # `fdict` body reaches this path and is rejected LOUD at the
+        # inlined-getindex boundary (see dict_vm.jl's top docstring): on Julia
+        # 1.12.5 the trailing `getindex` is inlined to raw hash arithmetic with
+        # no callee to rewrite. A program whose `getindex`/`delete!` survive as
+        # callees (e.g. behind `@noinline`) extracts fully.
+        if _dict_vm_is_recognised(func)
+            return _dict_vm_extract(func, names, counter, args, ret_width,
+                                    ret_elem_widths, globals, synth_ptr_provenance)
+        end
+        # SC9 Case A — Vector/GenericMemory. NOT yet implemented (a distinct
+        # Core-tier recogniser stripping the Julia-1.12 GC skeleton around
+        # `jl_alloc_genericmemory_unchecked` down to a loop-preserving
+        # IRAlloca(dyn)+IRVarGEP+IRStore/IRLoad ParsedIR). Fail loud rather
+        # than emit a skeleton-laden ParsedIR `lower_vm` would miscompile.
+        error("ir_extract.jl: mem=:vm extraction arm: no recognised Dict " *
+              "mutation callee found, and the Case A (Vector/GenericMemory) " *
+              "`mem=:vm` recogniser is not yet implemented (ADR 0013 §D-4.2). " *
+              "The Dict (Case B) recogniser handles setindex!/getindex/delete! " *
+              "callees; the Array recogniser that strips the GC skeleton around " *
+              "`jl_alloc_genericmemory_unchecked` (Array wrapper, " *
+              "`julia.gc_loaded` launder, GenericMemory/inexact/bounds throw " *
+              "diamonds) down to a loop-preserving " *
+              "`IRAlloca(dyn)+IRVarGEP+IRStore/IRLoad` ParsedIR remains TODO. " *
+              "Use the C/`.ll` route (`extract_parsed_ir_from_ll` on a VLA " *
+              "`.ll`, e.g. BennettVM `test/reference/frtN.ll`) for Case A today " *
+              "(ADR 0009 Decision 3)")
+    end
+
     # Bennett-gps7 / M1: GC/heap-skeleton recogniser. Runs ONLY when
     # `mem === :heap`. When it recognises + proves a dead heap skeleton it
     # short-circuits the whole walk: the surviving non-skeleton slice is

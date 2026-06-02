@@ -180,6 +180,81 @@ struct IRStore <: IRInst
     end
 end
 
+# --- language-neutral reversible-map ops (BennettVM SC9 Case B; ADR 0008 / 0013 §D-3) ---
+#
+# A Julia `Dict` (and, by the language-agnostic charter, any C/Rust hash map)
+# is an OPAQUE reversible register in the VM model: BennettVM does NOT model
+# its internal hash-table memory — it owns the map as a `RevMap` value and
+# makes mutations reversible with a Bennett-1973 history tape on the map, not
+# on control flow (PRD v4 §3.6.2 Case B; BennettVM `src/ir/revmap.jl`). These
+# three `IRInst` subtypes are the FRONT-END half of that case: the `mem=:vm`
+# extraction recogniser (`src/extract/dict_vm.jl`) recognises the Dict
+# `setindex!` / `getindex` / `delete!` callees, drops the GC alloc + frame
+# skeleton (the Dict allocation becomes the opaque map — NO heap node), and
+# emits these language-neutral ops. They mirror `IRStore` / `IRLoad` exactly so
+# BennettVM ingest (`src/ir/ingest.jl`) is a clean 1:1 to the VM-side
+# `IRMapInsert` / `IRMapGet` / `IRMapDelete` (`src/ir/revmap.jl`).
+#
+# v1 models a SINGLE map per routine (the canonical `fdict` body has one
+# `Dict`), so no map-handle operand is carried — the dict SSA ref is recognised
+# and dropped at extraction time. Multi-map is a documented follow-on
+# (ADR 0008; the VM-side op shapes leave room for a handle).
+#
+# Ref: docs/adr/0008-dict-reversibility.md (Decisions 1–6); ADR 0013 §D-3
+#   (language-neutral high-level map ops); BennettVM src/ir/revmap.jl
+#   (the 1:1 VM-side op the ingest maps to). CLAUDE.md §1 (fail loud).
+
+# IRMapInsert: `M[key] := value` (overwrite-or-create). Produces no SSA value
+# (void, like IRStore) — the Julia `setindex!(d, v, k)` callee returns the dict,
+# which the recogniser drops. `key`/`value` are the resolved hash-map operands;
+# the operand ORDER on the Julia callee is VALUE-BEFORE-KEY
+# (`@j_setindex!_NNN(dict, v, k)`), which the recogniser un-permutes before
+# constructing this struct, so the struct field order is the logical (key,
+# value).
+struct IRMapInsert <: IRInst
+    key::IROperand       # the map key   (SSA ref or constant)
+    value::IROperand     # the map value (SSA ref or constant)
+    key_width::Int       # bit width of the key   operand
+    value_width::Int     # bit width of the value operand
+    function IRMapInsert(key::IROperand, value::IROperand,
+                         key_width::Int, value_width::Int)
+        key_width >= 1 ||
+            throw(ArgumentError("IRMapInsert: key_width=$key_width must be >= 1"))
+        value_width >= 1 ||
+            throw(ArgumentError("IRMapInsert: value_width=$value_width must be >= 1"))
+        new(key, value, key_width, value_width)
+    end
+end
+
+# IRMapGet: `dest := M[key]` (a pure read into a fresh SSA value). Mirrors
+# IRLoad — `dest` is the SSA name the map value flows into.
+struct IRMapGet <: IRInst
+    dest::Symbol         # SSA name created — receives the map value
+    key::IROperand       # the map key (SSA ref or constant)
+    key_width::Int       # bit width of the key operand
+    value_width::Int     # bit width of the produced value
+    function IRMapGet(dest::Symbol, key::IROperand,
+                      key_width::Int, value_width::Int)
+        key_width >= 1 ||
+            throw(ArgumentError("IRMapGet: key_width=$key_width must be >= 1 (dest=$dest)"))
+        value_width >= 1 ||
+            throw(ArgumentError("IRMapGet: value_width=$value_width must be >= 1 (dest=$dest)"))
+        new(dest, key, key_width, value_width)
+    end
+end
+
+# IRMapDelete: `delete!(M, key)`. Produces no SSA value (void, like IRStore) —
+# the Julia `delete!(d, k)` callee returns the dict, which the recogniser drops.
+struct IRMapDelete <: IRInst
+    key::IROperand       # the map key (SSA ref or constant)
+    key_width::Int       # bit width of the key operand
+    function IRMapDelete(key::IROperand, key_width::Int)
+        key_width >= 1 ||
+            throw(ArgumentError("IRMapDelete: key_width=$key_width must be >= 1"))
+        new(key, key_width)
+    end
+end
+
 # IRAlloca produces a pointer SSA value. `n_elems::IROperand` mirrors
 # IRVarGEP.index — :const for static allocas, :ssa for dynamic. Static-only at
 # lower time; dynamic is rejected with a clear error until a shadow-memory or

@@ -35,15 +35,20 @@ using InteractiveUtils: subtypes, code_warntype
     #    subtype count guards both directions: if a new IRInst lands, the
     #    refactor calculus shifts (Union grows or shrinks).
     # =========================================================================
-    @testset "IRInst subtype count is exactly 16" begin
+    @testset "IRInst subtype count is exactly 19" begin
         concrete = subtypes(Bennett.IRInst)
-        @test length(concrete) == 16
+        # 16 base IR opcodes + the 3 language-neutral reversible-map ops
+        # (IRMapInsert/IRMapGet/IRMapDelete, BennettVM SC9 Case B; ADR 0008 /
+        # 0013 §D-3). Adding the map ops moves the pin 16→19, inside the ≤22
+        # arm bound the return-Union contract below depends on.
+        @test length(concrete) == 19
         # Verify the canonical set — any drift here trips the test.
         names = Set(Symbol(t.name.name) for t in concrete)
         expected = Set([
             :IRBinOp, :IRICmp, :IRSelect, :IRPhi, :IRCast, :IRBranch,
             :IRRet, :IRCall, :IRStore, :IRLoad, :IRAlloca, :IRPtrOffset,
             :IRVarGEP, :IRExtractValue, :IRInsertValue, :IRSwitch,
+            :IRMapInsert, :IRMapGet, :IRMapDelete,
         ])
         @test names == expected
     end

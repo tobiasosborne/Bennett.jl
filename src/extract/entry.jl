@@ -92,9 +92,15 @@ end
 # Shared plumbing for the external-IR entry points. Takes an already-parsed
 # module, optionally runs a pass pipeline on it, then walks the selected
 # entry function through the core walker.
+#
+# `mem` (ADR 0013 §D-4) selects the memory-extraction arm and is forwarded
+# verbatim to `_module_to_parsed_ir`. The `.ll`/`.bc` entry points expose it
+# so a C/Rust (or hand-written) module can request `mem=:vm` just like the
+# Julia-function path. Default `:auto` keeps every prior caller byte-identical.
 function _extract_from_module(mod::LLVM.Module,
                               entry_function::Union{Nothing, AbstractString},
-                              effective_passes::Vector{String})
+                              effective_passes::Vector{String};
+                              mem::Symbol=:auto)
     # Bennett-uyf9: auto-canonicalise memcpy-form sret (see extract_parsed_ir
     # for rationale). Shared across extract_parsed_ir_from_ll / _from_bc.
     if !("sroa" in effective_passes) && _module_has_sret(mod)
@@ -103,7 +109,7 @@ function _extract_from_module(mod::LLVM.Module,
     if !isempty(effective_passes)
         _run_passes!(mod, effective_passes)
     end
-    return _module_to_parsed_ir(mod; entry_function=entry_function)
+    return _module_to_parsed_ir(mod; entry_function=entry_function, mem=mem)
 end
 
 """
@@ -126,7 +132,8 @@ function extract_parsed_ir_from_ll(path::AbstractString;
                                     entry_function::AbstractString,
                                     preprocess::Bool=false,
                                     passes::Vector{String}=String[],
-                                    use_memory_ssa::Bool=false)
+                                    use_memory_ssa::Bool=false,
+                                    mem::Symbol=:auto)
     isfile(path) || throw(ArgumentError(
         "ir_extract.jl: extract_parsed_ir_from_ll: file not found: $path"))
 
@@ -149,7 +156,7 @@ function extract_parsed_ir_from_ll(path::AbstractString;
     LLVM.Context() do _ctx
         mod = parse(LLVM.Module, ir_string)
         try
-            result = _extract_from_module(mod, entry_function, effective_passes)
+            result = _extract_from_module(mod, entry_function, effective_passes; mem=mem)
         finally
             dispose(mod)
         end
@@ -177,7 +184,8 @@ use `extract_parsed_ir_from_ll`.
 function extract_parsed_ir_from_bc(path::AbstractString;
                                     entry_function::AbstractString,
                                     preprocess::Bool=false,
-                                    passes::Vector{String}=String[])
+                                    passes::Vector{String}=String[],
+                                    mem::Symbol=:auto)
     isfile(path) || throw(ArgumentError(
         "ir_extract.jl: extract_parsed_ir_from_bc: file not found: $path"))
 
@@ -192,7 +200,7 @@ function extract_parsed_ir_from_bc(path::AbstractString;
         @dispose membuf = LLVM.MemoryBufferFile(String(path)) begin
             mod = parse(LLVM.Module, membuf)
             try
-                result = _extract_from_module(mod, entry_function, effective_passes)
+                result = _extract_from_module(mod, entry_function, effective_passes; mem=mem)
             finally
                 dispose(mod)
             end
