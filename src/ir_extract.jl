@@ -12,6 +12,11 @@ include("extract/module_walk.jl")   # _find_entry_function / _module_to_parsed_i
 include("extract/instructions.jl")  # _handle_intrinsic + _convert_instruction (the IR → IRInst dispatcher)
 include("extract/heap.jl")          # Bennett-gps7 / M1: GC/heap-skeleton recogniser (_detect_gc_preamble!)
 include("extract/dict_vm.jl")       # SC9 Case B: mem=:vm Dict→IRMap* recogniser (ADR 0008 / 0013 §D-3)
+include("extract/vector_vm.jl")      # SC9 Case A: mem=:vm Vector recogniser — recognition (ADR 0016)
+include("extract/vector_vm_walk.jl") # SC9 Case A: skeleton + element-traffic capture (ADR 0016)
+include("extract/vector_vm_emit.jl") # SC9 Case A: multi-block ParsedIR assembly (ADR 0016)
+include("extract/vector_vm_cfg.jl")  # SC9 Case A: CFG helpers + body re-root (ADR 0016)
+include("extract/vector_vm_term.jl") # SC9 Case A: terminator rewrite + φ rebind (ADR 0016)
 include("extract/constexpr.jl")     # cc0.3 GlobalAlias + cc0.4 ConstantExpr operand folding
 include("extract/vectors.jl")       # cc0.7 vector SSA scalarisation + _convert_vector_instruction
 include("extract/helpers.jl")       # _get_deref_bytes / _operand / _iwidth / _type_width + _OPCODE_MAP / _PRED_MAP

@@ -190,23 +190,32 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
             return _dict_vm_extract(func, names, counter, args, ret_width,
                                     ret_elem_widths, globals, synth_ptr_provenance)
         end
-        # SC9 Case A — Vector/GenericMemory. NOT yet implemented (a distinct
-        # Core-tier recogniser stripping the Julia-1.12 GC skeleton around
-        # `jl_alloc_genericmemory_unchecked` down to a loop-preserving
-        # IRAlloca(dyn)+IRVarGEP+IRStore/IRLoad ParsedIR). Fail loud rather
-        # than emit a skeleton-laden ParsedIR `lower_vm` would miscompile.
+        # SC9 Case A — Vector/GenericMemory (ADR 0016; bead `Bennett-jfw6`).
+        # When the function allocates a Julia `Vector` via
+        # `jl_alloc_genericmemory_unchecked`, route to the Case-A Vector
+        # recogniser (`src/extract/vector_vm.jl`): it strips the Julia-1.12 GC
+        # skeleton (the GC frame, the Memory alloc, the `julia.gc_alloc_obj`
+        # Array wrapper, the `julia.gc_loaded` data-pointer launder, the
+        # MemoryRef chain, and the size/inexact/bounds throw diamonds) and
+        # rewrites the element traffic into the loop-PRESERVING
+        # `IRAlloca(dyn)+IRVarGEP+IRStore/IRLoad` multi-block ParsedIR BennettVM
+        # ingests (the proven `frtN.ll` shape). Pins to optimize=false (D1); a
+        # SIMD/O2 program, ≥2 dynamic arrays, an escape into an unmodelled
+        # callee, or a struct element type all FAIL LOUD (Rule 1).
+        if _vec_vm_is_recognised(func)
+            return _vec_vm_extract(func, names, counter, args, ret_width,
+                                   ret_elem_widths, globals, synth_ptr_provenance)
+        end
+        # Neither a recognised Dict (Case B) nor a recognised Vector (Case A)
+        # construct — fail loud rather than emit a skeleton-laden ParsedIR.
         error("ir_extract.jl: mem=:vm extraction arm: no recognised Dict " *
-              "mutation callee found, and the Case A (Vector/GenericMemory) " *
-              "`mem=:vm` recogniser is not yet implemented (ADR 0013 §D-4.2). " *
-              "The Dict (Case B) recogniser handles setindex!/getindex/delete! " *
-              "callees; the Array recogniser that strips the GC skeleton around " *
-              "`jl_alloc_genericmemory_unchecked` (Array wrapper, " *
-              "`julia.gc_loaded` launder, GenericMemory/inexact/bounds throw " *
-              "diamonds) down to a loop-preserving " *
-              "`IRAlloca(dyn)+IRVarGEP+IRStore/IRLoad` ParsedIR remains TODO. " *
-              "Use the C/`.ll` route (`extract_parsed_ir_from_ll` on a VLA " *
-              "`.ll`, e.g. BennettVM `test/reference/frtN.ll`) for Case A today " *
-              "(ADR 0009 Decision 3)")
+              "mutation callee (Case B) and no recognised " *
+              "`@jl_alloc_genericmemory_unchecked` Vector allocation (Case A) " *
+              "found (ADR 0013 §D-4.2 / ADR 0016). The Dict recogniser handles " *
+              "setindex!/getindex/delete! callees; the Vector recogniser " *
+              "handles a single dynamic `Vector{T}(undef, n)` at optimize=false. " *
+              "An O2/SIMD-vectorised Vector program is a different program and " *
+              "is out of scope (ADR 0016 D1) — extract at optimize=false.")
     end
 
     # Bennett-gps7 / M1: GC/heap-skeleton recogniser. Runs ONLY when
