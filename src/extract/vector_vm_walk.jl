@@ -171,6 +171,49 @@ function _vec_vm_skeleton(func::LLVM.Function, vb::_VecBacking)
             end
         end
     end
+
+    # ---- P-callee (ADR 0016 fail-loud matrix; heap.jl §P-callee, lines ~724) --
+    # The forward taint folds ANY tainted instruction into `skel`, and the walker
+    # then DROPS every `skel` instruction. For a side-effect-free opcode
+    # (arithmetic / gep / cast) dropping is sound. But a tainted user CALL — e.g.
+    # the Vector pointer passed to a `@noinline` helper `g!(v)` — would be
+    # SILENTLY DROPPED, miscompiling away the callee's effects (a Rule-1 silent
+    # miscompile, exactly the P-callee failure ADR 0016 forbids). So, mirroring
+    # heap.jl's P-callee discipline (Law 2), re-scan every `skel` CALL and reject
+    # loud any callee that is NOT on the recognised allowlist. The allowlisted
+    # callees fall in two classes (see `_vec_vm_is_skel_callee`): (1) the
+    # GC/Memory MACHINERY proper (`jl_alloc_genericmemory_unchecked`,
+    # `julia.gc_loaded`, `julia.gc_alloc_obj`/`ijl_gc_small_alloc`,
+    # `julia.get_pgcstack`, `jl_argument_error`,
+    # `llvm.memcpy/memset/lifetime/smul.with.overflow/trap`), and (2) the
+    # DEAD-THROW helpers Julia parks at the unreachable arm of a collapsed
+    # bounds/inexact diamond (`ijl_bounds_error_int`, `jl_throw`,
+    # `j_throw_boundserror_NNN`, `j_throw_inexacterror_NNN`, …) — REUSED from the
+    # project-wide benign-drop allowlist (instructions.jl §U15). The normal
+    # fvec/vsum IR carries `@ijl_bounds_error_int` in exactly such a diamond, so
+    # it MUST be accepted (the Bennett-msob over-rejection regression). Anything
+    # else that ends up tainted touches element/skeleton values and must error.
+    # Ref: docs/adr/0016-case-a-mem-vm-recognizer.md, fail-loud matrix (P-callee);
+    #   src/extract/heap.jl §P-callee; CLAUDE.md Rule 1/2. Bead Bennett-msob.
+    for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
+        inst.ref in skel || continue
+        LLVM.opcode(inst) == LLVM.API.LLVMCall || continue
+        if _heap_is_inline_asm_call(inst)
+            _heap_is_allowlisted_tls_asm(inst) ||
+                _vec_vm_error("skeleton-tainted inline-asm call " *
+                              "$(_heap_vname(inst)) is not the allowlisted x86-64 " *
+                              "TLS read — refusing to silently drop it")
+            continue
+        end
+        cn = _heap_callee_name(inst)
+        _vec_vm_is_skel_callee(cn) ||
+            _vec_vm_error("skeleton-tainted call to `@$(isempty(cn) ? "?" : cn)` " *
+                          "($(_heap_vname(inst))) is not an allowlisted Case-A " *
+                          "callee — the Vector pointer / element value escapes " *
+                          "into non-skeleton code (e.g. a `@noinline` helper or a " *
+                          "`push!`). Dropping it would silently miscompile away " *
+                          "the callee's effects; refusing to (ADR 0016 P-callee)")
+    end
     return skel, accesses
 end
 
@@ -185,6 +228,33 @@ function _vec_vm_index_of(inst_by_ref::Dict{_LLVMRef,LLVM.Instruction},
 end
 
 # True iff `cn` is a recognised dropped-skeleton callee (ADR 0016 allowlist).
+#
+# Two classes of legitimately-dropped callee are accepted:
+#
+#   (1) the Case-A GC/Memory MACHINERY proper — the Memory allocator, the
+#       `julia.gc_loaded` data-pointer launder, the GC-frame allocator/pgcstack,
+#       and the benign `llvm.memset/memcpy/lifetime/smul.with.overflow/trap`
+#       intrinsics. These are the skeleton this recogniser is built to strip.
+#
+#   (2) the DEAD-THROW / bounds-error / argument-error helpers Julia emits at
+#       the dead arm of a COLLAPSED bounds / inexact diamond. On a recognised
+#       in-range access the throwing arm is provably unreachable, so the call
+#       never executes; it is dropped, not silently miscompiled. The NORMAL
+#       fvec/vsum/fvec32 IR carries `call void @ijl_bounds_error_int(ptr
+#       %"box::GenericMemoryRef", i64 %off)` inside exactly such a collapsed
+#       diamond — the original (Bennett-msob) allowlist omitted it and
+#       OVER-rejected the normal Vector path (it only matched the optimised
+#       `j_throw_boundserror_NNN` / `j_throw_inexacterror_NNN` mangled forms,
+#       not the unmangled `@ijl_bounds_error_int` / `@jl_throw` runtime entry
+#       points). REUSE (Law 2) the project-wide canonical benign-drop allowlist
+#       — the throw/bounds prefixes in `_convert_instruction`'s `benign_prefixes`
+#       (src/extract/instructions.jl §U15) — verbatim, rather than re-deriving a
+#       narrower set here. `_vec_vm_is_dead_throw_callee` is shared with M2/M3.
+#
+# A genuine user escape (a `@noinline` helper `g!(v)`, a `push!`, a Dict
+# `setindex!`) matches NEITHER class and is still rejected loud (P-callee).
+# Ref: src/extract/instructions.jl §U15 benign_prefixes; heap.jl §P-callee.
+#   Bennett-msob (over-rejection regression fix).
 function _vec_vm_is_skel_callee(cn::AbstractString)
     cn in (_VEC_VM_MEM_ALLOC, _VEC_VM_GC_LOADED, _VEC_VM_GC_ALLOC_OBJ,
            _VEC_VM_GC_ALLOC_OBJ2, _VEC_VM_PGCSTACK, _VEC_VM_ARGERR) && return true
@@ -193,7 +263,27 @@ function _vec_vm_is_skel_callee(cn::AbstractString)
     startswith(cn, "llvm.lifetime.") && return true
     startswith(cn, "llvm.smul.with.overflow.") && return true
     startswith(cn, "llvm.trap") && return true
-    occursin(_GC_THROW_BOUNDSERROR_RE, cn) && return true
-    occursin(_VEC_VM_INEXACT_RE, cn) && return true
+    _vec_vm_is_dead_throw_callee(cn) && return true
+    return false
+end
+
+# True iff `cn` is a dead-throw / bounds-error / argument-error helper that
+# Julia emits at the (provably unreachable) throwing arm of a collapsed bounds
+# or inexact diamond. The prefixes/regexes are REUSED verbatim from the
+# project-wide canonical benign-drop allowlist
+# (`_convert_instruction`'s `benign_prefixes`, src/extract/instructions.jl §U15)
+# plus the M2 mangled-form regexes. Matching the `j_throw_*` prefix subsumes
+# both `_GC_THROW_BOUNDSERROR_RE` (`j_throw_boundserror_NNN`) and
+# `_VEC_VM_INEXACT_RE` (`j_throw_inexacterror_NNN`); the unmangled
+# `ijl_bounds_error*` / `jl_bounds_error*` / `ijl_throw` / `jl_throw` runtime
+# entry points are the ones the unoptimised normal Vector path actually emits.
+function _vec_vm_is_dead_throw_callee(cn::AbstractString)
+    startswith(cn, "j_throw_")        && return true
+    startswith(cn, "ijl_throw")       && return true
+    startswith(cn, "jl_throw")        && return true
+    startswith(cn, "ijl_bounds_error") && return true
+    startswith(cn, "jl_bounds_error")  && return true
+    startswith(cn, "ijl_argument_error") && return true
+    startswith(cn, "jl_argument_error")  && return true
     return false
 end

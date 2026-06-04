@@ -56,16 +56,33 @@ function _vec_vm_emit_terminator(bb::LLVM.BasicBlock, func::LLVM.Function,
         if t_dead && f_dead
             _vec_vm_error("both arms of %$(LLVM.name(bb)) are dead")
         end
-        live = t_dead ? succs[2] : (f_dead ? succs[1] :
-               # skeleton condition, both arms live (the empty/nonempty Memory
-               # diamond) — both reconverge in the dropped prelude, so this
-               # branch is itself inside the collapsed prelude and should not be
-               # emitted as a kept terminator. Route to the true arm; the
-               # prelude reachability makes the choice immaterial (both reach
-               # the exit and are dropped). For a kept block this path is the
-               # bounds/inexact guard, where exactly one arm is dead (handled
-               # above), so reaching here means a genuine skeleton diamond.
-               succs[1])
+        # The collapsible case is a guard with exactly ONE dead (throw) arm —
+        # the bounds / inexact / size-overflow diamond. Its surviving sibling is
+        # the in-range path; route to it. A skeleton-conditioned branch whose
+        # BOTH arms are LIVE in a KEPT block is a genuine, unrecognised skeleton
+        # diamond: we cannot prove which direction the surviving slice should
+        # take, and silently picking `succs[1]` would emit the WRONG branch
+        # direction for a more complex Vector program (a Rule-1 silent miscompile
+        # — the exact failure ADR 0016's fail-loud matrix forbids). The
+        # collapsing prelude diamonds (the empty/nonempty Memory test) live in
+        # `prelude_set` and are rewritten by `_vec_vm_reroute`, never reaching a
+        # KEPT terminator, so this fallthrough means the skeleton taint reached a
+        # surviving block — fail loud.
+        # Ref: docs/adr/0016-case-a-mem-vm-recognizer.md, fail-loud matrix
+        #   ("any instruction the closed-world partition can't classify");
+        #   CLAUDE.md Rule 1 (fail loud, never silent-accept). Bead Bennett-bal6.
+        if t_dead
+            live = succs[2]
+        elseif f_dead
+            live = succs[1]
+        else
+            _vec_vm_error("kept block %$(LLVM.name(bb)) ends in a skeleton-" *
+                          "conditioned branch (`$(_heap_vname(cond))`) whose " *
+                          "BOTH arms are live — an unrecognised skeleton diamond " *
+                          "in a surviving block. Cannot prove the branch " *
+                          "direction; refusing to guess (would emit the wrong " *
+                          "arm for a more complex Vector program)")
+        end
         dst = _vec_vm_reroute(live, func, skel, dead, prelude_set, exit)
         return IRBranch(nothing, dst, nothing)
     end
