@@ -11,6 +11,22 @@ at this stage; no code.
 Tracked as **`Bennett-spqu`**. Date: 2026-05-22. Origin: the 2026-05-22
 loop-architecture discussion (the A/B/C/D solution-set analysis).
 
+> **Cross-repo decision (2026-06-04, lead) — reversible `Dict`/dynamic memory.**
+> Settled in BennettVM `docs/adr/0015-dict-route-b-correctness-floor.md` (amends
+> ADR 0013 §D-3). **Correctness first, optimize on top:** a `Dict` (and dynamic
+> `Vector`) compiles by **reversibly executing its lowered LLVM opcodes** — hash
+> arithmetic + the open-addressing probe over the `keys`/`vals` `Memory` backing
+> + branches — over BennettVM's store-level memory floor + L3 checkpoint-replay
+> ("route (b)"). A live `code_llvm` probe confirmed **no in-principle blocker**
+> for value-semantic (isbits / content-hashed) keys; the *one* genuine
+> in-principle blocker is `objectid`/identity hashing (nondeterministic →
+> rejected loud). *Recognizing* `Dict` ops into a high-level `IRMap*`/`RevMap`
+> primitive ("route (a)", `Bennett-800b`'s framing) is **demoted to a future
+> quantum-circuit-lowering optimization**, not the correctness path — so the
+> inlined-`getindex` recognizer is **not** a blocker for Case B. The `heap.jl`
+> "Dict irreversible by construction" reject is correct for `mem=:heap` only.
+> **Do not relitigate.** See `Bennett-800b` notes.
+
 ## 1. One-line summary
 
 Add a second lowering target — a **reversible abstract machine** — so Bennett.jl
