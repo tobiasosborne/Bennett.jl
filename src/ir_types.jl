@@ -144,7 +144,23 @@ end
 struct IRPtrOffset <: IRInst
     dest::Symbol
     base::IROperand     # pointer SSA name
-    offset_bytes::Int   # byte offset from base
+    offset_bytes::Int   # byte offset from base — EXCEPT the mem=:heap M2
+                        # re-rooter (heap.jl ~2017/2042) stores a raw element
+                        # INDEX here, a circuit-backend-internal quirk. BVM
+                        # never ingests mem=:heap IR, so the byte-offset
+                        # contract holds for every site BVM sees; a follow-up
+                        # bead tracks reconciling the heap sites to true bytes.
+    # Bennett-xv0u / bennettvm-b5x (2026-06-05): the source element's bit
+    # width. ADDITIVE field — the circuit backend keeps consuming
+    # `offset_bytes` AS BYTES (`lower.jl`: `bit_offset = offset_bytes * 8`)
+    # and IGNORES `elem_width`. It exists so the CELL-addressed BennettVM
+    # (`target=:reversible_vm`) can recover the ELEMENT INDEX from the
+    # byte-valued offset: `index = offset_bytes ÷ (elem_width ÷ 8)`. Without
+    # it, a non-i64 array's byte offset would be mis-divided (a latent silent
+    # miscompile). All 8 construction sites pass the in-scope element bit
+    # width; the legacy non-integer-source GEP branch (instructions.jl ~2147,
+    # U16 out of scope) passes 8 as the raw-index unit placeholder.
+    elem_width::Int     # source element bit width (BVM element-index recovery)
 end
 
 struct IRVarGEP <: IRInst

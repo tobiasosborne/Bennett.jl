@@ -707,7 +707,7 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
         for i in 1:n
             gep_dest = _auto_name(counter)
             load_dest = _auto_name(counter)
-            push!(insts, IRPtrOffset(gep_dest, _operand(ptr, names), (i - 1) * eb))
+            push!(insts, IRPtrOffset(gep_dest, _operand(ptr, names), (i - 1) * eb, w))
             push!(insts, IRLoad(load_dest, ssa(gep_dest), w))
             out[i] = ssa(load_dest)
         end

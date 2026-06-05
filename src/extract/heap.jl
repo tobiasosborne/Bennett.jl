@@ -2013,8 +2013,14 @@ function _build_rerooted_slice(func::LLVM.Function,
                     # so `ea.index` is always an `Int` here.
                     idx = ea.index
                     if idx isa Int
+                        # NB heap.jl (mem=:heap only) stores an ELEMENT INDEX in
+                        # offset_bytes, not a byte offset — a pre-existing
+                        # circuit-backend quirk. `W` is still the TRUE element
+                        # bit width (the circuit backend ignores elem_width;
+                        # BennettVM only receives mem=:vm IR, never this site —
+                        # Bennett-xv0u / bennettvm-b5x).
                         push!(survivors,
-                              IRPtrOffset(gep_sym, SSAOperand(alloca_sym), idx))
+                              IRPtrOffset(gep_sym, SSAOperand(alloca_sym), idx, W))
                     else
                         _heap_m2_error("internal: runtime store index reached " *
                             "the re-rooter — should have been rejected by the " *
@@ -2029,8 +2035,11 @@ function _build_rerooted_slice(func::LLVM.Function,
                     idx = ea.index
                     load_dest = names[inst.ref]
                     if idx isa Int
+                        # See the store branch above: offset_bytes carries an
+                        # element index here (mem=:heap quirk); W is the true
+                        # element bit width (Bennett-xv0u / bennettvm-b5x).
                         push!(survivors,
-                              IRPtrOffset(gep_sym, SSAOperand(alloca_sym), idx))
+                              IRPtrOffset(gep_sym, SSAOperand(alloca_sym), idx, W))
                     else
                         idx_v = _heap_value_for_ref(func, idx)
                         idx_v === nothing &&

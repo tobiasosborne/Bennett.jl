@@ -127,7 +127,7 @@ using Bennett: ParsedIR, IRBasicBlock, IRBinOp, IRAlloca, IRStore, IRLoad,
         block = IRBasicBlock(:entry,
             [
                 IRAlloca(:p, 64, iconst(2)),
-                IRPtrOffset(:q, ssa(:p), 4),
+                IRPtrOffset(:q, ssa(:p), 4, 64),  # elem_width=64 (i64); Bennett-xv0u
                 # never reached; included so the block has a real shape:
                 IRLoad(:y, ssa(:q), 64),
             ],

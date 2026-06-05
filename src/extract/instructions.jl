@@ -274,8 +274,8 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
         src_off = _auto_name(counter)
         dst_off = _auto_name(counter)
         tmp     = _auto_name(counter)
-        push!(out, IRPtrOffset(src_off, src_op, k * ew_bytes))
-        push!(out, IRPtrOffset(dst_off, dst_op, k * ew_bytes))
+        push!(out, IRPtrOffset(src_off, src_op, k * ew_bytes, dst_ew))
+        push!(out, IRPtrOffset(dst_off, dst_op, k * ew_bytes, dst_ew))
         push!(out, IRLoad(tmp, ssa(src_off), dst_ew))
         push!(out, IRStore(ssa(dst_off), ssa(tmp), dst_ew))
     end
@@ -593,7 +593,7 @@ function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction
         word = gdata[src_elem_off + k + 1]  # 1-based indexing
         # Cast to signed Int via reinterpret (preserves bit pattern).
         ival = reinterpret(Int64, word) % Int
-        push!(out, IRPtrOffset(dst_off, dst_op, k * ew_bytes))
+        push!(out, IRPtrOffset(dst_off, dst_op, k * ew_bytes, dst_ew))
         push!(out, IRStore(ssa(dst_off), iconst(ival), dst_ew))
     end
     return out
@@ -889,7 +889,7 @@ function _handle_memset_arm(cname::AbstractString, inst::LLVM.Instruction,
     sizehint!(out, 2 * K)
     for k in 0:(K - 1)
         dst_off = _auto_name(counter)
-        push!(out, IRPtrOffset(dst_off, dst_op, k * ew_bytes))
+        push!(out, IRPtrOffset(dst_off, dst_op, k * ew_bytes, dst_ew))
         push!(out, IRStore(ssa(dst_off), iconst(c_broadcast), dst_ew))
     end
     return out
@@ -2134,19 +2134,29 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 raw_idx = _const_int_as_int(ops[2])
                 src_ty_ref_const = LLVM.API.LLVMGetGEPSourceElementType(inst)
                 src_type_const = LLVM.LLVMType(src_ty_ref_const)
-                offset = if src_type_const isa LLVM.IntegerType
+                # `offset` is the byte offset (circuit-backend semantics);
+                # `elem_bits` is the source element bit width threaded into the
+                # additive IRPtrOffset.elem_width field so the cell-addressed
+                # BennettVM can recover the element index (Bennett-xv0u /
+                # bennettvm-b5x). For the integer branch it is the true element
+                # width; for the legacy non-integer branch (U16 out of scope)
+                # offset is the raw index, so 8 is its raw-index unit (1 byte).
+                offset, elem_bits = if src_type_const isa LLVM.IntegerType
                     stride_bytes = LLVM.width(src_type_const) ÷ 8
                     stride_bytes >= 1 || _ir_error(inst,
                         "constant-index GEP with sub-byte source element " *
                         "width $(LLVM.width(src_type_const)) bits not " *
                         "supported (Bennett-vz5n / U12)")
-                    raw_idx * stride_bytes
+                    (raw_idx * stride_bytes, Int(LLVM.width(src_type_const)))
                 else
                     # Struct / array / float / vector base: legacy raw-index
-                    # behaviour. Silent-pass, tracked in U16.
-                    raw_idx
+                    # behaviour. Silent-pass, tracked in U16. elem_width=8 is
+                    # the legacy raw-index unit (offset is the raw index, U16
+                    # out of scope — BennettVM only receives the integer-source
+                    # `mem=:vm` GEPs, never this branch).
+                    (raw_idx, 8)
                 end
-                return IRPtrOffset(dest, ssa(names[base.ref]), offset)
+                return IRPtrOffset(dest, ssa(names[base.ref]), offset, elem_bits)
             else
                 # Variable-index GEP → IRVarGEP (MUX-tree selection at lowering time)
                 # Bennett-plb7 / U13: fail loud when the source element isn't

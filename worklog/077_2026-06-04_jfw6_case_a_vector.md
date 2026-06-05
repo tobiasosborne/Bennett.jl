@@ -51,3 +51,31 @@ GenericMemory backings keys+vals → BennettVM `uil`); `soft_frem` (`Bennett-tfx
 IRPtrOffset `elem_width` (`Bennett-xv0u`); multi-index GEP (`Bennett-8e1f`); struct
 aggregates (`Bennett-6bu3`); the Dict determinism guard (`Bennett-klgz`). RULE 14
 `src/` changes under standing user approval.
+
+## Session log — 2026-06-05 — `Bennett-xv0u`: `IRPtrOffset.elem_width` (BennettVM `b5x`)
+
+Additive `elem_width::Int` (source element bit width) on `IRPtrOffset` so the
+cell-addressed BennettVM recovers the ELEMENT INDEX from the byte offset
+(`index = offset_bytes ÷ (elem_width÷8)`); the circuit backend keeps consuming
+`offset_bytes` as bytes and ignores the field. Closes a latent silent miscompile
+(a non-i64 array's byte offset was mis-divided — Rule 1/7).
+
+**Gotcha (load-bearing):** the bead claimed "single construction site"; there are
+**8** (`instructions.jl` ×5 incl. memcpy/memset + the constant-index GEP integer
+branch, `vectors.jl`:710, `heap.jl` ×2). The constructor is positional → every
+site had to gain the 4th arg or the build breaks. A scout mapped them; each passes
+the in-scope element **bit** width (`dst_ew`/`w`/`W`/`LLVM.width`). Because the
+circuit backend *ignores* `elem_width`, a wrong unit at any site is invisible to
+this 688k-test suite — so the bits-not-bytes unit was verified at all 8 by hand +
+hostile review. Legacy non-integer-source GEP branch passes `8` (raw-index unit,
+U16 out of scope).
+
+**Quirk recorded (not fixed):** the `mem=:heap` M2 re-rooter (`heap.jl`
+~2017/2042) stores an element *index* in `offset_bytes`, violating the field's
+byte contract. Safe — BVM never ingests `mem=:heap` IR — but a P3 bead tracks
+reconciling the field to true bytes. `narrow.jl` gained an `IRPtrOffset`
+pass-through (closes the pre-existing fail-loud-fallback gap, `Bennett-2unc`).
+
+Cross-repo, orchestrated from BennettVM (Opus coder + Sonnet hostile review →
+APPROVE-WITH-NITS, nits closed). Gate: Bennett.jl full `Pkg.test` 688515 Pass / 1
+pre-existing Broken; BennettVM `Pkg.test` green (path dep). `Bennett-xv0u` CLOSED.

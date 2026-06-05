@@ -48,6 +48,12 @@ _narrow_inst(inst::IRStore, W::Int) = IRStore(inst.ptr, inst.val,
 _narrow_inst(inst::IRAlloca, W::Int) = IRAlloca(inst.dest,
                                                 inst.elem_width > 1 ? W : 1,
                                                 inst.n_elems)
+# Bennett-xv0u / bennettvm-b5x: IRPtrOffset has no operand BIT width to
+# narrow — `offset_bytes` is a byte offset and `elem_width` is the SOURCE
+# element's own bit width (used by BennettVM's element-index recovery), not
+# the routine's narrowable wire width. Pass through unchanged. (Closes the
+# pre-existing fail-loud-fallback gap for IRPtrOffset noted at Bennett-2unc.)
+_narrow_inst(inst::IRPtrOffset, W::Int) = inst
 # Bennett-2unc / U85: Fail loud per CLAUDE.md §1. The pre-fix
 # fallback `_narrow_inst(inst::IRInst, W::Int) = inst` silently
 # passed through any IR node type without an explicit method, which
