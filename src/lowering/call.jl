@@ -8,6 +8,15 @@
 # Fail-loud rejects: zero-method, multi-method, Vararg, arity-mismatch.
 # See docs/design/alpha_consensus.md.
 function _callee_arg_types(inst::IRCall)::Type{<:Tuple}
+    # Bennett-k3ej (hostile review, nit 1): a Symbol callee is the closed-world
+    # C-track shape (BVM ADR 0020 D1) — it has no Julia method table and can
+    # NEVER be inlined into a circuit. Without this guard the failure would be
+    # an unattributed MethodError from `methods(::Symbol)`; convert to Rule 1.
+    inst.callee isa Function ||
+        error("lower_call!: Symbol callee `", inst.callee, "` cannot be inlined ",
+              "via the circuit lowerer — Symbol-callee IRCalls are the ",
+              "closed-world C-track (BVM ADR 0020); route this ParsedIR ",
+              "through BennettVM lower_vm instead. (Bennett-k3ej)")
     ms = methods(inst.callee)
     fname = nameof(inst.callee)
     if isempty(ms)

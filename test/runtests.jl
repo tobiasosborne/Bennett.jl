@@ -368,6 +368,11 @@ runfile("test_qal5_multi_index_gep.jl")
 # Bennett-8b2f / U17 — `_get_deref_bytes` IR-string fallback regex now
 # anchored to the specific param name (was: function-wide first-match).
 runfile("test_8b2f_deref_bytes_per_param.jl")
+# Bennett-k3ej / BVM ADR 0020 (CW-C2 chunk A) — IRCall.callee widened to
+# Union{Function,Symbol} (D1) + C deref-absent ptr param → opaque Int64
+# cell-address arg (D2). Also covers the `_get_deref_bytes` actual-define-line
+# fallback fix (clang `; Function Attrs:` comment line was read as the define).
+runfile("test_k3ej_ircall_symbol_c_ptr_param.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message
 # + non-Bennett-authored guard (was: bare substring match that could
 # swallow unrelated Bennett fail-loud errors).

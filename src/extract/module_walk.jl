@@ -121,16 +121,50 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
             # Float params are just N-bit values (double=64, float=32)
             push!(args, (sym, _type_width(ptype)))
         elseif ptype isa LLVM.PointerType
-            # Pointer arg (e.g., NTuple passed by reference)
-            # Try to determine size from dereferenceable attribute or skip (pgcstack)
+            # Pointer arg. Two distinct shapes, distinguished by the
+            # `dereferenceable(N)` attribute:
+            #
+            #   (a) deref > 0 — Julia NTuple-by-ref / sret model. The pointer
+            #       names an N-byte object the callee reads through; we model it
+            #       as a flat wire array `N*8` bits wide and record it in
+            #       `ptr_params` for GEP/load resolution. UNTOUCHED by Bennett-k3ej.
+            #
+            #   (b) deref == 0 — the C heap-pointer case (BVM ADR 0020 D2). A C
+            #       `ptr` parameter (`ht_get(ptr %t, ...)`, `ht_free(ptr %t)`)
+            #       carries no dereferenceable attribute: it is an opaque
+            #       cell-address into the VM's flat address space (ADR 0018 §A),
+            #       not an inlined byte buffer. Model it as a single opaque
+            #       Int64 cell-address argument (width 64). This is the gate:
+            #       `deref == 0` AND the param is a real function input (the sret
+            #       param is already `continue`d above), so the Julia
+            #       deref-present model in (a) is never reached. NOTE (k3ej
+            #       hostile review, nit 2): Julia's `pgcstack`/GC-frame
+            #       synthetic ptr DOES reach this loop for swiftcc-form
+            #       functions (the `heap_m3_gap.ll`-family fixtures) — those
+            #       are rejection cases today, but a PASSING swiftcc function
+            #       would have gotten a spurious 64-bit wire here. So
+            #       `swiftself` params are explicitly skipped below (the
+            #       pre-k3ej silent skip, now scoped to exactly the synthetic
+            #       case instead of swallowing every deref-absent pointer).
             deref = _get_deref_bytes(func, p)
             if deref > 0
-                # Treat as flat wire array: deref bytes × 8 bits
+                # (a) Treat as flat wire array: deref bytes × 8 bits
                 w = deref * 8
                 push!(args, (sym, w))
                 ptr_params[sym] = (sym, deref)
+            elseif occursin("swiftself", string(p))
+                # Julia swiftcc GC-frame synthetic (`ptr nonnull swiftself
+                # %pgcstack`): not a function input; never a C cell-address.
+                continue
+            else
+                # (b) Opaque Int64 cell-address argument (BVM ADR 0020 D2).
+                # Width 64 = one VM address cell. Deliberately NOT recorded in
+                # `ptr_params` (which is the deref-byte-size side table for the
+                # NTuple-by-ref model); a cell-address has no inlined byte
+                # extent. Downstream `store ptr`/`load ptr`/struct-GEP handling
+                # (ADR 0020 D3/D4, chunk B) consumes this as a 64-bit cell.
+                push!(args, (sym, 64))
             end
-            # pgcstack and other non-dereferenceable ptrs are silently skipped
         end
     end
 

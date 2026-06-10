@@ -294,9 +294,24 @@ struct IRExtractValue <: IRInst
     n_elems::Int         # number of elements in the aggregate
 end
 
+# Bennett-k3ej (BVM ADR 0020 D1): `callee` widens from `Function` to
+# `Union{Function,Symbol}`. A `.ll`-sourced callee (C-track closed-world
+# ingest) has only a NAME — there is no Julia `Function` object to bind. BVM
+# already consumes callees by name (`nameof` → `_HEAP_DISPATCH` / guard-5
+# function table), so a `Symbol` callee carries exactly the information BVM
+# needs. We deliberately do NOT introduce a separate `IRCallByName` type: that
+# would fork every `isa IRCall` consumer (Law 2 / reuse-before-reinvention).
+# The `Function` path is byte-unchanged: the Function-callee inner constructor
+# below is identical in behaviour to the pre-widening one (same validations,
+# same error messages). The three `nameof(callee)` error sites now branch on
+# the union via `_callee_name` so a Symbol callee names itself in diagnostics.
+_callee_name(callee::Function) = nameof(callee)
+_callee_name(callee::Symbol)   = callee
+
 struct IRCall <: IRInst
     dest::Symbol
-    callee::Function       # Julia function to compile and inline
+    callee::Union{Function,Symbol}   # Julia function to inline, OR a bare name
+                                     # (C-track `.ll` callee; BVM resolves by name)
     args::Vector{IROperand}
     arg_widths::Vector{Int}
     ret_width::Int
@@ -322,6 +337,25 @@ struct IRCall <: IRInst
         for (i, w) in enumerate(arg_widths)
             w >= 1 ||
                 throw(ArgumentError("IRCall: arg_widths[$i]=$w must be >= 1 (dest=$dest, callee=$(nameof(callee)))"))
+        end
+        new(dest, callee, convert(Vector{IROperand}, args), arg_widths, ret_width)
+    end
+    # Bennett-k3ej (BVM ADR 0020 D1): Symbol-callee overload, mirroring the
+    # Function one exactly (same validations, same diagnostics shape). Used by
+    # the C-track `.ll` ingest where the callee is name-only. `_callee_name`
+    # collapses to the symbol itself, so error messages read identically aside
+    # from the name source.
+    function IRCall(dest::Symbol, callee::Symbol,
+                    args::AbstractVector{<:IROperand},
+                    arg_widths::Vector{Int}, ret_width::Int)
+        length(args) == length(arg_widths) ||
+            throw(DimensionMismatch("IRCall: length(args)=$(length(args)) != length(arg_widths)=$(length(arg_widths)) " *
+                  "(dest=$dest, callee=$(_callee_name(callee)))"))
+        ret_width >= 1 ||
+            throw(ArgumentError("IRCall: ret_width=$ret_width must be >= 1 (dest=$dest, callee=$(_callee_name(callee)))"))
+        for (i, w) in enumerate(arg_widths)
+            w >= 1 ||
+                throw(ArgumentError("IRCall: arg_widths[$i]=$w must be >= 1 (dest=$dest, callee=$(_callee_name(callee)))"))
         end
         new(dest, callee, convert(Vector{IROperand}, args), arg_widths, ret_width)
     end

@@ -56,7 +56,19 @@ function _get_deref_bytes(func::LLVM.Function, param::LLVM.Argument)
     # `%"t::Tuple"` with quotes — a simple `%NAME\b` won't match.
     # Slice by parameter, then look for both `%NAME` and `%"NAME"`.
     ir_str = string(func)
-    defline = split(ir_str, "\n")[1]
+    # Bennett-k3ej (BVM ADR 0020 D2): C/clang IR prefixes each function with a
+    # `; Function Attrs: ...` COMMENT line, so `string(func)` line 1 is not the
+    # `define`. The old `split(...)[1]` read that comment, found no `(...)`, and
+    # threw the "malformed define" AssertionError on every C function — the
+    # ptr-parameter wall. Locate the actual `define`/`declare` line instead of
+    # assuming it is line 1. This is robustness on the absence-detection path
+    # (Bennett.jl Rule 5/8: we are NOT extending the text parser — the primary
+    # `LLVM.parameter_attributes` API path is still preferred; this is only the
+    # fallback when that API raises MethodError on this LLVM.jl version).
+    lines = split(ir_str, "\n")
+    defidx = findfirst(l -> startswith(strip(l), "define ") ||
+                            startswith(strip(l), "declare "), lines)
+    defline = defidx === nothing ? lines[1] : lines[defidx]
     pname = LLVM.name(param)
     # Extract the (...) parameter list. A missing or out-of-order pair is
     # an LLVM.jl format mismatch — fail loud rather than silently returning 0.
