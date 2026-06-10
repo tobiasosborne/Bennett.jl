@@ -97,10 +97,15 @@ end
 # verbatim to `_module_to_parsed_ir`. The `.ll`/`.bc` entry points expose it
 # so a C/Rust (or hand-written) module can request `mem=:vm` just like the
 # Julia-function path. Default `:auto` keeps every prior caller byte-identical.
+#
+# `ptr_cells` (BVM ADR 0020 D3/D4, CW-C2 chunk B) is the C-track
+# extraction-mode gate; forwarded verbatim to `_module_to_parsed_ir`. Default
+# `false` keeps every prior caller byte-identical (see extract_parsed_ir_from_ll).
 function _extract_from_module(mod::LLVM.Module,
                               entry_function::Union{Nothing, AbstractString},
                               effective_passes::Vector{String};
-                              mem::Symbol=:auto)
+                              mem::Symbol=:auto,
+                              ptr_cells::Bool=false)
     # Bennett-uyf9: auto-canonicalise memcpy-form sret (see extract_parsed_ir
     # for rationale). Shared across extract_parsed_ir_from_ll / _from_bc.
     if !("sroa" in effective_passes) && _module_has_sret(mod)
@@ -109,7 +114,8 @@ function _extract_from_module(mod::LLVM.Module,
     if !isempty(effective_passes)
         _run_passes!(mod, effective_passes)
     end
-    return _module_to_parsed_ir(mod; entry_function=entry_function, mem=mem)
+    return _module_to_parsed_ir(mod; entry_function=entry_function,
+                                mem=mem, ptr_cells=ptr_cells)
 end
 
 """
@@ -127,13 +133,34 @@ Rust fixtures that want a stable name should be compiled with `extern "C"`
 
 `use_memory_ssa=true` runs the MemorySSA printer pass on the loaded IR
 text. Available on this path because the input is already text.
+
+`ptr_cells=true` (BVM ADR 0020 D3/D4, CW-C2 chunk B) is the **C-track
+extraction-mode gate**. When set, the extractor admits the C heap-pointer
+instruction surface as language-neutral 64-bit VM cells:
+
+  - `store ptr`/`load ptr` lower as 64-bit `IRStore`/`IRLoad` (a pointer is
+    one Int64 cell in the VM address space — ADR 0018 §A), instead of
+    fail-louding at the `Bennett-lgzx`/U114 wall.
+  - A `ptr` RETURN type derives `ret_width = 64` instead of hitting the
+    `_type_width` "unsupported LLVM type" wall (D3 pointer-return = cell).
+  - A two-index struct GEP (`getelementptr %struct.T, ptr %p, i32 0, i32 K`)
+    lowers to `IRPtrOffset(offset_bytes, elem_width=64)` with byte offsets
+    from the LLVM datalayout (`LLVM.offsetof`), instead of the
+    `Bennett-qal5`/U16 reject (D4).
+
+The default (`ptr_cells=false`) is byte-identical to every prior caller: ALL
+the existing Julia-path fail-louds (U114 store, U16 GEP, U81 void/ptr
+return) keep firing unchanged — they protect the circuit / `mem=:heap`
+models, which the C cell model must NOT silently alias. The gate is the
+single switch the C track flips; nothing else in the walk changes shape.
 """
 function extract_parsed_ir_from_ll(path::AbstractString;
                                     entry_function::AbstractString,
                                     preprocess::Bool=false,
                                     passes::Vector{String}=String[],
                                     use_memory_ssa::Bool=false,
-                                    mem::Symbol=:auto)
+                                    mem::Symbol=:auto,
+                                    ptr_cells::Bool=false)
     isfile(path) || throw(ArgumentError(
         "ir_extract.jl: extract_parsed_ir_from_ll: file not found: $path"))
 
@@ -156,7 +183,8 @@ function extract_parsed_ir_from_ll(path::AbstractString;
     LLVM.Context() do _ctx
         mod = parse(LLVM.Module, ir_string)
         try
-            result = _extract_from_module(mod, entry_function, effective_passes; mem=mem)
+            result = _extract_from_module(mod, entry_function, effective_passes;
+                                          mem=mem, ptr_cells=ptr_cells)
         finally
             dispose(mod)
         end
@@ -174,7 +202,10 @@ end
                               preprocess=false, passes=nothing) -> ParsedIR
 
 Parse a raw LLVM bitcode file (`.bc`) and walk the named entry function.
-Bennett-f2p9 (T5-P5b). Otherwise identical to `extract_parsed_ir_from_ll`.
+Bennett-f2p9 (T5-P5b). Otherwise identical to `extract_parsed_ir_from_ll`,
+including the `ptr_cells` C-track gate (BVM ADR 0020 D3/D4, Bennett-haiy),
+which is forwarded with the same default (`false` = Julia-path fail-louds
+byte-identical).
 
 `use_memory_ssa` is not exposed on this path: the MemorySSA printer
 operates on textual IR and we do not round-trip bitcode → text here. If
@@ -185,7 +216,8 @@ function extract_parsed_ir_from_bc(path::AbstractString;
                                     entry_function::AbstractString,
                                     preprocess::Bool=false,
                                     passes::Vector{String}=String[],
-                                    mem::Symbol=:auto)
+                                    mem::Symbol=:auto,
+                                    ptr_cells::Bool=false)
     isfile(path) || throw(ArgumentError(
         "ir_extract.jl: extract_parsed_ir_from_bc: file not found: $path"))
 
@@ -200,7 +232,8 @@ function extract_parsed_ir_from_bc(path::AbstractString;
         @dispose membuf = LLVM.MemoryBufferFile(String(path)) begin
             mod = parse(LLVM.Module, membuf)
             try
-                result = _extract_from_module(mod, entry_function, effective_passes; mem=mem)
+                result = _extract_from_module(mod, entry_function, effective_passes;
+                                              mem=mem, ptr_cells=ptr_cells)
             finally
                 dispose(mod)
             end

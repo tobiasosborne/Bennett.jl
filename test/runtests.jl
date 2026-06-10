@@ -373,6 +373,12 @@ runfile("test_8b2f_deref_bytes_per_param.jl")
 # cell-address arg (D2). Also covers the `_get_deref_bytes` actual-define-line
 # fallback fix (clang `; Function Attrs:` comment line was read as the define).
 runfile("test_k3ej_ircall_symbol_c_ptr_param.jl")
+# Bennett-haiy / BVM ADR 0020 (CW-C2 chunk B) — C ptr instruction surface
+# under the `ptr_cells` gate: store/load ptr → 64-bit cell IRStore/IRLoad +
+# ptr return → ret_width 64 (D3); two-index struct GEP → IRPtrOffset(elem_width
+# 64) via LLVM.offsetof (D4). Default (gate-off) keeps every Julia-path
+# fail-loud (U114/U16/U81) byte-identical. void-return left for chunk C.
+runfile("test_haiy_ptr_cells_store_load_gep.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message
 # + non-Bennett-authored guard (was: bare substring match that could
 # swallow unrelated Bennett fail-loud errors).

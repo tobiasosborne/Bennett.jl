@@ -1844,7 +1844,16 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                                   Dict{Symbol, Tuple{Vector{UInt64}, Int}}(),
                               synth_ptr_provenance::Set{Tuple{Symbol, Int, Int}}=
                                   Set{Tuple{Symbol, Int, Int}}(),
-                              synth_ptr_allocas::Set{_LLVMRef}=Set{_LLVMRef}())
+                              synth_ptr_allocas::Set{_LLVMRef}=Set{_LLVMRef}(),
+                              # BVM ADR 0020 D3/D4 (CW-C2 chunk B): C-track gate.
+                              # When true, `store ptr`/`load ptr` lower as 64-bit
+                              # cell IRStore/IRLoad and a two-index struct GEP
+                              # lowers to IRPtrOffset(elem_width=64). Default false
+                              # keeps the U114 store / U16 GEP fail-louds firing
+                              # byte-identically (they guard the circuit/:heap
+                              # models). The C cell model must not silently alias
+                              # those paths — `module_walk.jl` is the sole setter.
+                              ptr_cells::Bool=false)
     opc = LLVM.opcode(inst)
     dest = names[inst.ref]
 
@@ -1935,6 +1944,19 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
     # ret
     if opc == LLVM.API.LLVMRet
         ops = LLVM.operands(inst)
+        # BVM ADR 0020 D3 (CW-C2 chunk B): under the C-track `ptr_cells` gate, a
+        # `ret ptr %p` returns a pointer VALUE that is one Int64 VM cell (ADR
+        # 0018 §A) — width 64. The function-level return-WIDTH derivation in
+        # `module_walk.jl` already maps the `ptr` return type to `ret_width = 64`;
+        # this handles the matching TERMINATOR (`IRRet`'s `width`), whose operand
+        # `%p` is a ptr value with no scalar `_type_width`. Gate defaults false,
+        # so the Julia paths keep the byte-identical `_iwidth(ops[1])` behaviour
+        # below. (`ret void` carries no operand and is NOT handled here — it is
+        # chunk C / D5, see the return-width note in module_walk.jl.)
+        if ptr_cells && !isempty(ops) &&
+           LLVM.value_type(ops[1]) isa LLVM.PointerType
+            return IRRet(_operand(ops[1], names), 64)
+        end
         return IRRet(_operand(ops[1], names), _iwidth(ops[1]))
     end
 
@@ -2197,6 +2219,54 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 return IRVarGEP(dest, ssa(gname), idx_op, ew)
             end
         end
+        # BVM ADR 0020 D4 (CW-C2 chunk B): two-index struct GEP under the
+        # C-track `ptr_cells` gate. A C struct-field access compiles to
+        # `getelementptr %struct.T, ptr %p, i32 0, i32 K` — base + TWO constant
+        # indices (`length(ops) == 3`): index 0 steps over the (single) struct
+        # at `%p`, index K selects member K. This lowers to
+        # `IRPtrOffset(dest, base, offset_bytes, elem_width=64)` where
+        # `offset_bytes` is the member's byte offset from the LLVM datalayout
+        # (`LLVM.offsetof` → `LLVMOffsetOfElement`; NEVER IR-text parsing,
+        # Bennett.jl Rule 5/8). `elem_width=64` is the cell width: every struct
+        # member BVM addresses is a 64-bit cell (ADR 0018 §A).
+        #
+        # FAIL LOUD (still — the gate ADDS one accepted shape, it does not
+        # weaken any reject) on every other two-index shape: first index ≠ 0,
+        # > 2 indices, non-struct pointee, or a member offset not 8-byte aligned
+        # (the BVM cell discipline — `offset_bytes % 8 == 0` per ADR 0018; a
+        # packed/sub-cell struct fails loud rather than mis-addressing). The
+        # `qal5`/U16 array-GEP case (`[N x iM], ptr %p, i64 0, i64 %i`,
+        # variable index, non-struct pointee) is NOT a struct GEP and falls
+        # through to the U16 wall below, gate or no gate.
+        if ptr_cells && haskey(names, base.ref) && length(ops) == 3
+            src_ty_ref_gep = LLVM.API.LLVMGetGEPSourceElementType(inst)
+            src_type_gep = LLVM.LLVMType(src_ty_ref_gep)
+            src_type_gep isa LLVM.StructType || _ir_error(inst,
+                "two-index getelementptr with non-struct source element type " *
+                "$(src_type_gep) is not handled under ptr_cells; only " *
+                "`%struct.T, ptr %p, i32 0, i32 K` struct-member GEPs lower " *
+                "to IRPtrOffset (BVM ADR 0020 D4 / chunk B; gate-off this shape " *
+                "hits the Bennett-qal5 / U16 reject)")
+            (ops[2] isa LLVM.ConstantInt && _const_int_as_int(ops[2]) == 0) ||
+                _ir_error(inst,
+                    "two-index struct getelementptr first index must be the " *
+                    "constant 0 (single-struct step); got a non-zero / " *
+                    "non-constant first index (BVM ADR 0020 D4 / chunk B)")
+            ops[3] isa LLVM.ConstantInt || _ir_error(inst,
+                "two-index struct getelementptr member index must be a " *
+                "compile-time constant; a runtime member index is not a valid " *
+                "struct access (BVM ADR 0020 D4 / chunk B)")
+            member_k = _const_int_as_int(ops[3])
+            dl_gep = LLVM.datalayout(LLVM.parent(LLVM.parent(LLVM.parent(inst))))
+            offset_bytes = Int(LLVM.offsetof(dl_gep, src_type_gep, member_k))
+            offset_bytes % 8 == 0 || _ir_error(inst,
+                "two-index struct getelementptr member $(member_k) is at byte " *
+                "offset $(offset_bytes), which is not 8-byte (cell) aligned " *
+                "— the BVM cell discipline (ADR 0018) requires every struct " *
+                "member to land on a 64-bit cell boundary; a packed / sub-cell " *
+                "struct is out of scope (BVM ADR 0020 D4 / chunk B)")
+            return IRPtrOffset(dest, ssa(names[base.ref]), offset_bytes, 64)
+        end
         # Bennett-qal5 / U16: anything that reaches here is either a
         # multi-index GEP (`length(ops) > 2`, e.g. `getelementptr
         # [N x iM], ptr %p, i64 0, i64 %i`) or a GEP whose base is
@@ -2291,6 +2361,16 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             rt = LLVM.value_type(inst)
             if rt isa LLVM.IntegerType
                 return IRLoad(dest, ssa(names[ptr.ref]), LLVM.width(rt))
+            end
+            # BVM ADR 0020 D3 (CW-C2 chunk B): under the C-track `ptr_cells`
+            # gate, a `load ptr` reads a pointer VALUE = one Int64 VM cell (ADR
+            # 0018 §A) — model it as a 64-bit IRLoad. This admits the C
+            # heap-pointer surface (`%2 = load ptr, ptr %t`). The gate defaults
+            # false, so for the circuit/:heap models a non-integer load keeps the
+            # pre-existing silent-skip (`return nothing`) behaviour below — the C
+            # cell model never aliases those paths.
+            if ptr_cells && rt isa LLVM.PointerType
+                return IRLoad(dest, ssa(names[ptr.ref]), 64)
             end
         end
         return nothing  # non-integer load — skip
@@ -2466,6 +2546,22 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         val = ops[1]
         ptr = ops[2]
         vt = LLVM.value_type(val)
+        # BVM ADR 0020 D3 (CW-C2 chunk B): under the C-track `ptr_cells` gate, a
+        # `store ptr %v, ptr %p` stores a pointer VALUE that is one Int64 VM cell
+        # (ADR 0018 §A) — model it as a 64-bit IRStore. This admits the C
+        # heap-pointer surface (`store ptr %t, ptr %t.addr`, `store ptr %call,
+        # ptr %keys`) WITHOUT touching the Julia paths: the gate defaults false,
+        # so the Bennett-lgzx / U114 fail-loud below still fires byte-identically
+        # for the circuit/:heap models it protects. Width is the cell width (64),
+        # not `LLVM.width(vt)` (PointerType has no integer width). The store
+        # target `%p` must still be a registered SSA name — same guard as below.
+        if ptr_cells && vt isa LLVM.PointerType
+            haskey(names, ptr.ref) || _ir_error(inst,
+                "store target pointer is not a registered SSA name " *
+                "(value=$(ptr)) — likely an unsupported pointer source " *
+                "such as a global, ConstantExpr, or alias (Bennett-lgzx / U114).")
+            return IRStore(ssa(names[ptr.ref]), _operand(val, names), 64)
+        end
         # Bennett-lgzx / U114: was `vt isa LLVM.IntegerType || return nothing`
         # — silent drop violated CLAUDE.md §1. Error loud with the
         # actual stored-value type so the user can debug.

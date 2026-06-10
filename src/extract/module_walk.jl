@@ -44,9 +44,10 @@ end
 # a selected function.
 function _module_to_parsed_ir(mod::LLVM.Module;
                               entry_function::Union{Nothing, AbstractString}=nothing,
-                              mem::Symbol=:auto)
+                              mem::Symbol=:auto,
+                              ptr_cells::Bool=false)
     func = _find_entry_function(mod, entry_function)
-    return _module_to_parsed_ir_on_func(mod, func; mem=mem)
+    return _module_to_parsed_ir_on_func(mod, func; mem=mem, ptr_cells=ptr_cells)
 end
 
 # Core walker: `mod` provides module-scope globals / constants; `func` is the
@@ -55,8 +56,17 @@ end
 # `mem` (Bennett-gps7 / M1): when `:heap`, the GC/heap-skeleton recogniser
 # runs after the naming pass. Under any other value (`:auto` default) the
 # recogniser does NOT run — the walk is byte-identical to pre-M1 behaviour.
+#
+# `ptr_cells` (BVM ADR 0020 D3/D4, CW-C2 chunk B) is the C-track
+# extraction-mode gate. When `true`, the pointer instruction surface (ptr
+# RETURN width here; `store ptr`/`load ptr`/two-index struct GEP in
+# `_convert_instruction`) is admitted as 64-bit VM cells. Default `false`
+# keeps every Julia-path fail-loud firing byte-identically (it protects the
+# circuit / `mem=:heap` models — see the per-site notes below and in
+# `instructions.jl`).
 function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
-                                      mem::Symbol=:auto)
+                                      mem::Symbol=:auto,
+                                      ptr_cells::Bool=false)
     counter = Ref(0)
 
     # T1c.2: extract compile-time-constant global arrays so lower_var_gep! can
@@ -85,11 +95,33 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
     else
         ft = LLVM.function_type(func)
         rt = LLVM.return_type(ft)
-        ret_width = _type_width(rt)
-        ret_elem_widths = if rt isa LLVM.ArrayType
-            [LLVM.width(LLVM.eltype(rt)) for _ in 1:LLVM.length(rt)]
+        # BVM ADR 0020 D3 (CW-C2 chunk B): under the C-track `ptr_cells` gate, a
+        # `ptr` RETURN type is one Int64 VM cell (ADR 0018 §A) — `ret_width = 64`.
+        # This unblocks `ht_new` (`define internal ptr @ht_new`), whose return
+        # derivation otherwise hits the `_type_width` "unsupported LLVM type"
+        # wall (PointerType has no scalar width). DELIBERATELY handled HERE, at
+        # the return-width derivation, NOT inside `_type_width`: `_type_width`
+        # stays byte-identical (its precise ptr/void/struct/vector error messages
+        # are pinned by test_qmk6_dq8l). The gate is the only thing that changes.
+        #
+        # `void` RETURN is NOT handled here — it is left for chunk C (BVM ADR
+        # 0020 D5). A void return is not a 64-bit cell; it carries no value, and
+        # the IR's `IRRet` terminator REQUIRES `op::IROperand` + `width >= 1`
+        # (ir_types.jl), so representing "no return value" is an IR-SHAPE change
+        # (a void-return terminator form), which belongs with chunk C's void-call
+        # handling (void calls have the same no-dest modelling problem), not with
+        # return-WIDTH derivation. So `ht_free`/`ht_put` (`ret void`) stay at the
+        # existing `_type_width` VoidType (Bennett-dq8l / U81) wall — chunk C.
+        if ptr_cells && rt isa LLVM.PointerType
+            ret_width = 64
+            ret_elem_widths = [64]
         else
-            [ret_width]
+            ret_width = _type_width(rt)
+            ret_elem_widths = if rt isa LLVM.ArrayType
+                [LLVM.width(LLVM.eltype(rt)) for _ in 1:LLVM.length(rt)]
+            else
+                [ret_width]
+            end
         end
     end
 
@@ -324,7 +356,8 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
                 _convert_instruction(inst, names, counter, lanes;
                                      globals=globals,
                                      synth_ptr_provenance=synth_ptr_provenance,
-                                     synth_ptr_allocas=synth_ptr_allocas)
+                                     synth_ptr_allocas=synth_ptr_allocas,
+                                     ptr_cells=ptr_cells)
             catch e
                 e isa InterruptException && rethrow()
                 msg = sprint(showerror, e)
