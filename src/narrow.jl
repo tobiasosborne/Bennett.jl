@@ -34,7 +34,11 @@ _narrow_inst(inst::IRSelect, W::Int) = inst.width == 0 ? inst :
 _narrow_inst(inst::IRCast, W::Int) = IRCast(inst.dest, inst.op, inst.operand,
                                              inst.from_width > 1 ? W : 1,
                                              inst.to_width > 1 ? W : 1)
-_narrow_inst(inst::IRRet, W::Int) = IRRet(inst.op, W)
+# Bennett-nd45: the void IRRet form (`op === nothing`, the C `ret void` shape)
+# carries no value to narrow — pass it through unchanged. The C `ptr_cells`
+# path never runs the circuit width-narrowing pass, so this is defensive
+# totality, not a reached path.
+_narrow_inst(inst::IRRet, W::Int) = inst.op === nothing ? inst : IRRet(inst.op, W)
 _narrow_inst(inst::IRPhi, W::Int) = inst.width == 0 ? inst :
     IRPhi(inst.dest, inst.width > 1 ? W : 1, inst.incoming)
 _narrow_inst(inst::IRBranch, W::Int) = inst  # branches don't have widths

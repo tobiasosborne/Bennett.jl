@@ -50,6 +50,34 @@ function _module_to_parsed_ir(mod::LLVM.Module;
     return _module_to_parsed_ir_on_func(mod, func; mem=mem, ptr_cells=ptr_cells)
 end
 
+# BVM ADR 0020 D6 (CW-C2 chunk C): the multi-function producer. Walk EVERY
+# defined (non-declaration) function in the module through the SAME single-
+# function core walker (`_module_to_parsed_ir_on_func`) and return a
+# `Vector{Pair{Symbol,ParsedIR}}` — the exact shape BVM's multi-function
+# `lower_vm(::Vector{<:Pair{Symbol,ParsedIR}})` (ADR 0019 §2) consumes. A
+# `declare`d function (libc `malloc`/`free`, no body) has `isempty(blocks)` and
+# is SKIPPED — its calls are emitted as `Symbol`-callee `IRCall`s (D5) that BVM
+# routes to `_HEAP_DISPATCH`, NOT lowered as in-module functions. Fail loud on
+# a module with zero DEFINED functions (Rule 1): a `.ll` that is all
+# declarations has nothing to lower. Function order is module order (the
+# `LLVM.functions` walk), which BVM merges into one flat stream.
+function _module_to_parsed_ir_set(mod::LLVM.Module;
+                                  mem::Symbol=:auto,
+                                  ptr_cells::Bool=false)
+    out = Pair{Symbol,ParsedIR}[]
+    for f in LLVM.functions(mod)
+        isempty(LLVM.blocks(f)) && continue   # declaration-only (libc) — skip
+        name = Symbol(LLVM.name(f))
+        pir = _module_to_parsed_ir_on_func(mod, f; mem=mem, ptr_cells=ptr_cells)
+        push!(out, name => pir)
+    end
+    isempty(out) && throw(ArgumentError(
+        "ir_extract.jl: extract_parsed_ir_set: module has no DEFINED " *
+        "(non-declaration) functions — a `.ll` of pure declarations has " *
+        "nothing to lower (BVM ADR 0020 D6 / chunk C; Rule 1 fail-loud)."))
+    return out
+end
+
 # Core walker: `mod` provides module-scope globals / constants; `func` is the
 # entry point (already picked by `_find_entry_function`).
 #
@@ -115,6 +143,18 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
         if ptr_cells && rt isa LLVM.PointerType
             ret_width = 64
             ret_elem_widths = [64]
+        elseif ptr_cells && rt isa LLVM.VoidType
+            # BVM ADR 0020 D5b (CW-C2 chunk C): a `void` RETURN type under the
+            # C-track gate derives `ret_width = 0` / `ret_elem_widths = Int[]`
+            # (the C `ht_free`/`ht_put` shape). This is the matching half of the
+            # `ret void` → `IRRet()` void-FORM terminator (instructions.jl ret
+            # arm). chunk B deliberately LEFT this for chunk C because it
+            # entangles with the IRRet shape (a void terminator form). Gate-off:
+            # a void return still hits the `_type_width` VoidType (Bennett-dq8l /
+            # U81) wall below — `test_qmk6_dq8l` pins that message, and the C
+            # cell model must NOT silently alias it. The gate is the only switch.
+            ret_width = 0
+            ret_elem_widths = Int[]
         else
             ret_width = _type_width(rt)
             ret_elem_widths = if rt isa LLVM.ArrayType

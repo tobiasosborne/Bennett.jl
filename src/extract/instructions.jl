@@ -1957,6 +1957,22 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
            LLVM.value_type(ops[1]) isa LLVM.PointerType
             return IRRet(_operand(ops[1], names), 64)
         end
+        # BVM ADR 0020 D5b (CW-C2 chunk C): `ret void` under the C-track gate.
+        # A void return carries NO operand (`isempty(ops)`) and NO width. The
+        # value-bearing `IRRet(op, w)` requires `op::IROperand` + `width >= 1`,
+        # so void is the dedicated `IRRet()` void FORM (`op === nothing`,
+        # `width == 0`) — a terminator (so the block-builder's no-terminator
+        # AssertionError never fires), but one BVM maps to
+        # `EndInstruction(routine, Symbol[])` (empty returns) and
+        # `_declared_returns` ⇒ `Symbol[]` (the C void-callee shape: empty
+        # `CallEnter.targets`). The function-level `ret_width = 0` /
+        # `ret_elem_widths = Int[]` derivation (module_walk.jl, void arm) is the
+        # matching half. Gate-off: `ret void`'s function-level VoidType
+        # derivation still hits the U81 wall UPSTREAM (module_walk.jl), so this
+        # arm is never reached for the Julia paths; the guard is the gate.
+        if ptr_cells && isempty(ops)
+            return IRRet()
+        end
         return IRRet(_operand(ops[1], names), _iwidth(ops[1]))
     end
 
@@ -2067,6 +2083,78 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 end
                 ret_w = _iwidth(inst)
                 return IRCall(dest, callee, call_args, call_widths, ret_w)
+            end
+        end
+
+        # BVM ADR 0020 D5 (CW-C2 chunk C): call emission on a `_lookup_callee`
+        # MISS, under the C-track `ptr_cells` gate. A `.ll` call whose callee is
+        # not a registered Julia `Function` is, in the closed-world C model,
+        # either a libc heap intrinsic or an in-module `define`d function — both
+        # carried to BVM as an `IRCall` with a `Symbol` callee (the name-only
+        # form; BVM resolves it: `_HEAP_DISPATCH` for the libc whitelist, the
+        # guard-5 function table for an in-module callee). The callee VALUE is
+        # the LAST operand (`ops[n_ops]`); it is an `LLVM.Function`. NOTE
+        # (nd45 review nit 2): the code deliberately does NOT branch on
+        # `isdeclaration` — declarations and in-module bodies both emit the
+        # same Symbol-callee IRCall, and BVM disambiguates by name. A
+        # non-whitelisted EXTERNAL (e.g. printf) is therefore NOT rejected at
+        # U15 under gate-ON; it flows to BVM and rejects at the SoftCall
+        # allowlist (still fail-loud, different site). Gate-off (the Julia
+        # paths) this whole block is
+        # skipped — a `_lookup_callee` miss falls straight through to the benign-
+        # prefix allowlist / U15 fail-loud below, byte-identically.
+        if ptr_cells && n_ops >= 1
+            callee_val = ops[n_ops]
+            if callee_val isa LLVM.Function
+                # A C `ptr` arg/return is one Int64 VM cell (ADR 0018 §A): every
+                # operand (integer OR pointer) is carried at the cell width — a
+                # ptr arg as 64, an integer arg at its own width. NOTHING is
+                # skipped here (unlike the Julia swiftcc pgcstack-skip loop
+                # above): the C closed-world model has no synthetic frame arg.
+                c_args = IROperand[]
+                c_widths = Int[]
+                for i in 1:(n_ops - 1)
+                    op = ops[i]
+                    ot = LLVM.value_type(op)
+                    if ot isa LLVM.IntegerType
+                        push!(c_args, _operand(op, names))
+                        push!(c_widths, LLVM.width(ot))
+                    elseif ot isa LLVM.PointerType
+                        # Pointer ARG = 64-bit cell-address value (ADR 0018 §A).
+                        push!(c_args, _operand(op, names))
+                        push!(c_widths, 64)
+                    else
+                        _ir_error(inst,
+                            "C call argument $(i) has unsupported type $(ot) " *
+                            "under ptr_cells; only integer and pointer (cell) " *
+                            "args are modelled (BVM ADR 0020 D5 / chunk C)")
+                    end
+                end
+                rt = LLVM.value_type(inst)
+                cn = Symbol(cname)
+                if rt isa LLVM.VoidType
+                    # D5b void CALL (`call void @free` / `@ht_put`): IRCall.dest
+                    # is mandatory (`::Symbol`) and `ret_width >= 1`, so a void
+                    # call carries the auto-named never-read `dest` (the naming
+                    # pass already assigned one — line ~207) plus a `ret_width=64`
+                    # SENTINEL. The dest is NEVER consumed: BVM routes a void
+                    # callee to `IntrinsicFree` (takes no dest) or guard-5 with
+                    # `isempty(fe.returns)` ⇒ EMPTY targets, so neither the dest
+                    # nor the sentinel width is read. 64 (not a smaller value) so
+                    # the IR-level invariant `ret_width == cell-width` holds for
+                    # every C call, void or not — a uniform shape, no special 0.
+                    return IRCall(dest, cn, c_args, c_widths, 64)
+                elseif rt isa LLVM.IntegerType
+                    return IRCall(dest, cn, c_args, c_widths, LLVM.width(rt))
+                elseif rt isa LLVM.PointerType
+                    # Pointer RETURN (`malloc` / `ht_new`) = 64-bit cell.
+                    return IRCall(dest, cn, c_args, c_widths, 64)
+                else
+                    _ir_error(inst,
+                        "C call to '$(cname)' has unsupported return type " *
+                        "$(rt) under ptr_cells; only void, integer, and pointer " *
+                        "(cell) returns are modelled (BVM ADR 0020 D5 / chunk C)")
+                end
             end
         end
 
@@ -2603,6 +2691,30 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             inner isa LLVM.IntegerType || return nothing
             n_arr = LLVM.length(elem_ty)
             return IRAlloca(dest, LLVM.width(inner), iconst(n_arr))
+        end
+        # BVM ADR 0020 D5c (CW-C2 chunk C): `alloca ptr` under the C-track gate.
+        # The C local-pointer idiom is `%t.addr = alloca ptr; store ptr %t, ptr
+        # %t.addr` — a one-cell slot holding a pointer VALUE. Without this arm
+        # the extractor returns `nothing` for the pointer-typed alloca (the
+        # silent-skip below), so the matching `store ptr`/`load ptr` (D3) would
+        # target a dest with NO prior `IRAlloca` and BVM would see a store to an
+        # unallocated cell (worklog-079 / the Bennett-haiy chunk-C assumption).
+        # Emit `IRAlloca(dest, 64, 1)` — exactly one 64-bit cell (a pointer is
+        # one Int64 VM cell, ADR 0018 §A). An `alloca ptr, i32 N` (a pointer
+        # ARRAY) carries the constant/SSA count through the same `n_elems_op`
+        # logic as the integer arm. Gate-off: a pointer-typed alloca keeps the
+        # pre-existing silent-skip (`return nothing`) — the C cell model never
+        # aliases the circuit/:heap alloca paths.
+        if ptr_cells && elem_ty isa LLVM.PointerType
+            ops = LLVM.operands(inst)
+            n_elems_op = if !isempty(ops) && ops[1] isa LLVM.ConstantInt
+                iconst(_const_int_as_int(ops[1]))
+            elseif !isempty(ops) && haskey(names, ops[1].ref)
+                ssa(names[ops[1].ref])
+            else
+                iconst(1)
+            end
+            return IRAlloca(dest, 64, n_elems_op)
         end
         elem_ty isa LLVM.IntegerType || return nothing
         elem_w = LLVM.width(elem_ty)

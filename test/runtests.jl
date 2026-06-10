@@ -379,6 +379,13 @@ runfile("test_k3ej_ircall_symbol_c_ptr_param.jl")
 # 64) via LLVM.offsetof (D4). Default (gate-off) keeps every Julia-path
 # fail-loud (U114/U16/U81) byte-identical. void-return left for chunk C.
 runfile("test_haiy_ptr_cells_store_load_gep.jl")
+# Bennett-nd45 / BVM ADR 0020 (CW-C2 chunk C) — C call emission under the
+# `ptr_cells` gate: libc + in-module call → Symbol-callee IRCall (D5a); void
+# call (sentinel dest) + void return (IRRet() void form, ret_width 0) (D5b);
+# alloca ptr → IRAlloca(_,64,1) (D5c); multi-function producer
+# extract_parsed_ir_set_from_ll → Vector{Pair{Symbol,ParsedIR}} (D6). Default
+# (gate-off) keeps every Julia-path fail-loud (U15/U114/U81) byte-identical.
+runfile("test_nd45_ptr_cells_call_emission_multifn.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message
 # + non-Bennett-authored guard (was: bare substring match that could
 # swallow unrelated Bennett fail-loud errors).

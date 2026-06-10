@@ -198,6 +198,66 @@ function extract_parsed_ir_from_ll(path::AbstractString;
 end
 
 """
+    extract_parsed_ir_set_from_ll(path::String; ptr_cells=false,
+                                  preprocess=false, passes=String[],
+                                  mem=:auto) -> Vector{Pair{Symbol,ParsedIR}}
+
+Parse a raw LLVM IR text file (`.ll`) and walk EVERY defined (non-declaration)
+function in the module, returning a `Vector{Pair{Symbol,ParsedIR}}` keyed by
+function name (BVM ADR 0020 D6, CW-C2 chunk C). This is the multi-function
+producer the BennettVM closed-world C-track consumes: the output is the exact
+input shape of BVM's multi-function `lower_vm(::Vector{<:Pair{Symbol,ParsedIR}})`
+(ADR 0019 §2). Each function is walked through the SAME single-function
+pipeline as `extract_parsed_ir_from_ll`; the per-function `ptr_cells` /
+`mem` / pass behaviour is identical.
+
+`declare`d functions (libc `malloc` / `free`, no body) are SKIPPED — their
+calls are emitted as `Symbol`-callee `IRCall`s (D5) that BVM routes through
+`_HEAP_DISPATCH`, not lowered as in-module functions. Fails loud on a module
+with zero defined functions (Rule 1).
+
+Unlike `extract_parsed_ir_from_ll`, there is no `entry_function` selector
+(every function is walked) and no `use_memory_ssa` (the MemorySSA printer is a
+single-entry probe). `ptr_cells=true` is the C-track extraction-mode gate (see
+`extract_parsed_ir_from_ll`).
+"""
+function extract_parsed_ir_set_from_ll(path::AbstractString;
+                                       preprocess::Bool=false,
+                                       passes::Vector{String}=String[],
+                                       mem::Symbol=:auto,
+                                       ptr_cells::Bool=false)
+    isfile(path) || throw(ArgumentError(
+        "ir_extract.jl: extract_parsed_ir_set_from_ll: file not found: $path"))
+
+    ir_string = read(path, String)
+
+    effective_passes = String[]
+    if preprocess
+        append!(effective_passes, DEFAULT_PREPROCESSING_PASSES)
+    end
+    append!(effective_passes, passes)
+
+    local result::Vector{Pair{Symbol,ParsedIR}}
+    LLVM.Context() do _ctx
+        mod = parse(LLVM.Module, ir_string)
+        try
+            # Mirror _extract_from_module's sret auto-canonicalisation so the
+            # set walker matches the single-function path's pass handling.
+            if !("sroa" in effective_passes) && _module_has_sret(mod)
+                prepend!(effective_passes, ["sroa", "mem2reg"])
+            end
+            if !isempty(effective_passes)
+                _run_passes!(mod, effective_passes)
+            end
+            result = _module_to_parsed_ir_set(mod; mem=mem, ptr_cells=ptr_cells)
+        finally
+            dispose(mod)
+        end
+    end
+    return result
+end
+
+"""
     extract_parsed_ir_from_bc(path::String; entry_function::AbstractString,
                               preprocess=false, passes=nothing) -> ParsedIR
 

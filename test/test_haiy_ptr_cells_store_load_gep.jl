@@ -235,71 +235,53 @@ end
     #     Runs only if the read-only reference fixture is present.
     # ============================================================
     if isfile(_HAIY_HT_LL)
-        @testset "Fixture frontier — ht_new advances PAST ptr-return to malloc" begin
-            # Gate ON: the `ptr`-return wall (chunk A frontier) is cleared
-            # (ret_width 64); the NEXT wall is the `malloc` call — chunk C
-            # (call emission, BVM ADR 0020 D5/D6). The struct GEPs in ht_new's
-            # body sit AFTER the first malloc, so they are not reached here;
-            # the struct-GEP lowering itself is verified in the D4 testset above.
-            msg = try
-                extract_parsed_ir_from_ll(_HAIY_HT_LL; entry_function="ht_new",
-                                          ptr_cells=true)
-                ""
-            catch e
-                sprint(showerror, e)
-            end
-            @test occursin("malloc", msg)          # the next wall is the malloc call
-            @test occursin("U15", msg)             # unregistered callee (chunk C)
-            @test !occursin("unsupported LLVM type", msg)  # ptr-return wall is cleared
-            @test !occursin("PointerType(ptr)", msg)       # not the return-width wall
+        # NOTE (Bennett-nd45 / chunk C): chunk B pinned these four gate-ON
+        # fixture frontiers AT the call / void walls. Chunk C's call emission
+        # (D5) ADVANCED every one of them to FULL extraction — so these pins now
+        # assert the chunk-C-correct frontier (no throw). The chunk-B D3/D4
+        # message pins (the gate-off rejects + the gate-on shape tests above)
+        # are untouched. The dedicated, exhaustive chunk-C fixture coverage
+        # lives in `test_nd45_ptr_cells_call_emission_multifn.jl`.
+        @testset "Fixture frontier — ht_new now extracts FULLY (chunk C)" begin
+            # Gate ON: ptr-return cleared (chunk A/B), malloc call now emitted
+            # (chunk C D5a) — ht_new extracts end-to-end, no wall.
+            pir = extract_parsed_ir_from_ll(_HAIY_HT_LL; entry_function="ht_new",
+                                            ptr_cells=true)
+            @test pir.ret_width == 64              # ptr-return cell
+            insts = reduce(vcat, [b.instructions for b in pir.blocks];
+                           init=Bennett.IRInst[])
+            @test any(i -> i isa Bennett.IRCall && i.callee === :malloc, insts)
         end
 
-        @testset "Fixture frontier — ht_get advances PAST store-ptr + GEP to ht_hash" begin
-            # Gate ON: the `store ptr` wall (chunk A frontier) AND the two-index
-            # struct GEP (`%cap = getelementptr %struct.ht, ptr %0, i32 0, i32 2`)
-            # are both cleared; the NEXT wall is the in-module `ht_hash` call —
-            # chunk C (call emission).
-            msg = try
-                extract_parsed_ir_from_ll(_HAIY_HT_LL; entry_function="ht_get",
-                                          ptr_cells=true)
-                ""
-            catch e
-                sprint(showerror, e)
-            end
-            @test occursin("ht_hash", msg)         # the next wall is the ht_hash call
-            @test occursin("U15", msg)             # unregistered callee (chunk C)
-            @test !occursin("store of non-integer type", msg)  # store-ptr cleared
-            @test !occursin("U16", msg)            # struct GEP cleared
+        @testset "Fixture frontier — ht_get now extracts FULLY (chunk C)" begin
+            # Gate ON: store-ptr + struct GEP cleared (chunk B); in-module
+            # ht_hash call now emitted (chunk C D5a) — full extraction.
+            pir = extract_parsed_ir_from_ll(_HAIY_HT_LL; entry_function="ht_get",
+                                            ptr_cells=true)
+            insts = reduce(vcat, [b.instructions for b in pir.blocks];
+                           init=Bennett.IRInst[])
+            @test any(i -> i isa Bennett.IRCall && i.callee === :ht_hash, insts)
         end
 
-        @testset "Fixture frontier — ht_del advances PAST store-ptr to ht_hash" begin
-            msg = try
-                extract_parsed_ir_from_ll(_HAIY_HT_LL; entry_function="ht_del",
-                                          ptr_cells=true)
-                ""
-            catch e
-                sprint(showerror, e)
-            end
-            @test occursin("ht_hash", msg)
-            @test occursin("U15", msg)
-            @test !occursin("store of non-integer type", msg)
+        @testset "Fixture frontier — ht_del now extracts FULLY (chunk C)" begin
+            pir = extract_parsed_ir_from_ll(_HAIY_HT_LL; entry_function="ht_del",
+                                            ptr_cells=true)
+            insts = reduce(vcat, [b.instructions for b in pir.blocks];
+                           init=Bennett.IRInst[])
+            @test any(i -> i isa Bennett.IRCall && i.callee === :ht_hash, insts)
+            @test pir.ret_width == 64
         end
 
-        @testset "Fixture frontier — ht_free / ht_put stay at VoidType (chunk C)" begin
-            # `void` return is left for chunk C (D5) — it entangles with the
-            # IRRet shape (op::IROperand + width >= 1). So these stay at the
-            # existing VoidType (Bennett-dq8l / U81) return-width wall EVEN with
-            # the gate on. Documented so chunk C knows this is the real frontier.
+        @testset "Fixture frontier — ht_free / ht_put now extract FULLY (chunk C)" begin
+            # `void` return + void calls are chunk C's D5b: `ret void` → the
+            # IRRet() void form (ret_width 0); `call void @free`/`@ht_put` → a
+            # Symbol-callee IRCall with a sentinel dest. Both functions now
+            # extract end-to-end with no VoidType wall.
             for fn in ("ht_free", "ht_put")
-                msg = try
-                    extract_parsed_ir_from_ll(_HAIY_HT_LL; entry_function=fn,
-                                              ptr_cells=true)
-                    ""
-                catch e
-                    sprint(showerror, e)
-                end
-                @test occursin("VoidType", msg)
-                @test occursin("dq8l", msg)
+                pir = extract_parsed_ir_from_ll(_HAIY_HT_LL; entry_function=fn,
+                                                ptr_cells=true)
+                @test pir.ret_width == 0            # void function
+                @test pir.ret_elem_widths == Int[]
             end
         end
 

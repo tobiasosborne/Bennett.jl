@@ -91,7 +91,8 @@ _ssa_operands(inst::IRInsertValue) = Symbol[_ssa_names(inst.agg)..., _ssa_names(
 _ssa_operands(inst::IRExtractValue) = Symbol[_ssa_names(inst.agg)...]
 _ssa_operands(inst::IRCall)        = Symbol[n for a in inst.args for n in _ssa_names(a)]
 _ssa_operands(inst::IRPhi)         = Symbol[n for (op, _) in inst.incoming for n in _ssa_names(op)]
-_ssa_operands(inst::IRRet)         = Symbol[_ssa_names(inst.op)...]
+_ssa_operands(inst::IRRet)         = inst.op === nothing ? Symbol[] :
+                                     Symbol[_ssa_names(inst.op)...]  # void form (nd45 review nit 1): total, not MethodError
 _ssa_operands(inst::IRBranch)      = inst.cond === nothing ? Symbol[] : Symbol[_ssa_names(inst.cond)...]
 _ssa_operands(inst::IRPtrOffset)   = Symbol[_ssa_names(inst.base)...]
 _ssa_operands(inst::IRVarGEP)      = Symbol[_ssa_names(inst.base)..., _ssa_names(inst.index)...]

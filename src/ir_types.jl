@@ -102,14 +102,32 @@ struct IRSelect <: IRInst
     end
 end
 
+# Bennett-nd45 (BVM ADR 0020 D5b, CW-C2 chunk C): `IRRet` gains a VOID form.
+# A C `ret void` (`ht_free`/`ht_put`) carries no value and no width — but the
+# value-bearing constructor below MUST keep rejecting `width=0` (pinned by
+# `test_k7al_ir_constructor_asserts.jl`: `@test_throws "width=0" IRRet(a, 0)`).
+# So the void form is a SEPARATE shape: `op === nothing` + `width == 0`, built
+# ONLY by the zero-arg `IRRet()` constructor. The `op` field widens to
+# `Union{IROperand,Nothing}`; the value-bearing constructor still takes a
+# concrete `::IROperand` and still asserts `width >= 1`, so EVERY existing
+# `IRRet(op, w)` call is byte-identical (same dispatch, same validation, same
+# errors). BVM consumes the void form as `EndInstruction(routine, Symbol[])`
+# (empty returns) and `_declared_returns` ⇒ `Symbol[]` — the C void-callee
+# shape (empty `CallEnter.targets`). The void form is reachable ONLY under the
+# C-track `ptr_cells` gate (instructions.jl ret arm); the Julia paths keep
+# emitting value-bearing IRRets, and `ret void` on those paths still hits the
+# U81 VoidType wall in the return-width derivation UPSTREAM.
 struct IRRet <: IRInst
-    op::IROperand
+    op::Union{IROperand,Nothing}
     width::Int
     function IRRet(op::IROperand, width::Int)
         width >= 1 ||
             throw(ArgumentError("IRRet: width=$width must be >= 1"))
         new(op, width)
     end
+    # Void-return form: no operand, width 0 (the C `ret void` shape). NOT
+    # reachable via the `IRRet(op, 0)` path (that still throws width=0).
+    IRRet() = new(nothing, 0)
 end
 
 struct IRInsertValue <: IRInst
