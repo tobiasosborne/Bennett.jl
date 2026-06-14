@@ -386,6 +386,12 @@ runfile("test_haiy_ptr_cells_store_load_gep.jl")
 # extract_parsed_ir_set_from_ll → Vector{Pair{Symbol,ParsedIR}} (D6). Default
 # (gate-off) keeps every Julia-path fail-loud (U15/U114/U81) byte-identical.
 runfile("test_nd45_ptr_cells_call_emission_multifn.jl")
+# Bennett-CW-D1a / bennettvm-416r.11 chunk a — transitive_callees typed
+# call-graph walker (src/extract/callgraph.jl). Walks Julia inference's
+# optimized typed code from a root (f, argtypes), harvests :invoke edges, and
+# transitively closes the callee set (root excluded, edges@optimize=true per the
+# corrected ADR-0021 Decision-1). The path to SC9 Case B (reversible Dict).
+runfile("test_d1a_transitive_callees.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message
 # + non-Bennett-authored guard (was: bare substring match that could
 # swallow unrelated Bennett fail-loud errors).
