@@ -7,6 +7,7 @@
 include("extract/entry.jl")         # extract_ir / extract_parsed_ir / from_ll / from_bc / _run_passes!
 include("extract/callees.jl")       # known callee registry + cache + _LLVMRef + _auto_name
 include("extract/callgraph.jl")     # CW-D1a: transitive_callees typed call-graph walker (SC9 Case B path)
+include("extract/julia_set.jl")     # CW-D1b: extract_parsed_ir_set_from_julia closed-world Julia multi-IR producer
 include("extract/errors.jl")        # _ir_error / _ir_error_msg + _LLVM_OPCODE_NAMES
 include("extract/sret.jl")          # sret detection + writes collection + synthesis (Bennett-dv1z)
 include("extract/module_walk.jl")   # _find_entry_function / _module_to_parsed_ir / _extract_const_globals / _expand_switches

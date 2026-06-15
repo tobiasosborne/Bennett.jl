@@ -66,6 +66,8 @@ export reversible_compile, simulate, simulate!, diagnose_nonzero, extract_ir, ex
 # Bennett-u71l / U161: bundled options struct; single source of defaults.
 export CompileOptions
 export extract_parsed_ir_from_ll, extract_parsed_ir_from_bc, extract_parsed_ir_set_from_ll
+# Bennett-CW-D1b / bennettvm-416r.11 chunk b: closed-world Julia multi-IR producer.
+export extract_parsed_ir_set_from_julia
 export PersistentMapImpl, AbstractPersistentMap, verify_pmap_correctness, verify_pmap_persistence_invariant, pmap_demo_oracle, LINEAR_SCAN_IMPL
 # Bennett-uoem / U54: OKASAKI_IMPL + Okasaki API relocated to
 # src/persistent/research/okasaki_rbt.jl (2026-04-25).

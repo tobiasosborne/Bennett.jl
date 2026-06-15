@@ -392,6 +392,13 @@ runfile("test_nd45_ptr_cells_call_emission_multifn.jl")
 # transitively closes the callee set (root excluded, edges@optimize=true per the
 # corrected ADR-0021 Decision-1). The path to SC9 Case B (reversible Dict).
 runfile("test_d1a_transitive_callees.jl")
+# Bennett-CW-D1b / bennettvm-416r.11 chunk b — extract_parsed_ir_set_from_julia
+# closed-world Julia multi-IR producer (src/extract/julia_set.jl). Walks
+# transitive_callees, extracts root+helper bodies, keys by drift-free canonical
+# Symbols, fails loud on any IRCall escaping the closed world. fdict_d1b is an
+# HONEST tripwire (Gate E): bodies hit the U81/U14/dv1z walls (the accepted
+# closed-world runway, cleared by CW-D2), so >=4 is @test_broken not faked green.
+runfile("test_d1b_julia_set.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message
 # + non-Bennett-authored guard (was: bare substring match that could
 # swallow unrelated Bennett fail-loud errors).
