@@ -584,3 +584,31 @@ function lower_insertvalue!(gates, wa, vw, inst::IRInsertValue)
     vw[inst.dest] = result
 end
 
+# Bennett-dv1z: lower an IRInsertBits node — splice a `val_width`-bit value
+# into a `total_width`-bit packed aggregate at an arbitrary BIT offset. Same
+# gate class as `lower_insertvalue!` (CNOT aliasing into a fresh result group),
+# so it introduces NO new gate kinds and cannot perturb the gate-count
+# baselines of existing (homogeneous / non-sret) functions, which never emit an
+# IRInsertBits. The only difference from IRInsertValue is that the spliced span
+# is `(bit_offset, bit_offset+val_width]` (an arbitrary bit window) rather than
+# `index * elem_width` (a fixed-width-element slot).
+function lower_insertbits!(gates, wa, vw, inst::IRInsertBits)
+    val_wires = resolve!(gates, wa, vw, inst.val, inst.val_width)
+
+    # Resolve or create the aggregate. ZERO_AGG ⇒ a fresh all-zero group.
+    agg_wires = inst.agg === ZERO_AGG ?
+        allocate!(wa, inst.total_width) :
+        resolve!(gates, wa, vw, inst.agg, inst.total_width)
+
+    result = allocate!(wa, inst.total_width)
+    for i in 1:inst.total_width
+        if i > inst.bit_offset && i <= inst.bit_offset + inst.val_width
+            push!(gates, CNOTGate(val_wires[i - inst.bit_offset], result[i]))
+        else
+            push!(gates, CNOTGate(agg_wires[i], result[i]))
+        end
+    end
+
+    vw[inst.dest] = result
+end
+

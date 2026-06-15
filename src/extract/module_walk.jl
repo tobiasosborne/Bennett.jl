@@ -118,8 +118,17 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
     # Return type derivation — sret overrides the void return with the
     # aggregate described by the sret attribute.
     if sret_info !== nothing
-        ret_width       = sret_info.n_elems * sret_info.elem_width
-        ret_elem_widths = [sret_info.elem_width for _ in 1:sret_info.n_elems]
+        if sret_info.is_hetero
+            # Bennett-dv1z: heterogeneous bits-struct. The return is the PACKED
+            # bit width (sum of field widths, padding dropped) — NEVER the padded
+            # ABI size — and per-field widths in field order.
+            fields          = sret_info.fields::Vector{Tuple{Int,Int}}
+            ret_elem_widths = [w for (_, w) in fields]
+            ret_width       = sum(ret_elem_widths)
+        else
+            ret_width       = sret_info.n_elems * sret_info.elem_width
+            ret_elem_widths = [sret_info.elem_width for _ in 1:sret_info.n_elems]
+        end
     else
         ft = LLVM.function_type(func)
         rt = LLVM.return_type(ft)
@@ -359,8 +368,12 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
                 # Bennett-0c8o: before synthesising, confirm every pending
                 # vector sret store was resolved during pass 2.
                 _assert_no_pending_vec_stores!(sret_writes)
-                chain, ret_inst = _synthesize_sret_chain(
-                    sret_info, sret_writes.slot_values, counter)
+                # Bennett-dv1z: heterogeneous bits-struct returns synthesise an
+                # IRInsertBits chain (arbitrary-bit-offset packing); homogeneous
+                # `[N x iM]` returns keep the IRInsertValue chain VERBATIM.
+                chain, ret_inst = sret_info.is_hetero ?
+                    _synthesize_sret_bits(sret_info, sret_writes.slot_values, counter) :
+                    _synthesize_sret_chain(sret_info, sret_writes.slot_values, counter)
                 append!(insts, chain)
                 terminator = ret_inst
                 continue

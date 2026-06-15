@@ -24,19 +24,38 @@
 """
     SretInfo
 
-Detected sret parameter shape for a single function. `agg_type` is the
-LLVM `[N x iM]` array type; `param_ref` is the raw LLVMValueRef of the
-sret parameter (used to identify direct sret-pointer references in the
-function body). `agg_byte_size == n_elems * elem_byte_size`.
+Detected sret parameter shape for a single function. `param_ref` is the raw
+LLVMValueRef of the sret parameter (used to identify direct sret-pointer
+references in the function body).
+
+Two shapes (Bennett-dv1z extended the original homogeneous-only struct):
+
+  * **Homogeneous** (`is_hetero == false`): the sret pointee is an LLVM
+    `[N x iM]` array. `agg_type` is the `ArrayType`, `n_elems`/`elem_width`/
+    `elem_byte_size` describe the uniform element layout, and
+    `agg_byte_size == n_elems * elem_byte_size`. `fields === nothing`.
+
+  * **Heterogeneous** (`is_hetero == true`, Bennett-dv1z): the sret pointee is
+    an LLVM `StructType` of fixed-width integer fields of possibly DIFFERING
+    widths (e.g. `{i64, i8}`). `agg_type` is the `StructType`, and `fields` is
+    a `Vector{Tuple{Int,Int}}` of `(byte_offset, width_bits)` per field, in
+    field order, derived from the LLVM datalayout (`LLVMOffsetOfElement`).
+    `agg_byte_size` is the padded ABI size (`LLVMSizeOfType`) used ONLY for
+    GEP bounds-checking — NEVER for the return width, which is `sum(field
+    widths)` (the packed bit width, padding dropped). `n_elems == length(fields)`;
+    `elem_width`/`elem_byte_size` are set to 0 (meaningless for hetero — any
+    code reading them on the hetero path is a bug).
 """
 struct SretInfo
     param_index::Int
     param_ref::_LLVMRef
-    agg_type::LLVM.ArrayType
+    agg_type::LLVM.LLVMType
     n_elems::Int
     elem_width::Int
     elem_byte_size::Int
     agg_byte_size::Int
+    is_hetero::Bool
+    fields::Union{Nothing,Vector{Tuple{Int,Int}}}  # per-field (byte_offset, width_bits)
 end
 
 """
@@ -48,9 +67,15 @@ pre-fix behaviour, preserving all existing gate-count baselines.
 
 Errors (fail-fast per CLAUDE.md rule 1):
   * multiple sret parameters (LangRef forbids this)
-  * sret pointee is not `[N x iM]` (heterogeneous struct unsupported — MVP scope)
-  * sret element is not an integer type
-  * sret element width is not in {8, 16, 32, 64}
+  * sret pointee is neither `[N x iM]` nor a fixed-width-integer struct
+  * sret array element / struct field is not an integer type
+  * sret element/field width is not in {8, 16, 32, 64}
+
+Bennett-dv1z extended the detection to a 3-way dispatch on the pointee type:
+an `ArrayType` is the EXISTING homogeneous arm (byte-identical); a `StructType`
+of fixed-width integer fields is the NEW heterogeneous arm (`_sret_struct_fields`);
+anything else still rejects loud (the `sret pointee` substring is pinned by
+`test_land_ptrfield_struct.jl`).
 """
 function _detect_sret(func::LLVM.Function)::Union{Nothing, SretInfo}
     kind_sret = LLVM.API.LLVMGetEnumAttributeKindForName("sret", 4)
@@ -65,24 +90,78 @@ function _detect_sret(func::LLVM.Function)::Union{Nothing, SretInfo}
                   "$(found.param_index) and $i"))
         end
         ty = LLVM.LLVMType(LLVM.API.LLVMGetTypeAttributeValue(attr))
-        ty isa LLVM.ArrayType || error(
-            "ir_extract.jl: sret pointee is $ty in @$fname; only [N x iM] " *
-            "aggregates are supported (heterogeneous struct returns like " *
-            "Tuple{UInt32,UInt64} are not yet supported — see Bennett-dv1z " *
-            "MVP scope)")
-        et = LLVM.eltype(ty)
-        et isa LLVM.IntegerType || error(
-            "ir_extract.jl: sret aggregate element type $et in @$fname is not " *
-            "an integer; float/pointer sret aggregates are not supported")
-        w = LLVM.width(et)
-        w ∈ (8, 16, 32, 64) || error(
-            "ir_extract.jl: sret element width $w in @$fname is not in " *
-            "{8,16,32,64}; got aggregate $ty")
-        n = LLVM.length(ty)
-        elem_bytes = w ÷ 8
-        found = SretInfo(i, p.ref, ty, n, w, elem_bytes, n * elem_bytes)
+        if ty isa LLVM.ArrayType
+            # ---- Homogeneous arm (pre-dv1z, VERBATIM) ----
+            et = LLVM.eltype(ty)
+            et isa LLVM.IntegerType || error(
+                "ir_extract.jl: sret aggregate element type $et in @$fname is not " *
+                "an integer; float/pointer sret aggregates are not supported")
+            w = LLVM.width(et)
+            w ∈ (8, 16, 32, 64) || error(
+                "ir_extract.jl: sret element width $w in @$fname is not in " *
+                "{8,16,32,64}; got aggregate $ty")
+            n = LLVM.length(ty)
+            elem_bytes = w ÷ 8
+            found = SretInfo(i, p.ref, ty, n, w, elem_bytes, n * elem_bytes,
+                             false, nothing)
+        elseif ty isa LLVM.StructType
+            # ---- Heterogeneous arm (Bennett-dv1z, NEW) ----
+            fields, agg_bytes = _sret_struct_fields(ty, func)
+            found = SretInfo(i, p.ref, ty, length(fields), 0, 0, agg_bytes,
+                             true, fields)
+        else
+            error(
+                "ir_extract.jl: sret pointee is $ty in @$fname; only [N x iM] " *
+                "arrays and fixed-width integer bits-structs (e.g. {i64,i8}) " *
+                "are supported (Bennett-dv1z)")
+        end
     end
     return found
+end
+
+"""
+    _sret_struct_fields(st, func) -> (Vector{Tuple{Int,Int}}, Int)
+
+Bennett-dv1z: extract the per-field layout of a heterogeneous integer
+bits-struct sret pointee. Returns `(fields, agg_byte_size)` where `fields` is a
+`Vector{(byte_offset, width_bits)}` in field order (byte offset from the LLVM
+datalayout via `LLVMOffsetOfElement`, NEVER IR-text parsing or `index * width`
+— the fields are NOT contiguous when padding is present) and `agg_byte_size` is
+the padded ABI size (`LLVMSizeOfType`).
+
+Rejects loud (CLAUDE.md §1) on:
+  * packed structs (different layout rules — out of scope)
+  * any non-`IntegerType` field (pointer / float / nested struct / vector)
+  * any integer field whose width ∉ {8, 16, 32, 64}
+"""
+function _sret_struct_fields(st::LLVM.StructType, func::LLVM.Function)
+    fname = LLVM.name(func)
+    LLVM.ispacked(st) && error(
+        "ir_extract.jl: sret pointee $st in @$fname is a packed struct; only " *
+        "unpacked fixed-width integer bits-struct fields are supported " *
+        "(Bennett-dv1z)")
+    mod = LLVM.parent(func)
+    dl = LLVM.datalayout(mod)
+    elem_tys = LLVM.elements(st)
+    isempty(elem_tys) && error(
+        "ir_extract.jl: sret pointee $st in @$fname is an empty struct; only " *
+        "fixed-width integer bits-struct fields are supported (Bennett-dv1z)")
+    fields = Tuple{Int,Int}[]
+    for (k, fty) in enumerate(elem_tys)
+        fty isa LLVM.IntegerType || error(
+            "ir_extract.jl: sret struct field $(k-1) has type $fty in @$fname; " *
+            "only fixed-width integer bits-struct fields are supported " *
+            "(pointer/float/nested-struct/vector fields are rejected — Bennett-dv1z)")
+        w = LLVM.width(fty)
+        w ∈ (8, 16, 32, 64) || error(
+            "ir_extract.jl: sret struct field $(k-1) has width $w in @$fname, " *
+            "not in {8,16,32,64}; only fixed-width integer bits-struct fields " *
+            "are supported (Bennett-dv1z)")
+        off = Int(LLVM.offsetof(dl, st, k - 1))
+        push!(fields, (off, Int(w)))
+    end
+    agg_bytes = Int(LLVM.sizeof(dl, st))
+    return (fields, agg_bytes)
 end
 
 """
@@ -186,7 +265,15 @@ function _try_handle_sret_gep!(inst::LLVM.Instruction, sret_ref::_LLVMRef,
     add_bytes = if src_ty isa LLVM.IntegerType && LLVM.width(src_ty) == 8
         _const_int_as_int(idx)         # byte-indexed GEP (Julia default)
     elseif src_ty === sret_info.agg_type
-        _const_int_as_int(idx) * eb    # typed GEP on [N x iM]
+        # Bennett-dv1z (hostile-review SF-1): the typed-element GEP strides by
+        # `eb` (elem_byte_size), which is 0/meaningless on the heterogeneous
+        # arm — a typed whole-struct GEP off a hetero sret would SILENTLY compute
+        # offset 0 (§1 forbids silent-wrong-arithmetic). Hetero structs only ever
+        # see i8 byte-indexed GEPs (opaque-pointer Julia); reject the typed form.
+        sret_info.is_hetero && _ir_error(inst,
+            "typed-element GEP (source $src_ty) off a heterogeneous-struct sret " *
+            "is unsupported — only i8 byte-indexed GEPs (Bennett-dv1z)")
+        _const_int_as_int(idx) * eb    # typed GEP on [N x iM] (homogeneous only)
     else
         _ir_error(inst,
             "sret GEP source element type $src_ty; expected i8 " *
@@ -242,26 +329,55 @@ function _try_handle_sret_vector_store!(inst::LLVM.Instruction, byte_off::Int,
 end
 
 # Scalar integer store into an sret GEP.
+#
+# Bennett-dv1z: the slot ↦ field resolution differs by aggregate kind:
+#   * homogeneous `[N x iM]`: `slot = byte_off ÷ eb` (uniform element stride);
+#   * heterogeneous struct:   `slot = findfirst(f -> f[1] == byte_off, fields)`
+#     (an EXACT match against the per-field byte offset from the datalayout —
+#     NEVER `byte_off ÷ eb`, because hetero fields have differing widths and
+#     padding, so byte offset is not `slot * eb`). A store whose byte offset
+#     hits no field exactly (padding byte, misalignment, partial-field write)
+#     is rejected loud.
 function _try_handle_sret_scalar_store!(inst::LLVM.Instruction, byte_off::Int,
                                          val::LLVM.Value, ew::Int, eb::Int, n::Int,
                                          slot_values::Dict{Int, IROperand},
                                          names::Dict{_LLVMRef, Symbol},
-                                         suppressed::Set{_LLVMRef})::Bool
+                                         suppressed::Set{_LLVMRef},
+                                         sret_info::SretInfo)::Bool
     vt = LLVM.value_type(val)
     vt isa LLVM.IntegerType || _ir_error(inst,
         "sret store at byte offset $byte_off has non-integer value " *
         "type $vt; only integer stores are supported")
     sw = LLVM.width(vt)
-    sw == ew || _ir_error(inst,
-        "sret store at byte offset $byte_off has value width $sw, " *
-        "but aggregate element width is $ew (partial-element writes " *
-        "are not supported)")
-    (byte_off % eb == 0) || _ir_error(inst,
-        "sret store at byte offset $byte_off is not aligned to " *
-        "element size $eb (partial-element writes are not supported)")
-    slot = byte_off ÷ eb
-    (0 <= slot < n) || _ir_error(inst,
-        "sret store slot $slot is out of range [0, $n)")
+
+    local slot::Int
+    if sret_info.is_hetero
+        fields = sret_info.fields::Vector{Tuple{Int,Int}}
+        fidx = findfirst(f -> f[1] == byte_off, fields)
+        fidx === nothing && _ir_error(inst,
+            "sret store at byte offset $byte_off matches no field in " *
+            "heterogeneous bits-struct (field offsets: " *
+            "$([f[1] for f in fields])); padding-byte / misaligned / " *
+            "partial-field writes are not supported (Bennett-dv1z)")
+        fw = fields[fidx][2]
+        sw == fw || _ir_error(inst,
+            "sret store at byte offset $byte_off has value width $sw, but " *
+            "field $(fidx-1) width is $fw (partial-field writes are not " *
+            "supported — Bennett-dv1z)")
+        slot = fidx - 1
+    else
+        sw == ew || _ir_error(inst,
+            "sret store at byte offset $byte_off has value width $sw, " *
+            "but aggregate element width is $ew (partial-element writes " *
+            "are not supported)")
+        (byte_off % eb == 0) || _ir_error(inst,
+            "sret store at byte offset $byte_off is not aligned to " *
+            "element size $eb (partial-element writes are not supported)")
+        slot = byte_off ÷ eb
+        (0 <= slot < n) || _ir_error(inst,
+            "sret store slot $slot is out of range [0, $n)")
+    end
+
     if haskey(slot_values, slot)
         prior = slot_values[slot]
         if prior isa PendingVecLane
@@ -338,11 +454,19 @@ function _collect_sret_writes(func::LLVM.Function, sret_info::SretInfo,
                     nothing
                 end
                 if byte_off !== nothing
-                    _try_handle_sret_vector_store!(inst, byte_off, val, ew, eb, n,
-                                                    slot_values, pending_vec,
-                                                    pending_val_refs, suppressed) && continue
+                    # Bennett-dv1z: the SLP vector-store path is homogeneous-only
+                    # (it presumes a uniform lane width == element width). A
+                    # heterogeneous bits-struct never produces a single vector
+                    # store across differing field widths; gate it off so the
+                    # hetero path can't divide by the zeroed `eb`.
+                    if !sret_info.is_hetero
+                        _try_handle_sret_vector_store!(inst, byte_off, val, ew, eb, n,
+                                                        slot_values, pending_vec,
+                                                        pending_val_refs, suppressed) && continue
+                    end
                     _try_handle_sret_scalar_store!(inst, byte_off, val, ew, eb, n,
-                                                    slot_values, names, suppressed) && continue
+                                                    slot_values, names, suppressed,
+                                                    sret_info) && continue
                 end
             end
         end
@@ -440,6 +564,41 @@ function _synthesize_sret_chain(sret_info::SretInfo, slot_values::Dict{Int, IROp
         last_dest = dest
     end
     ret_inst = IRRet(ssa(last_dest), n * ew)
+    return (chain, ret_inst)
+end
+
+"""
+    _synthesize_sret_bits(sret_info, slot_values, counter) -> (Vector{IRInst}, IRRet)
+
+Bennett-dv1z: build an `IRInsertBits` chain that packs each heterogeneous
+bits-struct field into a `W = sum(field widths)`-bit value, terminated by an
+`IRRet(_, W)`. The fields are packed at CONTIGUOUS bit offsets IN FIELD ORDER
+(`bit += w` after each field) — i.e. field 0 occupies the lowest bits, field 1
+the next, and so on. The LLVM byte offsets / ABI padding are deliberately
+DROPPED: the packed value is `W` bits wide (NOT the padded ABI byte size), and
+the downstream `_read_output` consumes `ret_elem_widths` contiguously in the
+same order, so element `k` reads back exactly field `k` (field0-low/field1-high).
+
+`slot_values[k]` is the value stored to field `k` (0-based), populated by
+`_try_handle_sret_scalar_store!` using the exact-byte-offset → field-index map.
+"""
+function _synthesize_sret_bits(sret_info::SretInfo, slot_values::Dict{Int, IROperand},
+                               counter::Ref{Int})
+    fields = sret_info.fields::Vector{Tuple{Int,Int}}
+    W = sum(w for (_, w) in fields)
+    chain = IRInst[]
+    agg_op = ZERO_AGG
+    last_dest = Symbol("")
+    bit = 0
+    for k in 0:(length(fields) - 1)
+        w = fields[k + 1][2]
+        dest = _auto_name(counter)
+        push!(chain, IRInsertBits(dest, agg_op, slot_values[k], bit, w, W))
+        agg_op = ssa(dest)
+        last_dest = dest
+        bit += w
+    end
+    ret_inst = IRRet(ssa(last_dest), W)
     return (chain, ret_inst)
 end
 

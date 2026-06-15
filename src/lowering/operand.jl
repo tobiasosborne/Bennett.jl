@@ -88,6 +88,7 @@ _ssa_operands(inst::IRICmp)        = Symbol[_ssa_names(inst.op1)..., _ssa_names(
 _ssa_operands(inst::IRSelect)      = Symbol[_ssa_names(inst.cond)..., _ssa_names(inst.op1)..., _ssa_names(inst.op2)...]
 _ssa_operands(inst::IRCast)        = Symbol[_ssa_names(inst.operand)...]
 _ssa_operands(inst::IRInsertValue) = Symbol[_ssa_names(inst.agg)..., _ssa_names(inst.val)...]
+_ssa_operands(inst::IRInsertBits)  = Symbol[_ssa_names(inst.agg)..., _ssa_names(inst.val)...]
 _ssa_operands(inst::IRExtractValue) = Symbol[_ssa_names(inst.agg)...]
 _ssa_operands(inst::IRCall)        = Symbol[n for a in inst.args for n in _ssa_names(a)]
 _ssa_operands(inst::IRPhi)         = Symbol[n for (op, _) in inst.incoming for n in _ssa_names(op)]

@@ -118,10 +118,24 @@ _match(result::Tuple, expected::Tuple) =
         @test gate_count(circuit).total == 66
     end
 
-    @testset "error: struct-typed sret (heterogeneous tuple)" begin
-        # Tuple{UInt32, UInt64} produces sret({i32, i64}) — not [N x iM]
+    @testset "heterogeneous bits-struct sret (Bennett-dv1z)" begin
+        # Tuple{UInt32, UInt64} produces sret({i32, i64}) — a heterogeneous
+        # bits-struct, NOT [N x iM]. Pre-dv1z this rejected loud; dv1z now
+        # compiles it (see test_dv1z_hetero_sret.jl for the full coverage).
         f(a::UInt32, b::UInt64) = (a, b)
-        @test_throws ErrorException reversible_compile(f, UInt32, UInt64)
+        pir = extract_parsed_ir(f, Tuple{UInt32, UInt64})
+        @test pir.ret_elem_widths == [32, 64]
+        @test pir.ret_width == 96          # packed, NOT the padded ABI size
+        circuit = reversible_compile(f, UInt32, UInt64)
+        @test verify_reversibility(circuit)
+        for (a, b) in [
+                (UInt32(0),          UInt64(0)),
+                (UInt32(5),          UInt64(7)),
+                (typemax(UInt32),    typemax(UInt64)),
+                (UInt32(0xCAFEBABE), UInt64(0xDEADBEEF_12345678)),
+            ]
+            @test _match(simulate(circuit, (a, b)), (a, b))
+        end
     end
 
     @testset "optimize=false memcpy form auto-canonicalised (Bennett-uyf9)" begin

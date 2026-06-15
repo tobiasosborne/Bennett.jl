@@ -124,14 +124,38 @@ using Bennett
         end
     end
 
-    @testset "ir_extract: heterogeneous Tuple sret unsupported" begin
-        # Only [N x iM] homogeneous aggregate sret is supported today;
-        # struct-of-different-widths must fail loudly per CLAUDE.md §1.
+    @testset "ir_extract: heterogeneous integer Tuple sret now supported (Bennett-dv1z)" begin
+        # Pre-dv1z this rejected with "sret pointee" — only [N x iM]
+        # homogeneous aggregate sret was supported. dv1z added the
+        # heterogeneous integer bits-struct arm, so Tuple{Int32,Int64}
+        # (sret({i32,i64})) now compiles. Full coverage lives in
+        # test_dv1z_hetero_sret.jl; this is just the error-path flip.
         function hetero(x::Int32, y::Int64)::Tuple{Int32, Int64}
             (x, y)
         end
-        @test_throws "sret pointee" begin
-            reversible_compile(hetero, Int32, Int64)
+        circuit = reversible_compile(hetero, Int32, Int64)
+        @test verify_reversibility(circuit)
+    end
+
+    @testset "ir_extract: non-integer sret struct field still rejects loud" begin
+        # Preserve error-path coverage that the flip above removed: a struct
+        # sret field that is NOT a fixed-width integer (here a pointer field)
+        # must still fail loudly with the dv1z breadcrumb (CLAUDE.md §1).
+        dl = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+        path = tempname() * ".ll"
+        open(path, "w") do io
+            write(io, "target datalayout = \"$dl\"\n\n")
+            write(io, """
+            define void @sret_ptr_field(ptr noalias nocapture sret({ i64, ptr }) align 8 %ret, i64 %x) {
+              store i64 %x, ptr %ret, align 8
+              %g = getelementptr inbounds i8, ptr %ret, i64 8
+              store ptr null, ptr %g, align 8
+              ret void
+            }
+            """)
+        end
+        @test_throws "only fixed-width integer bits-struct fields" begin
+            Bennett.extract_parsed_ir_from_ll(path; entry_function="sret_ptr_field")
         end
     end
 end

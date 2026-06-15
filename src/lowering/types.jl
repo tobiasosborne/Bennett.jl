@@ -274,6 +274,10 @@ _lower_inst!(ctx::LoweringCtx, inst::IRExtractValue, ::Symbol) =
 _lower_inst!(ctx::LoweringCtx, inst::IRInsertValue, ::Symbol) =
     lower_insertvalue!(ctx.gates, ctx.wa, ctx.vw, inst)
 
+# Bennett-dv1z: heterogeneous bits-struct insert (sret aggregate-pack path).
+_lower_inst!(ctx::LoweringCtx, inst::IRInsertBits, ::Symbol) =
+    lower_insertbits!(ctx.gates, ctx.wa, ctx.vw, inst)
+
 _lower_inst!(ctx::LoweringCtx, inst::IRCall, ::Symbol) =
     lower_call!(ctx.gates, ctx.wa, ctx.vw, inst; compact=ctx.compact_calls,
                 loop_guards=ctx.loop_guards)   # Bennett-s0tn

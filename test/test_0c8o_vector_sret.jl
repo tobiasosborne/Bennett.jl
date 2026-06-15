@@ -151,9 +151,22 @@ using Bennett: IRInsertValue, IRRet
         @test verify_reversibility(c8)
     end
 
-    @testset "regression: heterogeneous sret still rejected" begin
+    @testset "heterogeneous sret now supported (Bennett-dv1z)" begin
+        # Pre-dv1z this rejected (only homogeneous [N x iM] supported). dv1z
+        # added the heterogeneous integer bits-struct arm — sret({i32,i64})
+        # now compiles. Full coverage in test_dv1z_hetero_sret.jl.
         f_het(a::UInt32, b::UInt64) = (a, b)
-        @test_throws ErrorException reversible_compile(f_het, UInt32, UInt64)
+        pir = extract_parsed_ir(f_het, Tuple{UInt32, UInt64})
+        @test pir.ret_elem_widths == [32, 64]
+        @test pir.ret_width == 96
+        circuit = reversible_compile(f_het, UInt32, UInt64)
+        @test verify_reversibility(circuit)
+        for (a, b) in [(UInt32(5), UInt64(7)),
+                       (typemax(UInt32), typemax(UInt64))]
+            out = simulate(circuit, (a, b))
+            @test (out[1] % UInt32) == a
+            @test (out[2] % UInt64) == b
+        end
     end
 
     @testset "regression: memcpy-form auto-canonicalised under optimize=false (post-Bennett-uyf9)" begin

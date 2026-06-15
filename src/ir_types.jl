@@ -139,6 +139,33 @@ struct IRInsertValue <: IRInst
     n_elems::Int         # number of elements in the aggregate
 end
 
+# Bennett-dv1z (heterogeneous bits-struct sret): insert a `val_width`-bit value
+# into a heterogeneous aggregate at an arbitrary BIT offset. Unlike
+# IRInsertValue (which assumes a homogeneous `[N x iM]` array of fixed-width
+# elements, identified by 0-based element INDEX), IRInsertBits identifies the
+# insertion point by an absolute bit offset within a `total_width`-bit packed
+# value, so it can model `{i64, i8}`-style tuples whose fields have differing
+# widths. The synthesised chain (see `_synthesize_sret_bits`) packs fields at
+# CONTIGUOUS bit offsets in field order (NOT at LLVM byte offsets — the padding
+# is dropped), so `total_width == sum(field widths)`, never the padded ABI size.
+struct IRInsertBits <: IRInst
+    dest::Symbol
+    agg::IROperand       # aggregate operand (or ZERO_AGG for zeroinitializer)
+    val::IROperand       # value to insert
+    bit_offset::Int      # 0-based bit offset of the insertion within the packed value
+    val_width::Int       # bit width of the inserted value
+    total_width::Int     # total bit width of the packed aggregate
+    function IRInsertBits(dest, agg, val, bit_offset, val_width, total_width)
+        bit_offset >= 0 ||
+            throw(ArgumentError("IRInsertBits: bit_offset=$bit_offset < 0"))
+        val_width >= 1 ||
+            throw(ArgumentError("IRInsertBits: val_width=$val_width < 1"))
+        bit_offset + val_width <= total_width ||
+            throw(ArgumentError("IRInsertBits: bit_offset($bit_offset)+val_width($val_width) > total_width($total_width)"))
+        new(dest, agg, val, bit_offset, val_width, total_width)
+    end
+end
+
 # --- v0.3: branch, phi, basic blocks ---
 
 struct IRCast <: IRInst

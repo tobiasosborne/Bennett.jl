@@ -297,12 +297,18 @@ const _LAND_BASE = UInt64(0x1000_0000_0000_0000)
                 :upstream_parse_error
             elseif occursin("sret pointee", msg) || occursin("only [N x iM]", msg) ||
                    occursin("Bennett-dv1z", msg)
-                # Clean fail-loud on HashMap::new's heterogeneous-struct sret return
-                # (Bennett-dv1z: only [N x iM] aggregates supported). This IS the
-                # spec's "(b) clean fail-loud" outcome — the extractor correctly
-                # refuses an unsupported heterogeneous sret rather than silently
-                # miscompiling. (Flips to :compiled when CW-D2 heterogeneous-sret
-                # support lands — the same dv1z wall is on the closed-world runway.)
+                # Clean fail-loud on HashMap::new's struct sret return. As of
+                # Bennett-dv1z the extractor SUPPORTS heterogeneous bits-structs
+                # of fixed-width INTEGER fields ({i64,i8}, …); HashMap::new's
+                # sret pointee still rejects because it carries NON-integer
+                # fields (pointer/capacity-handle members), which the dv1z
+                # `_sret_struct_fields` arm refuses loud with the
+                # "only fixed-width integer bits-struct fields" + "Bennett-dv1z"
+                # breadcrumb. This remains the spec's "(b) clean fail-loud"
+                # outcome — the extractor refuses an unsupported (non-integer-
+                # field) struct sret rather than silently miscompiling. (Flips
+                # to :compiled when ptr-field-struct sret support lands; that is
+                # a separate workstream from the dv1z integer-bits-struct arm.)
                 :dv1z_sret_reject
             else
                 @info "Unexpected T5 acceptance failure" exception=e

@@ -35,20 +35,23 @@ using InteractiveUtils: subtypes, code_warntype
     #    subtype count guards both directions: if a new IRInst lands, the
     #    refactor calculus shifts (Union grows or shrinks).
     # =========================================================================
-    @testset "IRInst subtype count is exactly 19" begin
+    @testset "IRInst subtype count is exactly 20" begin
         concrete = subtypes(Bennett.IRInst)
         # 16 base IR opcodes + the 3 language-neutral reversible-map ops
         # (IRMapInsert/IRMapGet/IRMapDelete, BennettVM SC9 Case B; ADR 0008 /
-        # 0013 §D-3). Adding the map ops moves the pin 16→19, inside the ≤22
-        # arm bound the return-Union contract below depends on.
-        @test length(concrete) == 19
+        # 0013 §D-3) + IRInsertBits (Bennett-dv1z heterogeneous bits-struct sret).
+        # The map ops moved the pin 16→19; IRInsertBits moves it 19→20.
+        # NB: IRInsertBits is SYNTHESISED by the sret path (_synthesize_sret_bits),
+        # NOT returned by `_convert_instruction` — so it adds a concrete subtype
+        # but NOT a return-Union arm; the ≤22 Union-arm bound below is unaffected.
+        @test length(concrete) == 20
         # Verify the canonical set — any drift here trips the test.
         names = Set(Symbol(t.name.name) for t in concrete)
         expected = Set([
             :IRBinOp, :IRICmp, :IRSelect, :IRPhi, :IRCast, :IRBranch,
             :IRRet, :IRCall, :IRStore, :IRLoad, :IRAlloca, :IRPtrOffset,
             :IRVarGEP, :IRExtractValue, :IRInsertValue, :IRSwitch,
-            :IRMapInsert, :IRMapGet, :IRMapDelete,
+            :IRMapInsert, :IRMapGet, :IRMapDelete, :IRInsertBits,
         ])
         @test names == expected
     end
