@@ -268,10 +268,21 @@ const _LAND_BASE = UInt64(0x1000_0000_0000_0000)
             @test true
             return
         end
+        # Bennett-37ib-adjacent / Rule 5: the HashMap::new mangled name carries a
+        # per-compilation `17h<hash>E` suffix that DRIFTS — the committed fixture's
+        # hash differs from the hash this test was originally pinned to (they were
+        # committed inconsistently; the test only "passed" before by being SKIPPED
+        # when the fixture was absent). Find the function by its STABLE demangled
+        # substring instead of pinning the volatile hash, so it tracks the fixture.
+        mref = match(r"_ZN3std11collections4hash3map\d+HashMap\$LT\$K\$C\$V\$GT\$3new17h[0-9a-f]+E",
+                     read(ll_path, String))
+        if mref === nothing
+            @info "Skipping T5 acceptance — HashMap::new symbol absent from fixture (mangled-name drift)"
+            @test true
+            return
+        end
         outcome = try
-            Bennett.extract_parsed_ir_from_ll(
-                ll_path;
-                entry_function="_ZN3std11collections4hash3map20HashMap\$LT\$K\$C\$V\$GT\$3new17hd5ce489df0fbe51fE")
+            Bennett.extract_parsed_ir_from_ll(ll_path; entry_function=mref.match)
             :compiled
         catch e
             msg = sprint(showerror, e)
@@ -284,6 +295,15 @@ const _LAND_BASE = UInt64(0x1000_0000_0000_0000)
                 # LLVM 19+ syntax against an LLVM 18 toolchain).
                 # Not our bead — skip the acceptance.
                 :upstream_parse_error
+            elseif occursin("sret pointee", msg) || occursin("only [N x iM]", msg) ||
+                   occursin("Bennett-dv1z", msg)
+                # Clean fail-loud on HashMap::new's heterogeneous-struct sret return
+                # (Bennett-dv1z: only [N x iM] aggregates supported). This IS the
+                # spec's "(b) clean fail-loud" outcome — the extractor correctly
+                # refuses an unsupported heterogeneous sret rather than silently
+                # miscompiling. (Flips to :compiled when CW-D2 heterogeneous-sret
+                # support lands — the same dv1z wall is on the closed-world runway.)
+                :dv1z_sret_reject
             else
                 @info "Unexpected T5 acceptance failure" exception=e
                 rethrow()
@@ -295,8 +315,8 @@ const _LAND_BASE = UInt64(0x1000_0000_0000_0000)
         # (float / vector / etc.) that land doesn't cover. The
         # :upstream_parse_error escape hatch handles LLVM-version
         # skew between the build/ snapshot and the local toolchain.
-        @test outcome in (:compiled, :ptrload_guard,
-                          :zxhg_residual_reject, :upstream_parse_error)
+        @test outcome in (:compiled, :ptrload_guard, :zxhg_residual_reject,
+                          :upstream_parse_error, :dv1z_sret_reject)
         @info "T5 acceptance outcome" outcome
     end
 
