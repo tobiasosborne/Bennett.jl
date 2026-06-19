@@ -190,17 +190,43 @@ end
 """
     SretWrites
 
-Result bundle from `_collect_sret_writes`. `slot_values` maps each
-0-based aggregate slot to its stored value (or a `PendingVecLane`
-sentinel for vector stores not yet resolved). `suppressed` is the set
-of LLVM instructions the block walk must skip (sret-targeting stores
-and their constant-offset GEPs). `pending_vec` and `pending_val_refs`
-let pass 2 fill in vector-lane values once the producer instruction is
-walked.
+Result bundle from `_collect_sret_writes`.
+
+Bennett-jghk (multi-return-site sret): the per-slot stored values are collected
+PER STORE-BEARING BLOCK, not into one global dict. `block_slot_values` maps each
+LLVM block ref (the block CONTAINING the sret stores) to that block's
+`Dict{Int,IROperand}` of slot ↦ stored value (or a `PendingVecLane` sentinel for
+vector stores not yet resolved). The optimised, auto-SROA'd Julia shape for a
+multi-arm tuple return emits ONE store-bearing block per branch arm, each
+writing every slot, then `br` to a single shared `ret void` block. Synthesis
+(in module_walk.jl) turns each such block into its own value-bearing IRRet,
+and the downstream `resolve_phi_predicated!` multi-IRRet merge reconciles them.
+
+For the single-return case (one store-bearing block whose own terminator is
+`ret void`) `block_slot_values` has exactly one entry and the synthesis is
+byte-identical to the pre-jghk single-site path.
+
+`slot_values` (legacy field, RETAINED) is the SINGLE store-bearing block's slot
+map when there is exactly one store-bearing block — it aliases that block's dict
+so the vector-lane resolution plumbing (`_resolve_pending_vec_for_val!`,
+`_assert_no_pending_vec_stores!`), which mutates a single flat dict, stays
+byte-identical. When there is MORE than one store-bearing block, `slot_values`
+is empty and vector sret stores are rejected loud (multi-return + SLP vector
+store is out of MVP scope — Julia never emits it for the hetero/scalar shapes
+jghk targets).
+
+`suppressed` is the set of LLVM instructions the block walk must skip
+(sret-targeting stores and their constant-offset GEPs). `ret_void_blocks` is the
+set of block refs whose terminator is `ret void` AND which contain NO sret
+stores of their own — these are dropped at synthesis (their value-bearing
+predecessors carry the return). `pending_vec`/`pending_val_refs` let pass 2 fill
+in vector-lane values once the producer instruction is walked.
 """
 struct SretWrites
-    slot_values::Dict{Int, IROperand}
+    slot_values::Dict{Int, IROperand}                       # legacy: single-block alias
+    block_slot_values::Dict{_LLVMRef, Dict{Int, IROperand}} # per store-bearing block
     suppressed::Set{_LLVMRef}
+    ret_void_blocks::Set{_LLVMRef}                           # store-free `ret void` blocks
     pending_vec::Dict{_LLVMRef, Tuple{Int, Int}}   # store.ref => (first_slot, n_lanes)
     pending_val_refs::Dict{_LLVMRef, _LLVMRef}     # store.ref => val.ref
 end
@@ -420,8 +446,13 @@ Errors (no silent miscompile):
 """
 function _collect_sret_writes(func::LLVM.Function, sret_info::SretInfo,
                               names::Dict{_LLVMRef, Symbol})::SretWrites
-    slot_values       = Dict{Int, IROperand}()
+    # Bennett-jghk: per store-bearing block. Each store appends to the dict
+    # for the block it lives in, so two arms of a `cond ? A : B` tuple return
+    # (each its own store-block) no longer collide on a single global slot 0.
+    # The within-a-block duplicate-store reject is UNCHANGED and still loud.
+    block_slot_values = Dict{_LLVMRef, Dict{Int, IROperand}}()
     suppressed        = Set{_LLVMRef}()
+    ret_void_blocks   = Set{_LLVMRef}()
     gep_byte          = Dict{_LLVMRef, Int}()   # sret-derived GEP result → byte offset
     pending_vec       = Dict{_LLVMRef, Tuple{Int, Int}}()
     pending_val_refs  = Dict{_LLVMRef, _LLVMRef}()
@@ -433,6 +464,7 @@ function _collect_sret_writes(func::LLVM.Function, sret_info::SretInfo,
     agg_bytes = sret_info.agg_byte_size
 
     for bb in LLVM.blocks(func)
+        bb_ref = bb.ref
         for inst in LLVM.instructions(bb)
             # Try each per-pattern handler in order. Each returns `true`
             # iff it claimed the instruction.
@@ -454,6 +486,9 @@ function _collect_sret_writes(func::LLVM.Function, sret_info::SretInfo,
                     nothing
                 end
                 if byte_off !== nothing
+                    # This store's slot values accumulate in THIS block's dict.
+                    slot_values = get!(() -> Dict{Int, IROperand}(),
+                                       block_slot_values, bb_ref)
                     # Bennett-dv1z: the SLP vector-store path is homogeneous-only
                     # (it presumes a uniform lane width == element width). A
                     # heterogeneous bits-struct never produces a single vector
@@ -472,15 +507,62 @@ function _collect_sret_writes(func::LLVM.Function, sret_info::SretInfo,
         end
     end
 
-    # Every slot must be written before ret void
     fname = LLVM.name(func)
-    for k in 0:(n - 1)
-        haskey(slot_values, k) || throw(AssertionError(
-            "ir_extract.jl: sret slot $k in @$fname is never written; every " *
-            "element of the aggregate return must be stored before ret void"))
+
+    # Bennett-jghk: classify `ret void` blocks. A `ret void` block that has NO
+    # sret stores of its own is a SHARED return funnel (the `common.ret` shape):
+    # its store-bearing predecessors each carry the value-bearing return, so it
+    # is dropped at synthesis. A `ret void` block that DOES contain sret stores
+    # (the single-return `top:` shape) keeps its synthesis in-place.
+    for bb in LLVM.blocks(func)
+        term = LLVM.terminator(bb)
+        (LLVM.opcode(term) == LLVM.API.LLVMRet && isempty(LLVM.operands(term))) || continue
+        if !haskey(block_slot_values, bb.ref)
+            push!(ret_void_blocks, bb.ref)
+        end
     end
 
-    return SretWrites(slot_values, suppressed, pending_vec, pending_val_refs)
+    # Every store-bearing block must write EVERY slot (a partial-slot write on a
+    # return path returns garbage for the missing slot). This is the per-return-
+    # path version of the pre-jghk global "every slot written" assert — stricter
+    # and CFG-correct (a slot written on some OTHER path no longer masks an
+    # unwritten slot on this one). Vector-lane PendingVecLane sentinels count as
+    # written (the lane value is filled in pass 2).
+    for (bb_ref, slot_values) in block_slot_values
+        for k in 0:(n - 1)
+            haskey(slot_values, k) || throw(AssertionError(
+                "ir_extract.jl: sret slot $k in @$fname is never written on the " *
+                "return path through this block; every element of the aggregate " *
+                "return must be stored before the return (Bennett-jghk: " *
+                "partial / conditional slot writes are not supported)"))
+        end
+    end
+
+    isempty(block_slot_values) && throw(AssertionError(
+        "ir_extract.jl: sret function @$fname has no store-bearing block; the " *
+        "aggregate return is never materialised (Bennett-jghk). Likely the " *
+        "return is built via an unsupported path (e.g. llvm.memcpy from a " *
+        "const global or a recursive sret self-call)."))
+
+    # Bennett-jghk: the legacy `slot_values` field aliases the SINGLE store-
+    # bearing block's dict (so the vector-lane plumbing stays byte-identical).
+    # With >1 store-bearing block, vector sret stores are unsupported (see the
+    # docstring); `slot_values` stays empty and any pending vector store would
+    # have a producer the multi-block path never resolves — guard it loud.
+    legacy_slot_values = if length(block_slot_values) == 1
+        first(values(block_slot_values))
+    else
+        if !isempty(pending_vec)
+            throw(AssertionError(
+                "ir_extract.jl: sret function @$fname has $(length(block_slot_values)) " *
+                "store-bearing blocks AND an SLP vector sret store; multi-return-" *
+                "site combined with vector stores is not supported (Bennett-jghk)."))
+        end
+        Dict{Int, IROperand}()
+    end
+
+    return SretWrites(legacy_slot_values, block_slot_values, suppressed,
+                      ret_void_blocks, pending_vec, pending_val_refs)
 end
 
 """

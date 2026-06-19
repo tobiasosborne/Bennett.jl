@@ -153,12 +153,23 @@ fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
         @test occursin("unsupported LLVM type", err) || occursin("sret", err) ||
               occursin("atomic", err)                  # a real extractor wall, not a D1b bug
 
-        # >=4 is BLOCKED on CW-D2 (atomic-load U14 + heterogeneous-sret dv1z),
-        # NOT on D1b. The :skip path tolerates every wall and returns whatever
-        # bodies extract today (currently 0 — root hits julia.get_pgcstack and
-        # all three Dict helpers hit the ptr-width wall). HONEST tripwire: when
-        # CW-D2 clears the walls this flips to a real pass and the @test_broken
-        # starts failing-as-unexpected-pass, prompting promotion to @test.
+        # >=4 is BLOCKED on CW-D2, NOT on D1b. The :skip path tolerates every
+        # wall and returns whatever bodies extract today (currently 0). The
+        # walls are NOT uniform across the Dict helpers (Rule 5 — verified by
+        # live probe 2026-06-19):
+        #   * root           → julia.get_pgcstack (GC-frame TLS read) wall.
+        #   * setindex!      → ptr-RETURN wall (returns a ptr, no ptr_cells gate).
+        #   * rehash!        → ptr-RETURN wall (same).
+        #   * ht_keyindex2_shorthash! → sret({i64,i8}) hetero multi-return. After
+        #     Bennett-jghk the six scalar-store return paths extract; the wall
+        #     ADVANCED to Bennett-59zi: the L165 path does a recursive sret self-
+        #     call into %sret_box then `llvm.memcpy(%sret_return, %sret_box)`,
+        #     which hits the "sret with llvm.memcpy form is not supported" reject.
+        # So ht_keyindex2 no longer hits the jghk multi-store wall, but it still
+        # does NOT extract end-to-end — the 59zi memcpy/self-call wall remains.
+        # HONEST tripwire: when CW-D2 + 59zi clear the walls this flips to a real
+        # pass and the @test_broken starts failing-as-unexpected-pass, prompting
+        # promotion to @test.
         @test_broken length(extract_parsed_ir_set_from_julia(
             fdict_d1b, Tuple{Int8,Int8}; on_extract_error=:skip)) >= 4
     end

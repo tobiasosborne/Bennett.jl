@@ -354,28 +354,69 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
         insts = IRInst[]
         terminator = nothing
 
+        # Bennett-jghk: classify this block for sret synthesis.
+        #   * `sret_store_block`: contains sret stores → its terminator (whether
+        #     `ret void` in-block, or `br` to a shared funnel) is REPLACED by the
+        #     synthesised IRInsertValue/IRInsertBits chain + value-bearing IRRet
+        #     built from THIS block's per-slot stores. Multiple such blocks
+        #     produce multiple value-bearing IRRet blocks, which the downstream
+        #     driver merges via `resolve_phi_predicated!` (the by-value
+        #     multi-return shape). The single-return case (one store block whose
+        #     own terminator is `ret void`) is byte-identical to pre-jghk.
+        #   * `sret_drop_block`: a store-FREE `ret void` funnel (`common.ret`) —
+        #     its value-bearing predecessors carry the return, so it is dropped.
+        sret_store_block = sret_writes !== nothing &&
+                           haskey(sret_writes.block_slot_values, bb.ref)
+        sret_drop_block  = sret_writes !== nothing &&
+                           bb.ref in sret_writes.ret_void_blocks
+        if sret_drop_block
+            continue   # store-free `ret void` funnel — dropped (Bennett-jghk)
+        end
+
         for inst in LLVM.instructions(bb)
             # sret hook: suppress instructions already accounted for in the
             # pre-walk (sret-targeting stores and their constant-offset GEPs).
             if sret_writes !== nothing && inst.ref in sret_writes.suppressed
                 continue
             end
-            # sret hook: at `ret void`, emit the synthetic IRInsertValue chain
-            # plus IRRet equivalent to the n=2 by-value aggregate-return path.
-            if sret_writes !== nothing &&
-               LLVM.opcode(inst) == LLVM.API.LLVMRet &&
-               isempty(LLVM.operands(inst))
-                # Bennett-0c8o: before synthesising, confirm every pending
-                # vector sret store was resolved during pass 2.
-                _assert_no_pending_vec_stores!(sret_writes)
-                # Bennett-dv1z: heterogeneous bits-struct returns synthesise an
-                # IRInsertBits chain (arbitrary-bit-offset packing); homogeneous
-                # `[N x iM]` returns keep the IRInsertValue chain VERBATIM.
-                chain, ret_inst = sret_info.is_hetero ?
-                    _synthesize_sret_bits(sret_info, sret_writes.slot_values, counter) :
-                    _synthesize_sret_chain(sret_info, sret_writes.slot_values, counter)
-                append!(insts, chain)
-                terminator = ret_inst
+            # Bennett-jghk: on an sret store block, the block's own terminator
+            # (`ret void` here, or an unconditional `br` to the shared funnel) is
+            # replaced by the synthesised value-bearing IRRet AFTER the
+            # instruction loop. Drop the original terminator instruction so it
+            # does not also set `terminator`. In the auto-SROA shape jghk targets
+            # a store-all-slots block always ends in `ret void` or an
+            # UNCONDITIONAL `br` to the funnel. A CONDITIONAL branch out of a
+            # store block means the block writes its slots then forks — replacing
+            # it with an unconditional IRRet would silently discard the other
+            # arm, so fail loud (CLAUDE.md §1) rather than guess.
+            if sret_store_block && LLVM.opcode(inst) == LLVM.API.LLVMRet
+                continue
+            end
+            if sret_store_block && LLVM.opcode(inst) == LLVM.API.LLVMBr
+                # operands of a conditional br are (cond, false_bb, true_bb);
+                # an unconditional br has a single operand (target bb).
+                length(LLVM.operands(inst)) > 1 && _ir_error(inst,
+                    "sret store block @$(LLVM.name(func)):%$label ends in a " *
+                    "CONDITIONAL branch; a block that writes the aggregate slots " *
+                    "and then forks is not supported (Bennett-jghk: each return " *
+                    "path must be its own store-then-unconditional-return block).")
+                # Bennett-jghk (reviewer hardening): the unconditional branch MUST
+                # target the shared store-free `ret void` funnel — its terminator
+                # is being REPLACED by a value-bearing IRRet below. If it instead
+                # targeted another store block (whose stores would OVERWRITE this
+                # block's in real execution) or an intermediate block, cutting the
+                # edge here would orphan that successor and `resolve_phi_predicated!`
+                # could silently return THIS block's (stale/overwritten) values —
+                # a Rule-1 silent miscompile. Enforce the MVP invariant loudly.
+                succs = collect(LLVM.successors(inst))
+                (length(succs) == 1 && succs[1].ref in sret_writes.ret_void_blocks) ||
+                    _ir_error(inst,
+                        "sret store block @$(LLVM.name(func)):%$label unconditionally " *
+                        "branches to a block that is not the shared store-free " *
+                        "`ret void` funnel; each return path must store all slots " *
+                        "then branch DIRECTLY to that funnel (Bennett-jghk MVP: " *
+                        "store-block→store-block / →intermediate-block chains are " *
+                        "not supported).")
                 continue
             end
 
@@ -441,6 +482,24 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
             else
                 push!(insts, ir_inst)
             end
+        end
+
+        # Bennett-jghk: synthesise the value-bearing return for an sret store
+        # block AFTER its instruction loop (so any pending vector-lane producer
+        # in this block has been resolved). The synthesised chain replaces the
+        # block's original `ret void` / `br` terminator. Pre-jghk this fired at
+        # the `ret void` instruction inline; the single-store-block case is
+        # byte-identical (same slot map, same counter, same emitted chain).
+        if sret_store_block
+            # Bennett-0c8o: confirm every pending vector sret store resolved.
+            _assert_no_pending_vec_stores!(sret_writes)
+            block_vals = sret_writes.block_slot_values[bb.ref]
+            # Bennett-dv1z: hetero → IRInsertBits chain; homogeneous → IRInsertValue.
+            chain, ret_inst = sret_info.is_hetero ?
+                _synthesize_sret_bits(sret_info, block_vals, counter) :
+                _synthesize_sret_chain(sret_info, block_vals, counter)
+            append!(insts, chain)
+            terminator = ret_inst
         end
 
         terminator === nothing && throw(AssertionError(
