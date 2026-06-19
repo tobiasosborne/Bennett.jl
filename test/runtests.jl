@@ -401,6 +401,15 @@ runfile("test_d1a_transitive_callees.jl")
 # HONEST tripwire (Gate E): bodies hit the U81/U14/dv1z walls (the accepted
 # closed-world runway, cleared by CW-D2), so >=4 is @test_broken not faked green.
 runfile("test_d1b_julia_set.jl")
+# Bennett-lf14 — ptr_cells gate on the Julia-function entry path
+# (src/extract/entry.jl + julia_set.jl). The .ll/.bc entries already exposed
+# ptr_cells (Bennett-haiy/nd45); lf14 closes the only entry that omitted it and
+# threads it through extract_parsed_ir_set_from_julia. Clears the ptr-RETURN
+# "unsupported LLVM type/PointerType" wall for setindex!/rehash! (which return
+# the Dict as a nonnull ptr): wall-advance proof (cells-OFF still the ptr-RETURN
+# wall; cells-ON advances to the U14 atomic-load / U81 void wall), plus a
+# default-off byte-identity pin (ptr-free fn extracts identically, gate_count 39).
+runfile("test_lf14_ptr_return_cells.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message
 # + non-Bennett-authored guard (was: bare substring match that could
 # swallow unrelated Bennett fail-loud errors).

@@ -212,6 +212,16 @@ Keyword arguments:
   U14 atomic-load / dv1z heterogeneous-sret walls — the accepted closed-world
   runway, cleared by later beads).
 - `mem` (default `:auto`): forwarded to each `extract_parsed_ir`.
+- `ptr_cells` (default `false`): forwarded to each per-callee/root
+  `extract_parsed_ir`. The C-track/Julia-ptr cell model (BVM ADR 0020 D3/D4,
+  generalized to Julia ptr args/returns per ADR 0021 Decision 2). When `true`,
+  Dict/Memory pointer args and returns are opaque 64-bit VM cells, clearing the
+  ptr-RETURN wall for `setindex!`/`rehash!` (Bennett-lf14). Defaults `false` for
+  symmetry with `extract_parsed_ir_set_from_ll`; the BennettVM closed-world
+  caller passes `ptr_cells=true` explicitly (a later mem=:vm convergence may set
+  the default from `mem`). Pointers are NEVER dereferenced — all the cell-model
+  fail-louds (first-index≠0, non-struct pointee, non-8-byte-aligned, >2 GEP
+  indices) are kept.
 
 Closed-world COMPLETENESS is enforced by `_closed_world_check!`: every emitted
 IRCall must resolve in-set, to a throw-leaf, or to a benign intrinsic, else fail
@@ -222,7 +232,8 @@ function extract_parsed_ir_set_from_julia(f, argtypes::Type{<:Tuple};
                                           include_root::Bool=true,
                                           drop_throw_leaves::Bool=true,
                                           on_extract_error::Symbol=:fail_loud,
-                                          mem::Symbol=:auto)
+                                          mem::Symbol=:auto,
+                                          ptr_cells::Bool=false)
     on_extract_error in (:fail_loud, :skip) || throw(ArgumentError(
         "extract_parsed_ir_set_from_julia: on_extract_error=:$(on_extract_error) " *
         "not in (:fail_loud, :skip)"))
@@ -247,7 +258,7 @@ function extract_parsed_ir_set_from_julia(f, argtypes::Type{<:Tuple};
     # Local extraction helper honouring on_extract_error.
     function _extract_one(canonical_key::Symbol, callable, at)
         try
-            return extract_parsed_ir(callable, at; optimize=optimize, mem=mem)
+            return extract_parsed_ir(callable, at; optimize=optimize, mem=mem, ptr_cells=ptr_cells)
         catch e
             e isa InterruptException && rethrow()
             if on_extract_error === :fail_loud

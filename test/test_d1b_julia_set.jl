@@ -150,16 +150,38 @@ fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
         end
         @test err !== nothing                          # MUST throw
         @test occursin("extraction FAILED", err)       # via the :fail_loud wrapper
+        # A real extractor wall, not a D1b bug. The wall identity is
+        # order-dependent (Rule 5) and depends on the ptr_cells gate:
+        #   * default (cells=false, what THIS GATE-E invocation uses): setindex!
+        #     surfaces FIRST on the ptr-RETURN "unsupported LLVM type ...
+        #     PointerType" wall (helpers.jl:246 via module_walk.jl:168).
+        #   * with ptr_cells=true (Bennett-lf14, the BennettVM closed-world
+        #     caller): that ptr-RETURN wall is CLEARED — setindex! advances to a
+        #     VoidType/U81 void wall, rehash! advances to the U14 atomic-load
+        #     wall. (Neither reaches the predicted jl_alloc_genericmemory
+        #     closed-world violation first — the atomic/void wall fires earlier.)
+        # Accept ANY of these so the assertion is robust to the gate and to the
+        # order-dependent first-failing-callee. "closed-world violation" is
+        # included for the future CW-D2 frontier where the atomic/void walls clear
+        # and jl_alloc_genericmemory_unchecked (a Symbol-callee decl) surfaces.
         @test occursin("unsupported LLVM type", err) || occursin("sret", err) ||
-              occursin("atomic", err)                  # a real extractor wall, not a D1b bug
+              occursin("atomic", err) || occursin("VoidType", err) ||
+              occursin("U81", err) || occursin("closed-world violation", err)
 
         # >=4 is BLOCKED on CW-D2, NOT on D1b. The :skip path tolerates every
-        # wall and returns whatever bodies extract today (currently 0). The
+        # wall and returns whatever bodies extract today (currently 0, with the
+        # ptr_cells gate OFF *and* ON — live-probe-verified 2026-06-19: lf14
+        # ADVANCES the walls but does not yet reach 4 fully-extracted bodies). The
         # walls are NOT uniform across the Dict helpers (Rule 5 — verified by
-        # live probe 2026-06-19):
-        #   * root           → julia.get_pgcstack (GC-frame TLS read) wall.
-        #   * setindex!      → ptr-RETURN wall (returns a ptr, no ptr_cells gate).
-        #   * rehash!        → ptr-RETURN wall (same).
+        # live probe 2026-06-19, ptr_cells-gate-aware):
+        #   * root           → julia.get_pgcstack (GC-frame TLS read), benign-listed.
+        #   * setindex!      → cells-OFF: ptr-RETURN wall (returns a ptr). cells-ON
+        #     (lf14): ptr-RETURN CLEARED, advances to a VoidType/U81 void wall.
+        #   * rehash!        → cells-OFF: ptr-RETURN wall (same). cells-ON (lf14):
+        #     ptr-RETURN CLEARED, advances to the U14 atomic-load wall
+        #     (`load atomic ptr ... unordered`). Beyond U14 lies its
+        #     jl_alloc_genericmemory_unchecked Symbol-callee → _closed_world_check!
+        #     "closed-world violation" frontier (CW-D2 / bennettvm-416r.12).
         #   * ht_keyindex2_shorthash! → sret({i64,i8}) hetero multi-return. After
         #     Bennett-jghk the six scalar-store return paths extract; the wall
         #     ADVANCED to Bennett-59zi: the L165 path does a recursive sret self-
@@ -167,9 +189,13 @@ fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
         #     which hits the "sret with llvm.memcpy form is not supported" reject.
         # So ht_keyindex2 no longer hits the jghk multi-store wall, but it still
         # does NOT extract end-to-end — the 59zi memcpy/self-call wall remains.
-        # HONEST tripwire: when CW-D2 + 59zi clear the walls this flips to a real
-        # pass and the @test_broken starts failing-as-unexpected-pass, prompting
-        # promotion to @test.
+        # rehash! frontier handed off to BennettVM CW-D2 (bennettvm-416r.12):
+        # jl_alloc_genericmemory_unchecked Symbol-callee awaits heap-intrinsic
+        # classification (it is past the U14 atomic-load wall, not yet reached).
+        # HONEST tripwire: when CW-D2 + U14 + 59zi clear the walls this flips to a
+        # real pass and the @test_broken starts failing-as-unexpected-pass,
+        # prompting promotion to @test. (This GATE-E call uses the default cells=
+        # false; lf14 left the default byte-identical so this stays broken.)
         @test_broken length(extract_parsed_ir_set_from_julia(
             fdict_d1b, Tuple{Int8,Int8}; on_extract_error=:skip)) >= 4
     end

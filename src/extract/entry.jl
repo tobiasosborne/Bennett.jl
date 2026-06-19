@@ -37,13 +37,26 @@ Pass-pipeline control:
   passes run first, then the explicit `passes` list.
 - When neither is set, no extra passes run — behavior is identical to earlier
   versions.
+
+`ptr_cells=true` (BVM ADR 0020 D3/D4, generalized to the Julia track per ADR
+0021 Decision 2) models pointers (Dict/Memory) as opaque 64-bit VM cells — a
+`ptr` RETURN type derives `ret_width = 64`, `store ptr`/`load ptr` lower as
+64-bit cells, and a two-index struct GEP lowers to `IRPtrOffset`. This is the
+SAME gate `extract_parsed_ir_from_ll`/`_from_bc` already expose; the
+Julia-function entry was the only core entry omitting it (Bennett-lf14). The
+default `false` is byte-identical to every prior caller: ALL the existing
+Julia-path fail-louds (U114 store, U16 GEP, U81 void/ptr return) keep firing
+unchanged — they protect the circuit / `mem=:heap` models, which the cell
+model must NOT silently alias. The gate is the single switch; nothing else in
+the walk changes shape.
 """
 function extract_parsed_ir(f, arg_types::Type{<:Tuple};
                            optimize::Bool=true,
                            preprocess::Bool=false,
                            passes::Vector{String}=String[],
                            use_memory_ssa::Bool=false,
-                           mem::Symbol=:auto)
+                           mem::Symbol=:auto,
+                           ptr_cells::Bool=false)
     ir_string = sprint(io -> code_llvm(io, f, arg_types; debuginfo=:none, optimize, dump_module=true))
 
     effective_passes = String[]
@@ -77,7 +90,7 @@ function extract_parsed_ir(f, arg_types::Type{<:Tuple};
         if !isempty(effective_passes)
             _run_passes!(mod, effective_passes)
         end
-        result = _module_to_parsed_ir(mod; mem=mem)
+        result = _module_to_parsed_ir(mod; mem=mem, ptr_cells=ptr_cells)
         dispose(mod)
     end
     # Stamp memssa into the result if requested
