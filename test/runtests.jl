@@ -358,6 +358,11 @@ runfile("test_plb7_irvargep_elem_width.jl")
 # Bennett-4mmt / U14 — atomic/volatile load/store reject loud instead of
 # silently producing a plain non-atomic IRLoad/IRStore.
 runfile("test_4mmt_atomic_volatile_load_store.jl")
+# Bennett-ares / CW-D2 lever 1 — VM-gated U14 atomic relaxation. Under
+# ptr_cells=true the relaxable ordering band {NotAtomic,Unordered,Monotonic,
+# Acquire,Release} falls through to the existing IRLoad/IRStore lowering;
+# strong orderings + volatile stay fail-loud; circuit path is byte-identical.
+runfile("test_ares_atomic_vm_relax.jl")
 # Bennett-5oyt / U15 — unregistered/inline-asm calls reject loud (was
 # silent drop, leaving dest SSA undefined). Benign-intrinsic allowlist
 # keeps llvm.lifetime/trap/etc. correctness-neutral. (memset graduated

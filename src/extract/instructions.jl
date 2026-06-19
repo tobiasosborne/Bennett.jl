@@ -1818,6 +1818,34 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     return nothing
 end
 
+# Bennett-ares — CW-D2 lever 1: VM-relaxable atomic ordering predicate.
+#
+# Bennett-4mmt / U14 made EVERY atomic load/store fail loud because reversible
+# CIRCUIT compilation has no semantics for ordering. That stays correct for the
+# circuit path. But under the closed-world / BennettVM cell model (`ptr_cells=
+# true`, sole setter module_walk.jl) the consumer is deterministic, single-
+# threaded and history-reversible: there is no concurrent observer, so a
+# RELAXED-consistency ordering contract is vacuous and the access can fall
+# through to the existing IRLoad/IRStore lowering (no new lowering — the guard
+# simply stops throwing).
+#
+# Accepted band (LLVM AtomicOrdering enum):
+#   NotAtomic(0), Unordered(1), Monotonic(2), Acquire(4), Release(5).
+# STILL fail-loud (even under the gate):
+#   AcquireRelease(6), SequentiallyConsistent(7) — a load/store under one of
+#   these is asking for a synchronisation edge the VM model does not provide;
+#   relaxing it would silently weaken the source contract. (6 is in fact
+#   unconstructible on a plain load/store — LLVM only permits it on atomicrmw/
+#   cmpxchg/fence — so its rejection here is defensive for any future reuse.)
+# `volatile` is handled by a SEPARATE check above each guard and is NOT relaxed
+# under either gate: it is an I/O-effect contract, not an ordering one.
+@inline _vm_relaxable_ordering(ord) =
+    ord == LLVM.API.LLVMAtomicOrderingNotAtomic   ||
+    ord == LLVM.API.LLVMAtomicOrderingUnordered   ||
+    ord == LLVM.API.LLVMAtomicOrderingMonotonic   ||
+    ord == LLVM.API.LLVMAtomicOrderingAcquire     ||
+    ord == LLVM.API.LLVMAtomicOrderingRelease
+
 # Bennett-q04a / 59jj-cut: this function returns a Union of 16 IRInst
 # subtypes plus `Nothing` (skip) plus `Vector{IRInst}` (cc0.7 vector
 # expansion) — 18 arms, beyond Julia's union-splitting threshold. The
@@ -2379,11 +2407,33 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         # silently producing a plain IRLoad would erase the source
         # program's atomic contract and turn a correctness bug into a
         # perf "feature".
+        #
+        # Bennett-ares — CW-D2 lever 1: under the closed-world / BennettVM cell
+        # model (`ptr_cells=true`) a RELAXED-consistency ordering is vacuous
+        # (deterministic single-threaded reversible VM — no concurrent observer),
+        # so the relaxable band {NotAtomic,Unordered,Monotonic,Acquire,Release}
+        # falls through to the existing IRLoad lowering (ptr→cell width 64,
+        # integer→width N — no new lowering). Strong orderings (AcquireRelease,
+        # SequentiallyConsistent) and `volatile` (an I/O-effect contract, not an
+        # ordering one) stay fail-loud. The else-arm (`ptr_cells=false`) is the
+        # original U14 guard VERBATIM — circuit-path behaviour is byte-identical
+        # (test_4mmt pins the text). The whole ordering check is gated because
+        # the integer IRLoad fall-through is itself gate-independent.
         LLVM.API.LLVMGetVolatile(inst) == 0 || _ir_error(inst,
             "volatile load not supported (Bennett-4mmt / U14)")
-        LLVM.API.LLVMGetOrdering(inst) == LLVM.API.LLVMAtomicOrderingNotAtomic ||
-            _ir_error(inst,
-                "atomic load not supported (Bennett-4mmt / U14)")
+        if ptr_cells
+            _vm_relaxable_ordering(LLVM.API.LLVMGetOrdering(inst)) || _ir_error(inst,
+                "atomic load not supported (Bennett-4mmt / U14): the ordering " *
+                "is a strong synchronisation edge (AcquireRelease / " *
+                "SequentiallyConsistent) that the BennettVM cell model cannot " *
+                "honour; only the relaxable band {NotAtomic, Unordered, " *
+                "Monotonic, Acquire, Release} is accepted under ptr_cells " *
+                "(Bennett-ares / CW-D2 lever 1)")
+        else
+            LLVM.API.LLVMGetOrdering(inst) == LLVM.API.LLVMAtomicOrderingNotAtomic ||
+                _ir_error(inst,
+                    "atomic load not supported (Bennett-4mmt / U14)")
+        end
         ops = LLVM.operands(inst)
         ptr = ops[1]
 
@@ -2625,11 +2675,31 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
     if opc == LLVM.API.LLVMStore
         # Bennett-4mmt / U14: reject atomic / volatile stores — same
         # reasoning as the load guard above.
+        #
+        # Bennett-ares — CW-D2 lever 1: under the closed-world / BennettVM cell
+        # model (`ptr_cells=true`) the relaxable band {NotAtomic,Unordered,
+        # Monotonic,Acquire,Release} falls through to the existing IRStore
+        # lowering (ptr→cell width 64, integer→width N — no new lowering).
+        # Strong orderings (AcquireRelease, SequentiallyConsistent) and
+        # `volatile` stay fail-loud. The else-arm (`ptr_cells=false`) is the
+        # original U14 guard VERBATIM — circuit-path behaviour is byte-identical
+        # (test_4mmt pins the text). See the load guard above for the full
+        # rationale; both guards are gated identically.
         LLVM.API.LLVMGetVolatile(inst) == 0 || _ir_error(inst,
             "volatile store not supported (Bennett-4mmt / U14)")
-        LLVM.API.LLVMGetOrdering(inst) == LLVM.API.LLVMAtomicOrderingNotAtomic ||
-            _ir_error(inst,
-                "atomic store not supported (Bennett-4mmt / U14)")
+        if ptr_cells
+            _vm_relaxable_ordering(LLVM.API.LLVMGetOrdering(inst)) || _ir_error(inst,
+                "atomic store not supported (Bennett-4mmt / U14): the ordering " *
+                "is a strong synchronisation edge (AcquireRelease / " *
+                "SequentiallyConsistent) that the BennettVM cell model cannot " *
+                "honour; only the relaxable band {NotAtomic, Unordered, " *
+                "Monotonic, Acquire, Release} is accepted under ptr_cells " *
+                "(Bennett-ares / CW-D2 lever 1)")
+        else
+            LLVM.API.LLVMGetOrdering(inst) == LLVM.API.LLVMAtomicOrderingNotAtomic ||
+                _ir_error(inst,
+                    "atomic store not supported (Bennett-4mmt / U14)")
+        end
         ops = LLVM.operands(inst)
         val = ops[1]
         ptr = ops[2]

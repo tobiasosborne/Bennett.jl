@@ -1,3 +1,79 @@
+## Session log — 2026-06-19 — Bennett-ares — CW-D2 lever 1: VM-gated U14 atomic relaxation
+
+**Bead:** `Bennett-ares` (P1, closed). CORE change (`src/extract/instructions.jl`)
+via **3+1** (2 Plan-agent proposers + 1 implementer + orchestrator review),
+RED-GREEN TDD. First lever of CW-D2 (`bennettvm-416r.12`) on the fdict-closure
+runway. Consensus doc: `docs/design/Bennett-ares-U14-atomic-relax-consensus.md`.
+
+### What landed
+Gated the U14 (`Bennett-4mmt`) atomic-load/store fail-loud on the existing
+`ptr_cells` flag. Under the closed-world / BennettVM cell model the consumer is
+deterministic, single-threaded and history-reversible — **no concurrent
+observer**, so a relaxed-consistency ordering contract is vacuous. New helper
+`_vm_relaxable_ordering(ord)` accepts the band `{NotAtomic, Unordered, Monotonic,
+Acquire, Release}` (= LLVM enum `{0,1,2,4,5}`); each guard became
+`if ptr_cells; relaxable || _ir_error(…); else; <ORIGINAL guard VERBATIM>; end`.
+Relaxed accesses fall through to the **existing** IRLoad/IRStore lowering
+(ptr→cell width 64, integer→width N) — no new lowering. `AcquireRelease(6)`,
+`SequentiallyConsistent(7)` and `volatile` stay fail-loud (the closure never
+emits them; if one appears it is a new shape worth a human). Circuit path
+(`ptr_cells=false`) is **byte-identical** — the else-arm is the original guard
+verbatim, so `test_4mmt` substrings + gate-count baselines are untouched.
+
+### Ground truth — the band was PROBED, not predicted (Rule 10)
+Skeptical live closure scan (`optimize=false`, this machine) of the three
+`fdict_d1b` callees `transitive_callees` returns:
+
+| callee | atomic loads | atomic stores | fences |
+|---|---|---|---|
+| `setindex!` | 7× unordered | — | 2 |
+| `rehash!` | 4× unordered | **6× release** | 2 |
+| `ht_keyindex2_shorthash!` | 7× unordered | — | 2 |
+
+(0 volatile, 0 atomicrmw/cmpxchg everywhere.) This **overturned proposer A's
+narrow `{unordered,monotonic}` band** — it would re-wall the closure at
+`rehash!`'s 6 `release` stores. Adopted proposer B's wider band. Moral (again):
+scan the *whole closure*, not just the named callee.
+
+### Wall-advance PROVEN (the deliverable)
+With U14 relaxed under `ptr_cells`, both closure write-paths advance past the
+atomic wall to their *next* wall — real forward progress on the P0 epic:
+- `setindex!(Dict{Int8,Int8},Int8,Int8)` → `insertvalue { ptr, ptr }` memoryref
+  aggregate wall (→ `Bennett-6bu3`, StructType insertvalue FILL, now on the
+  critical path).
+- `rehash!(Dict{Int8,Int8},Int64)` → `llvm.memcpy @"_j_const#1"` wall.
+
+### NEW finding (neither proposer): 2 `fence`/callee
+The closure scan surfaced **2 GC-safepoint `fence` instructions in every
+callee** — a standalone barrier opcode (`LLVMFence`), a SEPARATE lever from
+U14 load/store, and a pure no-op in the single-threaded VM. Filed
+`Bennett-3ptu` (CW-D2: fence-as-noop under `ptr_cells`).
+
+### Gotchas surfaced during impl (all LLVM-forced, documented in-test)
+- **`AcquireRelease(6)` is unconstructible** on `load atomic`/`store atomic` —
+  LLVM rejects it at parse (valid only on atomicrmw/cmpxchg/fence). So the
+  strong-ordering test witness is `seq_cst(7)`; the helper's rejection of 6 is
+  purely defensive.
+- **ptr-RETURNING atomic loads wall at the ptr-return width-query** (in
+  `ret_width` derivation) *before* the body load guard under `ptr_cells=false`
+  — so the load-guard byte-identity witnesses use **integer** atomic loads
+  (which reach U14 first); ptr-load fixtures assert the earlier ptr-return wall.
+- **Integer load/store fall-through is gate-INDEPENDENT** — the predicate MUST
+  be `ptr_cells && relaxable(ord)`; an ungated relaxation would silently change
+  circuit-path integer-atomic behaviour (byte-identity violation). GATE-(c)
+  locks this.
+- `test_lf14` GATE-B's wall-advance disjunction was pinned to the *old* atomic
+  successor this lever removes → orchestrator widened both disjunctions
+  (`insertvalue`/`aggregate`/`structtype`/`memcpy`); the load-bearing
+  `!_is_ptr_return_wall` assertion is unchanged.
+
+### Verification (orchestrator, `--check-bounds=yes`, fresh subprocess each)
+`test_ares_atomic_vm_relax` 57/57 · `test_lf14` 27/27 · `test_4mmt` 8/8
+(byte-identity) · `test_gate_count_regression` 39/39 (i8 `x+1`=58, doubling laws).
+Full `Pkg.test` deferred to the pre-push hook.
+
+---
+
 # 087 — 2026-06-19 — Bennett-lf14 — ptr_cells gate on the Julia-function entry
 
 **Bead:** `Bennett-lf14` (P1, fdict runway). CORE change (`src/extract/entry.jl`

@@ -134,8 +134,17 @@ _is_ptr_return_wall(msg) =
                 @test !_is_ptr_return_wall(msg_on)
                 # observed advanced wall (order-dependent, Rule 5): a void/U81 or
                 # atomic/U14 body wall — assert it is one of the plausible successors.
+                # Bennett-ares (CW-D2 lever 1) relaxed the U14 atomic-load guard
+                # under ptr_cells, so setindex! now advances PAST the atomic-load
+                # wall to its `insertvalue { ptr, ptr }` memoryref-aggregate wall;
+                # disjunction widened to include the new successor (the load-bearing
+                # `!_is_ptr_return_wall` assertion above is unchanged).
                 @test occursin("VoidType", msg_on) || occursin("U81", msg_on) ||
                       occursin("atomic", msg_on)   || occursin("U14", msg_on) ||
+                      occursin("insertvalue", lowercase(msg_on)) ||
+                      occursin("aggregate", lowercase(msg_on)) ||
+                      occursin("structtype", lowercase(msg_on)) ||
+                      occursin("memcpy", lowercase(msg_on)) ||
                       occursin("closed-world", msg_on)
             end
 
@@ -150,8 +159,15 @@ _is_ptr_return_wall(msg) =
                 @test rmsg_on isa ParsedIR
             else
                 @test !_is_ptr_return_wall(rmsg_on)   # ptr-RETURN wall CLEARED
+                # Bennett-ares (CW-D2 lever 1): the relaxed U14 guard advances
+                # rehash! past its `store atomic … release` + atomic-load walls to
+                # the `llvm.memcpy @"_j_const#1"` wall; disjunction widened.
                 @test occursin("atomic", rmsg_on) || occursin("U14", rmsg_on) ||
                       occursin("VoidType", rmsg_on) || occursin("U81", rmsg_on) ||
+                      occursin("insertvalue", lowercase(rmsg_on)) ||
+                      occursin("aggregate", lowercase(rmsg_on)) ||
+                      occursin("structtype", lowercase(rmsg_on)) ||
+                      occursin("memcpy", lowercase(rmsg_on)) ||
                       occursin("closed-world", rmsg_on)
             end
         end
