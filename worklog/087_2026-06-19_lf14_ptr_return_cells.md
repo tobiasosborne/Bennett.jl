@@ -1,3 +1,76 @@
+## Session log — 2026-06-20 — Bennett-zf5v — CW-D2 lever 2: gc_preserve token drop + get_pgcstack allowlist
+
+**Bead:** `Bennett-zf5v` (P1). CORE change (`src/extract/instructions.jl` +
+`src/extract/julia_set.jl`) via **3+1** (2 proposers + implementer + orchestrator
+review), RED-GREEN TDD. Second lever of CW-D2 (`bennettvm-416r.12`) on the
+fdict-closure runway. Consensus doc:
+`docs/design/Bennett-zf5v-gc_preserve-consensus.md`.
+
+### The premise was OVERTURNED at optimize=false (the tell — Rule 10)
+The bead asked for a `get_pgcstack` **inline-asm** GC-frame recognizer (the
+`movq %fs:0` form). Proposer B re-probed at `optimize=FALSE` (the level the
+closed-world producer `extract_parsed_ir_set_from_julia` actually extracts
+bodies at — julia_set.jl:185/231/261) and found get_pgcstack there is the
+**named intrinsic** `@julia.get_pgcstack()`, which ALREADY lowers cleanly to a
+64-bit cell IRCall under ptr_cells — NO inline asm. The orchestrator's
+definitive probe confirmed: at optimize=false the ROOT `fdict_d1b` walls at
+`llvm.julia.gc_preserve_begin` (return type `token` → the ptr_cells C-call arm's
+TokenType reject), `has movq %fs:0 asm: false`, `has @julia.get_pgcstack: true`.
+Proposer A's GC-frame approach (right answer to the wrong premise) discarded;
+`Bennett-6x2w` closed as superseded.
+
+### What landed (two surgical, additive, ptr_cells-gated edits)
+1. **instructions.jl** — at the TOP of the `ptr_cells && callee isa LLVM.Function`
+   C-call arm (BEFORE the variadic-arg loop AND the `rt = value_type(inst)`
+   return-type check), drop `cname == "llvm.julia.gc_preserve_begin"` /
+   `"llvm.julia.gc_preserve_end"` → `return nothing`. Pure GC-rooting bookkeeping;
+   no value semantics in the deterministic, single-threaded, history-reversible
+   VM cell model. The `_begin` token is consumed SOLELY by `_end` (also dropped),
+   so no dangling SSA. **Top placement is REQUIRED**: `gc_preserve_begin` is
+   variadic (`call token (...)`), so a lower placement hits the arg-carry /
+   TokenType error first (probe-verified pre-edit).
+2. **julia_set.jl** — add `"julia.get_pgcstack"` to
+   `_D1B_BENIGN_INTRINSIC_PREFIXES` so the MODELED get_pgcstack cell IRCall (it
+   feeds the `gep -152` current_task chain, NOT dropped) survives
+   `_closed_world_check!`. Gotcha worth pinning: the existing `"julia.gc_"`
+   prefix does **NOT** match `julia.get_pgcstack` (`gc_` vs `get_pg`) — they are
+   genuinely distinct entries.
+
+### Wall-advance ground truth (this is the next lever's input)
+Real `fdict_d1b(a,b)=(d=Dict{Int8,Int8}();d[a]=b;d[a])` at `optimize=false,
+ptr_cells=true`: the gc_preserve TokenType wall is CLEARED and the root now
+advances to **`ptrtoint ... unsupported LLVM opcode`** —
+`%Dict = ptrtoint ptr %"+Main.Base.Dict#NNNN" to i64` (the root casts the
+freshly gc_alloc'd Dict ptr to i64 right after the dropped gc_preserve_begin).
+THAT is CW-D2 lever 3. Gate (d)'s successor disjunction was widened to include
+`ptrtoint` / `unsupported llvm opcode` (kept inclusive per Rule 5).
+
+### Gotchas
+- The hand-built `.ll` gate-(a) fixture originally ended in `ptrtoint ptr
+  %loaded to i64` — which itself walls at the new ptrtoint opcode wall and
+  masked the drop proof. Switched the fixture to `ret ptr %loaded` (a ptr-cell
+  return, ret_width 64) so the lowered chain is the clean witness:
+  `IRCall(get_pgcstack, ret 64)` → 2× `IRPtrOffset(-152, +168)` → `IRLoad(64)`,
+  with BOTH gc_preserve intrinsics absent.
+- gate (b) byte-identity needed a MINIMAL fixture (no get_pgcstack) so
+  gc_preserve_begin is the FIRST wall under cells=false — otherwise get_pgcstack
+  (unregistered on the circuit path) walls at U15 first and the assertion text
+  pointed at the wrong symbol.
+- `test_d1b_julia_set.jl` GATE-E `@test_broken` stays broken (it runs `:skip`
+  with the DEFAULT `ptr_cells=false`, where the drop never fires — byte-
+  identical). The comment there already aspirationally said
+  "root → julia.get_pgcstack … benign-listed"; this edit makes that true.
+
+### Verification
+- `test/test_zf5v_gc_preserve.jl` 17/17 (gates a/b/c/d). RED confirmed pre-edit:
+  (a) blocked by TokenType wall, (d) still walled at gc_preserve/TokenType.
+- Regressions all green: `test_lf14` 27/27, `test_ares` 57/57, gate-count 39/39
+  (i8 x+1=58 holds — ptr_cells-gated, circuit path byte-identical),
+  `test_d1b_julia_set` 30 pass + 1 broken (unchanged). No baseline disjunction
+  needed widening (lf14/ares already inclusive of the relevant successors).
+
+---
+
 ## Session log — 2026-06-19 — Bennett-ares — CW-D2 lever 1: VM-gated U14 atomic relaxation
 
 **Bead:** `Bennett-ares` (P1, closed). CORE change (`src/extract/instructions.jl`)

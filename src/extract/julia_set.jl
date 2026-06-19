@@ -63,6 +63,14 @@ const _D1B_BENIGN_INTRINSIC_PREFIXES = (
     "julia.push_gc_frame",
     "julia.pop_gc_frame",
     "julia.get_gc_frame_slot",
+    # Bennett-zf5v / CW-D2: at optimize=false get_pgcstack is the named
+    # intrinsic `@julia.get_pgcstack()`, which lowers cleanly to a 64-bit cell
+    # IRCall under ptr_cells (it feeds the `gep -152` current_task chain). The
+    # cell is MODELED, not dropped — so the surviving IRCall must be tolerated
+    # by the closed-world completeness check (it is not an in-set body / throw
+    # leaf). Distinct from `julia.gc_` above: that prefix does NOT match
+    # `julia.get_pgcstack` (`gc_` vs `get_pg`).
+    "julia.get_pgcstack",
 )
 
 # A throw-leaf is a constructor-callee `Type{E}` for some `E <: Exception`

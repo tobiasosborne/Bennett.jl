@@ -2134,6 +2134,27 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         if ptr_cells && n_ops >= 1
             callee_val = ops[n_ops]
             if callee_val isa LLVM.Function
+                # Bennett-zf5v / CW-D2: GC-rooting bookkeeping intrinsics. At
+                # optimize=false the closed-world producer's bodies wall here on
+                # `llvm.julia.gc_preserve_begin` (return type `token`) — the
+                # ptr_cells C-call arm's TokenType reject (~below). These two
+                # intrinsics carry NO value semantics in the deterministic,
+                # single-threaded, history-reversible VM cell model: they only
+                # extend GC roots for the live preserved pointers between
+                # _begin and _end. The preserved-pointer args live independently
+                # in their own SSA values (consumed by the real ops in between);
+                # the only thing _begin PRODUCES is the rooting `token`, which is
+                # consumed SOLELY by gc_preserve_end (also dropped) — so dropping
+                # both leaves NO dangling SSA reference. Placed at the TOP of the
+                # arm (BEFORE the variadic-arg loop AND the return-type check)
+                # because gc_preserve_begin is variadic (`call token (...)`): a
+                # lower placement would hit the arg-carry / TokenType error
+                # first. Exact-name-scoped (Rule 1): any OTHER token-returning
+                # call still walls at the TokenType reject below.
+                if cname == "llvm.julia.gc_preserve_begin" ||
+                   cname == "llvm.julia.gc_preserve_end"
+                    return nothing
+                end
                 # A C `ptr` arg/return is one Int64 VM cell (ADR 0018 §A): every
                 # operand (integer OR pointer) is carried at the cell width — a
                 # ptr arg as 64, an integer arg at its own width. NOTHING is

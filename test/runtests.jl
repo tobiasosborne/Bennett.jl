@@ -415,6 +415,15 @@ runfile("test_d1b_julia_set.jl")
 # wall; cells-ON advances to the U14 atomic-load / U81 void wall), plus a
 # default-off byte-identity pin (ptr-free fn extracts identically, gate_count 39).
 runfile("test_lf14_ptr_return_cells.jl")
+# Bennett-zf5v / CW-D2 — drop the GC-rooting intrinsics
+# llvm.julia.gc_preserve_begin (token return) / gc_preserve_end (void) in the
+# ptr_cells C-call arm (src/extract/instructions.jl), and allowlist
+# julia.get_pgcstack in _D1B_BENIGN_INTRINSIC_PREFIXES (src/extract/julia_set.jl)
+# so the modeled get_pgcstack cell IRCall survives the closed-world check. At
+# optimize=false the real fdict_d1b root walled at the gc_preserve_begin
+# TokenType reject; this advances it to a `ptrtoint ... unsupported LLVM opcode`
+# wall (the next CW-D lever). ptr_cells-gated: circuit path byte-identical.
+runfile("test_zf5v_gc_preserve.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message
 # + non-Bennett-authored guard (was: bare substring match that could
 # swallow unrelated Bennett fail-loud errors).
