@@ -9,20 +9,28 @@ PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
 
 [compat]
 Aqua = "0.8"
-# JET = "0.10"  # Bennett-37ib: de-listed — JET 0.10 crashes precompiling on Julia 1.12.5
+# JET = "0.11"  # Bennett-37ib: de-listed — see note in [targets] below.
 LLVM = "9, 10"
 PrecompileTools = "1"
 julia = "1.10"
 
 [extras]
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
-# JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"  # Bennett-37ib: de-listed (see [compat])
+# JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"  # Bennett-37ib: de-listed (see [targets])
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-# Bennett-37ib: "JET" temporarily removed — JET 0.10 crashes precompiling on Julia
-# 1.12.5, aborting the whole suite at test-env precompile. Restore "JET" here (+ the
-# [extras]/[compat] entries above) once JET is repaired; the JET hygiene testset in
-# test_hygiene_aqua_jet.jl self-skips (try/catch) while JET is absent.
+# Bennett-37ib: "JET" removed from the test target. `Pkg.test()` precompiles the
+# ENTIRE test environment — the package PLUS every [targets].test extra — BEFORE
+# running a single test file. On Julia 1.12.x JET's fresh precompile under the test
+# config flags (--check-bounds=yes --warn-overwrite=yes ...) HANGS (observed: 14 min
+# wall / <1 min CPU, no .ji/.o output produced), which kills the whole 688k-assertion
+# correctness suite at SETUP — before any test runs. A standalone `using JET` happens
+# to succeed off a stale global-depot cache, but the strict test-env precompile does
+# not; and gating the test FILE does NOT help, because JET is precompiled before any
+# file executes. So JET must be OUT of the test target entirely. The JET hygiene
+# testset in test_hygiene_aqua_jet.jl self-skips (loudly) when JET is unavailable.
+# RESTORE "JET" here (+ the [extras]/[compat] entries above) once JET precompiles
+# cleanly under the test config on this Julia.
 test = ["Aqua", "Test", "Random"]

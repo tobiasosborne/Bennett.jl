@@ -14,11 +14,15 @@
 
 using Aqua
 
-# Bennett-37ib: JET 0.10 crashes during precompilation on Julia 1.12.5, which was
-# aborting the WHOLE suite. Load JET RESILIENTLY — skip the JET static-analysis
-# testset (loudly) if JET can't load/precompile, or if BENNETT_SKIP_JET=1. Aqua is
-# unaffected. This auto-runs again once JET is repaired (no flag flip needed);
-# restore + proper fix tracked by Bennett-37ib.
+# Bennett-37ib: JET hangs/crashes precompiling under the test-env config on Julia
+# 1.12.x, which aborts the WHOLE suite at TEST-ENV PRECOMPILE — before any test runs.
+# Because `Pkg.test()` precompiles every [targets].test extra up front, gating this
+# FILE alone is NOT enough; JET has been removed from Project.toml [extras]/[targets]
+# (see the note there) so it is never precompiled at setup. This block then loads JET
+# RESILIENTLY: if JET is absent (`@eval using JET` raises "package not found") or
+# BENNETT_SKIP_JET=1, the JET static-analysis testset is skipped LOUDLY and Aqua runs
+# unaffected. When JET is restored to the test target and precompiles cleanly, the
+# JET testset auto-runs again (no flag flip needed). Tracked by Bennett-37ib.
 const _JET_OK = get(ENV, "BENNETT_SKIP_JET", "0") != "1" && try
     @eval using JET
     true
