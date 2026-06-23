@@ -446,6 +446,11 @@ runfile("test_3ptu_fence_drop.jl")
 # (circuit path byte-identical). Advances the fdict root to the gc_alloc_obj
 # wall (Lever 2, separate bead). Does NOT touch gc_alloc_obj or BennettVM.
 runfile("test_iwo9_typetag.jl")
+# Bennett-r92o / CW-D3 Lever 2 — julia.gc_alloc_obj un-drop under the closed-world
+# `ptr_cells=true` gate: a Symbol-callee IRCall(:gc_alloc_obj, [size,tag], [64,64], 64)
+# with the task arg dropped, fail-loud on wrong arity. Gate-off byte-identical
+# (broad julia.gc_ benign drop intact). Does NOT touch BennettVM (Lever 3).
+runfile("test_r92o_gc_alloc_obj.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message
 # + non-Bennett-authored guard (was: bare substring match that could
 # swallow unrelated Bennett fail-loud errors).

@@ -2219,6 +2219,43 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                    cname == "llvm.julia.gc_preserve_end"
                     return nothing
                 end
+                # Bennett-r92o / CW-D3 Lever 2 (consensus decision 4): the Julia
+                # typed-GC allocation `julia.gc_alloc_obj`. Un-drop it under the
+                # closed-world `ptr_cells` gate, modelling it as a Symbol-callee
+                # IRCall (Bennett-k3ej) the BennettVM arena floor (Lever 3,
+                # ADR 0021 D3) ingests as a bump alloc. Placed at the TOP of this
+                # arm — BEFORE the generic C-call arg loop — for two reasons:
+                #   (1) The generic loop carries the `task` pointer arg
+                #       (`ops[1]`), but `task` is a %pgcstack GEP with NO VM
+                #       meaning and MUST be dropped (decision 4). We want
+                #       exactly [size, tag], not [task, size, tag].
+                #   (2) The generic loop would set the callee to the full dotted
+                #       name `Symbol("julia.gc_alloc_obj")`; BennettVM dispatches
+                #       on the canonical `:gc_alloc_obj` (`_HEAP_DISPATCH`).
+                # LLVM operand layout (verified empirically): for
+                # `call ptr @julia.gc_alloc_obj(ptr %task, i64 %size, ptr %tag)`,
+                # `ops = [task, size, tag, callee]` (callee is the LAST operand,
+                # matching the `cname = LLVM.name(ops[n_ops])` convention above).
+                # So 3 args ⇔ `n_ops == 4`. FAIL LOUD (CLAUDE.md §1) on any other
+                # arity — gc_alloc_obj's signature is fixed at (task, size, tag).
+                # Gate-off (ptr_cells=false): this whole arm is skipped, so
+                # gc_alloc_obj falls through to the broad `julia.gc_` benign drop
+                # below, byte-identically to pre-r92o.
+                if cname == "julia.gc_alloc_obj"
+                    n_ops == 4 || _ir_error(inst,
+                        "julia.gc_alloc_obj expected 3 args (task, size, tag) " *
+                        "⇒ n_ops == 4 (callee is the last operand), got " *
+                        "n_ops == $(n_ops). The Julia typed-GC alloc signature " *
+                        "is fixed; an unexpected arity is not modelled " *
+                        "(Bennett-r92o / CW-D3 Lever 2)")
+                    # Drop ops[1] (task / %pgcstack GEP). Carry [size, tag] as the
+                    # two Int64 VM cells; BennettVM ignores the tag's value
+                    # (ADR 0021 D3 floor: tag stored but structurally unread).
+                    size_op = _operand(ops[2], names)
+                    tag_op = _operand(ops[3], names)
+                    return IRCall(dest, :gc_alloc_obj,
+                                  IROperand[size_op, tag_op], Int[64, 64], 64)
+                end
                 # A C `ptr` arg/return is one Int64 VM cell (ADR 0018 §A): every
                 # operand (integer OR pointer) is carried at the cell width — a
                 # ptr arg as 64, an integer arg at its own width. NOTHING is
