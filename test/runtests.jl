@@ -451,6 +451,12 @@ runfile("test_iwo9_typetag.jl")
 # with the task arg dropped, fail-loud on wrong arity. Gate-off byte-identical
 # (broad julia.gc_ benign drop intact). Does NOT touch BennettVM (Lever 3).
 runfile("test_r92o_gc_alloc_obj.jl")
+# Bennett-beaw / CW-D — model `ptr null` (ConstantPointerNull) as a zero 64-bit
+# VM cell under the closed-world `ptr_cells=true` gate (null = address 0, one
+# Int64 cell; ADR 0018 §A). On the circuit path (ptr_cells=false) it stays
+# FAIL-LOUD (Bennett-bjdg / U80 byte-identical). The fdict-root successor wall
+# past iwo9/r92o (the `store ptr null` field-inits in inlined setindex!).
+runfile("test_beaw_null_ptr.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message
 # + non-Bennett-authored guard (was: bare substring match that could
 # swallow unrelated Bennett fail-loud errors).

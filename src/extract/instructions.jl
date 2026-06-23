@@ -2047,7 +2047,10 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         # chunk C / D5, see the return-width note in module_walk.jl.)
         if ptr_cells && !isempty(ops) &&
            LLVM.value_type(ops[1]) isa LLVM.PointerType
-            return IRRet(_operand(ops[1], names), 64)
+            # Bennett-beaw / CW-D: thread `ptr_cells` so a `ret ptr null`
+            # operand (ConstantPointerNull) lowers to the zero cell iconst(0)
+            # rather than the U80 fail-loud (the cell model: null = address 0).
+            return IRRet(_operand(ops[1], names; ptr_cells=true), 64)
         end
         # BVM ADR 0020 D5b (CW-C2 chunk C): `ret void` under the C-track gate.
         # A void return carries NO operand (`isempty(ops)`) and NO width. The
@@ -2867,7 +2870,12 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 "store target pointer is not a registered SSA name " *
                 "(value=$(ptr)) — likely an unsupported pointer source " *
                 "such as a global, ConstantExpr, or alias (Bennett-lgzx / U114).")
-            return IRStore(ssa(names[ptr.ref]), _operand(val, names), 64)
+            # Bennett-beaw / CW-D: thread `ptr_cells` so a `store ptr null, ptr
+            # %obj` field-init (ConstantPointerNull stored value) lowers to the
+            # zero cell iconst(0) rather than the U80 fail-loud (null = address
+            # 0, one Int64 VM cell).
+            return IRStore(ssa(names[ptr.ref]),
+                           _operand(val, names; ptr_cells=true), 64)
         end
         # Bennett-lgzx / U114: was `vt isa LLVM.IntegerType || return nothing`
         # — silent drop violated CLAUDE.md §1. Error loud with the

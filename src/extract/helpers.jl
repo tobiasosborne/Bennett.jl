@@ -131,7 +131,8 @@ IROperand widens to Int128/BigInt (tracked in U09 bead).
     return convert(Int, v)
 end
 
-function _operand(val::LLVM.Value, names::Dict{_LLVMRef, Symbol})
+function _operand(val::LLVM.Value, names::Dict{_LLVMRef, Symbol};
+                  ptr_cells::Bool=false)
     if val isa LLVM.ConstantInt
         return iconst(_const_int_as_int(val))
     elseif val isa LLVM.ConstantAggregateZero
@@ -181,6 +182,19 @@ function _operand(val::LLVM.Value, names::Dict{_LLVMRef, Symbol})
         if r != C_NULL
             kind = LLVM.API.LLVMGetValueKind(r)
             if kind == LLVM.API.LLVMConstantPointerNullValueKind
+                # Bennett-beaw / CW-D: under the closed-world `ptr_cells` gate, a
+                # `ptr null` (LLVM ConstantPointerNull) is a pointer VALUE that
+                # is one Int64 VM cell (ADR 0018 §A), and a null pointer is
+                # address 0 — model it as the zero cell `iconst(0)` (a
+                # `ConstOperand(0)`). This admits the C/Julia heap field-init
+                # idiom `store ptr null, ptr %obj` and `ret ptr null` WITHOUT
+                # touching the circuit path: the gate defaults false, so the
+                # Bennett-bjdg / U80 fail-loud below still fires byte-identically
+                # on the circuit/:heap models, which have no canonical zero-cell
+                # pointer semantics. NOTE: only ConstantPointerNull is modelled
+                # here — ConstantFP / Poison / Undef (handled above) are NOT null
+                # pointers and stay fail-loud under BOTH gates.
+                ptr_cells && return iconst(0)
                 error("ir_extract.jl: ConstantPointerNull operand: " *
                       "$(string(val)) — null-pointer dereference. " *
                       "Bennett.jl does not currently lower null-pointer " *
