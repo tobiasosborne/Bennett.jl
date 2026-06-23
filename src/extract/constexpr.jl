@@ -119,6 +119,39 @@ _constexpr_opcode_name(opc) =
 #   (:named, r::_LLVMRef)  — named global (Function / GlobalVariable / IFunc)
 #   (:null,  UInt64(0))    — null pointer
 #   nothing                — undecidable (caller fails loud)
+#
+# ---- Bennett-iwo9 / CW-D3 Lever 1: Julia type-tag globals -----------------
+#
+# Julia's JIT emits a per-type "type-tag" global whose NAME encodes the type
+# (e.g. `@"+Main.Base.Dict#148"`) and whose initializer is `inttoptr (i64 K
+# to ptr)` for a NON-DETERMINISTIC runtime address K. The closed-world VM
+# (`ptr_cells=true`) needs a deterministic, reproducible identity for each
+# type — so we recognise these globals BY NAME and derive a canonical type
+# path from the name, NEVER reading the JIT address K. The naming convention
+# is `+<dotted.type.path>#<digits>`; the `#N` suffix is a per-compilation
+# discriminator that varies run-to-run and is stripped.
+#
+# `_is_type_tag_global_name` — the recogniser (consensus decision 1).
+_is_type_tag_global_name(s::AbstractString)::Bool =
+    startswith(s, "+") && occursin(r"#\d+$", s)
+
+# `_canonical_type_path` — strip the leading `+` and the trailing `#<digits>`,
+# yielding the run-invariant canonical type path (e.g. "Main.Base.Dict").
+# FAIL LOUD (CLAUDE.md §1) if a `+`-prefixed name lacks the `#N` suffix:
+# that is unexpected JIT naming we must not silently mis-canonicalize.
+function _canonical_type_path(gname::AbstractString)::String
+    startswith(gname, "+") || error(
+        "ir_extract.jl: Bennett-iwo9 / CW-D3: _canonical_type_path called on " *
+        "non-type-tag global name `$(gname)` (expected leading `+`).")
+    occursin(r"#\d+$", gname) || error(
+        "ir_extract.jl: Bennett-iwo9 / CW-D3: `+`-prefixed global `$(gname)` " *
+        "lacks the trailing `#N` type-tag suffix — unexpected Julia JIT naming. " *
+        "Type-tag globals are `+<dotted.type.path>#<digits>`; a bare `+`-name " *
+        "cannot be canonicalized to a deterministic type id (CLAUDE.md §1).")
+    # Strip leading `+` and trailing `#<digits>`.
+    return replace(gname[2:end], r"#\d+$" => "")
+end
+
 function _ptr_identity(ref::_LLVMRef)::Union{Tuple{Symbol, UInt64}, Tuple{Symbol, _LLVMRef}, Nothing}
     ref == C_NULL && return nothing
     cur = ref

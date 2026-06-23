@@ -434,6 +434,18 @@ runfile("test_zf5v_gc_preserve.jl")
 # fail-loud at the existing "unsupported LLVM opcode" wall (circuit path
 # byte-identical). Mirrors the gc_preserve drop (zf5v) and atomic relax (ares).
 runfile("test_3ptu_fence_drop.jl")
+# Bennett-iwo9 / CW-D3 Lever 1 — recognise Julia type-tag globals
+# (@"+Type#N") BY NAME and model the closed-world cluster
+# `load @"+Type#N" → ptrtoint → inttoptr` under the ptr_cells VM gate
+# (src/extract/{constexpr,module_walk,instructions}.jl). The tag load lowers to
+# a deterministic name-derived dense id (NEVER the JIT address); the
+# ptrtoint/inttoptr round-trip is admitted ONLY when its source carries tag
+# provenance, else fail-loud (a genuine arena-pointer↔int cast is rejected).
+# `#N`-invariant + deterministic interning. ptr_cells-gated: gate-off the SAME
+# fixture walls at the pre-existing "unsupported LLVM opcode" ptrtoint fail-loud
+# (circuit path byte-identical). Advances the fdict root to the gc_alloc_obj
+# wall (Lever 2, separate bead). Does NOT touch gc_alloc_obj or BennettVM.
+runfile("test_iwo9_typetag.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message
 # + non-Bennett-authored guard (was: bare substring match that could
 # swallow unrelated Bennett fail-loud errors).

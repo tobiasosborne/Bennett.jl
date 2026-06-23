@@ -247,7 +247,19 @@ _is_token_wall(msg) =
                 # gc_preserve_begin. THIS is the next CW-D lever. (Rule 5: keep
                 # the disjunction inclusive of all plausible successors so an IR
                 # shuffle does not falsely red this wall-advance proof.)
+                #
+                # UPDATED (2026-06-23, Bennett-iwo9 / CW-D3 Lever 1): the
+                # type-tag round-trip is now modelled, so the `ptrtoint`/
+                # `inttoptr` wall is CLEARED and the root advances further into
+                # the Dict body — the NEW observed successor on this machine is
+                # `ConstantPointerNull operand: ptr null … (Bennett-bjdg / U80)`
+                # (a `ptr null` operand deeper in the inlined setindex!/getindex
+                # path). Added `null` / `U80` to the disjunction so the
+                # wall-advance proof stays green; this is the EXPECTED Lever-1
+                # advance, not a regression.
                 @test occursin("ptrtoint", lowercase(on_msg))        ||
+                      occursin("null", lowercase(on_msg))            ||
+                      occursin("U80", on_msg)                        ||
                       occursin("unsupported llvm opcode", lowercase(on_msg)) ||
                       occursin("gc_alloc_obj", lowercase(on_msg))    ||
                       occursin("genericmemory", lowercase(on_msg))   ||

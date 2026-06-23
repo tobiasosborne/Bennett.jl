@@ -1881,7 +1881,19 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                               # byte-identically (they guard the circuit/:heap
                               # models). The C cell model must not silently alias
                               # those paths — `module_walk.jl` is the sole setter.
-                              ptr_cells::Bool=false)
+                              ptr_cells::Bool=false,
+                              # Bennett-iwo9 / CW-D3 Lever 1: extraction-local
+                              # type-tag interning. `tag_ids` maps a canonical
+                              # type path ("Main.Base.Dict") → dense Int64 id
+                              # (first-seen walk order, deterministic). `tag_ssa`
+                              # records the SSA dests that carry a type-tag value
+                              # (provenance), so a downstream ptrtoint/inttoptr
+                              # whose source is a tag is recognised as the sound
+                              # type-tag round-trip. Both threaded from
+                              # `module_walk.jl` (the sole owner) and mutated in
+                              # place. Only consulted under `ptr_cells=true`.
+                              tag_ids::Dict{String, Int64}=Dict{String, Int64}(),
+                              tag_ssa::Set{_LLVMRef}=Set{_LLVMRef}())
     opc = LLVM.opcode(inst)
     dest = names[inst.ref]
 
@@ -1955,6 +1967,58 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                  opc == LLVM.API.LLVMZExt ? :zext : :trunc
         src = LLVM.operands(inst)[1]
         return IRCast(dest, opname, _operand(src, names), _iwidth(src), _iwidth(inst))
+    end
+
+    # Bennett-iwo9 / CW-D3 Lever 1: ptrtoint / inttoptr — model ONLY the Julia
+    # type-tag round-trip under the closed-world `ptr_cells` gate. The cluster
+    # the fdict root hits is
+    #
+    #   %tag  = load ptr, ptr @"+Main.Base.Dict#148"   ; → tag_ssa (load arm)
+    #   %Dict = ptrtoint ptr %tag to i64               ; src ∈ tag_ssa
+    #   %1    = inttoptr i64 %Dict to ptr              ; src ∈ tag_ssa
+    #
+    # Each link is a width-64 identity `IRBinOp(dest, :or, <src>, iconst(0), 64)`
+    # so the dest binds through the normal SSA path (consensus decision 3 —
+    # real SSA defs, not zero-IR const-prop). If the source SSA is a recognised
+    # type tag (`∈ tag_ssa`) the dest inherits tag provenance; OTHERWISE fail
+    # loud — a genuine pointer↔int round-trip (casting a real arena pointer,
+    # `ptrtoint ptr→i32`, etc.) is NOT modelled (it would expose
+    # ARENA_BASE-relative addresses to integer arithmetic). Under
+    # `ptr_cells=false` there is NO arm: the opcode falls through to the
+    # existing "unsupported LLVM opcode" fail-loud → circuit path byte-identical.
+    if (opc == LLVM.API.LLVMPtrToInt || opc == LLVM.API.LLVMIntToPtr) && ptr_cells
+        src = LLVM.operands(inst)[1]
+        opname = opc == LLVM.API.LLVMPtrToInt ? "ptrtoint" : "inttoptr"
+        if src isa LLVM.Instruction && src.ref in tag_ssa
+            # Width guard: the type-tag round-trip is a 64-bit VM-cell identity
+            # (ADR 0018 §A — a tag is one Int64 cell). A cast to/from a NON-64-bit
+            # width (e.g. `ptrtoint ptr %tag to i32`) is NOT this round-trip — it
+            # is genuine pointer arithmetic that would truncate/extend the cell
+            # value. It can't occur in the real fdict cluster (tags are always
+            # 64-bit round-trips), but a core extractor arm must not hardcode a
+            # width it didn't verify. PointerType has no integer width → 64 (cell).
+            srt = LLVM.value_type(src)
+            drt = LLVM.value_type(inst)
+            src_w = srt isa LLVM.PointerType ? 64 : _iwidth(src)
+            dst_w = drt isa LLVM.PointerType ? 64 : _iwidth(inst)
+            (src_w == 64 && dst_w == 64) || _ir_error(inst,
+                "$(opname) under ptr_cells on a type-tag value at a NON-64-bit " *
+                "width (src=$(src_w), dst=$(dst_w)) (Bennett-iwo9 / CW-D3 " *
+                "Lever 1). Only the 64-bit type-tag round-trip is modelled (a " *
+                "type tag is one Int64 VM cell); a narrower pointer↔integer cast " *
+                "is genuine pointer arithmetic that truncates/extends the cell " *
+                "value and is rejected to fail fast (CLAUDE.md §1).")
+            push!(tag_ssa, inst.ref)
+            return IRBinOp(dest, :or, _operand(src, names), iconst(0), 64)
+        end
+        _ir_error(inst,
+            "$(opname) under ptr_cells whose source is NOT a recognised Julia " *
+            "type-tag value (Bennett-iwo9 / CW-D3 Lever 1). Only the type-tag " *
+            "round-trip `load @\"+Type#N\" → ptrtoint → inttoptr` is modelled — " *
+            "a genuine pointer↔integer round-trip (e.g. casting a real arena " *
+            "pointer, or `ptrtoint ptr→i32`) would expose ARENA_BASE-relative " *
+            "addresses to integer arithmetic and is rejected to fail fast " *
+            "(CLAUDE.md §1).")
     end
 
     # branch
@@ -2513,6 +2577,33 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                         "ABI shape). Got $(n_uses == 0 ? "zero uses" : " " *
                         "a non-memcpy use") instead. (Bennett-land-ptrload)")
                 end
+            end
+        end
+
+        # Bennett-iwo9 / CW-D3 Lever 1: a `load ptr, ptr @"+Type#N"` reading a
+        # Julia type-tag global. Recognise BY NAME (never the JIT address in the
+        # initializer), mint/look-up a deterministic dense id for the canonical
+        # type path, and lower to `IRBinOp(dest, :or, iconst(id), iconst(0), 64)`
+        # — a width-64 constant identity (consensus decisions 1+3). Record `dest`
+        # in `tag_ssa` so the downstream ptrtoint/inttoptr round-trip is
+        # recognised as the sound type-tag pattern. ptr_cells-gated; the pointer
+        # operand is a `GlobalVariable` (not a registered SSA name), so this must
+        # run BEFORE the `haskey(names, ptr.ref)` block and the generic 64-bit
+        # IRLoad / `return nothing` fall-throughs. The `return IRBinOp(...)` here
+        # is itself the "no silent fall-through" protection: once a load is
+        # recognised as a type-tag-named global it ALWAYS emits the minted
+        # identity and never reaches the generic IRLoad. (`_canonical_type_path`
+        # supplies the only fail-loud on this path — a malformed `+`-name lacking
+        # the `#N` suffix.)
+        if ptr_cells && ptr isa LLVM.GlobalVariable
+            pname = LLVM.name(ptr)
+            if _is_type_tag_global_name(pname)
+                canon = _canonical_type_path(pname)   # fail-loud on malformed `+`-names
+                id = get!(tag_ids, canon) do
+                    Int64(length(tag_ids))            # dense, first-seen order
+                end
+                push!(tag_ssa, inst.ref)
+                return IRBinOp(dest, :or, iconst(Int(id)), iconst(0), 64)
             end
         end
 

@@ -111,6 +111,17 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
     # (carry-through tag). Consulted by `_handle_load`'s escape guard.
     synth_ptr_allocas = Set{_LLVMRef}()
 
+    # Bennett-iwo9 / CW-D3 Lever 1: extraction-local type-tag interning. Owned
+    # here, threaded into every `_convert_instruction` call and mutated in
+    # place. `tag_ids` maps a canonical type path → dense first-seen Int64 id
+    # (deterministic across re-extractions because the walk order is); `tag_ssa`
+    # records the SSA instruction refs that carry a type-tag value so the
+    # downstream ptrtoint/inttoptr round-trip is recognised. Only consulted under
+    # `ptr_cells=true`. NOT persisted into ParsedIR (consensus decision 2): the
+    # id is baked into emitted IR, nothing non-deterministic enters the contract.
+    tag_ids = Dict{String, Int64}()
+    tag_ssa = Set{_LLVMRef}()
+
     # Bennett-dv1z: detect sret calling convention. When present, the LLVM
     # return type is `void`; the aggregate shape comes from the sret attribute.
     sret_info = _detect_sret(func)
@@ -451,7 +462,9 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
                                      globals=globals,
                                      synth_ptr_provenance=synth_ptr_provenance,
                                      synth_ptr_allocas=synth_ptr_allocas,
-                                     ptr_cells=ptr_cells)
+                                     ptr_cells=ptr_cells,
+                                     tag_ids=tag_ids,
+                                     tag_ssa=tag_ssa)
             catch e
                 e isa InterruptException && rethrow()
                 msg = sprint(showerror, e)
