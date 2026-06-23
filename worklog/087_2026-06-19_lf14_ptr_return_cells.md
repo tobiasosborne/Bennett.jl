@@ -1,3 +1,91 @@
+## Session log — 2026-06-23 — Bennett-3ptu: fence drop under ptr_cells
+
+**Bead:** `Bennett-3ptu` (CW-D2 lever). SURGICAL, single-arm change to
+`src/extract/instructions.jl`, RED-GREEN TDD. Mirrors the two already-landed
+CW-D2 levers: gc_preserve token drop (`Bennett-zf5v`) and VM-gated atomic
+relaxation (`Bennett-ares`). Goal: under `ptr_cells=true` (closed-world BennettVM
+cell model) DROP LLVM `fence` as a no-op; on the circuit path
+(`ptr_cells=false`) keep it FAIL-LOUD.
+
+**IR construct.** `fence` is a pure memory-ordering barrier — constrains the
+*visibility ordering* of OTHER memory ops across threads, produces no value,
+mutates no state. In the single-threaded, deterministic, history-reversible
+BennettVM there is no concurrent observer for it to order against, so it is a
+genuine no-op: dropping it changes nothing and is trivially reversible. Every
+Julia closed-world callee emits **2** such fences (GC safepoint / write-barrier),
+so the drop unblocks `setindex!`/`rehash!`/`ht_keyindex2_shorthash!` body
+extraction.
+
+**Opcode constant.** `LLVM.API.LLVMFence`. Verified it exists before use:
+`julia --project -e 'using LLVM; println(LLVM.API.LLVMFence)'` → prints
+`LLVMFence` (no hallucination — Rule 5). Also confirmed `fence` is already in the
+opcode-name map (`src/extract/errors.jl:69` `LLVM.API.LLVMFence => "fence"`), so
+the gate-off fail-loud message reads `ir_extract.jl: fence in @fn:%bb: <inst> —
+unsupported LLVM opcode` (lets the cells=false test match both "fence" and
+"unsupported LLVM opcode").
+
+**The arm** (added just before the final `_ir_error(inst, "unsupported LLVM
+opcode")` fallthrough at ~line 2823 of `instructions.jl`):
+
+```julia
+if opc == LLVM.API.LLVMFence
+    if ptr_cells
+        return nothing          # drop — established "emit no IR" signal here
+    end
+    # ptr_cells=false → fall through to the fail-loud below.
+end
+```
+
+`return nothing` is the established "emit no IR for this instruction" signal in
+this converter (same as the gc_preserve drop above and the silent-skip
+alloca/load arms — confirmed by reading those sites). Exact-opcode-scoped:
+only `fence` is admitted (mirrors the exact-NAME scoping of the gc_preserve
+drop).
+
+**Gotcha checked (not a problem).** `dest = names[inst.ref]` runs
+*unconditionally* at the top of `_convert_instruction` (~line 1886). A `fence` is
+void, but `module_walk.jl`'s first naming pass (line 256) assigns an auto-name to
+EVERY instruction including void ones, so `dest` resolves fine for the fence; the
+arm just never uses it (returns `nothing`). No crash from the void result.
+
+**Test vehicle.** `test/test_3ptu_fence_drop.jl` (new; registered in
+`test/runtests.jl` right after `test_zf5v_gc_preserve.jl`). Hand-built `.ll`
+fixtures (Rule 5 — hermetic, version-independent), modeled on zf5v's
+`_extract_ll` plumbing via `extract_parsed_ir_from_ll(path; entry_function=...,
+ptr_cells=...)`. Each fixture isolates `fence`: a trivial `add i64 %x, 1` + a
+`fence` + `ret i64 %y`. Two ordering shapes:
+`fence syncscope("singlethread") seq_cst` (the exact GC-safepoint barrier Julia
+emits) and plain `fence seq_cst`. Deliberately NO ptrtoint / insertvalue / sret
+(separate beads — would mask the drop proof). Assertions: cells=true → extraction
+succeeds, the fence leaves NO IR instruction (`length(insts)==1`, the lone
+surviving `IRBinOp(:add)`); cells=false → `@test_throws`-style err whose message
+contains both "unsupported LLVM opcode" and "fence" (byte-identity, Rule 1: the
+circuit path does NOT silently drop the fence). There is no `IRFence` type in the
+IR hierarchy, so the drop witness is the instruction-count / sole-add shape (Rule
+4 — positive node shape, not no-throw).
+
+**Red → green evidence** (`julia --project --check-bounds=yes
+test/test_3ptu_fence_drop.jl`, captured via grep per the tail-in-stacktrace
+memory):
+- RED (before impl): `3 passed, 2 failed` — GATE (a) and (a') fail on
+  `@test st === :ok` (the fence hit the fail-loud under cells=true); GATE (b)
+  cells=false already walled correctly.
+- GREEN (after impl): `Bennett-3ptu fence drop under ptr_cells | 11 11` (11/11).
+
+**Regression (clean).**
+- `test_gate_count_regression.jl`: `Gate count regression baselines | 39 39`
+  (8.4s) — unchanged, proves the circuit path is byte-identical (ptr_cells
+  defaults false).
+- `test_zf5v_gc_preserve.jl`: 17/17. `test_ares_atomic_vm_relax.jl`: 57/57.
+  (Did NOT run full `Pkg.test()` — targeted files only, one julia process at a
+  time per the no-parallel-julia rule.)
+
+**Files touched:** `src/extract/instructions.jl` (the new arm),
+`test/test_3ptu_fence_drop.jl` (new), `test/runtests.jl` (registration only),
+this worklog chunk. No commit / push / bd-close — left for the orchestrator.
+
+---
+
 ## Session log — 2026-06-20 — Bennett-zf5v — CW-D2 lever 2: gc_preserve token drop + get_pgcstack allowlist
 
 **Bead:** `Bennett-zf5v` (P1). CORE change (`src/extract/instructions.jl` +

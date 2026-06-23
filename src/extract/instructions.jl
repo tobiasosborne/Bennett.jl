@@ -2820,6 +2820,30 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         return IRAlloca(dest, elem_w, n_elems_op)
     end
 
+    # Bennett-3ptu — CW-D2 lever: DROP `fence` under the closed-world / BennettVM
+    # cell model (`ptr_cells=true`). A `fence` is a pure memory-ordering barrier
+    # with NO data effect — it constrains the visibility ordering of OTHER memory
+    # ops across threads, but produces no value and mutates no state. In the
+    # single-threaded, deterministic, history-reversible BennettVM there is no
+    # concurrent observer for the barrier to order against, so the fence is a
+    # genuine no-op: dropping it changes nothing and is trivially reversible.
+    # `return nothing` is the established "emit no IR for this instruction" signal
+    # here (same as the gc_preserve drop above and the silent-skip allocas/loads).
+    # Every Julia callee in the fdict closed-world path emits 2 such fences (GC
+    # safepoint / write-barrier fences), so this unblocks setindex!/rehash!/
+    # ht_keyindex2_shorthash! extraction. Gate-off (`ptr_cells=false`) the fence
+    # falls through to the existing "unsupported LLVM opcode" fail-loud below —
+    # the circuit path is byte-identical and does NOT silently drop the fence
+    # (CLAUDE.md §1). Exact-opcode-scoped: only `fence` is admitted (mirrors the
+    # exact-name scoping of the gc_preserve drop in Bennett-zf5v).
+    if opc == LLVM.API.LLVMFence
+        if ptr_cells
+            return nothing
+        end
+        # ptr_cells=false → fall through to the fail-loud below (no change to
+        # circuit-path behaviour).
+    end
+
     _ir_error(inst, "unsupported LLVM opcode")
 end
 

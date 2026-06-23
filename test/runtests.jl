@@ -424,6 +424,16 @@ runfile("test_lf14_ptr_return_cells.jl")
 # TokenType reject; this advances it to a `ptrtoint ... unsupported LLVM opcode`
 # wall (the next CW-D lever). ptr_cells-gated: circuit path byte-identical.
 runfile("test_zf5v_gc_preserve.jl")
+# Bennett-3ptu / CW-D2 — DROP LLVM `fence` under the ptr_cells closed-world VM
+# gate (src/extract/instructions.jl). A `fence` is a pure memory-ordering
+# barrier with no data effect → a genuine no-op in the single-threaded,
+# deterministic, history-reversible BennettVM (no state change, trivially
+# reversible). Every Julia closed-world callee emits 2 such fences (GC safepoint
+# / write-barrier), so the drop unblocks setindex!/rehash!/ht_keyindex2 body
+# extraction. ptr_cells-gated and exact-opcode-scoped: gate-off the fence stays
+# fail-loud at the existing "unsupported LLVM opcode" wall (circuit path
+# byte-identical). Mirrors the gc_preserve drop (zf5v) and atomic relax (ares).
+runfile("test_3ptu_fence_drop.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message
 # + non-Bennett-authored guard (was: bare substring match that could
 # swallow unrelated Bennett fail-loud errors).
