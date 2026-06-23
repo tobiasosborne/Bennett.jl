@@ -130,14 +130,43 @@ struct IRRet <: IRInst
     IRRet() = new(nothing, 0)
 end
 
+# Bennett-6bu3: `field_widths` extends IRInsertValue to model HETEROGENEOUS
+# StructType aggregates (per-field bit layout) in addition to the original
+# homogeneous ArrayType `[N x iW]` case. Discriminator convention:
+#   * isempty(field_widths)  ⇒ HOMOGENEOUS — `elem_width`/`n_elems` are
+#     authoritative (every existing call site; byte-identical via the
+#     convenience ctor below, which sets `field_widths = Int[]`).
+#   * !isempty(field_widths) ⇒ STRUCTTYPE — per-field widths are authoritative;
+#     `n_elems == length(field_widths)` and `elem_width == 0` (sentinel).
+# The struct-type case is produced by the extractor (`_struct_field_widths`,
+# src/extract/instructions.jl) only for ptr_cells `{ptr,ptr}`-style structs
+# whose fields are integers in {8,16,32,64} or ptr-cells (width 64); i1 and
+# float/nested/vector/array fields are rejected FAIL-LOUD upstream.
 struct IRInsertValue <: IRInst
     dest::Symbol
-    agg::IROperand       # aggregate operand (or :zero for zeroinitializer)
+    agg::IROperand       # aggregate operand (or ZERO_AGG for zeroinitializer)
     val::IROperand       # value to insert
     index::Int           # 0-based element index
-    elem_width::Int      # bit width of each element
-    n_elems::Int         # number of elements in the aggregate
+    elem_width::Int      # bit width of each element (0 sentinel for StructType)
+    n_elems::Int         # number of elements (== length(field_widths) if struct)
+    field_widths::Vector{Int}  # per-field bit widths (empty ⇒ homogeneous)
+    # Full ctor: explicit per-field widths (StructType case).
+    function IRInsertValue(dest::Symbol, agg::IROperand, val::IROperand,
+                           index::Int, elem_width::Int, n_elems::Int,
+                           field_widths::Vector{Int})
+        isempty(field_widths) || length(field_widths) == n_elems ||
+            throw(ArgumentError("IRInsertValue: length(field_widths)=$(length(field_widths)) " *
+                  "!= n_elems=$n_elems (dest=$dest); non-empty field_widths must match n_elems"))
+        new(dest, agg, val, index, elem_width, n_elems, field_widths)
+    end
 end
+
+# Convenience ctor reproducing the EXACT pre-6bu3 6-arg signature — every
+# existing call site compiles byte-identically with `field_widths = Int[]`
+# (the homogeneous discriminator).
+IRInsertValue(dest::Symbol, agg::IROperand, val::IROperand,
+              index::Int, elem_width::Int, n_elems::Int) =
+    IRInsertValue(dest, agg, val, index, elem_width, n_elems, Int[])
 
 # Bennett-dv1z (heterogeneous bits-struct sret): insert a `val_width`-bit value
 # into a heterogeneous aggregate at an arbitrary BIT offset. Unlike
@@ -331,13 +360,33 @@ struct IRAlloca <: IRInst
     end
 end
 
+# Bennett-6bu3: `field_widths` extends IRExtractValue to model HETEROGENEOUS
+# StructType aggregates (per-field bit layout) — same discriminator convention
+# as IRInsertValue (isempty ⇒ homogeneous; non-empty ⇒ StructType with
+# n_elems == length(field_widths), elem_width == 0 sentinel).
 struct IRExtractValue <: IRInst
     dest::Symbol
     agg::IROperand       # aggregate operand
     index::Int           # 0-based element index
-    elem_width::Int      # bit width of each element
-    n_elems::Int         # number of elements in the aggregate
+    elem_width::Int      # bit width of each element (0 sentinel for StructType)
+    n_elems::Int         # number of elements (== length(field_widths) if struct)
+    field_widths::Vector{Int}  # per-field bit widths (empty ⇒ homogeneous)
+    # Full ctor: explicit per-field widths (StructType case).
+    function IRExtractValue(dest::Symbol, agg::IROperand, index::Int,
+                            elem_width::Int, n_elems::Int,
+                            field_widths::Vector{Int})
+        isempty(field_widths) || length(field_widths) == n_elems ||
+            throw(ArgumentError("IRExtractValue: length(field_widths)=$(length(field_widths)) " *
+                  "!= n_elems=$n_elems (dest=$dest); non-empty field_widths must match n_elems"))
+        new(dest, agg, index, elem_width, n_elems, field_widths)
+    end
 end
+
+# Convenience ctor reproducing the EXACT pre-6bu3 5-arg signature — every
+# existing call site compiles byte-identically with `field_widths = Int[]`.
+IRExtractValue(dest::Symbol, agg::IROperand, index::Int,
+               elem_width::Int, n_elems::Int) =
+    IRExtractValue(dest, agg, index, elem_width, n_elems, Int[])
 
 # Bennett-k3ej (BVM ADR 0020 D1): `callee` widens from `Function` to
 # `Union{Function,Symbol}`. A `.ll`-sourced callee (C-track closed-world

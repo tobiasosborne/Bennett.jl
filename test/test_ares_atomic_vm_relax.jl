@@ -341,7 +341,16 @@ _is_u14_wall(msg, op_kw) =
                 # atomic load. (Rule 5: order-dependent — keep the disjunction
                 # inclusive of all plausible successors so an IR shuffle does
                 # not falsely red this wall-advance proof.)
-                @test occursin("insertvalue", lowercase(on_msg))          ||
+                # Bennett-6bu3: insertvalue on {ptr,ptr} StructType bodies is now
+                # SUPPORTED in the extractor, so setindex! advances PAST the old
+                # insertvalue wall to the `ptrtoint ptr %memory_data to i64`
+                # GenericMemory data-pointer wall (Bennett-iwo9 / CW-D3 Lever 1).
+                # Added ptrtoint / iwo9 / type-tag disjuncts for the new successor;
+                # existing disjuncts kept (harmless under Rule 5).
+                @test occursin("ptrtoint", lowercase(on_msg))             ||  # Bennett-6bu3: new iwo9 successor
+                      occursin("iwo9", lowercase(on_msg))                 ||  # Bennett-6bu3
+                      occursin("type-tag", lowercase(on_msg))             ||  # Bennett-6bu3
+                      occursin("insertvalue", lowercase(on_msg))          ||
                       occursin("aggregate", lowercase(on_msg))            ||
                       occursin("structtype", lowercase(on_msg))           ||
                       occursin("fence", lowercase(on_msg))                ||

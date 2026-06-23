@@ -139,7 +139,15 @@ _is_ptr_return_wall(msg) =
                 # wall to its `insertvalue { ptr, ptr }` memoryref-aggregate wall;
                 # disjunction widened to include the new successor (the load-bearing
                 # `!_is_ptr_return_wall` assertion above is unchanged).
-                @test occursin("VoidType", msg_on) || occursin("U81", msg_on) ||
+                # Bennett-6bu3: insertvalue on {ptr,ptr} StructType bodies is now
+                # SUPPORTED, so setindex! advances PAST the insertvalue wall to the
+                # `ptrtoint ptr %memory_data to i64` GenericMemory data-pointer wall
+                # (Bennett-iwo9 / CW-D3 Lever 1). Added ptrtoint / iwo9 / type-tag
+                # disjuncts; all existing disjuncts kept.
+                @test occursin("ptrtoint", lowercase(msg_on)) ||  # Bennett-6bu3: new iwo9 successor
+                      occursin("iwo9", lowercase(msg_on)) ||      # Bennett-6bu3
+                      occursin("type-tag", lowercase(msg_on)) ||  # Bennett-6bu3
+                      occursin("VoidType", msg_on) || occursin("U81", msg_on) ||
                       occursin("atomic", msg_on)   || occursin("U14", msg_on) ||
                       occursin("insertvalue", lowercase(msg_on)) ||
                       occursin("aggregate", lowercase(msg_on)) ||
@@ -162,7 +170,16 @@ _is_ptr_return_wall(msg) =
                 # Bennett-ares (CW-D2 lever 1): the relaxed U14 guard advances
                 # rehash! past its `store atomic … release` + atomic-load walls to
                 # the `llvm.memcpy @"_j_const#1"` wall; disjunction widened.
-                @test occursin("atomic", rmsg_on) || occursin("U14", rmsg_on) ||
+                # Bennett-6bu3: insertvalue on {ptr,ptr} StructType bodies is now
+                # SUPPORTED; the captured runtime wall is the `llvm.memcpy
+                # @"_j_const#1"` wall (already covered by the memcpy disjunct), but
+                # under a different registry order the ptrtoint `%memory_data → i64`
+                # iwo9 wall (Bennett-iwo9 / CW-D3 Lever 1) can surface first — add
+                # ptrtoint / iwo9 / type-tag disjuncts; all existing disjuncts kept.
+                @test occursin("ptrtoint", lowercase(rmsg_on)) ||  # Bennett-6bu3: new iwo9 successor
+                      occursin("iwo9", lowercase(rmsg_on)) ||      # Bennett-6bu3
+                      occursin("type-tag", lowercase(rmsg_on)) ||  # Bennett-6bu3
+                      occursin("atomic", rmsg_on) || occursin("U14", rmsg_on) ||
                       occursin("VoidType", rmsg_on) || occursin("U81", rmsg_on) ||
                       occursin("insertvalue", lowercase(rmsg_on)) ||
                       occursin("aggregate", lowercase(rmsg_on)) ||

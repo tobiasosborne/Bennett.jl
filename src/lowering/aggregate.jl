@@ -547,21 +547,41 @@ function _lower_load_legacy!(gates::Vector{ReversibleGate}, wa::WireAllocator,
 end
 
 function lower_extractvalue!(gates, wa, vw, inst::IRExtractValue)
-    total_w = inst.elem_width * inst.n_elems
+    # Bennett-6bu3: empty field_widths ⇒ HOMOGENEOUS (existing path, byte-
+    # identical — total_w = elem_width*n_elems, fixed-width-element offset/width).
+    # Non-empty ⇒ STRUCTTYPE — contiguous per-field layout: total = Σ widths,
+    # offset = Σ widths[1:index] (0-based running sum), field width = widths[index+1].
+    if isempty(inst.field_widths)
+        total_w = inst.elem_width * inst.n_elems
+        offset = inst.index * inst.elem_width
+        w = inst.elem_width
+    else
+        total_w = sum(inst.field_widths)
+        offset = sum(@view inst.field_widths[1:inst.index])  # 0-based index
+        w = inst.field_widths[inst.index + 1]
+    end
     agg_wires = resolve!(gates, wa, vw, inst.agg, total_w)
 
-    # Select the wires for the requested element — zero gates (wire aliasing)
-    offset = inst.index * inst.elem_width
-    result = allocate!(wa, inst.elem_width)
-    for i in 1:inst.elem_width
+    # Select the wires for the requested field — zero gates (wire aliasing)
+    result = allocate!(wa, w)
+    for i in 1:w
         push!(gates, CNOTGate(agg_wires[offset + i], result[i]))
     end
     vw[inst.dest] = result
 end
 
 function lower_insertvalue!(gates, wa, vw, inst::IRInsertValue)
-    total_w = inst.elem_width * inst.n_elems
-    val_wires = resolve!(gates, wa, vw, inst.val, inst.elem_width)
+    # Bennett-6bu3: same homogeneous/StructType discriminator as extractvalue.
+    if isempty(inst.field_widths)
+        total_w = inst.elem_width * inst.n_elems
+        iv_offset = inst.index * inst.elem_width  # 0-based index
+        w = inst.elem_width
+    else
+        total_w = sum(inst.field_widths)
+        iv_offset = sum(@view inst.field_widths[1:inst.index])  # 0-based index
+        w = inst.field_widths[inst.index + 1]
+    end
+    val_wires = resolve!(gates, wa, vw, inst.val, w)
 
     # Resolve or create the aggregate
     if inst.agg === ZERO_AGG
@@ -570,11 +590,10 @@ function lower_insertvalue!(gates, wa, vw, inst::IRInsertValue)
         agg_wires = resolve!(gates, wa, vw, inst.agg, total_w)
     end
 
-    # Copy aggregate, replacing element at `index`
+    # Copy aggregate, replacing the field span at `index`
     result = allocate!(wa, total_w)
-    iv_offset = inst.index * inst.elem_width  # 0-based index
     for i in 1:total_w
-        if i > iv_offset && i <= iv_offset + inst.elem_width
+        if i > iv_offset && i <= iv_offset + w
             push!(gates, CNOTGate(val_wires[i - iv_offset], result[i]))
         else
             push!(gates, CNOTGate(agg_wires[i], result[i]))

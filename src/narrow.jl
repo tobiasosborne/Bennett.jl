@@ -42,8 +42,21 @@ _narrow_inst(inst::IRRet, W::Int) = inst.op === nothing ? inst : IRRet(inst.op, 
 _narrow_inst(inst::IRPhi, W::Int) = inst.width == 0 ? inst :
     IRPhi(inst.dest, inst.width > 1 ? W : 1, inst.incoming)
 _narrow_inst(inst::IRBranch, W::Int) = inst  # branches don't have widths
-_narrow_inst(inst::IRInsertValue, W::Int) = IRInsertValue(inst.dest, inst.agg, inst.val, inst.index, W, inst.elem_count)
-_narrow_inst(inst::IRExtractValue, W::Int) = IRExtractValue(inst.dest, inst.agg, inst.index, W)
+# Bennett-6bu3: these were broken-but-dead (behind the bit_width>0 narrowing
+# path, which is mutually exclusive with the aggregate/StructType path) — the
+# pre-6bu3 forms referenced a nonexistent `inst.elem_count` field and called a
+# 4-arg IRExtractValue ctor that never existed. Repaired to the real ctors.
+# StructType aggregates (non-empty field_widths) are a ptr-cell-only shape that
+# the circuit-width narrowing pass never touches; pass field_widths through
+# unchanged so a struct node round-trips totally (defensive, not a reached path).
+_narrow_inst(inst::IRInsertValue, W::Int) =
+    isempty(inst.field_widths) ?
+        IRInsertValue(inst.dest, inst.agg, inst.val, inst.index, W, inst.n_elems) :
+        inst
+_narrow_inst(inst::IRExtractValue, W::Int) =
+    isempty(inst.field_widths) ?
+        IRExtractValue(inst.dest, inst.agg, inst.index, W, inst.n_elems) :
+        inst
 _narrow_inst(inst::IRCall, W::Int) = inst  # calls handle their own widths
 # IRStore/IRAlloca: preserve i1 widths like the other narrow methods; n_elems
 # is a count, not a bit-width, so it passes through.

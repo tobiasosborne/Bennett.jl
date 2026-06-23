@@ -195,11 +195,13 @@ _is_null_wall(msg) =
                 # NEGATIVE: no longer the ConstantPointerNull U80 wall.
                 @test !_is_null_wall(on_msg)
                 # POSITIVE inclusive disjunction of plausible CW-D successors.
-                # The next wall is likely the inlined setindex!/getindex body:
-                # insertvalue {ptr,ptr} (Bennett-6bu3), memcpy (Bennett-8bys),
-                # sret (Bennett-59zi), genericmemory, or an unregistered callee.
-                @test occursin("insertvalue", lowercase(on_msg))     ||
-                      occursin("aggregate", lowercase(on_msg))       ||
+                # The next wall is the inlined setindex!/getindex body: memcpy
+                # (Bennett-8bys), sret (Bennett-59zi), genericmemory, or an
+                # unregistered callee. Bennett-6bu3 REMOVED the `insertvalue`
+                # disjunct — the {ptr,ptr} StructType insertvalue is now
+                # supported, so the root advances PAST it (the test must not pass
+                # for the wrong reason by matching the now-handled insertvalue).
+                @test occursin("aggregate", lowercase(on_msg))       ||
                       occursin("structtype", lowercase(on_msg))      ||
                       occursin("memcpy", lowercase(on_msg))          ||
                       occursin("genericmemory", lowercase(on_msg))   ||

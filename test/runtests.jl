@@ -463,6 +463,12 @@ runfile("test_beaw_null_ptr.jl")
 # 2). The fdict-root successor wall past beaw (the field-init memcpys from
 # scalar const-globals into gc_alloc'd Dict cells).
 runfile("test_vbv9_arena_memcpy.jl")
+# Bennett-6bu3 — CW-D: StructType insertvalue/extractvalue (per-field layout).
+# Adds an additive `field_widths::Vector{Int}` to IRInsertValue/IRExtractValue
+# so the `{ptr,ptr}` GenericMemoryRef body (and fixed-width integer tuples)
+# lower; keeps {i64,i1} (i1) and float/nested-struct fields fail-loud. The
+# fdict-root successor wall past vbv9.
+runfile("test_6bu3_struct_aggregate.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message
 # + non-Bennett-authored guard (was: bare substring match that could
 # swallow unrelated Bennett fail-loud errors).

@@ -32,6 +32,66 @@ function _alloca_root_ref(val::LLVM.Value, depth::Int=0)::Union{Nothing, _LLVMRe
 end
 
 """
+    _struct_field_widths(st::LLVM.StructType, inst, ptr_cells::Bool) -> Vector{Int}
+
+Bennett-6bu3: extract the per-field bit-width layout of a StructType aggregate
+for `insertvalue`/`extractvalue`. Mirrors `_sret_struct_fields`
+(src/extract/sret.jl) but returns ONLY the per-field WIDTHS (in field order),
+since the aggregate slot model is contiguous (no padding) — the
+insert/extract operate on logical field INDEX, not byte offset.
+
+Field rules (CLAUDE.md §1 — every rejection is fail-loud, citing Bennett-6bu3):
+  * IntegerType → `LLVM.width`, REQUIRING width ∈ {8,16,32,64}. This is the
+    load-bearing guard that keeps `{i64,i1}` (`llvm.*.with.overflow` results,
+    `cmpxchg` results) FAILING LOUD — i1 is rejected.
+  * PointerType → 64, but ONLY under `ptr_cells` (a pointer is one Int64 VM
+    cell, ADR 0018 §A). Without ptr_cells a pointer field fails loud.
+  * float / nested-struct / vector / array fields, packed structs, and empty
+    structs are all rejected loud.
+
+NOTE: pointer-field widths are computed HERE (constant 64), NOT routed through
+`_iwidth`/`_type_width` — those have no PointerType arm and would error.
+"""
+function _struct_field_widths(st::LLVM.StructType, inst::LLVM.Instruction,
+                              ptr_cells::Bool)::Vector{Int}
+    LLVM.ispacked(st) && _ir_error(inst,
+        "insertvalue/extractvalue on a PACKED StructType $(string(st)) is not " *
+        "supported; only unpacked structs of fixed-width integer ({8,16,32,64}) " *
+        "or (under ptr_cells) pointer fields are. (Bennett-6bu3)")
+    elem_tys = LLVM.elements(st)
+    isempty(elem_tys) && _ir_error(inst,
+        "insertvalue/extractvalue on an EMPTY StructType $(string(st)) is not " *
+        "supported; the aggregate has no fields. (Bennett-6bu3)")
+    widths = Int[]
+    for (k, fty) in enumerate(elem_tys)
+        if fty isa LLVM.IntegerType
+            w = LLVM.width(fty)
+            w ∈ (8, 16, 32, 64) || _ir_error(inst,
+                "StructType field $(k-1) of $(string(st)) has integer width $w " *
+                "not in {8,16,32,64}; the bits-struct slot model only supports " *
+                "fixed-width integer fields (this REJECTS i1 — `{i64,i1}` " *
+                "overflow/cmpxchg structs are out of scope). (Bennett-6bu3)")
+            push!(widths, Int(w))
+        elseif fty isa LLVM.PointerType
+            ptr_cells || _ir_error(inst,
+                "StructType field $(k-1) of $(string(st)) is a pointer field, " *
+                "which requires ptr_cells=true (a pointer is one Int64 VM cell, " *
+                "ADR 0018 §A); on the circuit path pointer fields are not " *
+                "supported. (Bennett-6bu3)")
+            push!(widths, 64)
+        else
+            _ir_error(inst,
+                "StructType field $(k-1) of $(string(st)) has unsupported type " *
+                "$(string(fty)); only fixed-width integer ({8,16,32,64}) or " *
+                "(under ptr_cells) pointer fields are supported — float, " *
+                "nested-struct, vector, and array fields are rejected. " *
+                "(Bennett-6bu3)")
+        end
+    end
+    return widths
+end
+
+"""
     _gc_alloc_root_ref(val, depth=0) -> Union{Nothing, _LLVMRef}
 
 Bennett-vbv9 (2026-06): the ARENA analogue of `_alloca_root_ref`. Walk the
@@ -2164,28 +2224,40 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
     end
 
     # extractvalue — select one element from an aggregate.
-    # Bennett-tu6i / U10: only ArrayType aggregates are supported (homogeneous,
-    # scalar-element). StructType aggregates ({iN, i1}, mixed-width tuples,
-    # .with.overflow intrinsics, cmpxchg results) need field-wise width
-    # tracking that IRExtractValue doesn't carry. Fail loud on StructType —
-    # without this guard, `LLVM.eltype(struct_type)` raises a raw UndefRefError
-    # deep in the LLVM.jl bindings with no Bennett context.
+    # Bennett-tu6i / U10: homogeneous ArrayType aggregates (scalar element).
+    # Bennett-6bu3: StructType aggregates ({ptr,ptr} GenericMemoryRef bodies,
+    # mixed-width integer tuples) are now supported via per-field widths — see
+    # `_struct_field_widths`. Fields are restricted to fixed-width integers
+    # ({8,16,32,64}) or (under ptr_cells) pointers; i1 (`{i64,i1}` overflow/
+    # cmpxchg), float, nested-struct, vector, and array fields stay FAIL-LOUD
+    # there. Anything that is neither Array nor Struct (vector/scalar) still
+    # falls to the final loud reject below.
     if opc == LLVM.API.LLVMExtractValue
         ops = LLVM.operands(inst)
         agg_val = ops[1]
         idx_ptr = LLVM.API.LLVMGetIndices(inst)
-        idx = unsafe_load(idx_ptr)  # 0-based
+        idx = Int(unsafe_load(idx_ptr))  # 0-based
         agg_type = LLVM.value_type(agg_val)
-        agg_type isa LLVM.ArrayType || _ir_error(inst,
-            "extractvalue on StructType aggregates not supported; " *
-            "only homogeneous ArrayType aggregates are. Source type: " *
-            string(agg_type))
-        ew = LLVM.width(LLVM.eltype(agg_type))
-        ne = LLVM.length(agg_type)
-        return IRExtractValue(dest, _operand(agg_val, names), idx, ew, ne)
+        if agg_type isa LLVM.ArrayType
+            ew = LLVM.width(LLVM.eltype(agg_type))
+            ne = LLVM.length(agg_type)
+            return IRExtractValue(dest, _operand(agg_val, names), idx, ew, ne)
+        elseif agg_type isa LLVM.StructType
+            fw = _struct_field_widths(agg_type, inst, ptr_cells)
+            0 <= idx < length(fw) || _ir_error(inst,
+                "extractvalue index $idx out of range for StructType $(string(agg_type)) " *
+                "with $(length(fw)) fields. (Bennett-6bu3)")
+            return IRExtractValue(dest, _operand(agg_val, names), idx,
+                                  0, length(fw), fw)
+        else
+            _ir_error(inst,
+                "extractvalue on $(string(agg_type)) is not supported; only " *
+                "homogeneous ArrayType and (Bennett-6bu3) fixed-width " *
+                "StructType aggregates are.")
+        end
     end
 
-    # insertvalue — same ArrayType-only restriction as extractvalue.
+    # insertvalue — same Array/Struct support as extractvalue.
     if opc == LLVM.API.LLVMInsertValue
         ops = LLVM.operands(inst)
         agg_val = ops[1]
@@ -2193,14 +2265,27 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         idxs_ptr = LLVM.API.LLVMGetIndices(inst)
         idx = Int(unsafe_wrap(Array, idxs_ptr, 1)[1])
         agg_type = LLVM.value_type(inst)
-        agg_type isa LLVM.ArrayType || _ir_error(inst,
-            "insertvalue on StructType aggregates not supported; " *
-            "only homogeneous ArrayType aggregates are. Destination type: " *
-            string(agg_type))
-        ew = LLVM.width(LLVM.eltype(agg_type))
-        ne = LLVM.length(agg_type)
-        return IRInsertValue(dest, _operand(agg_val, names),
-                             _operand(elem_val, names), idx, ew, ne)
+        if agg_type isa LLVM.ArrayType
+            ew = LLVM.width(LLVM.eltype(agg_type))
+            ne = LLVM.length(agg_type)
+            return IRInsertValue(dest, _operand(agg_val, names),
+                                 _operand(elem_val, names), idx, ew, ne)
+        elseif agg_type isa LLVM.StructType
+            fw = _struct_field_widths(agg_type, inst, ptr_cells)
+            0 <= idx < length(fw) || _ir_error(inst,
+                "insertvalue index $idx out of range for StructType $(string(agg_type)) " *
+                "with $(length(fw)) fields. (Bennett-6bu3)")
+            # Pass `ptr_cells` to `_operand` for the INSERTED value so a
+            # `ptr null` field lowers to the zero cell (iconst(0)) per Bennett-beaw.
+            return IRInsertValue(dest, _operand(agg_val, names),
+                                 _operand(elem_val, names; ptr_cells=ptr_cells),
+                                 idx, 0, length(fw), fw)
+        else
+            _ir_error(inst,
+                "insertvalue on $(string(agg_type)) is not supported; only " *
+                "homogeneous ArrayType and (Bennett-6bu3) fixed-width " *
+                "StructType aggregates are.")
+        end
     end
 
     # unreachable — dead code
