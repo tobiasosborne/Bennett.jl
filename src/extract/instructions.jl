@@ -32,6 +32,54 @@ function _alloca_root_ref(val::LLVM.Value, depth::Int=0)::Union{Nothing, _LLVMRe
 end
 
 """
+    _gc_alloc_root_ref(val, depth=0) -> Union{Nothing, _LLVMRef}
+
+Bennett-vbv9 (2026-06): the ARENA analogue of `_alloca_root_ref`. Walk the
+producer chain from a pointer SSA value back to its underlying
+`julia.gc_alloc_obj` CALL — the closed-world arena allocation (Bennett-r92o /
+CW-D3 Lever 2; BennettVM ADR 0021 D3 bump floor). Returns the call's LLVM ref,
+or `nothing` if the chain doesn't bottom out in a `julia.gc_alloc_obj` call
+(e.g. function parameter, global, ptr-phi, ptr-select, alloca).
+
+Mirrors `_alloca_root_ref`'s const-GEP recursion EXACTLY (same depth-8 bound,
+same `LLVMGetElementPtr` opcode walk, same `gep_ops[1]` base step), differing
+only in the bottom-out predicate: a Call instruction whose LAST operand (the
+callee, per the `cname = LLVM.name(ops[n_ops])` convention used throughout this
+file) is named `julia.gc_alloc_obj`.
+
+The real fdict field-init dst-GEP is `getelementptr inbounds i8, ptr %obj,
+i32 OFF` (a single-index i8 GEP off the gc_alloc result — empirically verified
+Bennett-vbv9 STEP 0c), so the recursion is a single GEP hop to the call.
+
+Used by `_handle_memcpy_global_src` (G3) ONLY under `ptr_cells=true` — an
+arena dst makes no sense on the circuit path, which has no gc_alloc cell model.
+"""
+function _gc_alloc_root_ref(val::LLVM.Value, depth::Int=0)::Union{Nothing, _LLVMRef}
+    depth > 8 && return nothing
+    val.ref == C_NULL && return nothing
+    if val isa LLVM.Instruction && LLVM.opcode(val) == LLVM.API.LLVMCall
+        call_ops = LLVM.operands(val)
+        n = length(call_ops)
+        n >= 1 || return nothing
+        # Callee is the LAST operand (file-wide convention). Read its name; a
+        # missing/exotic callee name simply means "not our gc_alloc_obj".
+        callee_name = try
+            LLVM.name(call_ops[n])
+        catch e
+            e isa InterruptException && rethrow()
+            return nothing
+        end
+        return callee_name == "julia.gc_alloc_obj" ? val.ref : nothing
+    end
+    if val isa LLVM.Instruction && LLVM.opcode(val) == LLVM.API.LLVMGetElementPtr
+        gep_ops = LLVM.operands(val)
+        length(gep_ops) >= 1 || return nothing
+        return _gc_alloc_root_ref(gep_ops[1], depth + 1)
+    end
+    return nothing
+end
+
+"""
     _alloca_elem_width_bits(alloca_ref) -> Int
 
 Returns the alloca's element width in bits, or 0 if the allocated type
@@ -110,7 +158,8 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
                                 Dict{Symbol, Tuple{Vector{UInt64}, Int}}();
                             synth_ptr_provenance::Set{Tuple{Symbol, Int, Int}}=
                                 Set{Tuple{Symbol, Int, Int}}(),
-                            synth_ptr_allocas::Set{_LLVMRef}=Set{_LLVMRef}())
+                            synth_ptr_allocas::Set{_LLVMRef}=Set{_LLVMRef}(),
+                            ptr_cells::Bool=false)
     # Predicate 1: addrspace 0 on both pointers (encoded in the intrinsic name).
     startswith(cname, "llvm.memcpy.p0.p0.") || _ir_error(inst,
         "$(cname): memcpy with non-default pointer address space is not " *
@@ -183,7 +232,8 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
     if _src_reaches_global(src_v)
         return _handle_memcpy_global_src(cname, inst, names, counter, ops, globals;
                                          synth_ptr_provenance=synth_ptr_provenance,
-                                         synth_ptr_allocas=synth_ptr_allocas)
+                                         synth_ptr_allocas=synth_ptr_allocas,
+                                         ptr_cells=ptr_cells)
     end
 
     # Predicate 6: both pointers must trace back to an alloca.
@@ -439,17 +489,24 @@ Bennett-doih global-src memcpy arm. Pre-conditions verified by
 
   G1. dst SSA must be in the names table
   G2. dst is NOT a global (defensive — caller's 5a already covers)
-  G3. dst traces to an alloca via `_alloca_root_ref`
-  G4. dst alloca elem_w is a non-zero integer
+  G3. dst traces to an alloca via `_alloca_root_ref` — OR, under the
+      closed-world `ptr_cells` gate (Bennett-vbv9), to a `julia.gc_alloc_obj`
+      ARENA call via `_gc_alloc_root_ref`. ARENA dst sets `is_arena=true`.
+  G4. dst alloca elem_w is a non-zero integer (ALLOCA only; ARENA → cell
+      width 64, ADR 0018 §A — G4 is SKIPPED)
   G5. src reaches a global; that global is in `globals` dict
-  G6. dst_ew == global_ew (no cross-width packing in MVP)
-  G7. src byte offset and N are multiples of ew_bytes
+  G6. dst_ew == global_ew (no cross-width packing in MVP — for the ARENA dst
+      this constrains the src global to 64-bit: a non-64-bit global into a
+      64-bit arena cell FAILS LOUD here)
+  G7. src byte offset and N are multiples of ew_bytes (cell-aligned for ARENA)
   G8. N + src_byte_off ≤ available global bytes
-  G9. dst alloca is fresh per `_alloca_is_fresh`
+  G9. dst alloca is fresh per `_alloca_is_fresh` (ALLOCA only; ARENA → SKIPPED,
+      gc_alloc zero-inits + distinct field offsets, STEP 0c)
 
-Emission shape (mirror of Bennett-9nwt case C): K element-granular
-`IRPtrOffset + IRStore(iconst, dst_ew)` pairs where each iconst is the
-k-th element of the global at the requested byte offset, K = N / ew_bytes.
+Emission shape (mirror of Bennett-9nwt case C; IDENTICAL for ALLOCA and ARENA):
+K element-granular `IRPtrOffset + IRStore(iconst, dst_ew)` pairs where each
+iconst is the k-th element of the global at the requested byte offset,
+K = N / ew_bytes. For the ARENA dst, dst_ew=64 ⇒ K=N/8 cell-granular stores.
 """
 function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction,
                                    names::Dict{_LLVMRef, Symbol},
@@ -457,7 +514,8 @@ function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction
                                    globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}};
                                    synth_ptr_provenance::Set{Tuple{Symbol, Int, Int}}=
                                        Set{Tuple{Symbol, Int, Int}}(),
-                                   synth_ptr_allocas::Set{_LLVMRef}=Set{_LLVMRef}())
+                                   synth_ptr_allocas::Set{_LLVMRef}=Set{_LLVMRef}(),
+                                   ptr_cells::Bool=false)
     dst_v = ops[1]
     src_v = ops[2]
     n_v   = ops[3]
@@ -473,20 +531,43 @@ function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction
         "$(cname): internal — dst is a global but caller's 5a should " *
         "have rejected it already. (Bennett-doih internal invariant)")
 
-    # G3: dst must trace to an alloca (direct or const-GEP).
+    # G3: dst must trace to an alloca (direct or const-GEP) — OR, under the
+    # closed-world `ptr_cells` gate (Bennett-vbv9), to a `julia.gc_alloc_obj`
+    # ARENA allocation (the Julia typed-GC bump cell — BennettVM ADR 0021 D3).
+    # The arena root is consulted ONLY under ptr_cells: on the circuit path a
+    # non-alloca dst stays FAIL-LOUD with the UNCHANGED doih message (byte-
+    # identical to pre-vbv9), because the circuit model has no gc_alloc cell.
     dst_root = _alloca_root_ref(dst_v)
-    dst_root === nothing && _ir_error(inst,
-        "$(cname): memcpy dst operand is not alloca-backed (or " *
-        "alloca-backed via a const-offset GEP) on the global-src path. " *
-        "Pointer phi/select/parameter dst not handled. Tracked in " *
-        "Bennett-8bys. (Bennett-doih)")
+    arena_root = (dst_root === nothing && ptr_cells) ?
+        _gc_alloc_root_ref(dst_v) : nothing
+    if dst_root === nothing && arena_root === nothing
+        _ir_error(inst,
+            "$(cname): memcpy dst operand is not alloca-backed (or " *
+            "alloca-backed via a const-offset GEP) on the global-src path. " *
+            "Pointer phi/select/parameter dst not handled. Tracked in " *
+            "Bennett-8bys. (Bennett-doih)")
+    end
+    is_arena = arena_root !== nothing
 
-    # G4: dst alloca must have a non-zero integer element width.
-    dst_ew = _alloca_elem_width_bits(dst_root)
-    dst_ew == 0 && _ir_error(inst,
-        "$(cname): memcpy dst alloca has non-integer element type " *
-        "(dst_ew=0 indicates struct, ptr, nested-array, or non-integer " *
-        "ArrayType inner). Tracked in Bennett-8bys. (Bennett-doih)")
+    # G4: dst element width. ARENA dst → fixed cell width 64 (ADR 0018 §A: a
+    # gc_alloc'd cell is one Int64 VM cell). The arena branch SKIPS the
+    # alloca-specific `_alloca_elem_width_bits` probe (there is no
+    # LLVMGetAllocatedType for a call result) and the G9 freshness check below
+    # (gc_alloc zero-inits the object and the 5 fdict field-init memcpys hit
+    # DISTINCT, non-overlapping byte offsets — empirically verified
+    # Bennett-vbv9 STEP 0c — so no destructive overwrite is possible; a precise
+    # freshness guard for the general arena case is deferred to a follow-up
+    # bead). ALLOCA dst → unchanged G4/G9 path below.
+    if is_arena
+        dst_ew = 64
+    else
+        # G4: dst alloca must have a non-zero integer element width.
+        dst_ew = _alloca_elem_width_bits(dst_root)
+        dst_ew == 0 && _ir_error(inst,
+            "$(cname): memcpy dst alloca has non-integer element type " *
+            "(dst_ew=0 indicates struct, ptr, nested-array, or non-integer " *
+            "ArrayType inner). Tracked in Bennett-8bys. (Bennett-doih)")
+    end
 
     # G5: src reaches a global, and the global is in the globals dict.
     src_unpacked = _global_root_and_offset(src_v)
@@ -557,13 +638,20 @@ function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction
         "Out-of-bounds read. (Bennett-doih)")
 
     # G9: dst alloca must be fresh (no prior IR-visible writes within
-    # the same basic block). Reuses the Bennett-9nwt helper.
-    _alloca_is_fresh(dst_root, inst) || _ir_error(inst,
-        "$(cname): memcpy dst alloca has prior IR-visible writes within " *
-        "this basic block (non-fresh dst) on the global-src path. " *
-        "Reversibility forbids destructive overwrite without first " *
-        "uncomputing the existing slot bits. Tracked in " *
-        "Bennett-8bys-uncompute. (Bennett-doih)")
+    # the same basic block). Reuses the Bennett-9nwt helper. SKIPPED for the
+    # arena dst (Bennett-vbv9): gc_alloc zero-inits the object and the fdict
+    # field-init memcpys hit distinct, non-overlapping byte offsets (STEP 0c),
+    # so no destructive overwrite is possible; `_alloca_is_fresh` is also
+    # alloca-specific (it walks back to an alloca root, which an arena dst
+    # lacks). A precise arena-freshness guard is deferred to a follow-up bead.
+    if !is_arena
+        _alloca_is_fresh(dst_root, inst) || _ir_error(inst,
+            "$(cname): memcpy dst alloca has prior IR-visible writes within " *
+            "this basic block (non-fresh dst) on the global-src path. " *
+            "Reversibility forbids destructive overwrite without first " *
+            "uncomputing the existing slot bits. Tracked in " *
+            "Bennett-8bys-uncompute. (Bennett-doih)")
+    end
 
     # ---- Bennett-land: tag dst alloca if any synth-ptr provenance ----
     # If the source global has any synth_ptr_provenance entries, mark
@@ -573,8 +661,10 @@ function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction
     # pointer/integer for arithmetic, comparison, or dereference. The
     # MVP guard is alloca-level coarse (any load from this alloca that
     # isn't piped into another memcpy fails loud); byte-precise overlap
-    # analysis is tracked in `Bennett-land-precise-escape`.
-    if any(p -> p[1] === gname, synth_ptr_provenance)
+    # analysis is tracked in `Bennett-land-precise-escape`. SKIPPED for the
+    # arena dst (Bennett-vbv9): the synth-ptr-alloca set keys on alloca refs;
+    # arena bytes are tracked under the BennettVM cell model, not this set.
+    if !is_arena && any(p -> p[1] === gname, synth_ptr_provenance)
         push!(synth_ptr_allocas, dst_root)
     end
 
@@ -916,7 +1006,8 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
                                Dict{Symbol, Tuple{Vector{UInt64}, Int}}();
                            synth_ptr_provenance::Set{Tuple{Symbol, Int, Int}}=
                                Set{Tuple{Symbol, Int, Int}}(),
-                           synth_ptr_allocas::Set{_LLVMRef}=Set{_LLVMRef}())
+                           synth_ptr_allocas::Set{_LLVMRef}=Set{_LLVMRef}(),
+                           ptr_cells::Bool=false)
     if startswith(cname, "llvm.umax.")
         cmp_dest = _auto_name(counter)
         w = _iwidth(ops[1])
@@ -1489,7 +1580,8 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     if startswith(cname, "llvm.memcpy.")
         return _handle_memcpy_arm(cname, inst, names, counter, ops, globals;
                                   synth_ptr_provenance=synth_ptr_provenance,
-                                  synth_ptr_allocas=synth_ptr_allocas)
+                                  synth_ptr_allocas=synth_ptr_allocas,
+                                  ptr_cells=ptr_cells)
     end
     # Bennett-hao Phase 2 (Bennett-9nwt): const-c const-N memset on
     # alloca-i8-backed dst lowers to byte-granular IRPtrOffset+IRStore
@@ -2158,7 +2250,8 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             # registered-callee path.
             handled = _handle_intrinsic(cname, inst, names, counter, dest, ops, globals;
                                         synth_ptr_provenance=synth_ptr_provenance,
-                                        synth_ptr_allocas=synth_ptr_allocas)
+                                        synth_ptr_allocas=synth_ptr_allocas,
+                                        ptr_cells=ptr_cells)
             handled === nothing || return handled
         end
         # Known Julia function calls → IRCall for gate-level inlining

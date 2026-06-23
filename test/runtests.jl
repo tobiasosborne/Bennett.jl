@@ -457,6 +457,12 @@ runfile("test_r92o_gc_alloc_obj.jl")
 # FAIL-LOUD (Bennett-bjdg / U80 byte-identical). The fdict-root successor wall
 # past iwo9/r92o (the `store ptr null` field-inits in inlined setindex!).
 runfile("test_beaw_null_ptr.jl")
+# Bennett-vbv9 — CW-D: global-src memcpy into a `julia.gc_alloc_obj`-backed
+# ARENA cell under ptr_cells. Captures scalar ConstantInt globals (Part 1) and
+# generalises the doih G3 dst-root from alloca-only to gc_alloc'd arena (Part
+# 2). The fdict-root successor wall past beaw (the field-init memcpys from
+# scalar const-globals into gc_alloc'd Dict cells).
+runfile("test_vbv9_arena_memcpy.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message
 # + non-Bennett-authored guard (was: bare substring match that could
 # swallow unrelated Bennett fail-loud errors).

@@ -872,6 +872,29 @@ function _extract_const_globals(mod::LLVM.Module)
             end
             # other zero-init types (vector, etc.) silently skipped
 
+        elseif init isa LLVM.ConstantInt
+            # Bennett-vbv9 (2026-06): scalar integer globals. Julia emits these
+            # as the field-init source for `Dict` (and other gc_alloc'd object)
+            # scalar fields — e.g. `@"_j_const#1" = private constant i64 0`,
+            # memcpy'd 8 bytes into a `julia.gc_alloc_obj` arena cell. Pre-vbv9
+            # the final `else: continue` DROPPED scalar ConstantInt globals
+            # (only ConstantDataArray/Struct/AggregateZero were captured), so
+            # the downstream global-src memcpy arm's G5 (`haskey(globals,...)`)
+            # would have rejected them even once G3 admitted the arena dst.
+            # This branch is purely ADDITIVE — a previously-dropped shape.
+            # Captured as a single-element data word at the global's bit width
+            # (the same shape a `[1 x iM]` ConstantDataArray would yield), via
+            # the proven `LLVMConstIntGetZExtValue` idiom (see the
+            # ConstantDataArray branch above). Cross-width packing into a
+            # 64-bit arena cell is rejected downstream at the memcpy G6 gate;
+            # here we faithfully record the global's NATURAL width.
+            ty = LLVM.value_type(init)
+            ty isa LLVM.IntegerType || continue
+            ew = Int(LLVM.width(ty))
+            (1 <= ew <= 64) || continue
+            out[Symbol(LLVM.name(g))] =
+                (UInt64[UInt64(LLVM.API.LLVMConstIntGetZExtValue(init.ref))], ew)
+
         else
             continue
         end
