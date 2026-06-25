@@ -188,6 +188,29 @@ function _module_has_sret(mod::LLVM.Module)::Bool
 end
 
 """
+    SretCallReturn
+
+Bennett-59zi: a recovered "return the aggregate produced by a callee" record for
+a block whose return is `memcpy(parent_sret, box, agg); ret void` where `box` is
+the sret-out alloca of an in-world CALL. The block is modelled as a single
+`IRCall(dest, callee, args, arg_widths, ret_width) → IRRet(ssa(dest), ret_width)`.
+
+`callee` is the resolved Julia `Function` (recursive self-call or any registered
+in-set callee) or a `Symbol` (the `.ll` C-track name-only form). `ret_width` is
+the PARENT sret packed bit width (`sum(field widths)` — NOT the producing call's
+own LLVM return type, which is `void`). `args`/`arg_widths` are the producing
+call's integer operands (the ptr sret-out and any pgcstack/ptr args dropped,
+exactly like the default `IRCall` arm).
+"""
+struct SretCallReturn
+    dest::Symbol
+    callee::Union{Function, Symbol}
+    args::Vector{IROperand}
+    arg_widths::Vector{Int}
+    ret_width::Int
+end
+
+"""
     SretWrites
 
 Result bundle from `_collect_sret_writes`.
@@ -229,16 +252,40 @@ struct SretWrites
     ret_void_blocks::Set{_LLVMRef}                           # store-free `ret void` blocks
     pending_vec::Dict{_LLVMRef, Tuple{Int, Int}}   # store.ref => (first_slot, n_lanes)
     pending_val_refs::Dict{_LLVMRef, _LLVMRef}     # store.ref => val.ref
+    # Bennett-59zi: sret-returning CALL forwarded into the parent sret via a
+    # local alloca + whole-aggregate llvm.memcpy. `block_call_returns` maps each
+    # such call-return block ref to the recovered call record; `call_return_suppressed`
+    # holds the box alloca + the memcpy + the producing call (suppressed in the
+    # block walk so the call is re-synthesised once, with ret_width from the
+    # PARENT sret packed width — the void producing call has no width of its own).
+    block_call_returns::Dict{_LLVMRef, SretCallReturn}
+    call_return_suppressed::Set{_LLVMRef}
 end
 
 # ---- Per-pattern handlers (Bennett-s92x / U115) -------------------------
 # Each `_try_handle_sret_*!` returns `true` iff it consumed the instruction.
 # The collector main loop calls them in order; the first to claim wins.
 
-# Reject `llvm.memcpy(sret, ...)` — the unoptimised sret form. Optimised
-# pipelines lower this through SROA/mem2reg into per-slot scalar stores
-# before extraction.
-function _try_handle_sret_memcpy_reject!(inst::LLVM.Instruction, sret_ref::_LLVMRef)::Bool
+# Triage `llvm.memcpy(sret, ...)` — the whole-aggregate sret copy form.
+#
+# Two cases, in order:
+#   * Bennett-59zi (Wall A): `memcpy(parent_sret, %box, agg_byte_size)` where
+#     `%box` is the sret-out alloca of an in-world CALL → recognised: record a
+#     `SretCallReturn`, suppress the box / memcpy / producing call. The block
+#     becomes a value-bearing `IRCall → IRRet` at synthesis time.
+#   * otherwise (an unoptimised sret memcpy whose source is NOT a call's sret-out
+#     alloca, e.g. a `[N x iM]` const-init box from raw optimize=false) → the
+#     EXISTING loud reject (SROA/mem2reg canonicalises that shape).
+#
+# Returns true iff it claimed the instruction (Wall A match). A non-match that is
+# also not the reject shape (memcpy not targeting parent sret) returns false and
+# is left for the regular block walk / padding classifier.
+function _try_handle_sret_memcpy_reject!(inst::LLVM.Instruction, sret_ref::_LLVMRef,
+                                          sret_info::SretInfo, func::LLVM.Function,
+                                          names::Dict{_LLVMRef, Symbol},
+                                          block_call_returns::Dict{_LLVMRef, SretCallReturn},
+                                          call_return_suppressed::Set{_LLVMRef},
+                                          counter::Ref{Int})::Bool
     LLVM.opcode(inst) == LLVM.API.LLVMCall || return false
     ops = LLVM.operands(inst)
     n_ops = length(ops)
@@ -250,15 +297,213 @@ function _try_handle_sret_memcpy_reject!(inst::LLVM.Instruction, sret_ref::_LLVM
         ""
     end
     startswith(cname, "llvm.memcpy.") || return false
-    if n_ops >= 2 && ops[1].ref === sret_ref
-        _ir_error(inst,
-            "sret with llvm.memcpy form is not supported " *
-            "(emitted under optimize=false). Re-compile with " *
-            "optimize=true (Bennett.jl default) or set " *
-            "preprocess=true to canonicalise via SROA/mem2reg.")
+    # Only a memcpy whose DST is the parent sret param is in scope here; a memcpy
+    # into an sret-derived GEP (padding bytes) is the Wall-B classifier's job.
+    (n_ops >= 2 && ops[1].ref === sret_ref) || return false
+
+    # ---- Wall A recognition (Bennett-59zi). Each predicate is fail-loud if it
+    # "almost matches" — no silent fall-through into a miscompile. ----
+
+    # P1: addrspace 0, exactly 5 operands (dst, src, N, isvolatile, callee).
+    startswith(cname, "llvm.memcpy.p0.p0.") || _ir_error(inst,
+        "Bennett-59zi: whole-aggregate sret-call memcpy with non-default " *
+        "pointer address space ($cname) is not supported")
+    n_ops == 5 || _ir_error(inst,
+        "Bennett-59zi: malformed whole-aggregate sret memcpy (expected 4 args " *
+        "+ callee ⇒ n_ops==5, got $n_ops)")
+
+    # P2: byte count N is a constant equal to the FULL padded aggregate size.
+    nbytes_op = ops[3]
+    nbytes_op isa LLVM.ConstantInt || _ir_error(inst,
+        "Bennett-59zi: whole-aggregate sret memcpy byte count is non-constant; " *
+        "variable-size sret copies are not supported")
+    N = _const_int_as_int(nbytes_op)
+    N == sret_info.agg_byte_size || _ir_error(inst,
+        "Bennett-59zi: whole-aggregate sret-call memcpy copies N=$N bytes, not " *
+        "the full aggregate ($(sret_info.agg_byte_size) bytes); partial / " *
+        "over-size aggregate returns are not modelled")
+
+    # P3: non-volatile.
+    vol_op = ops[4]
+    vol_op isa LLVM.ConstantInt || _ir_error(inst,
+        "Bennett-59zi: whole-aggregate sret memcpy isvolatile flag is non-constant")
+    _const_int_as_int(vol_op) == 0 || _ir_error(inst,
+        "Bennett-59zi: volatile whole-aggregate sret-call memcpy is not supported")
+
+    # P4: src is a direct local alloca (the producing call's sret-out buffer).
+    src_ref = ops[2].ref
+    LLVM.API.LLVMIsAAllocaInst(src_ref) != C_NULL || _ir_error(inst,
+        "Bennett-59zi: whole-aggregate sret memcpy source is not a local alloca; " *
+        "only a call's sret-out alloca is modelled (got $(ops[2]))")
+
+    # P5: bind src ↔ producing CALL by data-flow + call-site `sret` attribute
+    # (NOT textual adjacency). Scan THIS block for the unique non-memcpy CALL `C`
+    # carrying a call-site `sret` attribute whose sret-out operand === src_ref.
+    bb = LLVM.parent(inst)
+    kind_sret = LLVM.API.LLVMGetEnumAttributeKindForName("sret", 4)
+    producing = nothing
+    n_writers = 0
+    for cand in LLVM.instructions(bb)
+        LLVM.opcode(cand) == LLVM.API.LLVMCall || continue
+        cand === inst && continue
+        cops = LLVM.operands(cand)
+        length(cops) >= 1 || continue
+        cn = try
+            LLVM.name(cops[length(cops)])
+        catch e
+            e isa InterruptException && rethrow()
+            ""
+        end
+        startswith(cn, "llvm.memcpy.") && continue  # skip other intrinsics
+        # call-site sret attribute at param-index 1 (the sret-out operand).
+        a = LLVM.API.LLVMGetCallSiteEnumAttribute(cand, UInt32(1), kind_sret)
+        a == C_NULL && continue
+        length(cops) >= 1 && cops[1].ref === src_ref || continue
+        n_writers += 1
+        producing = cand
     end
-    # llvm.memcpy not targeting sret: leave it for the regular block walk
-    return false
+    n_writers == 0 && _ir_error(inst,
+        "Bennett-59zi: whole-aggregate sret memcpy source alloca is not the " *
+        "sret-out of any call in this block (no producing sret call found)")
+    n_writers == 1 || _ir_error(inst,
+        "Bennett-59zi: whole-aggregate sret memcpy source alloca is the sret-out " *
+        "of $n_writers calls in this block; only a single producing call is modelled")
+    C = producing::LLVM.Instruction
+
+    # P6: the producing call's sret pointee type equals the parent aggregate type.
+    aC = LLVM.API.LLVMGetCallSiteEnumAttribute(C, UInt32(1), kind_sret)
+    callee_agg = LLVM.LLVMType(LLVM.API.LLVMGetTypeAttributeValue(aC))
+    callee_agg == sret_info.agg_type || _ir_error(inst,
+        "Bennett-59zi: producing call returns $callee_agg but the parent sret " *
+        "aggregate is $(sret_info.agg_type); forwarding a differently-shaped " *
+        "aggregate is not supported")
+
+    # P7: the producing call is sret-form (LLVM return type void).
+    LLVM.value_type(C) isa LLVM.VoidType || _ir_error(inst,
+        "Bennett-59zi: producing sret call has non-void LLVM return type " *
+        "$(LLVM.value_type(C)); the sret-out form requires a void return")
+
+    # P8: alias/reuse guard — the box alloca is written ONLY by C and read ONLY
+    # by this memcpy (single-writer single-reader). Any other use ⇒ reject loud.
+    src_alloca = LLVM.Value(src_ref)
+    for u in LLVM.uses(src_alloca)
+        user = LLVM.user(u)
+        (user === C || user === inst) && continue
+        _ir_error(inst,
+            "Bennett-59zi: sret-out alloca $(LLVM.name(src_alloca)) is aliased / " *
+            "reused (an extra use beyond its single producing call + single " *
+            "forwarding memcpy); only single-writer single-reader is modelled")
+    end
+
+    # P9: resolve the producing call's callee. Function (registered Julia callee,
+    # incl. self-recursion) preferred; else Symbol (the .ll C-track name-only form).
+    cn = LLVM.name(LLVM.operands(C)[length(LLVM.operands(C))])
+    resolved = _lookup_callee(cn)
+    callee_val::Union{Function, Symbol} = if resolved !== nothing
+        resolved
+    else
+        # Only the .ll set/ptr-cells path admits a name-only callee; a missing
+        # registration on the Julia path is a hard error (can't inline it later).
+        Symbol(cn)
+    end
+
+    # Build the args/widths from C's integer operands, dropping the sret-out ptr
+    # and any pgcstack/ptr args — identical policy to the default IRCall arm.
+    Cops = LLVM.operands(C)
+    call_args = IROperand[]
+    call_widths = Int[]
+    for i in 1:(length(Cops) - 1)
+        op = Cops[i]
+        ot = LLVM.value_type(op)
+        ot isa LLVM.IntegerType || continue   # skip the sret-out ptr + ptr args
+        push!(call_args, _operand(op, names))
+        push!(call_widths, Int(LLVM.width(ot)))
+    end
+
+    # ret_width = the PARENT sret packed bit width. Hetero → sum(field widths);
+    # homogeneous [N x iM] → n_elems * elem_width (matches the by-value paths in
+    # module_walk.jl:131-141 exactly). NOT the producing call's (void) return.
+    ret_width = sret_info.is_hetero ?
+        sum(w for (_, w) in sret_info.fields::Vector{Tuple{Int,Int}}) :
+        sret_info.n_elems * sret_info.elem_width
+    dest = _auto_name(counter)
+    bb_ref = bb.ref
+    haskey(block_call_returns, bb_ref) && _ir_error(inst,
+        "Bennett-59zi: block has $(length(block_call_returns)+1) whole-aggregate " *
+        "sret-call memcpys; one call-return per block only")
+    block_call_returns[bb_ref] = SretCallReturn(dest, callee_val, call_args,
+                                                call_widths, ret_width)
+    # Suppress the box alloca, the producing call, and this memcpy.
+    push!(call_return_suppressed, src_ref)
+    push!(call_return_suppressed, C.ref)
+    push!(call_return_suppressed, inst.ref)
+    return true
+end
+
+# Bennett-59zi (Wall B): classify an sret-derived memcpy whose dst is a GEP off
+# the sret param (already recorded in `gep_byte`) — NOT the bare sret param (that
+# is Wall A). A copy whose byte range lies ENTIRELY in padding (disjoint from
+# every field byte-range) is INERT — the padding bytes never enter the packed
+# return — so it is suppressed. A range that OVERLAPS a field is rejected loud
+# (a real value-write via memcpy is out of scope). Returns true iff claimed.
+function _try_handle_sret_padding_memcpy!(inst::LLVM.Instruction, sret_ref::_LLVMRef,
+                                           gep_byte::Dict{_LLVMRef, Int},
+                                           sret_info::SretInfo,
+                                           suppressed::Set{_LLVMRef})::Bool
+    LLVM.opcode(inst) == LLVM.API.LLVMCall || return false
+    ops = LLVM.operands(inst)
+    n_ops = length(ops)
+    n_ops >= 1 || return false
+    cname = try
+        LLVM.name(ops[n_ops])
+    catch e
+        e isa InterruptException && rethrow()
+        ""
+    end
+    startswith(cname, "llvm.memcpy.") || return false
+    n_ops >= 3 || return false
+    dst_ref = ops[1].ref
+    # dst must be an sret-derived GEP (recorded byte offset); the bare-sret case
+    # is Wall A and never reaches here.
+    haskey(gep_byte, dst_ref) || return false
+    off = gep_byte[dst_ref]
+
+    startswith(cname, "llvm.memcpy.p0.p0.") || _ir_error(inst,
+        "Bennett-59zi: sret-derived padding memcpy with non-default address " *
+        "space ($cname) is not supported")
+    nbytes_op = ops[3]
+    nbytes_op isa LLVM.ConstantInt || _ir_error(inst,
+        "Bennett-59zi: sret-derived padding memcpy byte count is non-constant")
+    N = _const_int_as_int(nbytes_op)
+    if n_ops >= 4
+        vol_op = ops[4]
+        if vol_op isa LLVM.ConstantInt && _const_int_as_int(vol_op) != 0
+            _ir_error(inst,
+                "Bennett-59zi: volatile sret-derived padding memcpy is not supported")
+        end
+    end
+    agg = sret_info.agg_byte_size
+    (0 <= off && off + N <= agg) || _ir_error(inst,
+        "Bennett-59zi: sret-derived memcpy byte range [$off, $(off+N)) is " *
+        "outside the aggregate range [0, $agg)")
+
+    # Padding iff disjoint from every field's byte range. Field k occupies
+    # [foff, foff + width/8). Reject loud on any overlap (value-write via memcpy).
+    fields = sret_info.is_hetero ? sret_info.fields::Vector{Tuple{Int,Int}} :
+        [(k * sret_info.elem_byte_size, sret_info.elem_width) for k in 0:(sret_info.n_elems - 1)]
+    for (foff, fw) in fields
+        fend = foff + fw ÷ 8
+        # ranges [off, off+N) and [foff, fend) overlap iff off < fend && foff < off+N
+        if off < fend && foff < off + N
+            _ir_error(inst,
+                "Bennett-59zi: sret memcpy byte range [$off, $(off+N)) overlaps " *
+                "field bytes [$foff, $fend); only padding-only (disjoint-from-all-" *
+                "fields) sret memcpys are inert-suppressed (a value write via " *
+                "memcpy is out of scope)")
+        end
+    end
+    push!(suppressed, inst.ref)
+    return true
 end
 
 # Track byte offset of an sret-derived constant-offset GEP. Returns true
@@ -445,7 +690,8 @@ Errors (no silent miscompile):
   * a slot left unwritten before `ret void`
 """
 function _collect_sret_writes(func::LLVM.Function, sret_info::SretInfo,
-                              names::Dict{_LLVMRef, Symbol})::SretWrites
+                              names::Dict{_LLVMRef, Symbol},
+                              counter::Ref{Int})::SretWrites
     # Bennett-jghk: per store-bearing block. Each store appends to the dict
     # for the block it lives in, so two arms of a `cond ? A : B` tuple return
     # (each its own store-block) no longer collide on a single global slot 0.
@@ -456,6 +702,9 @@ function _collect_sret_writes(func::LLVM.Function, sret_info::SretInfo,
     gep_byte          = Dict{_LLVMRef, Int}()   # sret-derived GEP result → byte offset
     pending_vec       = Dict{_LLVMRef, Tuple{Int, Int}}()
     pending_val_refs  = Dict{_LLVMRef, _LLVMRef}()
+    # Bennett-59zi: sret-returning CALL forwarded via local alloca + memcpy.
+    block_call_returns     = Dict{_LLVMRef, SretCallReturn}()
+    call_return_suppressed = Set{_LLVMRef}()
 
     sret_ref  = sret_info.param_ref
     eb        = sret_info.elem_byte_size
@@ -463,14 +712,26 @@ function _collect_sret_writes(func::LLVM.Function, sret_info::SretInfo,
     ew        = sret_info.elem_width
     agg_bytes = sret_info.agg_byte_size
 
+    # The GEP byte-offset map must be fully populated before the Wall-B padding
+    # classifier runs (it keys on gep_byte). The sret-targeting GEPs always
+    # dominate their stores/memcpys, and LLVM.blocks/instructions iterate in
+    # program order, so a single forward pass suffices — but the memcpy triage
+    # is placed AFTER the GEP handler within the loop for exactly this reason.
     for bb in LLVM.blocks(func)
         bb_ref = bb.ref
         for inst in LLVM.instructions(bb)
             # Try each per-pattern handler in order. Each returns `true`
             # iff it claimed the instruction.
-            _try_handle_sret_memcpy_reject!(inst, sret_ref) && continue
             _try_handle_sret_gep!(inst, sret_ref, gep_byte, eb, agg_bytes,
                                   sret_info, suppressed) && continue
+            # Bennett-59zi Wall A: sret-call → whole-aggregate memcpy(parent_sret).
+            _try_handle_sret_memcpy_reject!(inst, sret_ref, sret_info, func, names,
+                                            block_call_returns,
+                                            call_return_suppressed, counter) && continue
+            # Bennett-59zi Wall B: inert sret-derived padding memcpy (suppressed),
+            # or loud reject on a field-overlapping memcpy.
+            _try_handle_sret_padding_memcpy!(inst, sret_ref, gep_byte,
+                                             sret_info, suppressed) && continue
 
             # Store targeting the sret buffer? Resolve byte offset first,
             # then dispatch to the vector or scalar handler.
@@ -509,15 +770,30 @@ function _collect_sret_writes(func::LLVM.Function, sret_info::SretInfo,
 
     fname = LLVM.name(func)
 
+    # Bennett-59zi (R12): a block must be EXACTLY ONE return shape. A block that
+    # both stores sret slots AND call-returns the whole aggregate is ambiguous
+    # (which value does the return path carry?) — fail loud rather than guess.
+    for bb_ref in keys(block_call_returns)
+        haskey(block_slot_values, bb_ref) && throw(AssertionError(
+            "ir_extract.jl: block in @$fname both stores sret slots AND " *
+            "whole-aggregate call-returns; a return path must be exactly one " *
+            "shape (Bennett-59zi)."))
+    end
+
     # Bennett-jghk: classify `ret void` blocks. A `ret void` block that has NO
     # sret stores of its own is a SHARED return funnel (the `common.ret` shape):
     # its store-bearing predecessors each carry the value-bearing return, so it
     # is dropped at synthesis. A `ret void` block that DOES contain sret stores
     # (the single-return `top:` shape) keeps its synthesis in-place.
+    #
+    # Bennett-59zi: a call-return block (L171 shape) is ALSO value-bearing — it
+    # synthesises an IRCall → IRRet — so it must NOT be classified as a store-free
+    # funnel and dropped. Exclude it from ret_void_blocks (its `ret void` is the
+    # block's own terminator, replaced by the synthesised IRRet).
     for bb in LLVM.blocks(func)
         term = LLVM.terminator(bb)
         (LLVM.opcode(term) == LLVM.API.LLVMRet && isempty(LLVM.operands(term))) || continue
-        if !haskey(block_slot_values, bb.ref)
+        if !haskey(block_slot_values, bb.ref) && !haskey(block_call_returns, bb.ref)
             push!(ret_void_blocks, bb.ref)
         end
     end
@@ -538,11 +814,14 @@ function _collect_sret_writes(func::LLVM.Function, sret_info::SretInfo,
         end
     end
 
-    isempty(block_slot_values) && throw(AssertionError(
-        "ir_extract.jl: sret function @$fname has no store-bearing block; the " *
-        "aggregate return is never materialised (Bennett-jghk). Likely the " *
-        "return is built via an unsupported path (e.g. llvm.memcpy from a " *
-        "const global or a recursive sret self-call)."))
+    # Bennett-59zi: a function whose ONLY return shape is a whole-aggregate
+    # call-return (no per-slot store block) is now valid — the aggregate IS
+    # materialised, by the producing call. Only error when BOTH are empty.
+    (isempty(block_slot_values) && isempty(block_call_returns)) && throw(AssertionError(
+        "ir_extract.jl: sret function @$fname has no store-bearing block and no " *
+        "whole-aggregate call-return block; the aggregate return is never " *
+        "materialised (Bennett-jghk / Bennett-59zi). Likely the return is built " *
+        "via an unsupported path (e.g. llvm.memcpy from a const global)."))
 
     # Bennett-jghk: the legacy `slot_values` field aliases the SINGLE store-
     # bearing block's dict (so the vector-lane plumbing stays byte-identical).
@@ -562,7 +841,8 @@ function _collect_sret_writes(func::LLVM.Function, sret_info::SretInfo,
     end
 
     return SretWrites(legacy_slot_values, block_slot_values, suppressed,
-                      ret_void_blocks, pending_vec, pending_val_refs)
+                      ret_void_blocks, pending_vec, pending_val_refs,
+                      block_call_returns, call_return_suppressed)
 end
 
 """

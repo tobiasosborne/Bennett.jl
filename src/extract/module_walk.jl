@@ -272,7 +272,7 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
     # record the per-slot stored values. Must run after the naming pass so
     # _operand() can resolve SSA references.
     sret_writes = sret_info === nothing ? nothing :
-                  _collect_sret_writes(func, sret_info, names)
+                  _collect_sret_writes(func, sret_info, names, counter)
 
     # ADR 0013 §D-4.2 — the `mem=:vm` extraction arm (BennettVM Case A/B feed).
     #
@@ -380,6 +380,11 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
                            haskey(sret_writes.block_slot_values, bb.ref)
         sret_drop_block  = sret_writes !== nothing &&
                            bb.ref in sret_writes.ret_void_blocks
+        # Bennett-59zi: a call-return block (whole-aggregate sret-call → memcpy)
+        # synthesises an IRCall → IRRet after its instruction loop, exactly like
+        # a jghk store block synthesises an IRInsertBits → IRRet.
+        sret_call_return_block = sret_writes !== nothing &&
+                                 haskey(sret_writes.block_call_returns, bb.ref)
         if sret_drop_block
             continue   # store-free `ret void` funnel — dropped (Bennett-jghk)
         end
@@ -388,6 +393,17 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
             # sret hook: suppress instructions already accounted for in the
             # pre-walk (sret-targeting stores and their constant-offset GEPs).
             if sret_writes !== nothing && inst.ref in sret_writes.suppressed
+                continue
+            end
+            # Bennett-59zi: suppress the box alloca + the producing call + the
+            # whole-aggregate memcpy of a call-return block — they are
+            # re-synthesised as one IRCall (with the PARENT sret ret_width) below.
+            if sret_writes !== nothing && inst.ref in sret_writes.call_return_suppressed
+                continue
+            end
+            # Bennett-59zi: drop the call-return block's own `ret void` terminator;
+            # it is replaced by the synthesised value-bearing IRRet after the loop.
+            if sret_call_return_block && LLVM.opcode(inst) == LLVM.API.LLVMRet
                 continue
             end
             # Bennett-jghk: on an sret store block, the block's own terminator
@@ -513,6 +529,19 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
                 _synthesize_sret_chain(sret_info, block_vals, counter)
             append!(insts, chain)
             terminator = ret_inst
+        end
+
+        # Bennett-59zi: synthesise the value-bearing return for a call-return
+        # block — one IRCall (the recursive / in-set sret callee, packed to the
+        # PARENT aggregate width) threaded into an IRRet. The box alloca, the
+        # producing call, and the memcpy were suppressed above; the `ret void`
+        # was dropped. This block now contributes exactly one value-bearing IRRet,
+        # merged with any store-block IRRets by `resolve_phi_predicated!`.
+        if sret_call_return_block
+            scr = sret_writes.block_call_returns[bb.ref]
+            push!(insts, IRCall(scr.dest, scr.callee, scr.args,
+                                scr.arg_widths, scr.ret_width))
+            terminator = IRRet(ssa(scr.dest), scr.ret_width)
         end
 
         terminator === nothing && throw(AssertionError(
