@@ -1,5 +1,129 @@
 # Worklog chunk 090
 
+## Session log — 2026-06-25 — Bennett-qmv7: gc_loaded heap-Memory value-store memcpy under ptr_cells (3+1 implementer)
+
+**FULL-SUITE POSTSCRIPT (orchestrator, post-push).** The qmv7 push's pre-push
+`Pkg.test()` FAILED on `689837 passed, 1 failed` — a single fragile assertion in
+qmv7's OWN test, **GATE (d)** (`test_qmv7_gc_loaded_memcpy.jl:341`), NOT a source
+regression (the source's deterministic peers + 34/34 all passed; gate-count 39/39).
+Diagnosis: GATE (d)'s `:err` branch pinned the EXACT `--check-bounds=yes`
+downstream wall to a `ptrtoint`/iwo9 disjunction. But the wall is **registry-
+ORDER-dependent**: `test_59zi` registers `ht_keyindex2_shorthash!`/`rehash!` and
+**leaks them into the global `_known_callees`**, so when GATE (d) later extracts
+`setindex!` the recursive walk advances PAST the iwo9 wall to the **dq8l/U81
+VoidType `_type_width`** wall — a message outside the disjunction. Passes
+standalone (clean registry → iwo9), fails in-suite (polluted registry → dq8l).
+The load-bearing MODE-INVARIANT negative (`!_is_37mt_dst_wall`) PASSED — qmv7's
+guarantee (memcpy wall gone) holds in every context; only the over-specified
+positive failed. Fix: broadened GATE (d) to accept BOTH walls (kept the
+negative). Reproduced the suite order (`include 59zi; include qmv7` under
+`--check-bounds=yes`) → 545/545 + 34/34 green. **Lessons:** (1) a per-file
+"green" can mask a suite-order failure — registry-sensitive extraction tests
+must not pin order-dependent outcomes; (2) the 32-thread vs 1-thread difference
+between the 59zi (passed, pre-qmv7) and qmv7 (failed) pushes was a RED HERRING —
+the failure was deterministic suite-order, the thread count coincidental;
+(3) the `pkill -f "Pkg.test"` I used to kill a diagnostic run left the child
+`runtests.jl` alive (its cmdline lacks "Pkg.test") → a stray suite oversubscribed
+the cores; kill the `runtests.jl` child too. Registry-isolation hygiene filed as
+**Bennett-6rqq**.
+
+**Orchestrated 3+1** (2 Opus proposers → A explicit-split / B reuse; Opus
+implementer; orchestrator +1). Cleared the `setindex!(Dict{Int8,Int8})` extraction
+wall at `instructions.jl` Predicate-6 (`dst_root === nothing`): the Int8
+value-store memcpy whose DST is a RUNTIME-indexed `julia.gc_loaded` heap-Memory
+cell (`memcpy(p0 %memoryref_data40, p0 %sret_box, 1)` where dst =
+`getelementptr i8, ptr %gc_loaded, i64 %byteoffset`). The dual of vbv9 (const-offset
+gc_alloc ARENA dst); here the byte offset is RUNTIME (`mul %off, STRIDE`).
+
+**The decisive probe (Rule 10) — B's "already-named IRVarGEP" claim is TRUE, but
+reusing it is eln6-WRONG.** Instrumented `_handle_memcpy_arm` to print
+`names[dst_v.ref]` at memcpy time: `dst_named=true, dst_sym=:addr` — the dst GEP IS
+already lowered to a named `IRVarGEP(:addr,:d,:bo,8)` before the memcpy processes
+(B's load-bearing claim confirmed). **BUT** that IRVarGEP is BYTE-OFFSET-indexed
+(index=`:bo`, the `mul %off, STRIDE` result) at the i8 GEP width 8. For
+`Dict{Int8,Int8}` (STRIDE=1) `bo==off` (coincidence), but for an **i64-vals**
+Memory (STRIDE=8) the real GEP is `getelementptr i8, ptr %d, i64 (off*8)` so
+`:bo == off*8` → BVM's stride-1-cell VarGEP would address **cell off*8, an 8×
+misaddress** (the exact eln6 trap). **So pure B-reuse is unsafe for the general
+case.** Probed `Dict{Int64,Int64}` to ground-truth this: confirmed the i64 value
+GEP is i8-typed with a `mul %off, 8` index — NOT the element-typed `getelementptr
+i64, ptr %d, i64 %off` B's design §3c *assumed* (B's i64-GEP claim was WRONG).
+
+**Design path = HYBRID (B's recognition + A's eln6-safe emission).** Recognise the
+gc_loaded dst (B), but RECOVER the raw element index by splitting `mul %off, STRIDE`
+(A / the proven `vector_vm_walk.jl` D6 pattern) and emit a FRESH
+`IRVarGEP(dst, gc_loaded_base, %off, value_ew) + IRLoad(src) + IRStore` at the VALUE
+width. Probe-verified emission: i8 → `IRVarGEP(:__v4,:d,:off,8)`; i64 →
+`IRVarGEP(:__v4,:d,:off,64)` — **index is the RAW `%off` (cell `off`), NEVER the
+byte offset `%bo`; width is N*8 (the Memory element width), NEVER the i8 GEP type,
+NEVER blind 64.** The dead `IRVarGEP(:addr,...,:bo,8)` (the dst GEP's own lowering,
+now unconsumed) is harmless dead SSA.
+
+**The value-width source — NOT the src alloca.** First cut derived `value_ew` from
+`_alloca_elem_width_bits(src_root)` and it RED-failed the i8 fixture: the src is the
+setindex! sret box `alloca [2 x i64]` (→ 64) read via a const-i8-GEP, so the box
+width mis-reports 64 for an i8 store. Fix: `value_ew = N*8` (the memcpy byte count),
+gated on `N == stride_bytes` (single element) so all three (N, stride, value width)
+agree. Reject multi-element (N != stride) loud (`Bennett-qmv7-multi`).
+
+**Changes (Bennett.jl only, additive):**
+- `src/extract/instructions.jl`: `_gc_loaded_dst_elem_ref` (~70 LOC, recognises
+  `gep i8 (gc_loaded), (mul %off, STRIDE)` → `(gcl_ref, off_ref, stride)`); a
+  `ptr_cells && dst_root===nothing` dispatch in `_handle_memcpy_arm` Predicate-6
+  (~12 LOC); `_handle_memcpy_gc_loaded` (~75 LOC). NO new IR node (reuses
+  IRVarGEP/IRLoad/IRStore — Rule 12). `ptr_cells` already threaded by vbv9.
+- `test/test_qmv7_gc_loaded_memcpy.jl` (new, 5 gates) + `runtests.jl` registration.
+
+**Gating (orchestrator point 3):** the `if ptr_cells && dst_root===nothing` branch
+is the only entry; circuit path (`ptr_cells=false`) falls to the BYTE-IDENTICAL
+302 reject — proven by GATE(b) (same fixture, cells=false, unchanged 37mt wall) and
+gate_count 39/39 unchanged.
+
+**Fail-loud matrix (Rule 1):** multi-element (N!=stride) → `qmv7-multi`; src not
+alloca → `qmv7` src reject; value_ew ∉ {8,16,32,64} → reject; non-`mul` index (e.g.
+`add %idx, 3`) → `_gc_loaded_dst_elem_ref` returns nothing → UNCHANGED 302 wall
+(proven: the recogniser is narrow, no previously-rejected program silently passes).
+
+**RED→GREEN.** RED: new test vs `git show HEAD:instructions.jl` = 12 pass / 5 fail
+(GATE a/c/d/e fail; b passes = current behaviour, correct). GREEN:
+`--check-bounds=yes` 34/34, no-bounds 35/35.
+
+**Bennett-2mj3 (--check-bounds=yes) gotcha — WRITE THIS DOWN.** Under suite mode
+(`--check-bounds=yes`) `code_llvm` for `setindex!` emits EXTRA bounds-check IR that
+surfaces the EARLIER `ptrtoint ptr %memory_data to i64` GenericMemory wall
+(Bennett-iwo9 / jfw6) at block L8 BEFORE the memcpy — so under suite mode setindex!
+walls at the ptrtoint, NOT clean-extract. Under `optimize=false` WITHOUT bounds
+checks it extracts CLEAN (ret_width=64, 12 blocks — the bead's recon shape). The
+memcpy wall (qmv7's target) IS cleared in BOTH modes (the synthetic .ll GATE-a/c
+prove it directly; no-bounds setindex! proves the full extraction). GATE(d) is
+written mode-INVARIANT: the load-bearing assertion is NEGATIVE (no longer the memcpy
+dst wall) + an inclusive disjunction; the clean-extract branch fires only off-bounds.
+
+**Wall-walk result.** The memcpy "not alloca-backed" wall is GONE. Next setindex!
+wall (suite mode) = the **iwo9/jfw6 ptrtoint GenericMemory data-pointer** wall —
+the next CW-D frontier (separate bead, the "LINCHPIN" Bennett-jfw6). NO new
+extraction-side interlock (unlike vbv9's G5).
+
+**Cross-repo (orchestrator point 6) — NO BVM change for EXTRACTION.** Verified
+`BennettVM/src/ir/ingest_body.jl`: `IRVarGEP→VarGEP(stride=1 cells)`,
+`IRLoad→MemoryLoad`, `IRStore→MemoryStore` all ingest the qmv7 emission unchanged.
+The DOWNSTREAM execution blockers (separate beads, NOT solved here): (1) the
+`julia.gc_loaded` IRCall is in NEITHER `_HEAP_DISPATCH` nor
+`_NONDETERMINISTIC_CALLEES` (`ingest_call.jl:124,144`) → fail-loud allowlist reject
+at BVM execution — needs a `bennettvm-qmv7-gcloaded` BVM bead (model gc_loaded as a
+data-ptr passthrough). (2) jfw6 GenericMemory virtual-base binding (the heap Memory
+needs a concrete VM base for VarGEP/MemoryStore to resolve a real cell).
+
+**Peer regressions GREEN (suite mode):** gate_count 39/39 (zero drift), vbv9 19/19,
+6bu3 162/162, ares 57/57, lf14 27/27, beaw 17/17, 37mt 86/86, doih 85/85, ixiz
+53/53, lqif 12/12, uyf9 11/11, iwo9 30/30, haiy 39/39, r92o 22/22, lower 6/6.
+
+**Cleared / NOT cleared (honest).** CLEARED: the setindex! memcpy *extraction* wall
+(both modes); the eln6-safe raw-index emission for ALL Memory widths (i8 AND i64
+proven). NOT cleared (out of scope, downstream beads): the BVM gc_loaded IRCall
+ingest, jfw6 base binding, the full fdict e2e run (still ~several walls + the two
+BVM beads away). Multi-element heap memcpy fails loud (qmv7-multi follow-up).
+
 ## Session log — 2026-06-25 — Bennett-59zi: sret-returning CALL → memcpy(sret) forwarding (3+1 implementer)
 
 Cleared the EXTRACTION wall for `Base.ht_keyindex2_shorthash!` (CW-D fdict

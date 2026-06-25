@@ -470,6 +470,12 @@ runfile("test_vbv9_arena_memcpy.jl")
 # lower; keeps {i64,i1} (i1) and float/nested-struct fields fail-loud. The
 # fdict-root successor wall past vbv9.
 runfile("test_6bu3_struct_aggregate.jl")
+# Bennett-qmv7 — CW-D: `setindex!` heap-Memory value-store memcpy whose DST is a
+# RUNTIME-INDEXED `julia.gc_loaded` heap-Memory cell, under ptr_cells (the dual
+# of vbv9's const-offset gc_alloc arena dst). Recovers the RAW element index
+# (eln6-safe `mul %off, STRIDE` split) and emits IRVarGEP+IRLoad+IRStore at the
+# VALUE width. Clears the last setindex! extraction wall on the fdict root.
+runfile("test_qmv7_gc_loaded_memcpy.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message
 # + non-Bennett-authored guard (was: bare substring match that could
 # swallow unrelated Bennett fail-loud errors).

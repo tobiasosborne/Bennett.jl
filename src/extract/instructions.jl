@@ -140,6 +140,79 @@ function _gc_alloc_root_ref(val::LLVM.Value, depth::Int=0)::Union{Nothing, _LLVM
 end
 
 """
+    _gc_loaded_dst_elem_ref(gep_val) -> Union{Nothing, Tuple{_LLVMRef,_LLVMRef,Int}}
+
+Bennett-qmv7 (2026-06): the HEAP-Memory analogue of `_gc_alloc_root_ref`, but
+for the RUNTIME-INDEXED element store into a Julia `Memory`/`GenericMemory`
+cell (the Dict keys/vals backing). Recognises a `setindex!`-style dst pointer
+
+    %d    = call ptr @julia.gc_loaded(ptr %mem, ptr %data)   ; laundered data ptr
+    %bo   = mul i64 %off, STRIDE                             ; byte offset = elem_idx * stride
+    %addr = getelementptr inbounds i8, ptr %d, i64 %bo       ; single-index i8 GEP
+
+and returns `(gc_loaded_call_ref, raw_element_index_ref, STRIDE)` — where
+`raw_element_index_ref` is the PRE-`mul` `%off` (the 0-based ELEMENT index)
+and `STRIDE` is the constant byte stride. Returns `nothing` for any other
+shape.
+
+  *** eln6 byte/cell contract (Bennett-eln6) — THE LOAD-BEARING REASON ***
+The dst GEP is ALWAYS an `i8` GEP whose index is the BYTE offset `%off*STRIDE`
+(Julia byte-GEPs into the Memory data region; the i8 source type is NOT the
+element width). BVM's `IRVarGEP` lowering is CELL-addressed (stride 1, one
+Int64 per cell) and consumes the index operand AS the element index. So
+feeding the byte offset `%bo` directly (as the already-lowered
+`IRVarGEP(:addr,:d,:bo,8)` would) addresses cell `off*STRIDE` — correct only
+for STRIDE==1 (i8 coincidence), an `8×` misaddress for an i64-vals Memory.
+This helper splits the `mul` and returns the RAW element index `%off` so the
+caller emits a FRESH `IRVarGEP(dst, gc_loaded_base, off, value_ew)` — cell
+`off`, correct for EVERY element width. This is the SAME `mul %off, STRIDE`
+→ keep-`%off`, drop-`%bo` split the proven `mem=:vm` recogniser performs in
+`vector_vm_walk.jl` (the D6/b5x stride pattern), applied at the memcpy-dst
+site. NEVER feed the byte offset; NEVER use the i8 GEP type as the width.
+
+Consulted ONLY under `ptr_cells=true` (see `_handle_memcpy_arm`); on the
+circuit / `mem=:heap` model a gc_loaded heap cell has no semantics, so the
+caller stays at the byte-identical fail-loud.
+"""
+function _gc_loaded_dst_elem_ref(gep_val::LLVM.Value
+                                )::Union{Nothing, Tuple{_LLVMRef, _LLVMRef, Int}}
+    gep_val.ref == C_NULL && return nothing
+    (gep_val isa LLVM.Instruction &&
+     LLVM.opcode(gep_val) == LLVM.API.LLVMGetElementPtr) || return nothing
+    gep_ops = LLVM.operands(gep_val)
+    # Single-index GEP only: base + exactly one index operand.
+    length(gep_ops) == 2 || return nothing
+    base = gep_ops[1]
+    idx  = gep_ops[2]
+    # Base must be a `julia.gc_loaded` call (callee = LAST operand, file-wide
+    # convention).
+    (base isa LLVM.Instruction &&
+     LLVM.opcode(base) == LLVM.API.LLVMCall) || return nothing
+    base_ops = LLVM.operands(base)
+    nbo = length(base_ops)
+    nbo >= 1 || return nothing
+    callee_name = try
+        LLVM.name(base_ops[nbo])
+    catch e
+        e isa InterruptException && rethrow()
+        return nothing
+    end
+    callee_name == "julia.gc_loaded" || return nothing
+    # Index must be `mul %off, STRIDE` with STRIDE a positive ConstantInt; the
+    # surviving %off is the raw element index (eln6-safe — never the byte off).
+    (idx isa LLVM.Instruction &&
+     LLVM.opcode(idx) == LLVM.API.LLVMMul) || return nothing
+    mul_ops = LLVM.operands(idx)
+    length(mul_ops) >= 2 || return nothing
+    off    = mul_ops[1]
+    stride = mul_ops[2]
+    stride isa LLVM.ConstantInt || return nothing
+    stride_val = _const_int_as_int(stride)
+    stride_val >= 1 || return nothing
+    return (base.ref, off.ref, stride_val)
+end
+
+"""
     _alloca_elem_width_bits(alloca_ref) -> Int
 
 Returns the alloca's element width in bits, or 0 if the allocated type
@@ -299,6 +372,25 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
     # Predicate 6: both pointers must trace back to an alloca.
     dst_root = _alloca_root_ref(dst_v)
     src_root = _alloca_root_ref(src_v)
+
+    # Bennett-qmv7 (2026-06): under the closed-world `ptr_cells` gate, a memcpy
+    # whose DST is a runtime-indexed element store into a `julia.gc_loaded`
+    # heap-Memory cell (the dual of vbv9's const-offset gc_alloc ARENA dst) is a
+    # valid VM heap pointer (the Dict keys/vals backing). The src is the
+    # alloca-backed value box (the sret `[2 x i64]` field on the fdict root).
+    # Route to `_handle_memcpy_gc_loaded`, which recovers the RAW element index
+    # (splitting the `mul %off, STRIDE` — eln6-safe) and emits a fresh
+    # IRVarGEP+IRLoad+IRStore at the VALUE element width. The circuit path
+    # (`ptr_cells=false`) skips this branch entirely → byte-identical fail-loud
+    # at the unchanged Predicate-6 reject below.
+    if ptr_cells && dst_root === nothing
+        heap_dst = _gc_loaded_dst_elem_ref(dst_v)
+        if heap_dst !== nothing
+            return _handle_memcpy_gc_loaded(cname, inst, names, counter, ops,
+                                            heap_dst, src_root)
+        end
+    end
+
     dst_root === nothing && _ir_error(inst,
         "$(cname): memcpy dst operand is not alloca-backed (or " *
         "alloca-backed via a const-offset GEP). Bennett's pointer- " *
@@ -390,6 +482,113 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
         push!(out, IRStore(ssa(dst_off), ssa(tmp), dst_ew))
     end
     return out
+end
+
+# ---- Bennett-qmv7 (2026-06-25, CW-D fdict critical path) ----
+"""
+    _handle_memcpy_gc_loaded(cname, inst, names, counter, ops, heap_dst, src_root)
+        -> Vector{IRInst}
+
+Bennett-qmv7: lower a SINGLE-ELEMENT memcpy whose DST is a runtime-indexed
+`julia.gc_loaded` heap-Memory cell store (the `setindex!` value-store into a
+Dict's keys/vals `Memory`). The dual of vbv9 (const-offset gc_alloc ARENA dst);
+here the dst byte-offset is a RUNTIME SSA (`%off * STRIDE`), so we address by
+the RAW element index, never the byte offset (the eln6-safe split done by
+`_gc_loaded_dst_elem_ref`).
+
+`heap_dst = (gc_loaded_base_ref, raw_index_ref, stride_bytes)` from
+`_gc_loaded_dst_elem_ref`. `src_root` is the src alloca ref (or `nothing`).
+
+Reached ONLY under `ptr_cells=true` (the caller gate). Emission reuses ONLY
+existing IR nodes (IRVarGEP/IRLoad/IRStore — Rule 12); no new IR node, no BVM
+ingest change for the store itself (the gc_loaded IRCall + its base resolution
+are downstream BVM concerns, separate beads).
+
+### Element-width contract (eln6, Rule 1)
+The VALUE element width is the Memory element width = `stride_bytes*8` (the byte
+stride the index `mul` scales by), NEVER the i8 dst-GEP source type and NEVER a
+blind 64. CRUCIALLY it is NOT the src alloca's element width either: on the real
+fdict root the src is the `setindex!` sret box (`alloca [2 x i64]`, so
+`_alloca_elem_width_bits == 64`) accessed through a const-i8-GEP, but the stored
+value is i8 — so the box width would mis-report 64 for an i8 store. The single
+authoritative width is `N*8` (the memcpy byte count scaled to bits), which for a
+single element equals `stride_bytes*8`. We require `N == stride_bytes` (one
+element) so all three agree, and the resulting `value_ew` addresses cell `off`
+at the correct width for EVERY Memory element type.
+
+### Fail-loud matrix
+  - src not alloca-backed (`src_root === nothing`)            → reject
+  - N (memcpy bytes) != stride_bytes (multi-element / sub-elt)→ reject
+  - value ew = N*8 ∉ {8,16,32,64}                             → reject
+  - gc_loaded base / raw index / src not a named SSA value    → reject
+"""
+function _handle_memcpy_gc_loaded(cname::AbstractString, inst::LLVM.Instruction,
+                                  names::Dict{_LLVMRef, Symbol}, counter::Ref{Int},
+                                  ops,
+                                  heap_dst::Tuple{_LLVMRef, _LLVMRef, Int},
+                                  src_root::Union{Nothing, _LLVMRef})
+    dst_v = ops[1]
+    src_v = ops[2]
+    n_v   = ops[3]
+    N     = _const_int_as_int(n_v)   # Predicates 1-4 (caller) already validated.
+
+    gcl_ref, off_ref, stride_bytes = heap_dst
+
+    # The src must be alloca-backed so the IRLoad reads from a valid named SSA
+    # value box (the setindex! sret field).
+    src_root === nothing && _ir_error(inst,
+        "$(cname): gc_loaded heap-Memory memcpy src is not alloca-backed — " *
+        "the value box (a setindex! sret field) must root at an alloca. " *
+        "(Bennett-qmv7)")
+
+    # Single-element only: a setindex! stores exactly one element, so the memcpy
+    # byte count N must equal the Memory's byte stride. A multi-element memcpy
+    # (N != stride) into a heap Memory would need per-element cell-stride
+    # emission and does not arise on the fdict root. Enforcing N == stride_bytes
+    # makes the value width unambiguous (value_ew = N*8 = stride_bytes*8).
+    N == stride_bytes || _ir_error(inst,
+        "$(cname): gc_loaded heap-Memory memcpy N=$(N) bytes != single " *
+        "element size $(stride_bytes) bytes (the byte stride from " *
+        "`mul %off, $(stride_bytes)`) — multi-element / sub-element heap-Memory " *
+        "memcpy is out of scope (the fdict setindex! root stores exactly one " *
+        "element). Tracked in Bennett-qmv7-multi. (Bennett-qmv7)")
+
+    # The value element width = the Memory element width = N*8 bits (== the byte
+    # stride scaled to bits). NEVER the i8 dst-GEP type, NEVER the src box width
+    # (which is the [2 x i64] sret box = 64, not the i8/i16/... stored value),
+    # NEVER a blind 64. This is the single eln6-safe width for the heap cell.
+    value_ew = N * 8
+    value_ew ∈ (8, 16, 32, 64) || _ir_error(inst,
+        "$(cname): gc_loaded heap-Memory memcpy element width $(value_ew) bits " *
+        "(= N*8, N=$(N)) ∉ {8,16,32,64} — only byte/half/word/dword heap-cell " *
+        "stores are modelled. (Bennett-qmv7)")
+
+    # The gc_loaded base and the raw element index must be named SSA values
+    # (they are: the gc_loaded CALL and the `sub %k, 1` index both lower
+    # normally before this memcpy in block order — empirically verified).
+    haskey(names, gcl_ref) || _ir_error(inst,
+        "$(cname): gc_loaded heap-Memory base (julia.gc_loaded result) is " *
+        "not a named SSA value. (Bennett-qmv7)")
+    haskey(names, off_ref) || _ir_error(inst,
+        "$(cname): gc_loaded heap-Memory element index is not a named SSA " *
+        "value. (Bennett-qmv7)")
+    haskey(names, src_v.ref) || _ir_error(inst,
+        "$(cname): gc_loaded heap-Memory memcpy src pointer is not a named " *
+        "SSA value. (Bennett-qmv7)")
+
+    base_op = ssa(names[gcl_ref])
+    idx_op  = ssa(names[off_ref])
+    src_op  = ssa(names[src_v.ref])
+
+    # Emit: fresh element-address GEP at the RAW index (cell `off`, eln6-safe) +
+    # load the value out of the alloca-backed src + store it into the heap cell.
+    addr = _auto_name(counter)
+    tmp  = _auto_name(counter)
+    return IRInst[
+        IRVarGEP(addr, base_op, idx_op, value_ew),
+        IRLoad(tmp, src_op, value_ew),
+        IRStore(ssa(addr), ssa(tmp), value_ew),
+    ]
 end
 
 # ---- Bennett-doih (2026-05-16, Bennett-8bys sub-bead under Bennett-hao Phase 3) ----
