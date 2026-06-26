@@ -476,6 +476,8 @@ runfile("test_6bu3_struct_aggregate.jl")
 # (eln6-safe `mul %off, STRIDE` split) and emits IRVarGEP+IRLoad+IRStore at the
 # VALUE width. Clears the last setindex! extraction wall on the fdict root.
 runfile("test_qmv7_gc_loaded_memcpy.jl")
+# Bennett-jfw6: mem=:vm Case A Vector/GenericMemory extraction recognizer (shape + fail-loud matrix).
+runfile("test_jfw6_vec_vm_extract.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message
 # + non-Bennett-authored guard (was: bare substring match that could
 # swallow unrelated Bennett fail-loud errors).
