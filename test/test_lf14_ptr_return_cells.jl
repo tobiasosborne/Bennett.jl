@@ -185,6 +185,12 @@ _is_ptr_return_wall(msg) =
                       occursin("aggregate", lowercase(rmsg_on)) ||
                       occursin("structtype", lowercase(rmsg_on)) ||
                       occursin("memcpy", lowercase(rmsg_on)) ||
+                      # Bennett-u2kk: the param-cell global-src memcpy fix advanced
+                      # rehash! PAST the `@"_j_const#1"` field-init memcpy wall
+                      # (idxfloor/ndel/maxprobe) to the ptr-null ICmp wall
+                      # (Bennett-8g7m target / Bennett-bjdg / U80). Add null/U80 disjuncts.
+                      occursin("null", lowercase(rmsg_on)) ||     # Bennett-u2kk
+                      occursin("u80", lowercase(rmsg_on)) ||      # Bennett-u2kk
                       occursin("closed-world", rmsg_on)
             end
         end

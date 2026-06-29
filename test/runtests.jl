@@ -477,6 +477,14 @@ runfile("test_6bu3_struct_aggregate.jl")
 # (eln6-safe `mul %off, STRIDE` split) and emits IRVarGEP+IRLoad+IRStore at the
 # VALUE width. Clears the last setindex! extraction wall on the fdict root.
 runfile("test_qmv7_gc_loaded_memcpy.jl")
+# Bennett-u2kk — CW-D: global-src memcpy whose DST is a const-offset GEP off a
+# function POINTER-PARAMETER cell (the Dict struct-by-ref param), under
+# ptr_cells. Adds `_param_ptr_root_ref` as a THIRD doih-G3 dst-root (after
+# alloca / gc_alloc arena); KEEPS G6 cross-width, SKIPS G9 freshness (destructive
+# live-field overwrite reversed by BVM's history tape, not by freshness). The
+# rehash! root successor wall past xrd6 (clears all 4 param-field-init memcpys;
+# next wall: ConstantPointerNull ICmp operand, Bennett-bjdg / U80).
+runfile("test_u2kk_param_memcpy.jl")
 # Bennett-jfw6: mem=:vm Case A Vector/GenericMemory extraction recognizer (shape + fail-loud matrix).
 runfile("test_jfw6_vec_vm_extract.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message

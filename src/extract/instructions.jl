@@ -140,6 +140,49 @@ function _gc_alloc_root_ref(val::LLVM.Value, depth::Int=0)::Union{Nothing, _LLVM
 end
 
 """
+    _param_ptr_root_ref(val, depth=0) -> Union{Nothing, _LLVMRef}
+
+Bennett-u2kk (2026-06): the POINTER-PARAMETER analogue of `_alloca_root_ref` /
+`_gc_alloc_root_ref`. Walk the producer chain from a pointer SSA value back to
+its underlying function POINTER PARAMETER — the closed-world caller-supplied
+cell (e.g. the `Dict` struct-by-ref param `h::Dict`; BennettVM ADR 0018 §A flat
+address space). Returns the parameter's LLVM ref, or `nothing` if the chain
+doesn't bottom out in a pointer-typed Argument (e.g. alloca, global, gc_alloc
+call, ptr-phi, ptr-select, or an INTEGER argument — never a cell root).
+
+Mirrors `_alloca_root_ref`'s const-GEP recursion EXACTLY (same depth-8 bound,
+same `LLVMGetElementPtr` opcode walk, same `gep_ops[1]` base step), differing
+only in the bottom-out predicate: an LLVM `Argument` whose `value_type` is a
+`PointerType`. (The PointerType guard is deliberate — an integer-typed argument
+carries a value, not a cell address, so it is never a memcpy-dst cell root.)
+
+The real rehash! field-init dst-GEP is `getelementptr inbounds i8, ptr
+%"h::Dict", i32 OFF` (a single-index i8 GEP off the Dict pointer param, after
+the extractor's addrspace-demotion preprocessing folds the p11 addrspacecast),
+so the recursion is a single GEP hop to the Argument. The same shape the proven
+setindex! field STORES already lower off `h::Dict` (see probe_field_gep).
+
+Used by `_handle_memcpy_global_src` (G3) ONLY under `ptr_cells=true` — a param
+cell dst makes no sense on the circuit path, which has no BVM cell model nor a
+history tape to reverse the destructive field overwrite (see the reversibility
+note at the G4 branch below).
+"""
+function _param_ptr_root_ref(val::LLVM.Value, depth::Int=0)::Union{Nothing, _LLVMRef}
+    depth > 8 && return nothing
+    val.ref == C_NULL && return nothing
+    if LLVM.API.LLVMIsAArgument(val.ref) != C_NULL &&
+       LLVM.value_type(val) isa LLVM.PointerType
+        return val.ref
+    end
+    if val isa LLVM.Instruction && LLVM.opcode(val) == LLVM.API.LLVMGetElementPtr
+        gep_ops = LLVM.operands(val)
+        length(gep_ops) >= 1 || return nothing
+        return _param_ptr_root_ref(gep_ops[1], depth + 1)
+    end
+    return nothing
+end
+
+"""
     _gc_loaded_dst_elem_ref(gep_val) -> Union{Nothing, Tuple{_LLVMRef,_LLVMRef,Int}}
 
 Bennett-qmv7 (2026-06): the HEAP-Memory analogue of `_gc_alloc_root_ref`, but
@@ -749,23 +792,26 @@ Bennett-doih global-src memcpy arm. Pre-conditions verified by
   G1. dst SSA must be in the names table
   G2. dst is NOT a global (defensive — caller's 5a already covers)
   G3. dst traces to an alloca via `_alloca_root_ref` — OR, under the
-      closed-world `ptr_cells` gate (Bennett-vbv9), to a `julia.gc_alloc_obj`
-      ARENA call via `_gc_alloc_root_ref`. ARENA dst sets `is_arena=true`.
-  G4. dst alloca elem_w is a non-zero integer (ALLOCA only; ARENA → cell
+      closed-world `ptr_cells` gate, to a `julia.gc_alloc_obj` ARENA call via
+      `_gc_alloc_root_ref` (Bennett-vbv9; sets `is_arena`), OR to a pointer
+      PARAMETER cell via `_param_ptr_root_ref` (Bennett-u2kk; sets `is_param`).
+  G4. dst alloca elem_w is a non-zero integer (ALLOCA only; ARENA/PARAM → cell
       width 64, ADR 0018 §A — G4 is SKIPPED)
   G5. src reaches a global; that global is in `globals` dict
-  G6. dst_ew == global_ew (no cross-width packing in MVP — for the ARENA dst
-      this constrains the src global to 64-bit: a non-64-bit global into a
-      64-bit arena cell FAILS LOUD here)
-  G7. src byte offset and N are multiples of ew_bytes (cell-aligned for ARENA)
+  G6. dst_ew == global_ew (no cross-width packing in MVP — for the ARENA/PARAM
+      dst this constrains the src global to 64-bit: a non-64-bit global into a
+      64-bit cell FAILS LOUD here)
+  G7. src byte offset and N are multiples of ew_bytes (cell-aligned for ARENA/PARAM)
   G8. N + src_byte_off ≤ available global bytes
   G9. dst alloca is fresh per `_alloca_is_fresh` (ALLOCA only; ARENA → SKIPPED,
-      gc_alloc zero-inits + distinct field offsets, STEP 0c)
+      gc_alloc zero-inits + distinct field offsets, STEP 0c; PARAM → SKIPPED,
+      destructive live-field overwrite reversed by BVM's history tape, not by
+      freshness — Bennett-u2kk REVERSIBILITY JUSTIFICATION at the G4 branch)
 
-Emission shape (mirror of Bennett-9nwt case C; IDENTICAL for ALLOCA and ARENA):
+Emission shape (mirror of Bennett-9nwt case C; IDENTICAL for ALLOCA/ARENA/PARAM):
 K element-granular `IRPtrOffset + IRStore(iconst, dst_ew)` pairs where each
 iconst is the k-th element of the global at the requested byte offset,
-K = N / ew_bytes. For the ARENA dst, dst_ew=64 ⇒ K=N/8 cell-granular stores.
+K = N / ew_bytes. For the ARENA/PARAM dst, dst_ew=64 ⇒ K=N/8 cell-granular stores.
 """
 function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction,
                                    names::Dict{_LLVMRef, Symbol},
@@ -799,7 +845,13 @@ function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction
     dst_root = _alloca_root_ref(dst_v)
     arena_root = (dst_root === nothing && ptr_cells) ?
         _gc_alloc_root_ref(dst_v) : nothing
-    if dst_root === nothing && arena_root === nothing
+    # Bennett-u2kk (2026-06): the THIRD G3 root — a const-offset GEP off a
+    # function POINTER PARAMETER cell (the Dict struct-by-ref param `h::Dict`).
+    # Consulted ONLY when both alloca and arena roots miss, and ONLY under
+    # ptr_cells (the BVM cell model — see the reversibility note at G4).
+    param_root = (dst_root === nothing && arena_root === nothing && ptr_cells) ?
+        _param_ptr_root_ref(dst_v) : nothing
+    if dst_root === nothing && arena_root === nothing && param_root === nothing
         _ir_error(inst,
             "$(cname): memcpy dst operand is not alloca-backed (or " *
             "alloca-backed via a const-offset GEP) on the global-src path. " *
@@ -807,6 +859,7 @@ function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction
             "Bennett-8bys. (Bennett-doih)")
     end
     is_arena = arena_root !== nothing
+    is_param = param_root !== nothing
 
     # G4: dst element width. ARENA dst → fixed cell width 64 (ADR 0018 §A: a
     # gc_alloc'd cell is one Int64 VM cell). The arena branch SKIPS the
@@ -817,7 +870,30 @@ function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction
     # Bennett-vbv9 STEP 0c — so no destructive overwrite is possible; a precise
     # freshness guard for the general arena case is deferred to a follow-up
     # bead). ALLOCA dst → unchanged G4/G9 path below.
-    if is_arena
+    #
+    # PARAM dst (Bennett-u2kk) → ALSO fixed cell width 64 (ADR 0018 §A: a
+    # caller-supplied pointer-param cell is one Int64 VM cell), and ALSO SKIPS
+    # the alloca-specific `_alloca_elem_width_bits` probe (no
+    # LLVMGetAllocatedType for an Argument) and the G9 freshness gate. But the
+    # reasoning is DIFFERENT and worth pinning, because the freshness skip is
+    # NOT vbv9's STEP-0c "fresh dst" argument:
+    #
+    #   *** REVERSIBILITY JUSTIFICATION (the crux) ***
+    #   The param-field write is a DESTRUCTIVE OVERWRITE of a LIVE field — the
+    #   caller's Dict already holds a value at `idxfloor`/`ndel`/`maxprobe`, so
+    #   the dst is NOT fresh and vbv9's freshness argument does NOT apply (do
+    #   NOT claim it). It is nevertheless reversible UNDER ptr_cells because the
+    #   BVM (`target=:reversible_vm`) logs every cell store on its Bennett-1973
+    #   history tape `(cell, pre-image)` and undoes it on reversal. Freshness is
+    #   a CIRCUIT-MODEL artifact (the circuit path has no tape, so it cannot
+    #   reverse a destructive overwrite) — which is exactly why G9 is skipped
+    #   here AND why the `ptr_cells=false` circuit path KEEPS failing loud at the
+    #   G3 "not alloca-backed" wall above (param_root is ptr_cells-gated). This
+    #   memcpy lowers to the IDENTICAL `IRPtrOffset + IRStore` shape that the
+    #   proven plain `IRStore`-into-param-field path (setindex! field stores)
+    #   already produces under ptr_cells with NO freshness guard — it adds ZERO
+    #   new reversibility surface over what already works.
+    if is_arena || is_param
         dst_ew = 64
     else
         # G4: dst alloca must have a non-zero integer element width.
@@ -903,7 +979,12 @@ function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction
     # so no destructive overwrite is possible; `_alloca_is_fresh` is also
     # alloca-specific (it walks back to an alloca root, which an arena dst
     # lacks). A precise arena-freshness guard is deferred to a follow-up bead.
-    if !is_arena
+    # SKIPPED for the PARAM dst too (Bennett-u2kk): the write IS a destructive
+    # overwrite of a live field, but it is reversed by BVM's history tape, not
+    # by a freshness precondition (see the REVERSIBILITY JUSTIFICATION at G4);
+    # and `_alloca_is_fresh` is alloca-specific (it walks to an alloca root,
+    # which a param dst lacks).
+    if !is_arena && !is_param
         _alloca_is_fresh(dst_root, inst) || _ir_error(inst,
             "$(cname): memcpy dst alloca has prior IR-visible writes within " *
             "this basic block (non-fresh dst) on the global-src path. " *
@@ -923,7 +1004,19 @@ function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction
     # analysis is tracked in `Bennett-land-precise-escape`. SKIPPED for the
     # arena dst (Bennett-vbv9): the synth-ptr-alloca set keys on alloca refs;
     # arena bytes are tracked under the BennettVM cell model, not this set.
-    if !is_arena && any(p -> p[1] === gname, synth_ptr_provenance)
+    # SKIPPED/REJECTED for the PARAM dst (Bennett-u2kk): the `synth_ptr_allocas`
+    # set keys on ALLOCA refs, so it CANNOT track a param-cell field. Rather than
+    # silently drop the load-escape guard (which would let synthetic-address
+    # bytes flow into a param cell undetected), FAIL LOUD — conservative per
+    # Rule 1. (`_j_const#N` are plain integers, so rehash! never trips this; but
+    # the guard must not be silently weakened.)
+    if is_param
+        any(p -> p[1] === gname, synth_ptr_provenance) && _ir_error(inst,
+            "$(cname): synth-address bytes (from global @$gname) into a " *
+            "param-cell field cannot be tracked by the alloca-keyed land " *
+            "guard (synth_ptr_allocas keys on alloca refs, not param cells). " *
+            "Tracked in Bennett-land-param / 8bys follow-up. (Bennett-u2kk)")
+    elseif !is_arena && any(p -> p[1] === gname, synth_ptr_provenance)
         push!(synth_ptr_allocas, dst_root)
     end
 
