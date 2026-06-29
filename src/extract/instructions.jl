@@ -2412,8 +2412,33 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
 
     # icmp
     if opc == LLVM.API.LLVMICmp
-        ops = LLVM.operands(inst)
-        return IRICmp(dest, _pred_to_sym(LLVM.predicate(inst)),
+        ops  = LLVM.operands(inst)
+        pred = _pred_to_sym(LLVM.predicate(inst))
+        # Bennett-8g7m / CW-D: pointer-typed icmp under the closed-world
+        # `ptr_cells` gate. A ptr operand is one Int64 VM cell (ADR 0018 §A,
+        # width 64); a `ptr null` lowers to the zero cell via
+        # `_operand(...; ptr_cells=true)` (Bennett-beaw — the helper already
+        # does null->iconst(0) under the gate). Only eq/ne is deterministic
+        # over cell ADDRESSES; an ordering compare is an address-MAGNITUDE
+        # comparison whose result depends on the BVM allocation layout (UB
+        # across allocations in C) — FAIL LOUD (Rule 1). Mirrors the ret/store
+        # beaw arms. Gate defaults false, so the circuit / Julia paths keep the
+        # byte-identical integer path below (`_iwidth(ops[1])`); the guard is
+        # the gate AND the PointerType operand check, so a non-pointer integer
+        # icmp (e.g. `icmp slt i32`) is never caught here.
+        if ptr_cells && (LLVM.value_type(ops[1]) isa LLVM.PointerType ||
+                         LLVM.value_type(ops[2]) isa LLVM.PointerType)
+            pred in (:eq, :ne) || _ir_error(inst,
+                "icmp predicate :$pred over pointer operands under ptr_cells — " *
+                "only :eq/:ne are deterministic over VM cell addresses; " *
+                "ordering predicates compare address magnitudes, which depend " *
+                "on the BVM allocation layout (not a source-level property) and " *
+                "risk a silent miscompile. (Bennett-8g7m / U80)")
+            return IRICmp(dest, pred,
+                          _operand(ops[1], names; ptr_cells=true),
+                          _operand(ops[2], names; ptr_cells=true), 64)
+        end
+        return IRICmp(dest, pred,
                       _operand(ops[1], names), _operand(ops[2], names),
                       _iwidth(ops[1]))
     end

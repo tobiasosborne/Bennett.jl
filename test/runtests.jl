@@ -485,6 +485,15 @@ runfile("test_qmv7_gc_loaded_memcpy.jl")
 # rehash! root successor wall past xrd6 (clears all 4 param-field-init memcpys;
 # next wall: ConstantPointerNull ICmp operand, Bennett-bjdg / U80).
 runfile("test_u2kk_param_memcpy.jl")
+# Bennett-8g7m — CW-D: pointer-typed `icmp` under the closed-world `ptr_cells`
+# gate. Threads ptr_cells to `_operand` (so a `ptr null` operand lowers to the
+# zero cell, not the U80 fail-loud) and uses cell width 64 (not the PointerType
+# scalar-width wall). Admits ONLY :eq/:ne over pointer cells; the 8 ordering
+# predicates FAIL LOUD (address-magnitude compare is BVM-layout-dependent / UB).
+# Integer icmp (non-pointer, or ptr_cells=false) is byte-identical. Advances the
+# rehash! root PAST the `icmp ne ptr %4, null` U80 wall (u2kk's successor) to the
+# `phi i64 [ undef, ... ]` UndefValue / U80 wall.
+runfile("test_8g7m_ptr_icmp_cells.jl")
 # Bennett-jfw6: mem=:vm Case A Vector/GenericMemory extraction recognizer (shape + fail-loud matrix).
 runfile("test_jfw6_vec_vm_extract.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message
