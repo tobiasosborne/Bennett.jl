@@ -2216,6 +2216,51 @@ end
 # (9 assertions): IRInst subtype count = 16, Union arm count bounded
 # 10-22, caller dispatch shape pinned, extraction allocation linear in
 # instruction count. Re-measure if a workload OOMs during extraction.
+
+# Bennett-xrd6 (Rule 12): the closed-world cell-ABI argument-carry loop, shared
+# by the registered-callee `ptr_cells` branch (consumed-call path) AND the
+# unregistered C-call arm of the LLVMCall handler. Iterates the operands
+# `1:(n_ops-1)` (the last operand is the callee value), carrying every
+# `IntegerType` operand at its own bit width and every `PointerType` operand as
+# one 64-bit VM cell (ADR 0018 §A — a pointer/sret-out box ptr is one address
+# cell). The Julia swiftcc GC-frame synthetic (`ptr nonnull swiftself
+# %pgcstack`) is a synthetic frame arg with no VM meaning — identified by its
+# call-site `swiftself` attribute (NOT by name, Rule 5) and SKIPPED. This is a
+# no-op for genuine C calls (ccall / in-module `.ll` callees carry no swiftself
+# attribute), so the C-call arm's behaviour is unchanged for the C-track corpus.
+# Any other operand type (float, vector, struct-by-value, token) fails loud
+# (CLAUDE.md §1). Pointer/integer constants resolve via `_operand(...;
+# ptr_cells=true)` so a `ptr null` arg becomes the zero cell rather than
+# crashing — both call sites are already `ptr_cells`-gated.
+function _cell_call_args(inst::LLVM.Instruction, ops, n_ops::Int,
+                         names::Dict{_LLVMRef, Symbol})
+    kind_swiftself = LLVM.API.LLVMGetEnumAttributeKindForName("swiftself", 9)
+    args = IROperand[]
+    widths = Int[]
+    for i in 1:(n_ops - 1)
+        # Skip the swiftcc GC-frame synthetic (call-site swiftself attribute at
+        # this operand's param index). For C calls this is always C_NULL ⇒ no-op.
+        LLVM.API.LLVMGetCallSiteEnumAttribute(inst, UInt32(i), kind_swiftself) == C_NULL ||
+            continue
+        op = ops[i]
+        ot = LLVM.value_type(op)
+        if ot isa LLVM.IntegerType
+            push!(args, _operand(op, names; ptr_cells=true))
+            push!(widths, Int(LLVM.width(ot)))
+        elseif ot isa LLVM.PointerType
+            # Pointer ARG = 64-bit cell-address value (ADR 0018 §A).
+            push!(args, _operand(op, names; ptr_cells=true))
+            push!(widths, 64)
+        else
+            _ir_error(inst,
+                "call argument $(i) has unsupported type $(ot) under ptr_cells; " *
+                "only integer and pointer (cell) args are modelled " *
+                "(Bennett-xrd6 / BVM ADR 0020 D5)")
+        end
+    end
+    return (args, widths)
+end
+
 function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symbol},
                               counter::Ref{Int},
                               lanes::Dict{_LLVMRef, Vector{IROperand}}=Dict{_LLVMRef, Vector{IROperand}}();
@@ -2542,6 +2587,62 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         if n_ops >= 1
             callee = _lookup_callee(cname)
             if callee !== nothing
+                if ptr_cells
+                    # Bennett-xrd6: closed-world cell ABI for a registered callee
+                    # whose result is CONSUMED locally (read back from an sret-out
+                    # box, or used as a returned cell) — NOT gate-inlined. Carries
+                    # pointer args (incl. the sret-out box ptr as arg 1) as 64-bit
+                    # VM cells so the read-back loads of the box resolve, and uses
+                    # the void/ptr → 64 ret_width SENTINEL: an sret-convention call
+                    # has a `void` LLVM return, and a Dict-returning call a `ptr`
+                    # return — neither has a scalar width of its own. The Function
+                    # callee is kept (clean nameof for closed-world linkage); the
+                    # IRCall shape is identical to the C-track / isolation D5 form
+                    # BennettVM already consumes.
+                    #
+                    # Fail-loud (CLAUDE.md §1): if this is an sret-convention call,
+                    # validate the sret pointee is a fixed-width integer bits-struct
+                    # (reusing the Bennett-dv1z `_sret_struct_fields` rules: reject
+                    # non-StructType pointee, packed structs, non-integer fields,
+                    # widths ∉ {8,16,32,64}) BEFORE trusting the read-back machinery
+                    # to unpack the box. A genuinely-unsupported sret shape rejects
+                    # here, never silently miscompiles.
+                    kind_sret = LLVM.API.LLVMGetEnumAttributeKindForName("sret", 4)
+                    asret = LLVM.API.LLVMGetCallSiteEnumAttribute(inst, UInt32(1), kind_sret)
+                    if asret != C_NULL
+                        pointee = LLVM.LLVMType(LLVM.API.LLVMGetTypeAttributeValue(asret))
+                        pointee isa LLVM.StructType || _ir_error(inst,
+                            "sret-convention call to '$(cname)' has pointee " *
+                            "$(pointee); only fixed-width integer bits-struct sret " *
+                            "pointees (e.g. {i64,i8}) are modelled on the " *
+                            "consumed-call path (Bennett-xrd6)")
+                        # Side-effecting validation (return discarded): rejects
+                        # packed / non-integer / bad-width fields loud (Bennett-dv1z).
+                        _sret_struct_fields(pointee, LLVM.parent(LLVM.parent(inst)))
+                    end
+                    cell_args, cell_widths = _cell_call_args(inst, ops, n_ops, names)
+                    rt = LLVM.value_type(inst)
+                    ret_w = if rt isa LLVM.VoidType || rt isa LLVM.PointerType
+                        64                       # void sret call / ptr-returning call
+                    elseif rt isa LLVM.IntegerType
+                        Int(LLVM.width(rt))
+                    elseif rt isa LLVM.ArrayType
+                        _type_width(rt)          # NTuple [N x iM] wide return
+                    else
+                        _ir_error(inst,
+                            "registered call to '$(cname)' has unsupported return " *
+                            "type $(rt) under ptr_cells; only void, integer, " *
+                            "pointer (cell), and [N x iM] aggregate returns are " *
+                            "modelled (Bennett-xrd6). A by-value StructType return " *
+                            "must use the sret convention.")
+                    end
+                    return IRCall(dest, callee, cell_args, cell_widths, ret_w)
+                end
+                # gate-inlining ABI (circuit path, ptr_cells=false): integer args
+                # ONLY — pointers (pgcstack, by-ref aggregates) are skipped because
+                # `lower_call!` re-extracts the callee body and inlines it. Byte-
+                # identical to pre-xrd6 (the gate-count regression baselines pin it).
+                #
                 # Operands: first n_ops-1 are arguments, last is the callee
                 # Skip pgcstack arg (first operand in swiftcc)
                 call_args = IROperand[]
@@ -2638,28 +2739,11 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 end
                 # A C `ptr` arg/return is one Int64 VM cell (ADR 0018 §A): every
                 # operand (integer OR pointer) is carried at the cell width — a
-                # ptr arg as 64, an integer arg at its own width. NOTHING is
-                # skipped here (unlike the Julia swiftcc pgcstack-skip loop
-                # above): the C closed-world model has no synthetic frame arg.
-                c_args = IROperand[]
-                c_widths = Int[]
-                for i in 1:(n_ops - 1)
-                    op = ops[i]
-                    ot = LLVM.value_type(op)
-                    if ot isa LLVM.IntegerType
-                        push!(c_args, _operand(op, names))
-                        push!(c_widths, LLVM.width(ot))
-                    elseif ot isa LLVM.PointerType
-                        # Pointer ARG = 64-bit cell-address value (ADR 0018 §A).
-                        push!(c_args, _operand(op, names))
-                        push!(c_widths, 64)
-                    else
-                        _ir_error(inst,
-                            "C call argument $(i) has unsupported type $(ot) " *
-                            "under ptr_cells; only integer and pointer (cell) " *
-                            "args are modelled (BVM ADR 0020 D5 / chunk C)")
-                    end
-                end
+                # ptr arg as 64, an integer arg at its own width. The C closed-
+                # world model has no synthetic frame arg; the shared helper's
+                # swiftself skip is therefore a no-op here (Bennett-xrd6, Rule 12 —
+                # the carry loop is now shared with the registered-callee branch).
+                c_args, c_widths = _cell_call_args(inst, ops, n_ops, names)
                 rt = LLVM.value_type(inst)
                 cn = Symbol(cname)
                 if rt isa LLVM.VoidType
