@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 250" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+
+  <rect x="2" y="2" width="956" height="246" rx="14" fill="#fbfbfe" stroke="#e6e8eb" stroke-width="1"/>
+  <text x="480" y="34" text-anchor="middle" font-size="13" fill="#57606a">Plain Julia in &#8594; reversible circuit out</text>
+
+  <!-- main pipeline row -->
+  <!-- N1: source -->
+  <rect x="20" y="62" width="150" height="58" rx="10" fill="#efe7f7" stroke="#9558B2" stroke-width="1.6"/>
+  <text x="95" y="88" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2328">f(x::Int8)</text>
+  <text x="95" y="106" text-anchor="middle" font-size="10.5" fill="#6e7781">Julia &#183; C &#183; Rust</text>
+
+  <!-- N2: LLVM IR -->
+  <rect x="215" y="62" width="135" height="58" rx="10" fill="#fdeaea" stroke="#f24f4f" stroke-width="1.6"/>
+  <text x="282" y="96" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2328">LLVM IR</text>
+
+  <!-- N3: ParsedIR -->
+  <rect x="405" y="62" width="135" height="58" rx="10" fill="#e9effb" stroke="#7aa2f7" stroke-width="1.6"/>
+  <text x="472" y="96" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2328">ParsedIR</text>
+
+  <!-- N4: gates -->
+  <rect x="595" y="62" width="150" height="58" rx="10" fill="#e7f6ec" stroke="#2ea043" stroke-width="1.6"/>
+  <text x="670" y="88" text-anchor="middle" font-size="14" font-weight="600" fill="#1f2328">gates</text>
+  <text x="670" y="106" text-anchor="middle" font-size="10.5" fill="#6e7781">NOT &#183; CNOT &#183; Toffoli</text>
+
+  <!-- N5: circuit -->
+  <rect x="800" y="62" width="142" height="58" rx="10" fill="#dff3e6" stroke="#2ea043" stroke-width="2"/>
+  <text x="871" y="88" text-anchor="middle" font-size="14" font-weight="700" fill="#1f2328">Reversible</text>
+  <text x="871" y="106" text-anchor="middle" font-size="13" font-weight="700" fill="#1f2328">Circuit</text>
+
+  <!-- arrows + stage captions -->
+  <line x1="170" y1="91" x2="213" y2="91" stroke="#57606a" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="191" y="82" text-anchor="middle" font-size="9" font-style="italic" fill="#6e7781">code_llvm</text>
+
+  <line x1="350" y1="91" x2="403" y2="91" stroke="#57606a" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="376" y="82" text-anchor="middle" font-size="9" font-style="italic" fill="#6e7781">extract</text>
+
+  <line x1="540" y1="91" x2="593" y2="91" stroke="#57606a" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="566" y="82" text-anchor="middle" font-size="9" font-style="italic" fill="#6e7781">lower</text>
+
+  <line x1="745" y1="91" x2="798" y2="91" stroke="#57606a" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="771" y="82" text-anchor="middle" font-size="9" font-style="italic" fill="#6e7781">bennett</text>
+
+  <!-- VM fork from ParsedIR -->
+  <line x1="472" y1="120" x2="472" y2="184" stroke="#e8920c" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+  <text x="484" y="152" font-size="9" font-style="italic" fill="#b06a00">target = :reversible_vm</text>
+
+  <rect x="360" y="184" width="300" height="50" rx="10" fill="#fff3e0" stroke="#e8920c" stroke-width="1.6"/>
+  <text x="510" y="206" text-anchor="middle" font-size="13.5" font-weight="600" fill="#1f2328">BennettVM &#8594; VMProgram</text>
+  <text x="510" y="223" text-anchor="middle" font-size="10.5" fill="#6e7781">reversible interpreter &#183; run! / unrun!</text>
+
+  <!-- outputs of circuit -->
+  <text x="871" y="150" text-anchor="middle" font-size="9.5" fill="#6e7781">simulate &#183; verify_reversibility</text>
+  <text x="871" y="164" text-anchor="middle" font-size="9.5" fill="#6e7781">gate_count &#183; toffoli_depth</text>
+  <text x="871" y="178" text-anchor="middle" font-size="9.5" fill="#6e7781">controlled</text>
+  <line x1="871" y1="120" x2="871" y2="138" stroke="#57606a" stroke-width="1.2" marker-end="url(#arrow)"/>
+</svg>

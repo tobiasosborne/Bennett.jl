@@ -1,5 +1,56 @@
 # Worklog chunk 092
 
+## Session log — 2026-06-30 — Comprehensive documentation round (README + Diátaxis docs/src), Bennett.jl + BennettVM.jl
+
+**What.** Full docs overhaul for both sibling repos. Bennett.jl: total README rewrite +
+restructured `docs/src` into a Diátaxis site (getting_started / tutorials / howto /
+explanation / reference, 18 pages) + hand-authored SVG pipeline diagram + new `make.jl`
+nav; retired the 4 superseded flat pages (`tutorial.md`/`api.md`/`architecture.md`/
+`reference.md`), preserving the autogen `@docs` surface as `reference/autodocs.md`.
+BennettVM.jl: README rewrite (production front door, replacing the spike-dominated text)
++ a `docs/src` site scaffolded from scratch (6 pages) + `make.jl` + `docs/Project.toml`.
+
+**Method.** Two mapping workflows (12 + 6 subagents) produced subsystem maps + a doc
+staleness audit + a **live README-snippet verifier** (ran real Julia 1.12.5). Then two
+write-then-adversarially-verify workflows authored the Diátaxis pages grounded in a
+verified-facts block + the maps + source; the verify pass caught/fixed real errors.
+
+**Key staleness fixed (every headline number re-verified against a live run).**
+- `gate_count` returns a **NamedTuple** `(total, NOT, CNOT, Toffoli)`, not an Int — the
+  old README showed it as a scalar everywhere.
+- `x+Int8(1)` default: **58** gates / ancilla **25** / t_count **84** (old README: 100/76/196).
+  `x*x+3x+1`: **482** (old: 872). `x*y` Int32 default toffoli_depth **180** (old: 190);
+  `:qcla_tree` **56** ✓. QROM `sbox` example **114** (old: 146).
+- **CRITICAL**: `simulate(controlled(c), false, x)` returns **0** (output register stays
+  zero), not the input — the old README taught wrong controlled-circuit semantics. Source
+  docstring (`src/controlled.jl`) confirms 0.
+- `mul=:karatsuba` is **retired** (only `:auto/:shift_add/:qcla_tree`); `add=:auto` is
+  always `:ripple` (not "Cuccaro-when-dead"); `target` has no `:circuit` value (it is
+  `:gate_count`/`:depth`/`:reversible_vm`).
+- The shipped **`target=:reversible_vm`** backend (BennettVM, M13 e2e Collatz) is now the
+  README's headline "two backends" story — was previously documented as "no implementation
+  exists."
+- Transcendentals are **supported** (60 `soft_*` exports; ≤2 ulp); QROM is `2(L-1)` Toffoli
+  (T-count `4(L-1)`); Feistel is `~4W` Toffoli (not `8W`); `lower.jl`/`ir_extract.jl` are
+  shims over `src/lowering/` + `src/extract/`; `ir_parser.jl`/`sat_pebbling.jl` deleted.
+
+**Gotchas for the next agent.**
+- I deliberately ran **no `bd`** commands so the carefully-synced `.beads` export stayed
+  clean (the auto-export-drops-memories trap). Follow-ups are recorded here, not filed as
+  beads, to avoid re-churning the export.
+- `docs/make.jl` now sets **`doctest=false`** (the prose pages show live-verified outputs
+  as plain ```julia blocks). Re-enable `doctest=true` only after validating the build.
+- The Bennett-1973 DOI is `10.1147/rd.176.0525` (the old README hyperlinked the 1989 SIAM
+  DOI `10.1137/0218053`).
+
+**Follow-ups (doc debt, unfiled).**
+- `CLAUDE.md` "File Structure" is stale: still calls `lower.jl`/`ir_extract.jl` monolithic
+  ("3+1 split pending"), lists deleted `ir_parser.jl`/`sat_pebbling.jl`, and says "274 test
+  files" (actual 297). Worth a pass.
+- BennettVM `BENNETT_JL_PIN.md` / `lower_vm.jl` / PRD §3.7 cite four divergent Bennett.jl
+  SHAs; reconcile to one canonical pin. BennettVM `src/BennettVM.jl` "Status" docstring and
+  several PRD §3.x signatures are frozen at the M0.1/spike era (documented in the maps).
+
 ## Session log — 2026-06-29 — Bennett-8g7m: ptr-typed `icmp` under `ptr_cells` (closed-world fdict CW-D path) + session wind-up
 
 **Context.** Third bead of a single orchestrated session advancing the P0 closed-world
