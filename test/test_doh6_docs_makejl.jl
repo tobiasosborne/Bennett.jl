@@ -15,7 +15,7 @@ const _DOH6_DOCS_DIR = abspath(joinpath(@__DIR__, "..", "docs"))
         @test isfile(joinpath(_DOH6_DOCS_DIR, "make.jl"))
         @test isfile(joinpath(_DOH6_DOCS_DIR, "Project.toml"))
         @test isfile(joinpath(_DOH6_DOCS_DIR, "src", "index.md"))
-        @test isfile(joinpath(_DOH6_DOCS_DIR, "src", "reference.md"))
+        @test isfile(joinpath(_DOH6_DOCS_DIR, "src", "reference", "autodocs.md"))
     end
 
     @testset "make.jl pins the doctest invariants" begin
@@ -30,8 +30,12 @@ const _DOH6_DOCS_DIR = abspath(joinpath(@__DIR__, "..", "docs"))
         @test !occursin("deploydocs(", src)
     end
 
-    @testset "reference.md pulls in the wlf6-doctested functions" begin
-        src = read(joinpath(_DOH6_DOCS_DIR, "src", "reference.md"), String)
+    @testset "reference/autodocs.md pulls in the wlf6-doctested functions" begin
+        # NOTE (docs overhaul, commit 1bf2a51): the flat `src/reference.md` was
+        # retired; the autogen `@docs` surface now lives at
+        # `src/reference/autodocs.md`. This test tracked the old path and went
+        # red on that (docs-only) push (tests skipped). Repointed here.
+        src = read(joinpath(_DOH6_DOCS_DIR, "src", "reference", "autodocs.md"), String)
         @test occursin("```@docs", src)
         # Each of the four src/*.jl files with wlf6 jldoctest fences
         # must surface here so Documenter executes their doctests.

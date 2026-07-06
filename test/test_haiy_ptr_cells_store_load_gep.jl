@@ -178,17 +178,23 @@ end
         @test occursin("first index must be the constant 0", m1)
         @test occursin("D4", m1)
 
-        # non-struct pointee (array, two-index)
+        # non-struct pointee (array, two-index) with a NON-INTEGER element.
+        # NOTE (bead `bennettvm-416r.4` / Bennett-dzd): a two-index array GEP
+        # with an INTEGER element on a local base (`[4 x i64], ptr %p, i32 0,
+        # i32 2`) is now SUPPORTED — it lowers to `IRVarGEP` via front-end
+        # Case C (the dzd stack-array closure), NOT the struct arm's reject.
+        # This edge case therefore now uses a `[4 x double]` array whose FLOAT
+        # element has no bit-exact `elem_width`, so Case C still fails loud.
         m2 = _extract_err("""
-        define i64 @f(ptr %p) {
+        define double @f(ptr %p) {
         e:
-          %m = getelementptr inbounds [4 x i64], ptr %p, i32 0, i32 2
-          %v = load i64, ptr %m
-          ret i64 %v
+          %m = getelementptr inbounds [4 x double], ptr %p, i32 0, i32 2
+          %v = load double, ptr %m
+          ret double %v
         }
         """, "f"; ptr_cells=true)
-        @test occursin("non-struct source element type", m2)
-        @test occursin("D4", m2)
+        @test occursin("non-integer array element", m2)
+        @test occursin("U16", m2) && occursin("Bennett-qal5", m2)
 
         # > 2 indices → U16
         m3 = _extract_err("""

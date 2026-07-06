@@ -3039,6 +3039,65 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 return IRVarGEP(dest, ssa(gname), idx_op, ew)
             end
         end
+        # Case C: two-index ARRAY GEP (bennettvm-416r.4 + Bennett-dzd). A
+        # runtime-indexed array element access compiles to
+        # `getelementptr [N x iM], ptr BASE, i64 0, i64 IDX` — base + TWO
+        # indices (`length(ops) == 3`): the leading constant-0 steps over the
+        # (single) array at BASE, IDX selects element IDX. This is semantically
+        # IDENTICAL to the single-index `iM, ptr BASE, i64 IDX` form (Case A /
+        # Case B above) once the leading 0 is stripped, so it lowers to the SAME
+        # node — `IRVarGEP(dest, base_sym, idx, elem_width)` — which
+        # `lower_var_gep!` (circuit) / BVM's `VarGEP` already handle for the
+        # single-index shape. ONE shared arm covers BOTH bases:
+        #   * a constant global array (`const uint8_t rom[8]`; name ∈ globals) —
+        #     the bennettvm-416r.4 acceptance case (`rom[i & 7]`), lowered like
+        #     Case B (base symbol = the global's LLVM name, resolved via
+        #     `parsed.globals` downstream);
+        #   * a named local (an alloca-backed C stack array `uint8_t a[8]`;
+        #     `haskey(names, base.ref)`) — the Bennett-dzd closure, lowered like
+        #     Case A (base symbol = the alloca's SSA name).
+        #
+        # FAIL LOUD (keeping the Bennett-qal5 / U16 breadcrumb) on every shape
+        # this arm does NOT model: a non-integer array element (float / pointer /
+        # nested `[K x [M x iN]]` array — no bit-exact elem_width), a first index
+        # that is not the constant 0 (a non-plain array-base step), or > 3
+        # operands (a genuine multi-dim GEP), which falls through to the U16 wall
+        # below. Only fires when the GEP source element type is an ArrayType AND
+        # the base is a recognised global-or-local — a two-index STRUCT GEP
+        # (StructType source) is NOT an ArrayType, so it skips this arm and hits
+        # the struct arm below unchanged.
+        if length(ops) == 3
+            src_ty_ref_arr = LLVM.API.LLVMGetGEPSourceElementType(inst)
+            src_type_arr = LLVM.LLVMType(src_ty_ref_arr)
+            if src_type_arr isa LLVM.ArrayType
+                is_global_arr = base isa LLVM.GlobalVariable &&
+                                LLVM.isconstant(base) &&
+                                haskey(globals, Symbol(LLVM.name(base)))
+                is_local_arr = haskey(names, base.ref)
+                if is_global_arr || is_local_arr
+                    elem_ty_arr = LLVM.eltype(src_type_arr)
+                    elem_ty_arr isa LLVM.IntegerType || _ir_error(inst,
+                        "two-index array getelementptr with non-integer array " *
+                        "element type $(elem_ty_arr) is not supported; cannot " *
+                        "infer a bit-exact elem_width (float / pointer / nested " *
+                        "array are out of scope) (Bennett-qal5 / U16; " *
+                        "bennettvm-416r.4)")
+                    (ops[2] isa LLVM.ConstantInt &&
+                     _const_int_as_int(ops[2]) == 0) || _ir_error(inst,
+                        "two-index array getelementptr first index must be the " *
+                        "constant 0 (the single-array base step); got a " *
+                        "non-zero / non-constant first index (Bennett-qal5 / " *
+                        "U16; bennettvm-416r.4)")
+                    ew_arr = LLVM.width(elem_ty_arr)
+                    base_sym_arr = is_local_arr ? names[base.ref] :
+                                   Symbol(LLVM.name(base))
+                    idx_op_arr = ops[3] isa LLVM.ConstantInt ?
+                        iconst(_const_int_as_int(ops[3])) :
+                        _operand(ops[3], names)
+                    return IRVarGEP(dest, ssa(base_sym_arr), idx_op_arr, ew_arr)
+                end
+            end
+        end
         # BVM ADR 0020 D4 (CW-C2 chunk B): two-index struct GEP under the
         # C-track `ptr_cells` gate. A C struct-field access compiles to
         # `getelementptr %struct.T, ptr %p, i32 0, i32 K` — base + TWO constant

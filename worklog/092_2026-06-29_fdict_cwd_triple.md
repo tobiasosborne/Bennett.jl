@@ -1,5 +1,51 @@
 # Worklog chunk 092
 
+## Session log — 2026-07-06 — Case C: two-index array GEP support (cross-repo bennettvm-416r.4 + closes dzd)
+
+**What.** `src/extract/instructions.jl` gains a new "Case C" arm (before the
+qal5/U16 reject) for the two-index ARRAY getelementptr `[N x iM], ptr BASE, i64
+0, i64 IDX` — a runtime-indexed array element access. Emits the SAME
+`IRVarGEP(dest, base_sym, idx, elem_width)` node the single-index global/local
+arms already produce (the leading constant-0 is stripped; semantically
+identical). ONE arm covers BOTH bases: a const global integer array (name ∈
+`parsed.globals`) — the `bennettvm-416r.4` driver (`rom[i&7]`) — and a named
+local alloca-backed array (`haskey(names, base.ref)`) — the **Bennett-dzd**
+closure (C `uint8_t a[N]` stack arrays, which previously forced the `calloc`
+workaround). Fails loud (keeping the qal5 breadcrumb) on non-integer element
+(float/pointer/nested — no bit-exact `elem_width`), first index ≠ constant-0, or
+>3 operands (genuine multi-dim). Struct GEPs (StructType source, not ArrayType)
+skip this arm and hit the existing struct arm unchanged.
+
+**Why (cross-repo).** This is the Bennett.jl half of BennettVM's `416r.4`
+(const globals as read-only VM memory — a NES ROM prerequisite). Landed via the
+CORE 3+1 protocol (2 proposers + implementer + review); the BennettVM half
+(`GlobalROM` segment, `GLOBAL_BASE=2^48`, materialization) is in BennettVM
+`src/ir/{IState,memory_floor,ingest}.jl`. See BennettVM WORKLOG 2026-07-06.
+
+**Gotcha — two fail-loud tests updated (legitimately, not weakened).**
+`test_qal5_multi_index_gep.jl`'s original fixture (`[4 x i32], ptr @tbl, 0, %i`,
+a const global int array at a runtime index) IS the 416r.4 goal and now
+extracts → the test now positively asserts `IRVarGEP(:tbl,…,32)` +
+`parsed.globals[:tbl]==([1,2,3,4],32)`, and moves its fail-loud coverage to a
+genuine multi-dim `[2x[2xi32]]` + a non-integer `[4xdouble]`.
+`test_haiy_ptr_cells_store_load_gep.jl` swapped its now-supported `[4xi64]`
+local-array edge case for `[4xdouble]` (non-integer element, still rejected). A
+grep over all test `.ll`/inline IR found no other affected fixtures (the
+implementer's narrower grep missed ~10 `heap_*`/T5 fixtures that ALSO carry
+2-index array GEPs, but those all still pass — `heap_m2` 9734, `heap_m3` 529,
+T5-julia 517 — because their allocas' Case C lowering is correct). Verified:
+qal5 (4+6), haiy (39), plus BennettVM `test_global_array_vm.jl` 2375/2375 and
+the BennettVM full suite 9328/9328.
+
+**Also this session — fixed a PRE-EXISTING red (`test_doh6_docs_makejl.jl`).**
+Diagnosing why the Bennett.jl full suite timed out (it did NOT — it ran ~2.5×
+slow under machine pressure, ~71min, and the 75min cap cut off the last file
+`kuza`, which passes standalone 9734/9734), a streamed run revealed the ONLY
+failing file was `test_doh6`: the docs overhaul (commit `1bf2a51`) retired flat
+`docs/src/reference.md` → `docs/src/reference/autodocs.md`, but that docs-only
+push skipped tests, so the stale-path checks went red unnoticed. Repointed the
+test (14/14). Unrelated to Case C; fixed here to unblock a green push.
+
 ## Session log — 2026-06-30 — Comprehensive documentation round (README + Diátaxis docs/src), Bennett.jl + BennettVM.jl
 
 **What.** Full docs overhaul for both sibling repos. Bennett.jl: total README rewrite +
