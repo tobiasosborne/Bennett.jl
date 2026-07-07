@@ -516,6 +516,18 @@ runfile("test_yd4f_undef_phi_cells.jl")
 # AssertionError [1 x ptr] return-type). ptr_cells-gated: circuit path
 # byte-identical.
 runfile("test_583s_memdata_bounds.jl")
+# Bennett-utzc / CW-D (ADR 0017 §4) — the keep-branch dead-block pruner. Under
+# the closed-world `ptr_cells` gate, a block whose LLVM terminator is
+# `unreachable` (a provably-dead Julia throw arm) has its BODY dropped, its own
+# label KEPT, and the reserved `IRBranch(nothing, :__unreachable__, nothing)`
+# emitted; the predecessor's conditional branch into it is PRESERVED (keep-
+# branch → BennettVM's `:__unreachable__` halt sink). This clears the `setindex!`
+# U114 `store {ptr,ptr}` (suite mode) and `rehash!` `[1 x ptr] @j_AssertionError`
+# (default mode) dead-block extraction walls in one recognizer — advancing the
+# fdict set PAST them to the CW-D2 `llvm.smul.with.overflow` / `gc_alloc_obj`
+# frontier (bennettvm-416r.12). Two Rule-1 guards: no-live-escape + throw-skeleton
+# surprise guard. ptr_cells-gated: default path byte-identical.
+runfile("test_utzc_dead_block_pruner.jl")
 # Bennett-jfw6: mem=:vm Case A Vector/GenericMemory extraction recognizer (shape + fail-loud matrix).
 runfile("test_jfw6_vec_vm_extract.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message

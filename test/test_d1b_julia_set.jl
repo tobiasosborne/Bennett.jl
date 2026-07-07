@@ -134,14 +134,15 @@ fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
     # ========================================================================
     # GATE E — fdict_d1b HONEST tripwire (NOT faked green).
     # ========================================================================
-    @testset "GATE E — fdict_d1b: :fail_loud throws; :skip>=4 is @test_broken" begin
-        # :fail_loud (default) MUST throw — a reached Dict-helper body hits a real
-        # extractor wall. Capture & inspect rather than matching the wrapper's
-        # hardcoded hint text (S3): assert (a) the :fail_loud wrapper fired on an
-        # EXTRACTION failure, and (b) the WRAPPED underlying error is a genuine
-        # LLVM extractor wall (ptr-width U81 / heterogeneous-sret dv1z / atomic
-        # U14) — NOT a D1b logic bug. The wall identity is order-dependent
-        # (Rule 5) so accept any of them.
+    @testset "GATE E — fdict_d1b: :fail_loud throws; dead-block walls cleared (utzc); :skip>=4 broken" begin
+        # :fail_loud (default, cells=FALSE) MUST throw — a reached Dict-helper body
+        # hits a real extractor wall. Capture & inspect rather than matching the
+        # wrapper's hardcoded hint text (S3): assert (a) the :fail_loud wrapper
+        # fired on an EXTRACTION failure, and (b) the WRAPPED underlying error is a
+        # genuine LLVM extractor wall — NOT a D1b logic bug. This invocation uses
+        # the default cells=FALSE gate, which Bennett-utzc leaves BYTE-IDENTICAL
+        # (the dead-block pruner is ptr_cells-gated), so setindex! still surfaces
+        # FIRST on the ptr-RETURN "unsupported LLVM type ... PointerType" wall.
         err = try
             extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8})
             nothing
@@ -150,52 +151,46 @@ fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
         end
         @test err !== nothing                          # MUST throw
         @test occursin("extraction FAILED", err)       # via the :fail_loud wrapper
-        # A real extractor wall, not a D1b bug. The wall identity is
-        # order-dependent (Rule 5) and depends on the ptr_cells gate:
-        #   * default (cells=false, what THIS GATE-E invocation uses): setindex!
-        #     surfaces FIRST on the ptr-RETURN "unsupported LLVM type ...
-        #     PointerType" wall (helpers.jl:246 via module_walk.jl:168).
-        #   * with ptr_cells=true (Bennett-lf14, the BennettVM closed-world
-        #     caller): that ptr-RETURN wall is CLEARED — setindex! advances to a
-        #     VoidType/U81 void wall, rehash! advances to the U14 atomic-load
-        #     wall. (Neither reaches the predicted jl_alloc_genericmemory
-        #     closed-world violation first — the atomic/void wall fires earlier.)
-        # Accept ANY of these so the assertion is robust to the gate and to the
-        # order-dependent first-failing-callee. "closed-world violation" is
-        # included for the future CW-D2 frontier where the atomic/void walls clear
-        # and jl_alloc_genericmemory_unchecked (a Symbol-callee decl) surfaces.
+        # A real extractor wall, not a D1b bug. Order-dependent (Rule 5); accept
+        # any plausible cells-OFF wall. "closed-world violation" retained for the
+        # future frontier where the ptr-return/void/atomic walls all clear.
         @test occursin("unsupported LLVM type", err) || occursin("sret", err) ||
               occursin("atomic", err) || occursin("VoidType", err) ||
               occursin("U81", err) || occursin("closed-world violation", err)
 
-        # >=4 is BLOCKED on CW-D2, NOT on D1b. The :skip path tolerates every
-        # wall and returns whatever bodies extract today (currently 0, with the
-        # ptr_cells gate OFF *and* ON — live-probe-verified 2026-06-19: lf14
-        # ADVANCES the walls but does not yet reach 4 fully-extracted bodies). The
-        # walls are NOT uniform across the Dict helpers (Rule 5 — verified by
-        # live probe 2026-06-19, ptr_cells-gate-aware):
-        #   * root           → julia.get_pgcstack (GC-frame TLS read), benign-listed.
-        #   * setindex!      → cells-OFF: ptr-RETURN wall (returns a ptr). cells-ON
-        #     (lf14): ptr-RETURN CLEARED, advances to a VoidType/U81 void wall.
-        #   * rehash!        → cells-OFF: ptr-RETURN wall (same). cells-ON (lf14):
-        #     ptr-RETURN CLEARED, advances to the U14 atomic-load wall
-        #     (`load atomic ptr ... unordered`). Beyond U14 lies its
-        #     jl_alloc_genericmemory_unchecked Symbol-callee → _closed_world_check!
-        #     "closed-world violation" frontier (CW-D2 / bennettvm-416r.12).
-        #   * ht_keyindex2_shorthash! → sret({i64,i8}) hetero multi-return. After
-        #     Bennett-jghk the six scalar-store return paths extract; the wall
-        #     ADVANCED to Bennett-59zi: the L165 path does a recursive sret self-
-        #     call into %sret_box then `llvm.memcpy(%sret_return, %sret_box)`,
-        #     which hits the "sret with llvm.memcpy form is not supported" reject.
-        # So ht_keyindex2 no longer hits the jghk multi-store wall, but it still
-        # does NOT extract end-to-end — the 59zi memcpy/self-call wall remains.
-        # rehash! frontier handed off to BennettVM CW-D2 (bennettvm-416r.12):
-        # jl_alloc_genericmemory_unchecked Symbol-callee awaits heap-intrinsic
-        # classification (it is past the U14 atomic-load wall, not yet reached).
-        # HONEST tripwire: when CW-D2 + U14 + 59zi clear the walls this flips to a
-        # real pass and the @test_broken starts failing-as-unexpected-pass,
-        # prompting promotion to @test. (This GATE-E call uses the default cells=
-        # false; lf14 left the default byte-identical so this stays broken.)
+        # utzc RESOLUTION (cells=TRUE): the dead-block extraction walls that this
+        # gate historically pinned are GONE. Before Bennett-utzc, the ptr_cells=true
+        # set walled INSIDE a provably-dead unreachable throw block — the `rehash!`
+        # `[1 x ptr] @j_AssertionError` ArrayType-return call (default mode) and the
+        # `setindex!` U114 `store { ptr, ptr }` box-store (suite mode). utzc prunes
+        # those dead blocks, so the wall ADVANCES to the CW-D2 frontier
+        # (bennettvm-416r.12): :skip walls on the `gc_alloc_obj` Symbol callee (not
+        # yet in the closed-world whitelist), proving the rehash!/setindex! bodies
+        # now extract PAST their dead blocks. Assert the specific thing this gate
+        # was pinning — the dead-block wall — is resolved. (Live-probe-verified
+        # 2026-07-07, BOTH check-bounds modes.)
+        skmsg = try
+            extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
+                                             ptr_cells=true, on_extract_error=:skip)
+            ""   # (future) fully closed — no closed-world violation
+        catch e
+            sprint(showerror, e)
+        end
+        @test !occursin("j_AssertionError", skmsg)     # AssertionError dead block pruned
+        @test !occursin("[1 x ptr", skmsg)             # its [1 x ptr] return-type wall gone
+        @test skmsg == "" || occursin("gc_alloc_obj", skmsg) ||
+              occursin("closed-world violation", skmsg)   # advanced to CW-D2 frontier
+
+        # >=4 is BLOCKED on CW-D2, NOT on D1b — and NOT on the dead-block walls
+        # utzc just cleared. The :skip path (cells=FALSE here, byte-identical under
+        # utzc) tolerates every wall and returns whatever bodies extract today
+        # (currently 0). Beyond the utzc-pruned dead blocks the remaining CW-D2
+        # frontier is `llvm.smul.with.overflow.i64` (struct `{i64,i1}` return in a
+        # LIVE rehash! block) + the `gc_alloc_obj` closed-world whitelist gap
+        # (bennettvm-416r.12). HONEST tripwire: when that frontier lands this flips
+        # to a real pass and the @test_broken starts failing-as-unexpected-pass,
+        # prompting promotion to @test. (cells=FALSE; utzc left the default
+        # byte-identical so this stays broken.)
         @test_broken length(extract_parsed_ir_set_from_julia(
             fdict_d1b, Tuple{Int8,Int8}; on_extract_error=:skip)) >= 4
     end

@@ -78,6 +78,50 @@ function _module_to_parsed_ir_set(mod::LLVM.Module;
     return out
 end
 
+# Bennett-utzc / CW-D (ADR 0017 §4) — keep-branch dead-block pruner guards.
+#
+# Guard 1 (load-bearing, Rule 1): no value DEFINED in an `unreachable`
+# (provably-dead) block may be USED by a KEPT (live) block. An unreachable block
+# has 0 successors ⇒ dominates only itself ⇒ nothing it defines is live, so this
+# holds universally — but we assert it rather than assume it. Uses INSIDE the
+# dead set (this block or any other dead block) are fine; the wall is a use in a
+# non-dead block, which after pruning would dangle.
+function _assert_dead_block_no_live_escape(bb::LLVM.BasicBlock,
+                                           dead::Set{_LLVMRef}, label)
+    for inst in LLVM.instructions(bb), u in LLVM.uses(inst)
+        usr = LLVM.user(u)
+        usr isa LLVM.Instruction || continue
+        LLVM.parent(usr).ref in dead || _ir_error(inst,
+            "dead-block pruner (Bennett-utzc): value defined in unreachable block " *
+            "%$label ESCAPES to a live block — an unreachable block must dominate " *
+            "nothing live (Rule 1).")
+    end
+    return nothing
+end
+
+# Guard 2 (surprise guard, Rule 1): a dead block is EXPECTED iff it has 0
+# predecessors (an orphan `after_throw`/`after_noret` trap stub — Julia emits
+# `call @llvm.trap; unreachable` skeletons with no incoming edge) OR it contains
+# a throw-family / `llvm.trap` / error/throw/assert-named call. Anything else is
+# a SURPRISING unreachable block whose halt reason is unmodelled — refuse to
+# silently prune it (dropping a block that halts for an unknown reason could mask
+# a real miscompile).
+function _assert_dead_block_is_throw_skeleton(bb::LLVM.BasicBlock, label)
+    isempty(LLVM.predecessors(bb)) && return nothing
+    for inst in LLVM.instructions(bb)
+        LLVM.opcode(inst) == LLVM.API.LLVMCall || continue
+        cf = LLVM.called_operand(inst)
+        cn = cf isa LLVM.Function ? LLVM.name(cf) : ""
+        (_vec_vm_is_dead_throw_callee(cn) || startswith(cn, "llvm.trap") ||
+         startswith(cn, "llvm.debugtrap") ||
+         occursin(r"(?i)error|throw|assert", cn)) && return nothing
+    end
+    _ir_error(LLVM.terminator(bb),
+        "dead-block pruner (Bennett-utzc): unreachable block %$label has a predecessor " *
+        "but no throw-family / llvm.trap call — a SURPRISING unreachable block whose halt " *
+        "reason is unmodelled. Refusing to silently prune (Rule 1).")
+end
+
 # Core walker: `mod` provides module-scope globals / constants; `func` is the
 # entry point (already picked by `_find_entry_function`).
 #
@@ -358,10 +402,36 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
                         nothing, synth_ptr_provenance)
     end
 
+    # Bennett-utzc / CW-D (ADR 0017 §4): collect provably-dead unreachable throw
+    # blocks ONCE, only under the closed-world ptr_cells gate (reuses the Case-A
+    # _vec_vm_dead_blocks helper). Empty at ptr_cells=false ⇒ default path
+    # byte-identical.
+    dead_blocks = ptr_cells ? _vec_vm_dead_blocks(func) : Set{_LLVMRef}()
+
     # Convert blocks (second pass)
     blocks = IRBasicBlock[]
     for bb in LLVM.blocks(func)
         label = Symbol(LLVM.name(bb))
+
+        # Bennett-utzc / CW-D (ADR 0017 §4): the keep-branch dead-block pruner.
+        # A block whose terminator is `unreachable` is a provably-dead Julia
+        # throw arm; its BODY holds constructs the generic walker cannot convert
+        # (the U114 `store { ptr, ptr }` box-store; the `[1 x ptr]
+        # @j_AssertionError` ArrayType-return call). DROP the body, KEEP the
+        # block's own label, and emit the reserved `:__unreachable__` unconditional
+        # branch (exactly what instructions.jl:2792 produces for a bare
+        # `unreachable`). The predecessor's conditional branch into this block is
+        # emitted by the normal path and left untouched (keep-branch): if the
+        # guard ever fires at runtime, BennettVM's `:__unreachable__` halt sink
+        # traps loud (a faithful reversible throw).
+        if bb.ref in dead_blocks
+            _assert_dead_block_no_live_escape(bb, dead_blocks, label)  # Rule 1
+            _assert_dead_block_is_throw_skeleton(bb, label)            # surprise guard
+            push!(blocks, IRBasicBlock(label, IRInst[],
+                                       IRBranch(nothing, :__unreachable__, nothing)))
+            continue
+        end
+
         insts = IRInst[]
         terminator = nothing
 
