@@ -73,6 +73,16 @@ const _D1B_BENIGN_INTRINSIC_PREFIXES = (
     "julia.get_pgcstack",
 )
 
+# CW-D2 / bennettvm-416r.12: modeled heap/runtime intrinsics the closed-world
+# check tolerates because BennettVM ingest lowers each to an Intrinsic*. MUST
+# mirror BennettVM._HEAP_DISPATCH (src/ir/ingest_call.jl) — tolerate-here ⟺
+# ingest-there; machine-checked by the BVM-side equality test. EXACT-name match
+# (not prefix): an unknown runtime callee still fails loud.
+const _D1B_MODELED_HEAP_INTRINSICS = Set{Symbol}((
+    :malloc, :calloc, :realloc, :free, :memset, :memcpy, :memmove,
+    :gc_alloc_obj, :jl_alloc_genericmemory_unchecked,
+))
+
 # A throw-leaf is a constructor-callee `Type{E}` for some `E <: Exception`
 # (e.g. `Type{AssertionError}`, `Type{BoundsError}`). The typed call graph
 # bottoms out at these (CW-D1a GATE 4); their *bodies* hit the ptr-width wall in
@@ -173,6 +183,9 @@ function _closed_world_check!(out::Vector{Pair{Symbol,ParsedIR}},
                     (sym in throw_leaf_names || (bare !== nothing && bare in throw_leaf_names)) && continue
                     # 4. benign intrinsic.
                     any(p -> startswith(name, p), _D1B_BENIGN_INTRINSIC_PREFIXES) && continue
+                    # 5. 416r.12: modeled heap/runtime intrinsic (mirrors BVM _HEAP_DISPATCH).
+                    (sym in _D1B_MODELED_HEAP_INTRINSICS ||
+                     (bare !== nothing && bare in _D1B_MODELED_HEAP_INTRINSICS)) && continue
                     # Unresolved in all paths → fail loud (Rule 1).
                     error("julia_set.jl: _closed_world_check!: closed-world violation in " *
                           "ParsedIR `$(pkey)` — Symbol callee `$(sym)` " *

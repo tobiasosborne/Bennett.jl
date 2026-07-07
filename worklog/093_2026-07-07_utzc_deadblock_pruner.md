@@ -1,5 +1,56 @@
 # Worklog chunk 093
 
+## Session log — 2026-07-07 — bennettvm-416r.12 / CW-D2: close the fdict closed-world set (cross-repo) — EXTRACTION COMPLETE
+
+**What (cross-repo).** The fdict closed-world set now FULLY CLOSES to its 4 bodies
+(`fdict_d1b`, `setindex!`, `rehash!`, `ht_keyindex2_shorthash!`) under `ptr_cells=true`.
+- **Bennett.jl `src/extract/julia_set.jl`:** new `const _D1B_MODELED_HEAP_INTRINSICS`
+  (bare Symbols: malloc/calloc/realloc/free, memset/memcpy/memmove, gc_alloc_obj,
+  jl_alloc_genericmemory_unchecked) + a 5th classifier bucket in `_closed_world_check!`
+  (after benign-prefix, before fail-loud) — EXACT-name match, so an unknown runtime
+  callee still fails loud. This MIRRORS BVM `_HEAP_DISPATCH` (tolerate-here ⟺ ingest-there).
+- **Bennett.jl `src/extract/instructions.jl`:** drop `julia.write_barrier` (GC card-marking,
+  no VM semantics) inside the `ptr_cells` Function arm after the gc_preserve drop — the
+  `benign_prefixes` list is UNREACHABLE for Function callees under ptr_cells, so the drop
+  MUST go there (else the generic C-call void arm emits a Symbol IRCall BVM can't home).
+- **BennettVM `src/ir/ingest_call.jl`:** add `:jl_alloc_genericmemory_unchecked` to
+  `_HEAP_DISPATCH` + a `_lower_intrinsic_call` arm → `IntrinsicGCAlloc(dest, a[2], a[3])`
+  (drop a[1]=ptls; size=a[2] = the lbot-fused smul product; tag=a[3] metadata, unread).
+  Reuses `_ArenaAlloc` → reverses for free. No name normalization (Bennett emits bare).
+
+**Coupling (the durable invariant).** `Bennett._D1B_MODELED_HEAP_INTRINSICS` and
+`BennettVM._HEAP_DISPATCH` are MIRRORED Sets; a BVM-side test asserts
+`Set(Bennett._D1B_MODELED_HEAP_INTRINSICS) == BennettVM._HEAP_DISPATCH` (BVM path-depends
+on Bennett, so only a BVM test sees both). Dependency runs BVM→Bennett only, so a shared
+constant would invert ownership — rejected; mirrored-set + equality-test is the durable
+low-blast-radius choice. Catches drift in both directions.
+
+**MILESTONE.** This closes the fdict EXTRACTION chain (6 walls: yd4f, 583s, utzc/g501,
+lbot, 8bys, 416r.12). `extract_parsed_ir_set_from_julia(fdict_d1b, …; ptr_cells=true,
+on_extract_error=:fail_loud)` returns the closed 4-body `Vector{Pair{Symbol,ParsedIR}}`.
+
+**lower_vm(fdict_set) next blockers (observed, IN ORDER — the assembly walls ahead).**
+  0. `#`-in-key reject at `BennettVM/src/ir/ingest_multi.jl:89` — BVM reserves `#` for label
+     qualification (ADR 0019), but Bennett's content-addressed keys are `<bare>#<digest>`.
+     Cross-repo key-normalization at the set boundary. FILED.
+  1. `julia.get_pgcstack` SoftCall reject at `softcall_instruction.jl:253` — a Bennett-side
+     MODELED cell IRCall (feeds the current-task GEP chain, can't be dropped) with no BVM
+     ingest home. FILED (BVM modeling, mirror `julia.gc_loaded` at ingest_body.jl:270).
+  2. Const-globals collision at `ingest_multi.jl:129` — the multi-function const-global
+     un-deferral (bennettvm-416r.4). Then byte/cell + aggregate-ABI round-trip debug.
+
+**Gotchas.** gc_alloc_obj is emitted BARE (canonicalized upstream at instructions.jl:3073);
+digests (`#4a8d3eda`) are `hash(::DataType)`-based and PROCESS-VARYING → tests assert BARE
+names via `rsplit(k,"#";limit=2)[1]`, NEVER full keys.
+
+**Process.** 3+1 (2 concise blind proposers → 1 cross-repo implementer → orchestrator
+review + independent suite-mode re-run). New `test/test_416r12_closed_world_heap.jl` (25,
+both modes) + BVM `test/test_416r12_jl_alloc_genericmemory.jl` (23, incl. coupling). GATE E
+(`test_d1b`) honestly tightened: cells=TRUE `:skip` now sees the CLOSED set (`skmsg==""`);
+cells=FALSE stays `@test_broken` (ptr-width walls drop every body — CW-D2 is ptr_cells-gated).
+
+---
+
 ## Session log — 2026-07-07 — Bennett-8bys / CW-D: route VARIABLE-size `llvm.memset.p0.i64` to BVM `IntrinsicMemset` under ptr_cells
 
 **What.** `src/extract/instructions.jl` `_handle_memset_arm`: at predicate 5 (the

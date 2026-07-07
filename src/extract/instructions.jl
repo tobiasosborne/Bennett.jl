@@ -3036,6 +3036,15 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                    cname == "llvm.julia.gc_preserve_end"
                     return nothing
                 end
+                # CW-D2 / 416r.12: julia.write_barrier is GC card-marking with NO
+                # VM value semantics (void, dest auto-named + never consumed, like
+                # gc_preserve/safepoint). Drop BEFORE the generic C-call void arm
+                # (which would emit a Symbol IRCall BVM has no home for). The
+                # benign_prefixes list is UNREACHABLE for Function callees under
+                # ptr_cells, so the drop must go here. Exact-name-scoped (Rule 1).
+                if cname == "julia.write_barrier"
+                    return nothing
+                end
                 # Bennett-r92o / CW-D3 Lever 2 (consensus decision 4): the Julia
                 # typed-GC allocation `julia.gc_alloc_obj`. Un-drop it under the
                 # closed-world `ptr_cells` gate, modelling it as a Symbol-callee

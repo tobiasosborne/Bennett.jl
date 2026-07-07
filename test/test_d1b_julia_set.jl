@@ -163,34 +163,38 @@ fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
         # set walled INSIDE a provably-dead unreachable throw block — the `rehash!`
         # `[1 x ptr] @j_AssertionError` ArrayType-return call (default mode) and the
         # `setindex!` U114 `store { ptr, ptr }` box-store (suite mode). utzc prunes
-        # those dead blocks, so the wall ADVANCES to the CW-D2 frontier
-        # (bennettvm-416r.12): :skip walls on the `gc_alloc_obj` Symbol callee (not
-        # yet in the closed-world whitelist), proving the rehash!/setindex! bodies
-        # now extract PAST their dead blocks. Assert the specific thing this gate
-        # was pinning — the dead-block wall — is resolved. (Live-probe-verified
-        # 2026-07-07, BOTH check-bounds modes.)
+        # those dead blocks, so the wall ADVANCED to the CW-D2 frontier
+        # (bennettvm-416r.12) — the `gc_alloc_obj` Symbol callee — which 416r.12
+        # has now CLOSED: the modeled-heap classifier bucket
+        # (`_D1B_MODELED_HEAP_INTRINSICS`) tolerates `gc_alloc_obj` /
+        # `jl_alloc_genericmemory_unchecked` / `memset`, and `julia.write_barrier`
+        # is dropped at extraction. So under ptr_cells=true the fdict set now
+        # FULLY CLOSES — 4 bodies, no closed-world violation (probe-verified
+        # length==4, skmsg==""). The authoritative pin for the closed set is
+        # test_416r12_closed_world_heap.jl; here we assert the dead-block walls
+        # this gate historically pinned are gone AND the set now closes cleanly.
+        # (Live-probe-verified 2026-07-07, BOTH check-bounds modes.)
         skmsg = try
             extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
                                              ptr_cells=true, on_extract_error=:skip)
-            ""   # (future) fully closed — no closed-world violation
+            ""   # fully closed (CW-D2 / 416r.12 landed) — no closed-world violation
         catch e
             sprint(showerror, e)
         end
         @test !occursin("j_AssertionError", skmsg)     # AssertionError dead block pruned
         @test !occursin("[1 x ptr", skmsg)             # its [1 x ptr] return-type wall gone
-        @test skmsg == "" || occursin("gc_alloc_obj", skmsg) ||
-              occursin("closed-world violation", skmsg)   # advanced to CW-D2 frontier
+        @test skmsg == ""                              # CW-D2 (416r.12): set fully closes, no wall
 
-        # >=4 is BLOCKED on CW-D2, NOT on D1b — and NOT on the dead-block walls
-        # utzc just cleared. The :skip path (cells=FALSE here, byte-identical under
-        # utzc) tolerates every wall and returns whatever bodies extract today
-        # (currently 0). Beyond the utzc-pruned dead blocks the remaining CW-D2
-        # frontier is `llvm.smul.with.overflow.i64` (struct `{i64,i1}` return in a
-        # LIVE rehash! block) + the `gc_alloc_obj` closed-world whitelist gap
-        # (bennettvm-416r.12). HONEST tripwire: when that frontier lands this flips
-        # to a real pass and the @test_broken starts failing-as-unexpected-pass,
-        # prompting promotion to @test. (cells=FALSE; utzc left the default
-        # byte-identical so this stays broken.)
+        # >=4 stays BROKEN under the DEFAULT cells=FALSE gate — and this is the
+        # honest thing, NOT a D1b bug. CW-D2 (416r.12) is ptr_cells-GATED: it
+        # closes the set only under ptr_cells=true (asserted just above, skmsg==""
+        # ⇒ length 4). Under cells=FALSE the Dict-helper bodies still hit the
+        # ptr-width extraction walls (U81 ptr-RETURN etc.), so :skip DROPS every
+        # one and the set is EMPTY (probe-verified length==0). The cells=TRUE
+        # closure lives in test_416r12_closed_world_heap.jl (GATE 1, length==4).
+        # This @test_broken remains as the cells=FALSE tripwire: if a future bead
+        # generalizes the cell model to the default gate, length flips >=4 and the
+        # unexpected-pass prompts promotion to @test.
         @test_broken length(extract_parsed_ir_set_from_julia(
             fdict_d1b, Tuple{Int8,Int8}; on_extract_error=:skip)) >= 4
     end

@@ -408,6 +408,12 @@ runfile("test_d1a_transitive_callees.jl")
 # HONEST tripwire (Gate E): bodies hit the U81/U14/dv1z walls (the accepted
 # closed-world runway, cleared by CW-D2), so >=4 is @test_broken not faked green.
 runfile("test_d1b_julia_set.jl")
+# Bennett-CW-D2 / bennettvm-416r.12 — close the fdict closed-world set: the 4th
+# classifier bucket (_D1B_MODELED_HEAP_INTRINSICS, mirrors BVM _HEAP_DISPATCH)
+# tolerates modeled heap/runtime intrinsics (gc_alloc_obj, memset,
+# jl_alloc_genericmemory_unchecked) + julia.write_barrier is dropped at
+# extraction. fdict_d1b now closes to a 4-body set under ptr_cells=true.
+runfile("test_416r12_closed_world_heap.jl")
 # Bennett-lf14 — ptr_cells gate on the Julia-function entry path
 # (src/extract/entry.jl + julia_set.jl). The .ll/.bc entries already exposed
 # ptr_cells (Bennett-haiy/nd45); lf14 closes the only entry that omitted it and
