@@ -228,16 +228,15 @@ _is_ptr_return_wall(msg) =
         end
 
         # With ptr_cells=true the producer's per-callee extract clears the
-        # ptr-RETURN wall; the producer then surfaces an ADVANCED wall (NOT the
-        # ptr-RETURN PointerType wall).
-        # Bennett-8bys / CW-D (2026-07-07): variable-size memset routing advanced
-        # rehash! (and the other Dict helpers) to FULL extraction, so NO per-callee
-        # EXTRACTION fails anymore — the ":fail_loud"/"extraction FAILED" wrapper no
-        # longer fires. The producer now walls at the POST-extraction CLOSED-WORLD
-        # check on the `gc_alloc_obj` Symbol callee (CW-D2 / bennettvm-416r.12),
-        # in BOTH check-bounds modes. Accept EITHER the closed-world violation (the
-        # current frontier) OR the "extraction FAILED" wrapper (future-robust, if a
-        # later callee-extraction wall reappears).
+        # ptr-RETURN wall. Bennett-416r.12 / CW-D2 (2026-07-07): the closed-world
+        # heap-intrinsic whitelist (gc_alloc_obj / jl_alloc_genericmemory /
+        # memset) + the julia.write_barrier drop CLOSED the set — with
+        # ptr_cells=true the producer now returns a FULLY CLOSED 4-body set (no
+        # wall at all), in BOTH check-bounds modes. (Earlier frontiers this GATE
+        # pinned: Bennett-8bys advanced rehash! to full extraction; before that
+        # the ptr-RETURN wall.) The cells=true (CLOSES) vs cells=false (ptr-RETURN
+        # wall, below) CONTRAST is what still proves the producer forwards
+        # ptr_cells into the per-callee extract.
         err_on = try
             extract_parsed_ir_set_from_julia(fdict_lf14, Tuple{Int8,Int8};
                                              on_extract_error=:fail_loud, ptr_cells=true)
@@ -245,13 +244,9 @@ _is_ptr_return_wall(msg) =
         catch e
             sprint(showerror, e)
         end
-        @test err_on !== nothing
-        @test occursin("closed-world violation", err_on) ||  # Bennett-8bys frontier
-              occursin("extraction FAILED", err_on)          # future-robust wrapper
-        @test !_is_ptr_return_wall(err_on)             # ptr-RETURN wall threaded-CLEARED
-        @test occursin("VoidType", err_on) || occursin("U81", err_on) ||
-              occursin("atomic", err_on)   || occursin("U14", err_on) ||
-              occursin("closed-world", err_on)
+        @test err_on === nothing ||         # set CLOSED (current, strongest outcome)
+              !_is_ptr_return_wall(err_on)   # or a residual wall that is NOT the
+                                             # threaded-cleared ptr-RETURN wall (future-robust)
 
         # Default (cells=false) STILL hits the ptr-RETURN wall — pins that the
         # producer default is byte-identical (it forwards false, not true).
