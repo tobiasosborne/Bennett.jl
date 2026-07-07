@@ -92,16 +92,47 @@ Bennett.jl/                         # Project root. PRDs and CLAUDE.md live alon
   Bennett-Memory-PRD.md             # reversible mutable memory plan
   Bennett-Memory-T5-PRD.md          # T5 persistent-DS workstream
 
-  src/                              # 31 included src/*.jl + softfloat/ (17) + persistent/ (10)
+  src/                              # 31 top-level src/*.jl + extract/ (18) + lowering/ (9) + pebble/ (4) + softfloat/ (35) + persistent/ (5, +research/)
     Bennett.jl                      # module: 3 reversible_compile overloads (Tuple / ParsedIR / Float64), SoftFloat dispatch, callee registry
+    callees.jl                      # registers the soft_* division / memory callees into the extract/ registry on load (Bennett-19g6 / kmuj)
 
     # ---- IR extraction & representation ----
     ir_types.jl                     # IR struct hierarchy: IRBinOp, IRICmp, IRSelect, IRPhi, IRCall, IRStore, IRAlloca, IRSwitch, ...
-    ir_extract.jl                   # LLVM.jl C-API walk → ParsedIR; callee registry; sret + vector + switch + intrinsic handling (~2.7k LOC; 3+1 split pending — Bennett-tzrs / U41)
+    ir_extract.jl                   # thin include-manifest (~24 LOC) pulling in the extract/ subdir; the ~2.7k-LOC monolith was split per Bennett-tzrs / U41
+    extract/                        # LLVM.jl C-API walk → ParsedIR, split out of the old ir_extract.jl monolith (Bennett-tzrs / U41)
+      entry.jl                      # extract_ir / extract_parsed_ir / from_ll / from_bc / _run_passes!
+      callees.jl                    # known-callee registry (register_callee! / _lookup_callee) + cache + _LLVMRef + _auto_name
+      callgraph.jl                  # CW-D1a: transitive_callees typed call-graph walker (SC9 Case B path)
+      julia_set.jl                  # CW-D1b: extract_parsed_ir_set_from_julia — closed-world Julia multi-IR producer
+      errors.jl                     # _ir_error / _ir_error_msg + _LLVM_OPCODE_NAMES
+      sret.jl                       # sret detection + writes collection + synthesis (Bennett-dv1z)
+      module_walk.jl                # _find_entry_function / _module_to_parsed_ir / _extract_const_globals / _expand_switches
+      instructions.jl               # _handle_intrinsic + _convert_instruction (the IR → IRInst dispatcher)
+      heap.jl                       # Bennett-gps7 / M1: GC/heap-skeleton recogniser (_detect_gc_preamble!)
+      dict_vm.jl                    # SC9 Case B: mem=:vm Dict → IRMap* recogniser (ADR 0008 / 0013 §D-3)
+      vector_vm.jl                  # SC9 Case A: mem=:vm Vector recogniser — recognition (ADR 0016)
+      vector_vm_walk.jl             # SC9 Case A: skeleton + element-traffic capture (ADR 0016)
+      vector_vm_emit.jl             # SC9 Case A: multi-block ParsedIR assembly (ADR 0016)
+      vector_vm_cfg.jl              # SC9 Case A: CFG helpers + body re-root (ADR 0016)
+      vector_vm_term.jl             # SC9 Case A: terminator rewrite + φ rebind (ADR 0016)
+      constexpr.jl                  # cc0.3 GlobalAlias + cc0.4 ConstantExpr operand folding
+      vectors.jl                    # cc0.7 vector SSA scalarisation + _convert_vector_instruction
+      helpers.jl                    # _get_deref_bytes / _operand / _iwidth / _type_width + _OPCODE_MAP / _PRED_MAP
     ir_parser.jl                    # legacy regex parser (backward compat; mostly used by test_parse.jl)
 
     # ---- Lowering: ParsedIR → gates ----
-    lower.jl                        # per-opcode dispatch, loop unrolling, PHI-MUX resolution, load/store/alloca, strategy dispatchers (~2.9k LOC; 3+1 split pending — Bennett-vdlg / U40)
+    lower.jl                        # thin include-manifest (~18 LOC) pulling in the lowering/ subdir; the ~2.9k-LOC monolith was split per Bennett-vdlg / U40
+    lowering/                       # per-opcode ParsedIR → gates lowering, split out of the old lower.jl monolith (Bennett-vdlg / U40)
+      types.jl                      # GateGroup / LoweringResult / LoweringCtx + _lower_inst! dispatch
+      operand.jl                    # resolve! / _ssa_operands / compute_ssa_liveness
+      driver.jl                     # lower() / _fold_constants / lower_block_insts! (+ strategy / target dispatch)
+      cfg.jl                        # topo sort / back edges / loop unrolling
+      phi.jl                        # path-predicate computation + PHI-MUX resolution
+      arith.jl                      # binop dispatch + bitwise + shifts + icmp + select + cast
+      aggregate.jl                  # divrem + ptr_offset + var_gep + load + extract/insertvalue
+      call.jl                       # function call inlining (callee dispatch)
+      memory.jl                     # T1b.3 reversible memory: alloca + store + MUX-EXCH dispatch
+    narrow.jl                       # _narrow_ir: bit-width narrowing of ParsedIR for reversible_compile(f, T; bit_width=W) (Bennett-19g6)
     wire_allocator.jl               # bump-allocator + free-list for ancilla wire slots
 
     # ---- Gate primitives & Bennett construction ----
@@ -110,6 +141,7 @@ Bennett.jl/                         # Project root. PRDs and CLAUDE.md live alon
                                     # Bennett-i2ca / U55: body renamed `_bennett_default(lr)`, reached via DefaultStrategy. Helpers `_allocate_copy_wires` / `_emit_copy_gates!` shared with eager / value_eager / pebbled.
     bennett_strategies.jl           # Bennett-i2ca / U55 (2026-05-01): `abstract type BennettStrategy` + 6 concrete subtypes (DefaultStrategy, EagerStrategy, ValueEagerStrategy, CheckpointStrategy, PebbledStrategy(max_pebbles), PebbledGroupStrategy(max_pebbles)) + `bennett(lr; strategy=...)` dispatch + 5 legacy aliases as zero-overhead forwarders.
     controlled.jl                   # ControlledCircuit: lifts a circuit to take an explicit control bit
+    compose.jl                      # compose(c1, c2): reversible-circuit pipeline composition, uncomputing the intermediate (Bennett-qcso / U59)
 
     # ---- Simulation & metrics ----
     simulator.jl                    # bit-vector simulate; ancilla-zero + input-preservation assertions; signedness inference (Bennett-zc50 / U100)
@@ -125,11 +157,12 @@ Bennett.jl/                         # Project root. PRDs and CLAUDE.md live alon
     divider.jl                      # soft_udiv / soft_urem (registered as callees)
 
     # ---- Bennett strategy variants (Bennett-i2ca / U55: bodies renamed `_*_impl`, reached via BennettStrategy dispatch in bennett_strategies.jl) ----
-    pebbling.jl                     # Knill 1995 (Theorem 2.1) — `_pebbled_bennett_impl` ← PebbledStrategy
-    pebbled_groups.jl               # group-level pebbling with wire reuse + `_checkpoint_bennett_impl` ← CheckpointStrategy / PebbledGroupStrategy
-    eager.jl                        # PRS15 EAGER cleanup (gate-level) — `_eager_bennett_impl` ← EagerStrategy
-    value_eager.jl                  # PRS15 Algorithm 2 value-level EAGER — `_value_eager_bennett_impl` ← ValueEagerStrategy
-    # Bennett-u2yp / U149 (2026-05-01): sat_pebbling.jl + PicoSAT dep dropped — was 211 LOC unwired into any strategy dispatcher; modern-SAT-solver replacement tracked in Bennett-fg2 (P2).
+    pebble/                         # strategy-variant impls, colocated as a group (included from Bennett.jl; filenames preserved)
+      pebbling.jl                   # Knill 1995 (Theorem 2.1) — `_pebbled_bennett_impl` ← PebbledStrategy
+      pebbled_groups.jl             # group-level pebbling with wire reuse + `_checkpoint_bennett_impl` ← CheckpointStrategy / PebbledGroupStrategy
+      eager.jl                      # PRS15 EAGER cleanup (gate-level) — `_eager_bennett_impl` ← EagerStrategy
+      value_eager.jl                # PRS15 Algorithm 2 value-level EAGER — `_value_eager_bennett_impl` ← ValueEagerStrategy
+    # Bennett-u2yp / U149 (2026-05-01): pebble/sat_pebbling.jl + PicoSAT dep dropped — was 211 LOC unwired into any strategy dispatcher; modern-SAT-solver replacement tracked in Bennett-fg2 (P2).
     dep_dag.jl                      # gate dependency graph extraction
 
     # ---- Memory: reversible store/load primitives ----
