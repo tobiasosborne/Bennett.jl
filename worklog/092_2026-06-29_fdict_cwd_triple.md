@@ -1,5 +1,64 @@
 # Worklog chunk 092
 
+## Session log — 2026-07-07 — Bennett-583s / CW-D: GenericMemory `.data`-base ptrtoint → cell identity under ptr_cells (ADR 0017)
+
+**What.** `src/extract/instructions.jl`: extended the iwo9 ptrtoint lever to admit
+`ptrtoint ptr %memory_data to i64` (the GenericMemory `.data` base pointer) as a
+width-64 cell identity `IRBinOp(dest, :or, src, iconst(0), 64)` under `ptr_cells`,
+gated to a same-Memory base-cancelling bounds check. Three new structural helpers
+beside `_param_ptr_root_ref`: `_is_memdata_field1_gep` (field-1 GEP of `{i64,ptr}`),
+`_memdata_root` (traces `.data` provenance through the i8 byte-offset GEP + identity
+casts, depth-8), `_verify_memdata_bounds_cluster` (EVERY use of the ptrtoint must be a
+same-ROOT `sub(ptrtoint,ptrtoint)`; use-less → reject). New arm is `LLVMPtrToInt`-only —
+an `inttoptr` of a `.data` base is the forbidden escape, falls to the iwo9 fail-loud.
+
+**Why sound.** `sub(ptrtoint(base+off), ptrtoint(base)) = off` — the base cancels, the
+net effect is base-INDEPENDENT → matches the native oracle. The unsoundness boundary is a
+base-DEPENDENT escaping value (cross-allocation diff, hash, inttoptr-deref) → stays
+fail-loud. Same-ROOT (not merely "both memdata") is load-bearing: option (b) "sibling is
+a memdata ptrtoint" would wrongly admit `sub(ptrtoint(dataA+off), ptrtoint(dataB))` for
+DIFFERENT allocations (base does not cancel → the bennettvm-90l oracle-mismatch hazard).
+Chose option (a), the same-root gate.
+
+**Gotchas (next agent, read this).**
+1. The extractor walks **NON-RAW** IR (`entry.jl:60` `code_llvm(...; raw=false)`): 0
+   addrspacecast, plain `getelementptr {i64,ptr}`. A `raw=true` `code_llvm` dump is
+   MISLEADING for the seed predicate — always re-dump non-raw for the walker's view.
+   Hand-built `.ll` fixtures must use plain `ptr` (addrspace 0), else they wall at
+   addrspacecast.
+2. 583s is a `--check-bounds=yes`-ONLY artifact: at default check-bounds, `setindex!` has
+   0 ptrtoint and already extracts. The arm is byte-identically inert at default, so the
+   real-target test self-guards on `Base.JLOptions().check_bounds == 1`.
+3. Data structure: a self-contained structural `_memdata_root` helper — NOT a threaded
+   `memdata_ssa` set through `module_walk.jl`. The same-base gate needs structural
+   root-tracing regardless, so a membership set is redundant (`x ∈ set ⟺ _memdata_root(x)
+   !== nothing`); mirrors `_param_ptr_root_ref`/`_alloca_root_ref`.
+
+**Process.** 3+1 (2 blind proposers → implementer → orchestrator review). Both proposers
+independently caught the non-raw-IR correction and converged on option (a); diverged only
+on data structure (threaded set vs structural helper) — chose the structural helper.
+
+**Tests.** New `test/test_583s_memdata_bounds.jl` (7 testsets: GREEN node-shape, escape
+guards hash + inttoptr-deref, width≠64, non-memdata, cross-Memory, real-target
+wall-advance, byte-identity/inertness). Default 28 / suite 29. Downstream u2kk-trap
+updates: `test_59zi` (ht_keyindex2 → U114 store wall) + `test_beaw` GATE d (fdict_d1b →
+AssertionError wall); baseline-green-confirmed before editing. ptr_cells regression
+cluster (iwo9/r92o/beaw/8g7m/lf14/59zi/u2kk/yd4f) green under `--check-bounds=yes`.
+
+**Next wall — both modes converging on THROW/DEAD-block constructs.** After 583s the
+fdict set-extraction walls at: suite → `setindex!` U114 `store { ptr, ptr } %memory_ref,
+ptr %"box::GenericMemoryRef"` (non-integer struct-store; Bennett-lgzx made it fail-loud,
+now needs modeling); default → `rehash!` `[1 x ptr] @j_AssertionError` ArrayType return
+(Bennett-44dg). 583s also made `rehash!` **mode-invariant** (both modes → AssertionError).
+BOTH walls live in Julia throw/error DEAD blocks (bounds_error / AssertionError) — ADR
+0017 §4 "throw/unreachable → halt-dead-branch" recognition could clear both at once; the
+next design should weigh that vs modeling each construct. FOLLOW-UPS filed: fold
+`sub(ptrtoint(gep i8),ptrtoint) → off` for in-model cancellation (Bennett.jl). NOT yet
+filed (capture at the BennettVM assembly step): BennettVM `VarGEP` byte-vs-cell stride
+reconciliation for wider-than-Int8 element types (exact for Int8 fdict).
+
+---
+
 ## Session log — 2026-07-07 — Bennett-yd4f / U80: integer undef in phi-incoming → zero cell under ptr_cells (CW-D, ADR 0017)
 
 **What.** `src/extract/instructions.jl` generic `_convert_instruction` PHI arm:

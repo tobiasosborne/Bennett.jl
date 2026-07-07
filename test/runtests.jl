@@ -503,6 +503,19 @@ runfile("test_8g7m_ptr_icmp_cells.jl")
 # `j_AssertionError [1 x ptr]` unsupported-return-type wall (default mode) /
 # the `ptrtoint %memory_data` iwo9 wall (suite mode --check-bounds=yes).
 runfile("test_yd4f_undef_phi_cells.jl")
+# Bennett-583s — CW-D: admit `ptrtoint ptr %memory_data to i64` (the Julia
+# GenericMemory `.data` base pointer) as a width-64 cell identity — BUT ONLY
+# when confined to a same-Memory base-cancelling bounds check
+# (`sub(ptrtoint(P_elem), ptrtoint(P_base))`, both operands tracing to the SAME
+# Memory `.data` root). `sub(ptrtoint(base+off), ptrtoint(base)) = off` is
+# base-INDEPENDENT → matches the native oracle; any escaping / base-DEPENDENT
+# use (inttoptr-deref, store-of-int, hash, cross-allocation diff, width≠64)
+# stays FAIL-LOUD. Advances `setindex!`/`ht_keyindex2!`/`rehash!`/`fdict` PAST
+# the memory_data ptrtoint wall (suite mode --check-bounds=yes) — the beaw/59zi
+# suite disjunctions were updated to the new successor (U114 struct-store /
+# AssertionError [1 x ptr] return-type). ptr_cells-gated: circuit path
+# byte-identical.
+runfile("test_583s_memdata_bounds.jl")
 # Bennett-jfw6: mem=:vm Case A Vector/GenericMemory extraction recognizer (shape + fail-loud matrix).
 runfile("test_jfw6_vec_vm_extract.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message

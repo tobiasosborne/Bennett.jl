@@ -292,16 +292,22 @@ leaf59zi(k::Int8) = (Int64(k) + 1000, k ⊻ Int8(0x55))
         # DEEPER wall that is UNRELATED to 59zi: under `--check-bounds=yes` (the
         # Pkg.test mode, Bennett-2mj3/figa) Julia codegen emits a
         # `ptrtoint ptr %memory_data to i64` in block L71 (a bounds-check pointer-
-        # arithmetic artifact) that hits the pre-existing iwo9 ptrtoint reject.
-        # Under DEFAULT bounds-checking that ptrtoint is absent and the extract
-        # completes; under `--check-bounds=yes` it does not. So we probe and:
+        # arithmetic artifact). Bennett-583s / CW-D now ADMITS that ptrtoint as a
+        # base-cancelling cell identity, so the extract advances PAST it to the
+        # NEXT deeper wall: a `store { ptr, ptr } %memory_ref, ptr
+        # %"box::GenericMemoryRef"` in the `%oob` block — a non-integer
+        # (StructType) store rejected by Bennett-lgzx / U114. Under DEFAULT
+        # bounds-checking that ptrtoint (and this store) is absent and the extract
+        # completes. So we probe and:
         #   * if extraction SUCCEEDS (default bounds mode) — assert the full
         #     59zi-specific extraction shape (ret_width 72, one recursive IRCall,
         #     six value-bearing IRRets);
-        #   * if it throws the iwo9 ptrtoint wall (check-bounds=yes mode) — accept
-        #     it as a known deeper wall and assert ONLY that the message is the
-        #     iwo9 ptrtoint reject (NOT a 59zi memcpy wall — proving both 59zi
-        #     walls are cleared). The deeper wall is filed as a follow-up bead.
+        #   * if it throws (check-bounds=yes mode) — accept it as a known deeper
+        #     wall and assert the message is the U114 non-integer-struct-store
+        #     reject (Bennett-583s's successor), NOT a 59zi memcpy wall (which
+        #     would mean 59zi is incomplete) and NOT the now-CLEARED iwo9/583s
+        #     ptrtoint reject (which would mean 583s did not land). The deeper
+        #     U114 struct-store wall is filed as a follow-up bead.
         local pir = nothing
         local threw = nothing
         try
@@ -323,13 +329,22 @@ leaf59zi(k::Int8) = (Int64(k) + 1000, k ⊻ Int8(0x55))
             # Five store-arm IRRets + one call-arm IRRet = six value-bearing returns.
             @test _n_ret_blocks(pir) == 6
         else
-            # check-bounds=yes mode: both 59zi memcpy walls are CLEARED — the
-            # extract now reaches a deeper, unrelated iwo9 ptrtoint wall. Assert
-            # the failure is NOT a 59zi/sret-memcpy wall (which would mean 59zi
-            # is incomplete), and IS the known iwo9 ptrtoint reject.
+            # check-bounds=yes mode: both 59zi memcpy walls are CLEARED, AND the
+            # once-deeper iwo9/583s `ptrtoint %memory_data` wall is now ADMITTED
+            # (Bennett-583s). The extract advances to the next deeper wall: the
+            # `store { ptr, ptr } … %"box::GenericMemoryRef"` non-integer-struct
+            # store rejected by Bennett-lgzx / U114. Assert the failure IS that
+            # U114 struct-store reject (583s's successor), and is NOT a
+            # 59zi/sret-memcpy wall (would mean 59zi incomplete) and NOT the now-
+            # cleared iwo9/583s ptrtoint reject (would mean 583s didn't land).
             msg = sprint(showerror, threw)
-            @test occursin("ptrtoint", msg)
-            @test occursin("iwo9", msg) || occursin("type-tag", msg)
+            @test occursin("U114", msg) ||
+                  (occursin("store", lowercase(msg)) &&
+                   occursin("structtype", lowercase(msg)))
+            # The 583s ptrtoint wall is CLEARED — the deeper wall is NOT a
+            # ptrtoint reject anymore (proving 583s admitted the .data ptrtoint).
+            @test !occursin("583s / CW-D", msg)
+            @test !occursin("iwo9", msg)
             @test !occursin("sret with llvm.memcpy", msg)   # Wall A gone
             @test !occursin("dst operand is not alloca-backed", msg)  # Wall B gone
         end

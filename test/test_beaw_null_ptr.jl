@@ -201,6 +201,13 @@ _is_null_wall(msg) =
                 # disjunct — the {ptr,ptr} StructType insertvalue is now
                 # supported, so the root advances PAST it (the test must not pass
                 # for the wrong reason by matching the now-handled insertvalue).
+                # Bennett-583s / CW-D: under `--check-bounds=yes` (suite mode) the
+                # root now advances PAST the admitted `ptrtoint %memory_data`
+                # base-cancelling bounds check to the `j_AssertionError [1 x ptr]`
+                # unsupported-RETURN-TYPE (ArrayType) wall — added the
+                # `assertionerror`/`arraytype`/`unsupported return type` disjuncts
+                # (the SAME wall yd4f/GATE-5 already tolerates for the rehash!
+                # root; default-bounds mode still hits one of the older disjuncts).
                 @test occursin("aggregate", lowercase(on_msg))       ||
                       occursin("structtype", lowercase(on_msg))      ||
                       occursin("memcpy", lowercase(on_msg))          ||
@@ -208,6 +215,9 @@ _is_null_wall(msg) =
                       occursin("gc_alloc_obj", lowercase(on_msg))    ||
                       occursin("ptrtoint", lowercase(on_msg))        ||
                       occursin("unsupported llvm opcode", lowercase(on_msg)) ||
+                      occursin("unsupported return type", lowercase(on_msg)) ||
+                      occursin("arraytype", lowercase(on_msg))       ||
+                      occursin("assertionerror", lowercase(on_msg))  ||
                       occursin("atomic", lowercase(on_msg))          ||
                       occursin("U14", on_msg)                        ||
                       occursin("VoidType", on_msg)                   ||

@@ -182,6 +182,89 @@ function _param_ptr_root_ref(val::LLVM.Value, depth::Int=0)::Union{Nothing, _LLV
     return nothing
 end
 
+# ---- Bennett-583s / CW-D: GenericMemory `.data`-base ptrtoint provenance ----
+#
+# The `setindex!`/`getindex`/`rehash!` @boundscheck (under --check-bounds=yes)
+# lowers to a base-cancelling difference of two `.data`-base pointers:
+#
+#   %g     = getelementptr {i64,ptr}, ptr %mem, i32 0, i32 1  ; field-1 = .data
+#   %data  = load ptr, ptr %g
+#   %elem  = getelementptr i8, ptr %data, i64 %off
+#   %b     = ptrtoint ptr %data to i64
+#   %e     = ptrtoint ptr %elem to i64
+#   %d     = sub i64 %e, %b                                   ; == %off (base cancels)
+#   %c     = icmp ult i64 %d, %len                            ; dead throw @boundscheck
+#
+# `_memdata_root` returns the Memory struct-base ref of a `.data`-provenanced
+# pointer (its identity); `_verify_memdata_bounds_cluster` proves the ptrtoint
+# result NEVER escapes the same-Memory base-cancelling `sub(ptrtoint,ptrtoint)`
+# pattern. Both are the SOLE soundness boundary (see the ptrtoint arm below):
+# `sub(ptrtoint(base+off), ptrtoint(base)) = off` is base-INDEPENDENT (matches
+# the native oracle), but a base-DEPENDENT / escaping address would not.
+
+# Is `gepval` a field-1 GEP of a `{i64,ptr}` GenericMemory struct (`.data`)?
+function _is_memdata_field1_gep(gepval)::Bool
+    gepval isa LLVM.Instruction || return false
+    LLVM.opcode(gepval) == LLVM.API.LLVMGetElementPtr || return false
+    ops = LLVM.operands(gepval)
+    length(ops) == 3 || return false
+    st = LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(gepval.ref))
+    st isa LLVM.StructType || return false
+    els = LLVM.elements(st)
+    length(els) == 2 || return false
+    (els[1] isa LLVM.IntegerType && LLVM.width(els[1]) == 64) || return false
+    els[2] isa LLVM.PointerType || return false
+    # indices [0, 1] (field-1)
+    (ops[2] isa LLVM.ConstantInt && _const_int_as_int(ops[2]) == 0) || return false
+    (ops[3] isa LLVM.ConstantInt && _const_int_as_int(ops[3]) == 1) || return false
+    return true
+end
+
+# The Memory root ref of a memdata-provenanced pointer value, or `nothing`.
+# Seed: `load ptr` of a `{i64,ptr}` field-1 GEP → the struct base ref.
+# Propagate through `getelementptr i8` (the elem byte-offset GEP) and identity
+# casts. Depth-bounded like `_param_ptr_root_ref` / `_alloca_root_ref`.
+function _memdata_root(v, depth::Int=0)::Union{Nothing, _LLVMRef}
+    depth > 8 && return nothing
+    v isa LLVM.Instruction || return nothing
+    opc = LLVM.opcode(v)
+    if opc == LLVM.API.LLVMLoad
+        LLVM.value_type(v) isa LLVM.PointerType || return nothing
+        p = LLVM.operands(v)[1]
+        _is_memdata_field1_gep(p) || return nothing
+        return LLVM.operands(p)[1].ref                 # the {i64,ptr} struct base
+    elseif opc == LLVM.API.LLVMGetElementPtr
+        # propagate through the i8 byte-offset GEP only
+        st = LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(v.ref))
+        (st isa LLVM.IntegerType && LLVM.width(st) == 8) || return nothing
+        return _memdata_root(LLVM.operands(v)[1], depth + 1)
+    elseif opc in (LLVM.API.LLVMAddrSpaceCast, LLVM.API.LLVMBitCast)
+        return _memdata_root(LLVM.operands(v)[1], depth + 1)
+    end
+    return nothing
+end
+
+# Same-base gate: EVERY use of the memdata ptrtoint `pt` must be a `sub i64`
+# whose sibling operand is a ptrtoint of a SAME-ROOT memdata pointer. A ptrtoint
+# with NO uses (`saw == false`), or any use that is not such a same-root sub,
+# means the base does not provably cancel → reject (the bennettvm-90l hazard).
+function _verify_memdata_bounds_cluster(pt::LLVM.Instruction, src)::Bool
+    root = _memdata_root(src)
+    root === nothing && return false
+    saw = false
+    for u in LLVM.uses(pt)
+        saw = true
+        usr = LLVM.user(u)
+        (usr isa LLVM.Instruction && LLVM.opcode(usr) == LLVM.API.LLVMSub) || return false
+        ops = LLVM.operands(usr)
+        length(ops) == 2 || return false
+        sib = ops[1].ref == pt.ref ? ops[2] : ops[1]
+        (sib isa LLVM.Instruction && LLVM.opcode(sib) == LLVM.API.LLVMPtrToInt) || return false
+        _memdata_root(LLVM.operands(sib)[1]) == root || return false
+    end
+    return saw
+end
+
 """
     _gc_loaded_dst_elem_ref(gep_val) -> Union{Nothing, Tuple{_LLVMRef,_LLVMRef,Int}}
 
@@ -2542,6 +2625,42 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 "is genuine pointer arithmetic that truncates/extends the cell " *
                 "value and is rejected to fail fast (CLAUDE.md §1).")
             push!(tag_ssa, inst.ref)
+            return IRBinOp(dest, :or, _operand(src, names), iconst(0), 64)
+        end
+        # Bennett-583s / CW-D: `ptrtoint ptr %memory_data to i64` — the Julia
+        # GenericMemory `.data` base pointer — admitted as a width-64 cell
+        # identity BUT ONLY when confined to a same-Memory base-cancelling bounds
+        # check (`sub(ptrtoint(P_elem), ptrtoint(P_base))` where both operands
+        # trace to the SAME Memory `.data` root). Soundness (ADR 0017 CW-D): the
+        # base cancels in `sub(ptrtoint(base+off), ptrtoint(base)) = off`, so the
+        # net effect is base-INDEPENDENT → matches the native oracle; the `oob`
+        # block is a dead `@boundscheck` throw. Any escaping / base-DEPENDENT use
+        # (inttoptr-back-to-deref, store-of-int, hash, cross-allocation diff,
+        # width≠64) would break oracle match (the bennettvm-90l hazard) and stays
+        # fail-loud. `inttoptr` of a `.data` base is itself the forbidden escape,
+        # so this arm is `LLVMPtrToInt`-only — an `inttoptr` falls through to the
+        # iwo9 fail-loud below. Sits inside the `&& ptr_cells` block, so the
+        # circuit path is byte-identical (no arm at all → the ptrtoint opcode
+        # hits the pre-existing "unsupported LLVM opcode" wall).
+        if opc == LLVM.API.LLVMPtrToInt && src isa LLVM.Instruction &&
+           _memdata_root(src) !== nothing
+            srt = LLVM.value_type(src)
+            drt = LLVM.value_type(inst)
+            src_w = srt isa LLVM.PointerType ? 64 : _iwidth(src)
+            dst_w = drt isa LLVM.PointerType ? 64 : _iwidth(inst)
+            (src_w == 64 && dst_w == 64) || _ir_error(inst,
+                "ptrtoint of a GenericMemory .data base at a NON-64-bit width " *
+                "(src=$(src_w) dst=$(dst_w)) — genuine pointer arithmetic, not a " *
+                "cell identity (Bennett-583s / CW-D). Only the 64-bit .data-base " *
+                "round-trip confined to a base-cancelling bounds check is modelled " *
+                "(CLAUDE.md §1).")
+            _verify_memdata_bounds_cluster(inst, src) || _ir_error(inst,
+                "ptrtoint of a GenericMemory .data base under ptr_cells whose " *
+                "result is NOT confined to a same-Memory base-cancelling bounds " *
+                "check (a use is not a same-root sub(ptrtoint,ptrtoint); e.g. " *
+                "inttoptr-deref, store, hash, or a cross-allocation difference). " *
+                "An escaping base-dependent address would break oracle match " *
+                "(Bennett-583s / CW-D; CLAUDE.md §1).")
             return IRBinOp(dest, :or, _operand(src, names), iconst(0), 64)
         end
         _ir_error(inst,
