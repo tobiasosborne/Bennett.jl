@@ -212,12 +212,18 @@ _is_undef_wall(msg) =
     # order-tolerant per the beaw/u2kk lesson). Registry snapshot/restore
     # (Rule 7 — no _known_callees leak).
     #
-    # OBSERVED post-fix walls (2026-07-07, this machine):
-    #   * default mode           : `j_AssertionError` `[1 x ptr]` unsupported
-    #                              RETURN TYPE (`assertionerror` / `arraytype` /
-    #                              `unsupported return type`).
-    #   * suite (--check-bounds=yes): a `ptrtoint %memory_data → i64` GenericMemory
-    #                              data-pointer wall (`ptrtoint` / `iwo9`).
+    # OBSERVED walls (re-probed 2026-07-07 post-Bennett-lbot, this machine):
+    #   * BOTH check-bounds modes : `rehash!` walls at the VARIABLE-SIZE
+    #                              `llvm.memset.p0.i64` zeroing `h::Dict.slots2`
+    #                              (non-constant byte count — Bennett-8bys /
+    #                              Bennett-9nwt; the message names both `memset`
+    #                              and `variable-size memcpy`). Bennett-lbot FUSED
+    #                              the `llvm.smul.with.overflow.i64` GenericMemory
+    #                              size-check that used to gate this body, so
+    #                              rehash! now extracts PAST it to this memset wall.
+    #   Earlier (pre-lbot) walls retained as future-robust disjuncts: default
+    #   `j_AssertionError [1 x ptr]` unsupported RETURN TYPE (`assertionerror` /
+    #   `arraytype`), suite-mode `ptrtoint %memory_data` (`ptrtoint` / `iwo9`).
     # =======================================================================
     @testset "GATE 5 — rehash! advances past the undef-phi U80 wall" begin
         before = lock(Bennett._known_callees_lock) do
@@ -248,6 +254,11 @@ _is_undef_wall(msg) =
                       occursin("ptrtoint", lc)                ||
                       occursin("iwo9", lc)                    ||
                       occursin("type-tag", lc)                ||
+                      occursin("memset", lc)                  ||  # Bennett-lbot: rehash! frontier
+                      occursin("memcpy", lc)                  ||  #   advanced to the variable-size
+                      occursin("8bys", lc)                    ||  #   memset (Bennett-8bys / 9nwt)
+                      occursin("9nwt", lc)                    ||
+                      occursin("gc_alloc_obj", lc)            ||
                       occursin("no registered callee", lc)    ||
                       occursin("closed-world", lc)
             end

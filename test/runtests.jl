@@ -528,6 +528,15 @@ runfile("test_583s_memdata_bounds.jl")
 # frontier (bennettvm-416r.12). Two Rule-1 guards: no-live-escape + throw-skeleton
 # surprise guard. ptr_cells-gated: default path byte-identical.
 runfile("test_utzc_dead_block_pruner.jl")
+# Bennett-lbot / CW-D (ADR 0017) — overflow-arith intrinsics
+# (`llvm.{smul,umul,sadd,uadd}.with.overflow.iN`, result `{iN,i1}`) under the
+# closed-world `ptr_cells` gate. The `{iN,i1}` aggregate is NEVER modeled (its i1
+# field trips the 6bu3 reject); the intrinsic call + its two extractvalues are
+# FUSED into scalar IRInsts — extractvalue-0 (product/sum) → IRBinOp, extractvalue-1
+# (overflow bit) → iconst(0) ONLY when provably no-overflow (MUL const ∈ {0,1},
+# ADD const == 0), else FAIL LOUD. Unblocks fdict `rehash!` (the GenericMemory
+# alloc-size check `smul(newsz,1)`). ptr_cells-gated: circuit path byte-identical.
+runfile("test_lbot_overflow_intrinsic.jl")
 # Bennett-jfw6: mem=:vm Case A Vector/GenericMemory extraction recognizer (shape + fail-loud matrix).
 runfile("test_jfw6_vec_vm_extract.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message

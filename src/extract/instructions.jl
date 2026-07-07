@@ -2437,6 +2437,46 @@ function _cell_call_args(inst::LLVM.Instruction, ops, n_ops::Int,
     return (args, widths)
 end
 
+# Bennett-lbot / CW-D (ADR 0017): fuse an `extractvalue` off an overflow-arith
+# intrinsic (`llvm.{smul,umul,sadd,uadd}.with.overflow.iN`, result `{iN,i1}`)
+# into a scalar IRInst. The `{iN,i1}` aggregate is never modeled; both fields are
+# re-derived directly from the intrinsic call's operands `[a, b, callee]`:
+#   - idx 0 (wrapped product/sum) → IRBinOp(dest, :mul|:add, a, b, N)
+#   - idx 1 (overflow bit)        → IRBinOp(dest, :add, iconst(0), iconst(0), 1)
+#     ONLY when the op is PROVABLY no-overflow, else FAIL LOUD.
+#
+# CRITICAL fold predicate: the provably-no-overflow constant set for MUL is
+# `{0,1}` ONLY — NOT `{-1,0,1}`. Signed `smul(x,-1) = -x` overflows at x = INT_MIN
+# (`-2^(N-1) * -1 = 2^(N-1)` is unrepresentable), so `-1` is NOT admitted. For ADD
+# the set is `{0}` (x+0 never overflows). A wrong placeholder-0 would route away
+# from the throw the native code takes on overflow — UNSOUND — so anything else
+# fails loud (CLAUDE.md §1) rather than guessing.
+function _fuse_overflow_extractvalue(call, cn, idx, dest, inst, names)
+    idx in (0, 1) || _ir_error(inst,
+        "extractvalue index $idx out of range for overflow intrinsic $cn " *
+        "(only 0=result, 1=overflow-bit). (Bennett-lbot)")
+    cops = LLVM.operands(call)            # [a, b, callee]
+    a, b = cops[1], cops[2]
+    N  = _iwidth(a)
+    op = (startswith(cn, "llvm.smul") || startswith(cn, "llvm.umul")) ? :mul : :add
+    if idx == 0
+        # Wrapped product/sum: the scalar iN arithmetic (N-bit two's-complement
+        # wrap matches the intrinsic's low-N-bits result field).
+        return IRBinOp(dest, op, _operand(a, names), _operand(b, names), N)
+    end
+    # idx == 1: overflow bit — iconst(0) ONLY when provably no-overflow.
+    ca = a isa LLVM.ConstantInt ? _const_int_as_int(a) : nothing
+    cb = b isa LLVM.ConstantInt ? _const_int_as_int(b) : nothing
+    provably_zero = op === :mul ? (ca in (0, 1) || cb in (0, 1)) :   # x*0, x*1 never overflow
+                                  (ca == 0 || cb == 0)               # x+0 never overflows
+    provably_zero || _ir_error(inst,
+        "overflow bit of $cn is not provably zero (operands $(string(a)), $(string(b))); " *
+        "general overflow-bit computation is future work — a placeholder-0 would route away " *
+        "from the throw the native code takes and is UNSOUND. (Bennett-lbot)")
+    # The overflow bit is field 1 of `{iN,i1}` — an i1. `_iwidth(inst)` == 1.
+    return IRBinOp(dest, :add, iconst(0), iconst(0), _iwidth(inst))   # bit = 0 (i1)
+end
+
 function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symbol},
                               counter::Ref{Int},
                               lanes::Dict{_LLVMRef, Vector{IROperand}}=Dict{_LLVMRef, Vector{IROperand}}();
@@ -2737,6 +2777,24 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         agg_val = ops[1]
         idx_ptr = LLVM.API.LLVMGetIndices(inst)
         idx = Int(unsafe_load(idx_ptr))  # 0-based
+        # Bennett-lbot / CW-D (ADR 0017): an extractvalue whose aggregate is an
+        # overflow-arith intrinsic call (`llvm.{smul,umul,sadd,uadd}.with.overflow`)
+        # is FUSED into a scalar IRInst, re-deriving the value from the CALL's
+        # operands — the `{iN,i1}` aggregate is never modeled (its i1 field would
+        # trip the 6bu3 StructType i1-field reject via `_struct_field_widths`
+        # below). The producing call emits nothing (Spot 1, CALL arm). Placed
+        # BEFORE the StructType/ArrayType dispatch so the aggregate type is never
+        # inspected. ptr_cells-gated ⇒ byte-identical when off.
+        if ptr_cells && agg_val isa LLVM.Instruction &&
+           LLVM.opcode(agg_val) == LLVM.API.LLVMCall
+            cn = _heap_callee_name(agg_val)   # heap.jl: guards opcode==Call
+            if startswith(cn, "llvm.smul.with.overflow.") ||
+               startswith(cn, "llvm.umul.with.overflow.") ||
+               startswith(cn, "llvm.sadd.with.overflow.") ||
+               startswith(cn, "llvm.uadd.with.overflow.")
+                return _fuse_overflow_extractvalue(agg_val, cn, idx, dest, inst, names)
+            end
+        end
         agg_type = LLVM.value_type(agg_val)
         if agg_type isa LLVM.ArrayType
             ew = LLVM.width(LLVM.eltype(agg_type))
@@ -2992,6 +3050,26 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                     tag_op = _operand(ops[3], names)
                     return IRCall(dest, :gc_alloc_obj,
                                   IROperand[size_op, tag_op], Int[64, 64], 64)
+                end
+                # Bennett-lbot / CW-D (ADR 0017): overflow-arith intrinsics
+                # (`llvm.{smul,umul,sadd,uadd}.with.overflow.iN`, result
+                # `{iN,i1}`). The `{iN,i1}` aggregate is NEVER modeled — an i1
+                # struct field hits the 6bu3 i1-field reject on BOTH repos. The
+                # two `extractvalue`s re-derive the scalars (wrapped product/sum
+                # + overflow bit) DIRECTLY from THIS call's operands (fused at the
+                # extractvalue handler, `_fuse_overflow_extractvalue`). So the
+                # call itself emits NOTHING: its `dest` is bound to no IRInst and
+                # its ref is consumed ONLY by those two extractvalues (any OTHER
+                # consumer would fail loud at `_operand` — no dest binding). Placed
+                # BEFORE the generic C-call arm to pre-empt the D5 `{iN,i1}`
+                # return-type reject below. Auto-gated (inside the `ptr_cells` arm)
+                # ⇒ byte-identical when off. `return nothing` skips the inst
+                # (module_walk.jl `ir_inst === nothing && continue`).
+                if startswith(cname, "llvm.smul.with.overflow.") ||
+                   startswith(cname, "llvm.umul.with.overflow.") ||
+                   startswith(cname, "llvm.sadd.with.overflow.") ||
+                   startswith(cname, "llvm.uadd.with.overflow.")
+                    return nothing
                 end
                 # A C `ptr` arg/return is one Int64 VM cell (ADR 0018 §A): every
                 # operand (integer OR pointer) is carried at the cell width — a

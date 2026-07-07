@@ -219,14 +219,17 @@ fdict_utzc(k::Int8, v::Int8) = (d = Dict{Int8,Int8}(); d[k] = v; d[k])
     #     `setindex!` U114 `store { ptr, ptr }` throw block (suite mode). The set
     #     does NOT YET fully close: the wall has ADVANCED to the CW-D2 frontier
     #     (the next bead, bennettvm-416r.12):
-    #       * :fail_loud → `rehash!` walls at `llvm.smul.with.overflow.i64`
-    #         (struct `{i64,i1}` return) in the LIVE `%nonemptymem` block — the
-    #         GenericMemory size-overflow check, a FRESH construct wall the pruner
-    #         does not (and should not) touch.
+    #       * :fail_loud → `rehash!` walls at the VARIABLE-SIZE `llvm.memset.p0.i64`
+    #         zeroing `h::Dict.slots2` (non-constant byte count — Bennett-8bys /
+    #         Bennett-9nwt Phase 2), in BOTH check-bounds modes. Re-probed post-
+    #         Bennett-lbot (2026-07-07): lbot FUSED the `llvm.smul.with.overflow.i64`
+    #         GenericMemory size-check that was the prior :fail_loud frontier here,
+    #         so rehash! now extracts PAST the smul to this fresh memset wall — a
+    #         construct the pruner does not (and should not) touch.
     #       * :skip → the closed-world check walls on the `gc_alloc_obj` Symbol
     #         callee (not in the CW-D2 whitelist), proving the rehash!/setindex!
     #         bodies now extract PAST their dead blocks.
-    #     This tripwire flips to a real closed set when smul.with.overflow +
+    #     This tripwire flips to a real closed set when the variable-size memset +
     #     gc_alloc_obj land — prompting promotion to the full-closure assertion.
     # ========================================================================
     @testset "(c) fdict set — dead-block walls cleared, advances to CW-D2 (check-bounds=$(Base.JLOptions().check_bounds))" begin
@@ -263,17 +266,27 @@ fdict_utzc(k::Int8, v::Int8) = (d = Dict{Int8,Int8}(); d[k] = v; d[k])
         @test !occursin("store of non-integer type", fl)   # setindex! U114 box-store gone
 
         # POSITIVE — the wall ADVANCED to the CW-D2 frontier (the next bead), OR
-        # (future) the set is fully closed.
-        @test fl == "" || occursin("smul.with.overflow", fl) ||
+        # (future) the set is fully closed. Bennett-lbot (2026-07-07) FUSED away
+        # the `llvm.smul.with.overflow.i64` GenericMemory size-check that WAS the
+        # prior :fail_loud frontier here, so `rehash!` now extracts PAST it and
+        # walls at the VARIABLE-SIZE `llvm.memset.p0.i64` zeroing `h::Dict.slots2`
+        # (non-constant byte count — Bennett-8bys / Bennett-9nwt Phase 2), in BOTH
+        # check-bounds modes (re-probed). gc_alloc_obj / closed-world-violation
+        # retained as future-robust disjuncts (they surface once memset clears).
+        @test fl == "" ||
+              occursin("memset", fl) || occursin("non-constant byte count", fl) ||
+              occursin("Bennett-8bys", fl) || occursin("Bennett-9nwt", fl) ||
               occursin("gc_alloc_obj", fl) || occursin("closed-world violation", fl)
         @test sk === :closed || occursin("gc_alloc_obj", sk) ||
               occursin("closed-world violation", sk)
 
         # NOTE: a direct positive "a real Dict helper fully extracts" assertion is
-        # deliberately NOT made here — the individual helper bodies wall on
-        # mode-dependent, utzc-UNRELATED constructs (e.g. under --check-bounds=yes
-        # `ht_keyindex2_shorthash!` walls at the `movq %fs:0` inline-asm TLS read,
-        # Bennett-5oyt / U15). The mechanical pruner correctness on a real throw
+        # deliberately NOT made here — the helper bodies still wall on
+        # utzc-UNRELATED constructs past their pruned dead blocks. The current
+        # :fail_loud frontier is `rehash!`'s variable-size `llvm.memset.p0.i64`
+        # (Bennett-8bys, mode-independent); deeper still, `ht_keyindex2_shorthash!`
+        # walls at the `movq %fs:0` inline-asm TLS read under --check-bounds=yes
+        # (Bennett-5oyt / U15). The mechanical pruner correctness on a real throw
         # callee is covered by fixture (a); the real-world advance is the
         # negative+positive wall-move above (mode-robust in BOTH check-bounds modes).
     end

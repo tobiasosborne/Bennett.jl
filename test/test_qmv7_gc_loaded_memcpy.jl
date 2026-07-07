@@ -292,16 +292,19 @@ end
 
     # =======================================================================
     # GATE (d) — the real `setindex!(Dict{Int8,Int8})` root advances PAST the
-    # memcpy "not alloca-backed" wall under ptr_cells. The memcpy dst wall (this
-    # bead's target) must be GONE: setindex! either extracts CLEAN (ret_width==64,
-    # 12 blocks — the `optimize=false`, NO-bounds-check shape) OR advances to a
-    # DIFFERENT (already-tracked) wall. Rule 5 / Bennett-2mj3: under
-    # `--check-bounds=yes` (the Pkg.test() suite mode) `code_llvm` emits extra
-    # bounds-check IR that surfaces the EARLIER `ptrtoint` GenericMemory
-    # data-pointer wall (Bennett-iwo9 / jfw6 — the next CW-D frontier) BEFORE the
-    # memcpy; so the clean-extract shape is mode-dependent. The load-bearing,
-    # mode-INVARIANT assertion is the NEGATIVE: it is no longer the qmv7 memcpy
-    # dst wall. Registry snapshot/restore (Rule 7 — no _known_callees leak).
+    # memcpy "not alloca-backed" wall under ptr_cells. Post-Bennett-lbot
+    # (2026-07-07) setindex! now extracts CLEAN in BOTH check-bounds modes: lbot
+    # FUSED the `llvm.smul.with.overflow.i64` GenericMemory size-check (`smul(x,1)`,
+    # provably no-overflow ⇒ bit 0) that was the cb=yes wall, so setindex! fully
+    # extracts. ret_width==64, with a bounds-check-mode-dependent block count — 12
+    # under default (the `optimize=false`, NO-bounds-check shape) and 36 under
+    # `--check-bounds=yes` (the Pkg.test() suite mode: `code_llvm` emits extra
+    # @boundscheck IR). Rule 5 / Bennett-2mj3: the block count is a mode-dependent
+    # shape lock; the :err branch below is retained as a FUTURE-ROBUST fallback (a
+    # later IR change could re-introduce a wall). The load-bearing, mode-INVARIANT
+    # guarantees: it is no longer the qmv7 memcpy dst wall, and the heap-store
+    # var-GEP shape (:off index, width-8 store) holds. Registry snapshot/restore
+    # (Rule 7 — no _known_callees leak).
     # =======================================================================
     @testset "GATE (d) — setindex! root advances past the memcpy wall" begin
         before = lock(Bennett._known_callees_lock) do
@@ -323,11 +326,13 @@ end
             end
 
             if on_result[1] === :ok
-                # NO-bounds-check mode: extracts clean (the bead's predicted
-                # shape). Even stronger than wall-advance.
+                # Extracts CLEAN (even stronger than wall-advance). Post-Bennett-lbot
+                # this holds in BOTH modes; the block count is bounds-check-mode-
+                # dependent (12 default / 36 --check-bounds=yes). ret_width and the
+                # heap-store var-GEP shape are mode-invariant.
                 pir = on_result[2]
                 @test pir.ret_width == 64
-                @test length(pir.blocks) == 12
+                @test length(pir.blocks) == (Base.JLOptions().check_bounds == 1 ? 36 : 12)
                 vg = _qmv7_heap_store_vargep(pir)
                 @test vg !== nothing
             else
