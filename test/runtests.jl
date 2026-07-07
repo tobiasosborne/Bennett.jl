@@ -537,6 +537,15 @@ runfile("test_utzc_dead_block_pruner.jl")
 # ADD const == 0), else FAIL LOUD. Unblocks fdict `rehash!` (the GenericMemory
 # alloc-size check `smul(newsz,1)`). ptr_cells-gated: circuit path byte-identical.
 runfile("test_lbot_overflow_intrinsic.jl")
+# Bennett-8bys / CW-D (ADR 0017) — VARIABLE-size `llvm.memset.p0.i64` under the
+# closed-world `ptr_cells` gate. Predicate 5 (non-const N) routes to a bare
+# IRCall(:memset,[dst_cell,byte,nbytes],[64,8,64],64) → BVM's reversible
+# IntrinsicMemset, instead of the const-N unroll's fail-loud reject. The byte is
+# passed RAW (BVM does its own cell-broadcast). Const-N keeps the unroll;
+# ptr_cells=false keeps the reject; a VOLATILE variable-N memset still fails loud.
+# Unblocks fdict `rehash!` zeroing the fresh Dict.slots Memory (variable length).
+# ptr_cells-gated: circuit path byte-identical.
+runfile("test_8bys_variable_memset.jl")
 # Bennett-jfw6: mem=:vm Case A Vector/GenericMemory extraction recognizer (shape + fail-loud matrix).
 runfile("test_jfw6_vec_vm_extract.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message

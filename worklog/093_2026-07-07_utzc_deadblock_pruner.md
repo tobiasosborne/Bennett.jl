@@ -1,5 +1,57 @@
 # Worklog chunk 093
 
+## Session log — 2026-07-07 — Bennett-8bys / CW-D: route VARIABLE-size `llvm.memset.p0.i64` to BVM `IntrinsicMemset` under ptr_cells
+
+**What.** `src/extract/instructions.jl` `_handle_memset_arm`: at predicate 5 (the
+`!(n_v isa ConstantInt)` variable-count case), under `ptr_cells` AND non-volatile,
+route to a bare `IRCall(dest, :memset, [dst_cell, byte, nbytes], [64,8,64], 64)`
+instead of the const-N unroll's fail-loud reject. Reuses BVM's reversible
+`IntrinsicMemset` (`:memset → IntrinsicMemset`, `:memset ∈ _HEAP_DISPATCH`).
+Threaded `dest::Symbol` + `ptr_cells::Bool` into the arm (both already in scope at
+the sole `_handle_intrinsic` caller; the memcpy arm nearby already forwards
+`ptr_cells`). ~15 LOC, one source file. Bennett.jl-ONLY (BVM ingest already
+handles variable-size `:memset`). Const-N keeps the unroll; `ptr_cells=false`
+keeps the reject; a VOLATILE variable-N memset still fails loud (Rule 1).
+
+**Byte is passed RAW.** `_operand(c_v, names)` — no mask, no broadcast (BVM's
+`IntrinsicMemset.forward` does its own cell-broadcast; pre-broadcasting would
+double-broadcast). GOTCHA: `_const_int_as_int` uses `convert(Int, ::ConstantInt)`
+which SIGN-EXTENDS the i8, so `i8 255`/`i8 -1` (0xFF) → `-1`, not 255 — and 0xFF
+is degenerate for raw-vs-broadcast (broadcast of 0xFF is also -1). The test uses
+`i8 1` (raw 1 ≠ 64-bit broadcast 0x0101…) as the discriminating probe. Dst guard:
+`_operand(dst_v; ptr_cells=true) isa SSAOperand` (a `ptr null` cell would be a
+`ConstOperand` → fail loud).
+
+**Real-target payoff (fdict `rehash!`), BOTH check-bounds modes, live-probed:**
+- `:fail_loud` single-fn `extract_parsed_ir(Base.rehash!, {Dict{Int8,Int8},Int64};
+  optimize=false, ptr_cells=true)` now **FULLY EXTRACTS** (no throw) — the
+  variable-size slots-zeroing memset was rehash!'s last single-function wall
+  (after lbot fused the `smul.with.overflow` GenericMemory size-check).
+- `:skip`/`:fail_loud` SET producer (`extract_parsed_ir_set_from_julia`) walls at
+  the POST-extraction closed-world check: Symbol callee `gc_alloc_obj` unclassified
+  (CW-D2 whitelist not built — **bennettvm-416r.12, the NEXT bead**). In-set keys
+  now: `rehash!`, `setindex!`, `ht_keyindex2_shorthash!`, fdict root — all bodies
+  extract. Mode-INDEPENDENT.
+
+**Frontier-test updates (honest, lbot/u2kk pattern).** 8bys advancing rehash! to
+full extraction shifted asserted frontiers: `test_lf14` GATE C pinned the
+per-callee `"extraction FAILED"` wrapper as the `:fail_loud` set frontier — now the
+closed-world `gc_alloc_obj` violation fires instead (no callee extraction fails);
+added `occursin("closed-world violation")` disjunct (kept the wrapper as
+future-robust). `test_lf14` GATE B rehash! probe now takes the `:ok`
+full-extraction branch (`rmsg_on isa ParsedIR`). Stale "walls at the memset" prose
+corrected in `test_utzc` (c) and `test_yd4f` GATE 5 (both still pass — their
+disjunctions already carried `gc_alloc_obj`/`closed-world`/`nothing`-branch).
+
+**Tests.** New `test/test_8bys_variable_memset.jl` (28 assertions) + fixture
+`test/fixtures/ll/8bys_memset_var_n.ll` (void ptr-param memset, c=0/1/0xFF +
+volatile). Registered after `test_lbot` in the CW-D cluster. Gate-off proof (c)
+uses `9nwt_memset_var_n_reject.ll` (i8-return alloca dst) NOT fixture (a): the
+void/ptr-param shape (a) pre-empts at the U81 VoidType `_type_width` wall under
+`ptr_cells=false` before reaching the memset. Suite-mode (`--check-bounds=yes`)
+green: 8bys 28, 9nwt 87, 37mt 86, lqif 12, 8su4 24 (volatile guard intact),
+qmv7 35, u2kk 14, lf14 25, 583s 28, d1b 33+1broken, utzc 31, yd4f 25.
+
 ## Session log — 2026-07-07 — Bennett-lbot / CW-D: fuse `llvm.{s,u}{mul,add}.with.overflow.iN` to scalars under ptr_cells
 
 **What.** `src/extract/instructions.jl`: under `ptr_cells`, recognize the four

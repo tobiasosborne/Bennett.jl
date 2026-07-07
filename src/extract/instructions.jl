@@ -1272,7 +1272,8 @@ Predicate cascade (earliest mismatch → most actionable error):
  13. dst alloca is fresh per `_alloca_is_fresh` (option γ)
 """
 function _handle_memset_arm(cname::AbstractString, inst::LLVM.Instruction,
-                            names::Dict{_LLVMRef, Symbol}, counter::Ref{Int}, ops)
+                            names::Dict{_LLVMRef, Symbol}, counter::Ref{Int}, ops,
+                            dest::Symbol, ptr_cells::Bool=false)
     # Predicate 1: addrspace 0 (accept both `memset.p0.` and `memset.inline.p0.`).
     is_p0 = startswith(cname, "llvm.memset.p0.") ||
             startswith(cname, "llvm.memset.inline.p0.")
@@ -1310,11 +1311,32 @@ function _handle_memset_arm(cname::AbstractString, inst::LLVM.Instruction,
         "Bennett-8bys. (Bennett-9nwt Phase 2 — const-c only)")
 
     # Predicate 5: byte count must be a ConstantInt.
-    n_v isa LLVM.ConstantInt || _ir_error(inst,
-        "$(cname): memset with non-constant byte count is not supported. " *
-        "Variable-size memset requires runtime-bounded loop unrolling, " *
-        "same gap as variable-size memcpy. Tracked in Bennett-8bys. " *
-        "(Bennett-9nwt Phase 2 — const-N only)")
+    if !(n_v isa LLVM.ConstantInt)
+        # Bennett-8bys / CW-D (ADR 0017): under ptr_cells, a VARIABLE-size memset
+        # routes to IRCall(:memset,[dst,byte,nbytes]) → BVM's reversible
+        # IntrinsicMemset (ingest_call.jl :memset→IntrinsicMemset, :memset ∈
+        # _HEAP_DISPATCH; its L2 delta reverses fresh-absent OR stale, so no
+        # freshness proof is needed here). The byte is passed RAW — BVM's
+        # IntrinsicMemset.forward does its own cell-broadcast; pre-broadcasting
+        # here would double-broadcast. A VOLATILE variable-N memset still fails
+        # loud (Rule 1). Const-N keeps the unroll; ptr_cells=false keeps the
+        # reject — both byte-identical. `vol_v` is proven ConstantInt at
+        # predicate 3 above, so `_const_int_as_int(vol_v)` is safe.
+        if ptr_cells && _const_int_as_int(vol_v) == 0
+            dst_op = _operand(dst_v, names; ptr_cells=true)   # .data ptr → Int64 cell
+            dst_op isa SSAOperand || _ir_error(inst,
+                "$(cname): variable-size memset dst is not an SSA pointer cell " *
+                "(got $(dst_op)); BVM IntrinsicMemset needs an SSA dst. (Bennett-8bys)")
+            return IRCall(dest, :memset,
+                IROperand[dst_op, _operand(c_v, names), _operand(n_v, names)],
+                Int[64, 8, 64], 64)
+        end
+        _ir_error(inst,
+            "$(cname): memset with non-constant byte count is not supported. " *
+            "Variable-size memset requires runtime-bounded loop unrolling, " *
+            "same gap as variable-size memcpy. Tracked in Bennett-8bys. " *
+            "(Bennett-9nwt Phase 2 — const-N only)")
+    end
     N = _const_int_as_int(n_v)
     N >= 0 || _ir_error(inst,
         "$(cname): negative byte count $N (corrupt IR; LLVM treats the " *
@@ -2023,7 +2045,7 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     # pairs with ConstOperand(c) at width=8. c=0 takes a separate
     # silent-drop fast path that preserves pre-9nwt benign behaviour.
     if startswith(cname, "llvm.memset.")
-        return _handle_memset_arm(cname, inst, names, counter, ops)
+        return _handle_memset_arm(cname, inst, names, counter, ops, dest, ptr_cells)
     end
     if startswith(cname, "llvm.cos.")
         w = _iwidth(ops[1])

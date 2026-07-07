@@ -162,6 +162,11 @@ _is_ptr_return_wall(msg) =
             @test rh_off === :err
             @test _is_ptr_return_wall(rmsg_off)       # cells-OFF: still the ptr-RETURN wall
 
+            # Bennett-8bys / CW-D (2026-07-07): variable-size memset routing cleared
+            # rehash!'s last single-function wall, so `rehash!` now FULLY EXTRACTS
+            # (rh_on === :ok, BOTH check-bounds modes) — the :ok branch below fires.
+            # The else-branch disjunction is retained as future-robust (if a later
+            # wall reappears).
             (rh_on, rmsg_on) = _try_extract(Base.rehash!, at_rh; cells=true)
             if rh_on === :ok
                 @test rmsg_on isa ParsedIR
@@ -223,8 +228,16 @@ _is_ptr_return_wall(msg) =
         end
 
         # With ptr_cells=true the producer's per-callee extract clears the
-        # ptr-RETURN wall; the first failing callee surfaces an ADVANCED wall
-        # (NOT the ptr-RETURN PointerType wall) through the :fail_loud wrapper.
+        # ptr-RETURN wall; the producer then surfaces an ADVANCED wall (NOT the
+        # ptr-RETURN PointerType wall).
+        # Bennett-8bys / CW-D (2026-07-07): variable-size memset routing advanced
+        # rehash! (and the other Dict helpers) to FULL extraction, so NO per-callee
+        # EXTRACTION fails anymore — the ":fail_loud"/"extraction FAILED" wrapper no
+        # longer fires. The producer now walls at the POST-extraction CLOSED-WORLD
+        # check on the `gc_alloc_obj` Symbol callee (CW-D2 / bennettvm-416r.12),
+        # in BOTH check-bounds modes. Accept EITHER the closed-world violation (the
+        # current frontier) OR the "extraction FAILED" wrapper (future-robust, if a
+        # later callee-extraction wall reappears).
         err_on = try
             extract_parsed_ir_set_from_julia(fdict_lf14, Tuple{Int8,Int8};
                                              on_extract_error=:fail_loud, ptr_cells=true)
@@ -233,7 +246,8 @@ _is_ptr_return_wall(msg) =
             sprint(showerror, e)
         end
         @test err_on !== nothing
-        @test occursin("extraction FAILED", err_on)   # via the :fail_loud wrapper
+        @test occursin("closed-world violation", err_on) ||  # Bennett-8bys frontier
+              occursin("extraction FAILED", err_on)          # future-robust wrapper
         @test !_is_ptr_return_wall(err_on)             # ptr-RETURN wall threaded-CLEARED
         @test occursin("VoidType", err_on) || occursin("U81", err_on) ||
               occursin("atomic", err_on)   || occursin("U14", err_on) ||

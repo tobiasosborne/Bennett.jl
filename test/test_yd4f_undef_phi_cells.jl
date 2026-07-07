@@ -212,18 +212,23 @@ _is_undef_wall(msg) =
     # order-tolerant per the beaw/u2kk lesson). Registry snapshot/restore
     # (Rule 7 — no _known_callees leak).
     #
-    # OBSERVED walls (re-probed 2026-07-07 post-Bennett-lbot, this machine):
-    #   * BOTH check-bounds modes : `rehash!` walls at the VARIABLE-SIZE
-    #                              `llvm.memset.p0.i64` zeroing `h::Dict.slots2`
-    #                              (non-constant byte count — Bennett-8bys /
-    #                              Bennett-9nwt; the message names both `memset`
-    #                              and `variable-size memcpy`). Bennett-lbot FUSED
-    #                              the `llvm.smul.with.overflow.i64` GenericMemory
-    #                              size-check that used to gate this body, so
-    #                              rehash! now extracts PAST it to this memset wall.
-    #   Earlier (pre-lbot) walls retained as future-robust disjuncts: default
-    #   `j_AssertionError [1 x ptr]` unsupported RETURN TYPE (`assertionerror` /
-    #   `arraytype`), suite-mode `ptrtoint %memory_data` (`ptrtoint` / `iwo9`).
+    # OBSERVED (re-probed 2026-07-07 post-Bennett-8bys, this machine):
+    #   * BOTH check-bounds modes : `Base.rehash!` now FULLY EXTRACTS as a single
+    #                              function (no throw) — Bennett-8bys routed the
+    #                              VARIABLE-SIZE `llvm.memset.p0.i64` zeroing
+    #                              `h::Dict.slots2` to BVM's reversible
+    #                              IntrinsicMemset, which was the last single-
+    #                              function wall (after lbot fused the
+    #                              `llvm.smul.with.overflow.i64` GenericMemory
+    #                              size-check). So `on_msg === nothing` and the
+    #                              `@test true` branch fires; the disjunction is
+    #                              retained as future-robust (if a later wall
+    #                              reappears). `gc_alloc_obj` surfaces only in the
+    #                              closed-world SET producer, not single-function.
+    #   Earlier walls retained as future-robust disjuncts: memset/8bys/9nwt,
+    #   default `j_AssertionError [1 x ptr]` unsupported RETURN TYPE
+    #   (`assertionerror` / `arraytype`), suite-mode `ptrtoint %memory_data`
+    #   (`ptrtoint` / `iwo9`).
     # =======================================================================
     @testset "GATE 5 — rehash! advances past the undef-phi U80 wall" begin
         before = lock(Bennett._known_callees_lock) do
