@@ -2459,7 +2459,26 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
     if opc == LLVM.API.LLVMPHI
         incoming = Tuple{IROperand, Symbol}[]
         for (val, blk) in LLVM.incoming(inst)
-            push!(incoming, (_operand(val, names), Symbol(LLVM.name(blk))))
+            # Bennett-yd4f / U80 / CW-D (ADR 0017): under the closed-world
+            # `ptr_cells` gate ONLY, an INTEGER `undef` in phi-INCOMING position
+            # is LLVM's compiler-proven don't-care on a dynamically-dead edge
+            # (LangRef: undef as a phi operand). BennettVM resolves phis by the
+            # TAKEN predecessor edge (BennettVM/src/ir/ingest_phi.jl:84), so a
+            # `0` placeholder on a dead incoming is never materialised at
+            # runtime. Model it as the zero cell `iconst(0)` (mirrors the beaw
+            # ptr-null lever, helpers.jl:184, and the existing vec_vm dead-edge
+            # substitution at vector_vm_term.jl:112). Gated HERE, not in
+            # `_operand`, because undef→0 is position-DEPENDENT (sound only in
+            # phi-incoming); every other operand position keeps `_operand`'s
+            # undef fail-loud (helpers.jl:167). PoisonValue is a DISTINCT LLVM.jl
+            # type (sibling of UndefValue, not a subtype), so it is NOT caught
+            # here and stays fail-loud; a non-integer undef falls through to
+            # `_operand` and stays fail-loud. `ptr_cells=false` (circuit/:heap)
+            # is byte-identical fail-loud.
+            op = (ptr_cells && val isa LLVM.UndefValue &&
+                  LLVM.value_type(val) isa LLVM.IntegerType) ?
+                 iconst(0) : _operand(val, names)
+            push!(incoming, (op, Symbol(LLVM.name(blk))))
         end
         # Bennett-cc0 M2b: pointer-typed phi uses width=0 sentinel.
         w = LLVM.value_type(inst) isa LLVM.PointerType ? 0 : _iwidth(inst)

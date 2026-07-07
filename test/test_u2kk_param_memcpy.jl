@@ -211,7 +211,18 @@ _is_doih_g3_wall(msg) =
                 # NEGATIVE: no longer the doih G3 global-src-memcpy wall.
                 @test !_is_doih_g3_wall(on_msg)
                 # POSITIVE inclusive disjunction of plausible CW-D successors.
-                @test occursin("insertvalue", lowercase(on_msg))     ||
+                # Bennett-yd4f / U80 (2026-07-07): the integer-undef-in-phi →
+                # zero-cell fix cleared the `phi i64 [ undef, ... ]` wall that
+                # the 8g7m address-icmp fix had advanced rehash! to; the next
+                # wall is MODE-dependent — default mode: the `unsupported return
+                # type LLVM.ArrayType([1 x ptr])` `j_AssertionError` C-call wall
+                # (assertionerror / arraytype / unsupported-return-type); suite
+                # mode: the ptrtoint/iwo9 wall (already covered). Added the three
+                # default-mode disjuncts.
+                @test occursin("unsupported return type", lowercase(on_msg)) ||  # Bennett-yd4f
+                      occursin("assertionerror", lowercase(on_msg))  ||  # Bennett-yd4f
+                      occursin("arraytype", lowercase(on_msg))       ||  # Bennett-yd4f
+                      occursin("insertvalue", lowercase(on_msg))     ||
                       occursin("aggregate", lowercase(on_msg))       ||
                       occursin("structtype", lowercase(on_msg))      ||
                       occursin("genericmemory", lowercase(on_msg))   ||

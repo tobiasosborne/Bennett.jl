@@ -284,14 +284,25 @@ _is_ptr_width_wall(msg) =
                 # NEGATIVE: no longer the ConstantPointerNull U80 wall.
                 @test !_is_null_wall(on_msg)
                 # POSITIVE inclusive disjunction of plausible CW-D successors.
-                # GENUINE live landing (2026-06-29, registry-clean direct entry):
-                # the UndefValue / U80 wall on a `phi i64 [ undef, ... ]` node —
-                # `_operand(::UndefValue)` via the PHI arm (helpers.jl). The
-                # address-icmp fix advanced rehash! PAST the `icmp ne ptr %4,
-                # null` ConstantPointerNull wall to this `i64 undef` phi-incoming.
-                # Other disjuncts kept inclusive (Rule 5 — order-dependent).
-                @test occursin("undefvalue", lowercase(on_msg))      ||  # GENUINE post-8g7m landing
-                      occursin("undef", lowercase(on_msg))           ||  # phi i64 undef incoming
+                # Bennett-yd4f / U80 (2026-07-07): the integer-undef-in-phi →
+                # zero-cell fix REMOVED the old `phi i64 [ undef, ... ]`
+                # UndefValue / U80 wall that the address-icmp fix had advanced
+                # rehash! to. rehash! now advances PAST the undef phi to its
+                # NEXT wall, which is MODE-dependent:
+                #   * default mode           : `unsupported return type
+                #     LLVM.ArrayType([1 x ptr])` from a `j_AssertionError` C call
+                #     (assertionerror / arraytype / unsupported return type).
+                #   * suite (--check-bounds=yes): a `ptrtoint %memory_data → i64`
+                #     GenericMemory data-pointer wall (ptrtoint / iwo9).
+                # Added the arraytype / assertionerror / unsupported-return-type
+                # disjuncts for the default-mode successor. The stale `undef*`
+                # disjuncts are kept (harmless under Rule 5 — the test no longer
+                # REQUIRES the undef wall, which is gone).
+                @test occursin("unsupported return type", lowercase(on_msg)) ||  # Bennett-yd4f: default-mode successor
+                      occursin("assertionerror", lowercase(on_msg))    ||  # Bennett-yd4f
+                      occursin("arraytype", lowercase(on_msg))         ||  # Bennett-yd4f
+                      occursin("undefvalue", lowercase(on_msg))      ||  # stale pre-yd4f landing (kept, Rule 5)
+                      occursin("undef", lowercase(on_msg))           ||  # phi i64 undef incoming (gone post-yd4f)
                       occursin("aggregate", lowercase(on_msg))       ||
                       occursin("structtype", lowercase(on_msg))      ||
                       occursin("insertvalue", lowercase(on_msg))     ||

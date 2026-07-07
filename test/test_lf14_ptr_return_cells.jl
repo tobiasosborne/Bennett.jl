@@ -176,7 +176,17 @@ _is_ptr_return_wall(msg) =
                 # under a different registry order the ptrtoint `%memory_data → i64`
                 # iwo9 wall (Bennett-iwo9 / CW-D3 Lever 1) can surface first — add
                 # ptrtoint / iwo9 / type-tag disjuncts; all existing disjuncts kept.
-                @test occursin("ptrtoint", lowercase(rmsg_on)) ||  # Bennett-6bu3: new iwo9 successor
+                # Bennett-yd4f / U80 (2026-07-07): the integer-undef-in-phi →
+                # zero-cell fix cleared the `phi i64 [ undef, ... ]` wall; rehash!
+                # now advances to a MODE-dependent successor — default mode: the
+                # `unsupported return type LLVM.ArrayType([1 x ptr])`
+                # `j_AssertionError` C-call wall (assertionerror / arraytype /
+                # unsupported-return-type); suite mode: the ptrtoint/iwo9 wall
+                # (already covered). Added the three default-mode disjuncts.
+                @test occursin("unsupported return type", lowercase(rmsg_on)) ||  # Bennett-yd4f
+                      occursin("assertionerror", lowercase(rmsg_on)) ||  # Bennett-yd4f
+                      occursin("arraytype", lowercase(rmsg_on)) ||       # Bennett-yd4f
+                      occursin("ptrtoint", lowercase(rmsg_on)) ||  # Bennett-6bu3: new iwo9 successor
                       occursin("iwo9", lowercase(rmsg_on)) ||      # Bennett-6bu3
                       occursin("type-tag", lowercase(rmsg_on)) ||  # Bennett-6bu3
                       occursin("atomic", rmsg_on) || occursin("U14", rmsg_on) ||

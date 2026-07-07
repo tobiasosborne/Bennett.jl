@@ -494,6 +494,15 @@ runfile("test_u2kk_param_memcpy.jl")
 # rehash! root PAST the `icmp ne ptr %4, null` U80 wall (u2kk's successor) to the
 # `phi i64 [ undef, ... ]` UndefValue / U80 wall.
 runfile("test_8g7m_ptr_icmp_cells.jl")
+# Bennett-yd4f / U80 — CW-D (ADR 0017): under `ptr_cells` ONLY, an INTEGER
+# `undef` in phi-INCOMING position lowers to iconst(0) (dynamically-dead
+# don't-care edge; BennettVM resolves phis by the taken predecessor). Every
+# other operand position, poison anywhere, non-integer undef, and the circuit
+# path (ptr_cells=false) stay byte-identically fail-loud. Advances the rehash!
+# root PAST the `phi i64 [ undef, ... ]` U80 wall (8g7m's successor) to the
+# `j_AssertionError [1 x ptr]` unsupported-return-type wall (default mode) /
+# the `ptrtoint %memory_data` iwo9 wall (suite mode --check-bounds=yes).
+runfile("test_yd4f_undef_phi_cells.jl")
 # Bennett-jfw6: mem=:vm Case A Vector/GenericMemory extraction recognizer (shape + fail-loud matrix).
 runfile("test_jfw6_vec_vm_extract.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message

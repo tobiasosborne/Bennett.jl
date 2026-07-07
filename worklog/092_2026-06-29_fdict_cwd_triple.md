@@ -1,5 +1,65 @@
 # Worklog chunk 092
 
+## Session log — 2026-07-07 — Bennett-yd4f / U80: integer undef in phi-incoming → zero cell under ptr_cells (CW-D, ADR 0017)
+
+**What.** `src/extract/instructions.jl` generic `_convert_instruction` PHI arm:
+the per-incoming `_operand(val, names)` call is replaced by a gated form —
+`(ptr_cells && val isa LLVM.UndefValue && LLVM.value_type(val) isa
+LLVM.IntegerType) ? iconst(0) : _operand(val, names)`. Under the closed-world
+`ptr_cells` gate ONLY, an INTEGER `undef` in phi-INCOMING position lowers to a
+`ConstOperand(0)` instead of the Bennett-bjdg / U80 fail-loud. Everything else
+is byte-identical: poison anywhere, non-integer (ptr) undef, integer undef in
+any NON-phi operand position, and the entire `ptr_cells=false` circuit/:heap
+path all stay fail-loud (poison is a DISTINCT LLVM.jl type, not a subtype of
+UndefValue, so it is never caught; non-integer undef fails the `IntegerType`
+guard and falls through to `_operand`).
+
+**Why sound.** `rehash!(::Dict{Int8,Int8},::Int64)` at `optimize=false` has
+exactly 5 undef operands, all `i64`, all phi-incoming, all on dynamically-dead
+edges (LLVM LangRef: undef-as-phi-incoming don't-care contract). BennettVM
+resolves phis by the TAKEN predecessor edge (`BennettVM/src/ir/ingest_phi.jl:84`),
+so a `0` placeholder on a dead incoming is never materialised at runtime. Gated
+at the phi SITE, not in `_operand`, because undef→0 is position-DEPENDENT.
+
+**Wall-advance (this is a WALL-ADVANCE, not full extraction).** rehash! advances
+PAST the `phi i64 [ undef, ... ]` U80 wall (8g7m's successor) to a MODE-dependent
+next wall — captured on this machine 2026-07-07:
+- **default mode**: `call [1 x ptr] @j_AssertionError_… has unsupported return
+  type LLVM.ArrayType([1 x ptr]) under ptr_cells … (BVM ADR 0020 D5 / chunk C)`.
+- **suite mode (`--check-bounds=yes`)**: `%N = ptrtoint ptr %memory_data to i64 —
+  ptrtoint under ptr_cells whose source is NOT a recognised Julia type-tag value
+  (Bennett-iwo9 / CW-D3 Lever 1)`.
+Two distinct successor beads for the orchestrator to file: an ArrayType
+(`[1 x ptr]`) C-call-return lever, and the `%memory_data` GenericMemory
+data-pointer ptrtoint (iwo9 extension). `ptr_cells=false` still walls EARLIER at
+the ptr-return width wall (`unsupported LLVM type for width query: PointerType`)
+in BOTH modes — the undef phi is never reached under the gate-off path, so the
+byte-identity guard for cells=false is "still errors at the ptr wall", not "undef
+wall".
+
+**Gotcha — the u2kk cross-test trap (mode-dependent).** Landing yd4f removes the
+undef wall that THREE other rehash! wall-advance tests assert as their "next
+wall": `test_8g7m` GATE F, `test_lf14` GATE B rehash! block, `test_u2kk` GATE (d).
+In SUITE mode all three already covered the ptrtoint/iwo9 successor, so
+`Pkg.test()` (which runs `--check-bounds=yes`) would stay green WITHOUT the test
+edits — but a per-file run in DEFAULT mode walls at the `j_AssertionError`
+ArrayType message, which none of the three disjunctions covered → RED. Added
+`unsupported return type` / `assertionerror` / `arraytype` disjuncts to all
+three (order-tolerant, Rule 5). The load-bearing NEGATIVE assertions are
+unaffected: `_is_null_wall` (8g7m), `_is_ptr_return_wall` = "unsupported LLVM
+type" && "PointerType" (lf14), `_is_doih_g3_wall` (u2kk) match neither new wall.
+
+**Task-spec discrepancy (reported to orchestrator).** The bead predicted
+`test_yd4f` GATE 5 `ptr_cells=false` would throw the UndefValue wall; observation
+shows it throws the PointerType ptr-return-width wall (the ptr return pre-empts
+the undef phi under the gate-off path). The new test asserts reality (still
+errors + pointer wall, defensively inclusive of undef).
+
+**Verification (all suite mode `--check-bounds=yes` unless noted).**
+`test_yd4f` 26/26 (default 26/26 too); `test_8g7m` 47/47; `test_lf14` 27/27;
+`test_u2kk` 15/15; regression set (beaw/6bu3/59zi/ares/zf5v/nd45/iwo9/r92o/xrd6)
+all green.
+
 ## Session log — 2026-07-06 — Case C: two-index array GEP support (cross-repo bennettvm-416r.4 + closes dzd)
 
 **What.** `src/extract/instructions.jl` gains a new "Case C" arm (before the
