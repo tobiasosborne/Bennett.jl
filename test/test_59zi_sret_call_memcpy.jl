@@ -326,6 +326,10 @@ leaf59zi(k::Int8) = (Int64(k) + 1000, k ⊻ Int8(0x55))
                    if i isa IRCall && i.callee === Base.ht_keyindex2_shorthash!]
             @test length(rec) == 1
             @test rec[1].ret_width == 72
+            # Bennett-416r.17: the recursive-call forwarding path must carry the
+            # h::Dict pointer operand as a 64-bit cell (was silently dropped by
+            # the integer-only loop ⇒ arg_widths [8]). Correct shape [h, key].
+            @test rec[1].arg_widths == [64, 8]
             # Five store-arm IRRets + one call-arm IRRet = six value-bearing returns.
             @test _n_ret_blocks(pir) == 6
         else

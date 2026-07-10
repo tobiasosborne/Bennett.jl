@@ -2431,8 +2431,17 @@ end
 # ptr_cells=true)` so a `ptr null` arg becomes the zero cell rather than
 # crashing — both call sites are already `ptr_cells`-gated.
 function _cell_call_args(inst::LLVM.Instruction, ops, n_ops::Int,
-                         names::Dict{_LLVMRef, Symbol})
+                         names::Dict{_LLVMRef, Symbol};
+                         skip_sret::Bool=false)
     kind_swiftself = LLVM.API.LLVMGetEnumAttributeKindForName("swiftself", 9)
+    # Bennett-416r.17: on the sret-forwarding path (skip_sret=true) the producing
+    # call's sret-out box is a local temporary whose aggregate IS the enclosing
+    # block's IRRet — NOT a callee value argument. Identify it by its call-site
+    # `sret` attribute (Rule 5, never by position) and SKIP it. LangRef permits
+    # at most one sret parameter, so exactly one operand is elided. Default
+    # (skip_sret=false) never queries the attribute ⇒ existing callers are
+    # byte-identical (the consumed-call path carries the box as a genuine cell).
+    kind_sret = skip_sret ? LLVM.API.LLVMGetEnumAttributeKindForName("sret", 4) : UInt32(0)
     args = IROperand[]
     widths = Int[]
     for i in 1:(n_ops - 1)
@@ -2440,6 +2449,11 @@ function _cell_call_args(inst::LLVM.Instruction, ops, n_ops::Int,
         # this operand's param index). For C calls this is always C_NULL ⇒ no-op.
         LLVM.API.LLVMGetCallSiteEnumAttribute(inst, UInt32(i), kind_swiftself) == C_NULL ||
             continue
+        # Bennett-416r.17: elide the sret-out box operand on the forwarding path.
+        if skip_sret
+            LLVM.API.LLVMGetCallSiteEnumAttribute(inst, UInt32(i), kind_sret) == C_NULL ||
+                continue
+        end
         op = ops[i]
         ot = LLVM.value_type(op)
         if ot isa LLVM.IntegerType

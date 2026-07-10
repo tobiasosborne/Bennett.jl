@@ -1,5 +1,65 @@
 # Worklog chunk 093
 
+## Session log — 2026-07-10 — bennettvm-416r.17 (cross-repo): sret-forwarding ptr-cell arg fix
+
+**Root cause (silent ptr-operand drop).** Under `ptr_cells=true`, the Wall-A
+sret-forwarding recognizer `_try_handle_sret_memcpy_reject!`
+(`src/extract/sret.jl`) built the forwarded `SretCallReturn` args with an
+INTEGER-ONLY loop (`ot isa LLVM.IntegerType || continue`). That loop predates
+`ptr_cells` (the first-class-function cell world) — it was correct when the
+producing callee was always re-inlined into the circuit (its ptr operands never
+became cells), but WRONG once callees are homed as cell-ABI functions: it
+silently DROPPED every pointer operand, including the callee-ABI-required
+`h::Dict` cell. Concretely the recursive `ht_keyindex2_shorthash!` call
+extracted `args=[key], arg_widths=[8]` when the callee's ABI demands
+`args=[h, key], arg_widths=[64, 8]`. A miscompile, not a crash — the dropped
+arg is a Rule-1 fail-fast miss that only the cell world exposes.
+
+**Fix.** On the `ptr_cells=true` branch, build the args via the shared
+consumed-call helper `_cell_call_args(C, Cops, length(Cops), names; skip_sret=true)`
+(new `skip_sret` kwarg in `src/extract/instructions.jl`): ptr operands → 64-bit
+VM cells, ints → own width, unmodellable operand → fail loud (Rule 1, free via
+the helper). The sret-out box operand is ELIDED by its call-site `sret`
+attribute (Rule 5, never by position). Rationale for the elision: the forwarded
+box is a LOCAL temporary whose aggregate IS this block's synthesised IRRet, not a
+callee value arg; LangRef permits ≤1 sret param, so exactly one operand is
+skipped. The `ptr_cells=false` branch keeps the integer-only loop VERBATIM — the
+callee is re-inlined later, gate-count baselines pin it (Rule 6), and it stays
+byte-identical.
+
+**Threading.** `_collect_sret_writes` + `_try_handle_sret_memcpy_reject!` gained a
+trailing `ptr_cells::Bool=false` positional; `module_walk.jl:319` forwards the
+value already in scope. Single caller each (grep-confirmed).
+
+**Consumed-call ret_width VERDICT: 64, NOT 72.** Empirically verified: the
+consumed `setindex!`→`ht_keyindex2` call is `args=[sret_box, h, key],
+arg_widths=[64,64,8], ret_width=64` (a returned-pointer cell width), byte-
+identical after the fix. Distinct from the FORWARDING path's `ret_width=72`
+(the PARENT sret packed `{i64,i8}` width). Two different semantics, both correct;
+one proposer's "72" transcription for the consumed call was wrong.
+
+**C-track shared-loop coverage.** The synthetic `@callerX416r17` .ll fixture
+(`leafX(ptr sret({i64,i8}), ptr %h, i8 %k)` → box → whole-agg `memcpy` size 16
+under the x86-64 SysV datalayout) exercises the Symbol-callee arm; a registered
+`leafY416r17` exercises the Function arm; the natural fdict set pins the real
+recursive+consumed calls. `{i64,i8}` = 16 padded bytes (i64@0, i8@8, pad to 8);
+the memcpy `i64 16` matches `agg_byte_size` for P2.
+
+**Tests.** New `test/test_416r17_sret_forward_cell_args.jl` (RED first: 22 pass /
+6 fail — exactly the ptr-cell carry asserts; byte-identical + consumed pins
+already green → GREEN 28/28). Strengthened `test_59zi_sret_call_memcpy.jl` with
+the missing `arg_widths == [64,8]` assert in its ht_keyindex2 ptr_cells=true
+testset (where the bug hid). Targeted regression (all --check-bounds=yes, all
+green): 416r17 28, 59zi 547, xrd6 21, uyf9 11, dv1z 142, sret 4195, 416r12 25,
+gate_count 39. NOTE: in THIS env ht_keyindex2 extracts under both bounds modes
+(the U114 struct-store wall that test_59zi guards for did not fire); the set pin
+uses `on_extract_error=:skip` + presence guards to stay robust regardless.
+
+**BVM cross-check (read-only, no BVM edits).** `test_x3t0_multikey_return.jl`
+(f) + `test_416r15_insertbits.jl` — the fdict wall-pins STAY at the guard-5
+`sret_box`/blocker-5 gate: the fix adds an arg to a call BVM lowers fine; the
+wall still fires later on setindex!'s consumed call. No BVM pin flip needed.
+
 ## Session log — 2026-07-07 — bennettvm-416r.12 / CW-D2: close the fdict closed-world set (cross-repo) — EXTRACTION COMPLETE
 
 **What (cross-repo).** The fdict closed-world set now FULLY CLOSES to its 4 bodies

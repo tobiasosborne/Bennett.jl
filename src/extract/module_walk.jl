@@ -316,7 +316,7 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
     # record the per-slot stored values. Must run after the naming pass so
     # _operand() can resolve SSA references.
     sret_writes = sret_info === nothing ? nothing :
-                  _collect_sret_writes(func, sret_info, names, counter)
+                  _collect_sret_writes(func, sret_info, names, counter, ptr_cells)
 
     # ADR 0013 §D-4.2 — the `mem=:vm` extraction arm (BennettVM Case A/B feed).
     #

@@ -198,9 +198,18 @@ the sret-out alloca of an in-world CALL. The block is modelled as a single
 `callee` is the resolved Julia `Function` (recursive self-call or any registered
 in-set callee) or a `Symbol` (the `.ll` C-track name-only form). `ret_width` is
 the PARENT sret packed bit width (`sum(field widths)` — NOT the producing call's
-own LLVM return type, which is `void`). `args`/`arg_widths` are the producing
-call's integer operands (the ptr sret-out and any pgcstack/ptr args dropped,
-exactly like the default `IRCall` arm).
+own LLVM return type, which is `void`).
+
+`args`/`arg_widths` depend on the extraction ABI (Bennett-416r.17):
+  * `ptr_cells=false` (circuit-inline path): the producing call's INTEGER
+    operands only — the ptr sret-out and any pgcstack/ptr args are dropped,
+    exactly like the default `IRCall` arm (the callee is re-inlined later, so its
+    ptr operands never become cells). Gate-count baselines pin this shape.
+  * `ptr_cells=true` (first-class-function cell world): pointer operands are
+    CARRIED as 64-bit VM cells (via `_cell_call_args`), integers at their own
+    width, and ONLY the sret-out box is elided (by its call-site `sret`
+    attribute). The pre-416r.17 integer-only loop wrongly dropped the callee-ABI
+    ptr cells (e.g. the recursive `ht_keyindex2` `h::Dict`).
 """
 struct SretCallReturn
     dest::Symbol
@@ -285,7 +294,8 @@ function _try_handle_sret_memcpy_reject!(inst::LLVM.Instruction, sret_ref::_LLVM
                                           names::Dict{_LLVMRef, Symbol},
                                           block_call_returns::Dict{_LLVMRef, SretCallReturn},
                                           call_return_suppressed::Set{_LLVMRef},
-                                          counter::Ref{Int})::Bool
+                                          counter::Ref{Int},
+                                          ptr_cells::Bool=false)::Bool
     LLVM.opcode(inst) == LLVM.API.LLVMCall || return false
     ops = LLVM.operands(inst)
     n_ops = length(ops)
@@ -407,17 +417,35 @@ function _try_handle_sret_memcpy_reject!(inst::LLVM.Instruction, sret_ref::_LLVM
         Symbol(cn)
     end
 
-    # Build the args/widths from C's integer operands, dropping the sret-out ptr
-    # and any pgcstack/ptr args — identical policy to the default IRCall arm.
+    # Build the args/widths from the producing call's operands. Two ABIs:
     Cops = LLVM.operands(C)
-    call_args = IROperand[]
-    call_widths = Int[]
-    for i in 1:(length(Cops) - 1)
-        op = Cops[i]
-        ot = LLVM.value_type(op)
-        ot isa LLVM.IntegerType || continue   # skip the sret-out ptr + ptr args
-        push!(call_args, _operand(op, names))
-        push!(call_widths, Int(LLVM.width(ot)))
+    call_args, call_widths = if ptr_cells
+        # ---- Cell ABI (ptr_cells=true, Bennett-416r.17) ----
+        # First-class-function world: pointer operands are 64-bit VM cells,
+        # integers keep their own width, and the sret-out box operand is ELIDED
+        # via its call-site `sret` attribute (the forwarded box is a local temp
+        # whose aggregate IS this block's IRRet). Shares the consumed-call
+        # `_cell_call_args` helper, so any unmodellable operand fails loud
+        # (Rule 1). The pre-416r.17 integer-only loop here silently DROPPED the
+        # callee-ABI-required ptr cell (e.g. the recursive `ht_keyindex2` `h`),
+        # miscompiling the forwarded call.
+        _cell_call_args(C, Cops, length(Cops), names; skip_sret=true)
+    else
+        # ---- Circuit-inline ABI (ptr_cells=false, VERBATIM pre-416r.17) ----
+        # The callee is re-inlined into the circuit later, so its pointer
+        # operands never become cells: drop the sret-out ptr and any pgcstack/ptr
+        # args, carrying only integers — identical policy to the default IRCall
+        # arm. Gate-count baselines pin this branch byte-identically (Rule 6).
+        _a = IROperand[]
+        _w = Int[]
+        for i in 1:(length(Cops) - 1)
+            op = Cops[i]
+            ot = LLVM.value_type(op)
+            ot isa LLVM.IntegerType || continue   # skip the sret-out ptr + ptr args
+            push!(_a, _operand(op, names))
+            push!(_w, Int(LLVM.width(ot)))
+        end
+        (_a, _w)
     end
 
     # ret_width = the PARENT sret packed bit width. Hetero → sum(field widths);
@@ -691,7 +719,8 @@ Errors (no silent miscompile):
 """
 function _collect_sret_writes(func::LLVM.Function, sret_info::SretInfo,
                               names::Dict{_LLVMRef, Symbol},
-                              counter::Ref{Int})::SretWrites
+                              counter::Ref{Int},
+                              ptr_cells::Bool=false)::SretWrites
     # Bennett-jghk: per store-bearing block. Each store appends to the dict
     # for the block it lives in, so two arms of a `cond ? A : B` tuple return
     # (each its own store-block) no longer collide on a single global slot 0.
@@ -727,7 +756,8 @@ function _collect_sret_writes(func::LLVM.Function, sret_info::SretInfo,
             # Bennett-59zi Wall A: sret-call → whole-aggregate memcpy(parent_sret).
             _try_handle_sret_memcpy_reject!(inst, sret_ref, sret_info, func, names,
                                             block_call_returns,
-                                            call_return_suppressed, counter) && continue
+                                            call_return_suppressed, counter,
+                                            ptr_cells) && continue
             # Bennett-59zi Wall B: inert sret-derived padding memcpy (suppressed),
             # or loud reject on a field-overlapping memcpy.
             _try_handle_sret_padding_memcpy!(inst, sret_ref, gep_byte,
