@@ -36,7 +36,7 @@
 using Test
 using Bennett
 using Bennett: extract_parsed_ir, extract_parsed_ir_from_ll, register_callee!,
-               ParsedIR, IRCall, IRAlloca, IRLoad, SSAOperand
+               ParsedIR, IRCall, IRAlloca, IRLoad, IRExtractValue, SSAOperand
 
 # ---- scoped registry snapshot/restore (mirror test_lf14 / julia_set.jl) ----
 # Registering setindex!/rehash!/ht_keyindex2 is required so the body walk emits
@@ -125,34 +125,38 @@ xrd6_leaf(k::Int8) = (Int64(k) + 1, k ⊻ Int8(0x55))
             end
 
             if pir !== nothing
-                # ---- DEFAULT bounds mode: full extraction. Structural invariants
-                # only (Rule 5 — no block/gate counts). ----
+                # ---- Full extraction. Structural invariants only (Rule 5 — no
+                # block/gate counts). bennettvm-416r.16 RECONCILED the consumed
+                # sret-out box call: the box alloca is SUPPRESSED, the call is
+                # value-ABI (ret_width = Σ field widths = 72, no box arg), and the
+                # box field reads are IRExtractValue — NOT the pre-416r.16 box-cell-
+                # arg + IRLoad shape this testset originally pinned. ----
                 allinsts = [i for b in pir.blocks for i in b.instructions]
                 calls = filter(i -> i isa IRCall, allinsts)
                 allocas = filter(i -> i isa IRAlloca, allinsts)
-                loads = filter(i -> i isa IRLoad, allinsts)
+                extracts = filter(i -> i isa IRExtractValue, allinsts)
 
-                # The sret-convention call: ht_keyindex2_shorthash!, void → 64
-                # sentinel, sret-out box carried as arg 1.
+                # The sret-convention call: ht_keyindex2_shorthash!, now VALUE ABI
+                # (ret_width 72, args [h, key] — the sret_box arg dropped).
                 kx = filter(c -> c.callee isa Function &&
                                  nameof(c.callee) === :ht_keyindex2_shorthash!, calls)
                 @test length(kx) == 1
-                @test kx[1].ret_width == 64
-                @test !isempty(kx[1].args)
-                @test kx[1].args[1] isa SSAOperand
-                # arg 1 ties the call to the sret box alloca (read-back anchor).
-                box_name = kx[1].args[1].name
-                @test any(a -> a.dest === box_name, allocas)
+                @test kx[1].ret_width == 72                # value ABI (was 64)
+                @test kx[1].arg_widths == [64, 8]          # [h, key] (box dropped)
+                # The box alloca was SUPPRESSED (no sret_box remains).
+                @test !any(a -> a.dest === :sret_box, allocas)
+                # The field reads are IRExtractValue against the call's aggregate.
+                evs = filter(e -> e.agg isa SSAOperand && e.agg.name === kx[1].dest,
+                             extracts)
+                @test !isempty(evs)
+                @test all(e -> e.field_widths == [64, 8], evs)
 
-                # The ptr-returning call: rehash!, ptr → 64 sentinel.
+                # The ptr-returning call: rehash!, ptr → 64 sentinel (NOT sret;
+                # untouched by 416r.16).
                 rh = filter(c -> c.callee isa Function &&
                                  nameof(c.callee) === :rehash!, calls)
                 @test length(rh) == 1
                 @test rh[1].ret_width == 64
-
-                # The sret box alloca + ≥1 read-back (loads of the box / fields).
-                @test !isempty(allocas)
-                @test !isempty(loads)
             else
                 # ---- --check-bounds=yes mode: the xrd6 walls (void + ptr) are
                 # CLEARED; extraction now reaches the DEEPER, unrelated Bennett-iwo9

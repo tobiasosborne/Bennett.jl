@@ -122,10 +122,11 @@ leafY416r17(k::Int8) = (Int64(k) + 7, k)
 
     # =====================================================================
     # (c) Natural integration pin: the fdict_d1b closed-world set (~1-2 min).
-    #     The recursive ht_keyindex2_shorthash! call (Wall-A forwarding path,
-    #     the bug site) must forward [h, key] widths [64, 8]; the consumed
-    #     setindex! call (already-correct _cell_call_args path) must stay
-    #     byte-identical [64, 64, 8] with ret_width 64.
+    #     The recursive ht_keyindex2_shorthash! call (Wall-A FORWARDING path,
+    #     the 416r.17 bug site) must forward [h, key] widths [64, 8] — UNTOUCHED
+    #     by 416r.16. The consumed setindex! call was RECONCILED by bennettvm-
+    #     416r.16 to the VALUE ABI: the sret_box arg dropped, ret_width the packed
+    #     aggregate width 72 (was the pre-416r.16 box-cell-arg [64,64,8]/64).
     # =====================================================================
     @testset "natural pin: fdict_d1b recursive + consumed calls" begin
         fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
@@ -159,9 +160,9 @@ leafY416r17(k::Int8) = (Int64(k) + 7, k)
             cons = [i for b in pir.blocks for i in b.instructions
                     if i isa IRCall && i.callee === Base.ht_keyindex2_shorthash!]
             @test length(cons) == 1
-            # Consumed-call path (byte-identical — must NOT change):
-            @test cons[1].arg_widths == [64, 64, 8]    # [sret_box, h, key]
-            @test cons[1].ret_width == 64              # verified 64, NOT 72
+            # Consumed-call path — RECONCILED by bennettvm-416r.16 to value ABI:
+            @test cons[1].arg_widths == [64, 8]        # [h, key] (sret_box dropped)
+            @test cons[1].ret_width == 72              # value ABI (was 64)
         else
             @info "setindex! absent from set (deeper wall) — consumed pin skipped"
             @test true

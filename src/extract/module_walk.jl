@@ -318,6 +318,19 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
     sret_writes = sret_info === nothing ? nothing :
                   _collect_sret_writes(func, sret_info, names, counter, ptr_cells)
 
+    # bennettvm-416r.16: caller-side CONSUMED-sret reconciliation. Pre-walk for
+    # sret-out CALLs whose local-alloca box is read back by field loads (NOT
+    # forwarded to a parent sret) and rewrite them to the value ABI BVM's x3t0
+    # slot-family path ingests (box alloca suppressed, call ret_width = Σ field
+    # widths, field loads → IRExtractValue). Mutually exclusive with the
+    # forwarding recognizer above: a box already claimed by
+    # `_collect_sret_writes` (`call_return_suppressed`) is skipped here. Inert
+    # (empty) under `ptr_cells=false` ⇒ circuit / gate-count baselines unchanged.
+    forwarding_suppressed = sret_writes === nothing ? Set{_LLVMRef}() :
+                            sret_writes.call_return_suppressed
+    consumed_sret = _collect_consumed_sret(func, names, counter, ptr_cells,
+                                           forwarding_suppressed)
+
     # ADR 0013 §D-4.2 — the `mem=:vm` extraction arm (BennettVM Case A/B feed).
     #
     # `:vm` is a RECOGNISED-BUT-UNFINISHED mode: it must NOT silently alias
@@ -471,6 +484,19 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
             if sret_writes !== nothing && inst.ref in sret_writes.call_return_suppressed
                 continue
             end
+            # bennettvm-416r.16: consumed-sret reconciliation. Suppress the box
+            # alloca + its const-offset GEPs; REPLACE the consumed sret-out call
+            # with the value-ABI IRCall (prebuilt in the pre-walk). The box field
+            # reads (plain loads AND memcpy-synthesised IRLoads) are rewritten to
+            # IRExtractValue by the `_apply_consumed_sret_loads!` post-pass below,
+            # keyed by ptr NAME (a memcpy reader has no LLVM `load` ref to key on).
+            if inst.ref in consumed_sret.suppressed
+                continue
+            end
+            if haskey(consumed_sret.call_rewrites, inst.ref)
+                push!(insts, consumed_sret.call_rewrites[inst.ref])
+                continue
+            end
             # Bennett-59zi: drop the call-return block's own `ret void` terminator;
             # it is replaced by the synthesised value-bearing IRRet after the loop.
             if sret_call_return_block && LLVM.opcode(inst) == LLVM.API.LLVMRet
@@ -618,6 +644,13 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
             "ir_extract.jl: block in @$(LLVM.name(func)):%$label has no terminator"))
         push!(blocks, IRBasicBlock(label, insts, terminator))
     end
+
+    # bennettvm-416r.16: consumed-sret field-read rewrite. Turn every IRLoad off
+    # a suppressed box / box-GEP into the IRExtractValue reading the value-ABI
+    # call's aggregate slot (keyed by ptr name — covers both plain loads and the
+    # memcpy-synthesised field reads), then assert no suppressed-name reference
+    # dangles. Inert under ptr_cells=false / no consumed call.
+    blocks = _apply_consumed_sret_loads!(blocks, consumed_sret)
 
     # Post-pass: expand switch terminators into cascaded icmp + branch blocks
     blocks = _expand_switches(blocks)

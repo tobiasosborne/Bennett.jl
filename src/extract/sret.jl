@@ -994,3 +994,391 @@ function _synthesize_sret_bits(sret_info::SretInfo, slot_values::Dict{Int, IROpe
     return (chain, ret_inst)
 end
 
+
+# ---- caller-side CONSUMED-sret reconciliation (bennettvm-416r.16) ----------
+#
+# The FORWARDING recognizer above (`_try_handle_sret_memcpy_reject!`) claims an
+# sret-out CALL whose result box is `memcpy`'d into the PARENT sret (the caller
+# ALSO returns the aggregate). This recognizer is its SIBLING for the OTHER
+# shape: an sret-out call whose box is NOT forwarded but CONSUMED locally — its
+# fields read back (directly and via constant-offset GEPs). The canonical
+# instance is `setindex!`'s `ht_keyindex2_shorthash!(sret_box, h, key)` call:
+# `ht_keyindex2` returns `{i64,i8}` by sret into a local `alloca [2 x i64]` box;
+# setindex! reads field 0 (the key index, i64) 4× via plain `load i64`, and
+# field 1 (the shorthash byte, i8) via a byte-8 GEP whose reader is a 1-byte
+# `llvm.memcpy` (SOURCE) copying it into the Dict's data array — NOT a plain
+# `load`. Both read kinds materialise as `IRLoad`s in the extracted ParsedIR
+# (the memcpy handler lowers a field-width memcpy to `IRLoad(field_ptr)+IRStore`),
+# so at the ParsedIR level the field reads are uniformly `IRLoad(box/gep, W)`.
+# setindex! then discards the box (it returns the Dict ptr, not the aggregate).
+#
+# Pre-416r.16 that call extracted through the Bennett-xrd6 registered-callee
+# `ptr_cells` arm as `IRCall(dest=__v1, callee, [box(cell), h(cell), key],
+# [64,64,8], ret_width=64)` with the box carried as a 64-bit VM cell arg and the
+# field reads as `IRLoad`s off that cell. BennettVM's guard-5 walls on it: the
+# callee returns a 72-bit `{i64,i8}` aggregate (sum of field widths), but
+# `ret_width=64` ≠ 72 is the sret_box MEMORY ABI, which BVM's slot-family value
+# ABI cannot land. This is the LAST static wall of the CW-D fdict chain.
+#
+# The FIX (front-end reconciliation, chosen over a BVM-side reconstruction:
+# reconstructing the field byte offsets from widths on the BVM side would be
+# silent-miscompile-prone — hetero `{i64,i8}` has padding, so offset ≠ Σwidths;
+# the byte offsets are FRONT-END ground truth via `LLVMOffsetOfElement`, the
+# same source `_detect_sret`/`_sret_struct_fields` already trust). Under the
+# `ptr_cells` gate, rewrite the consumed call to the VALUE ABI BVM's x3t0
+# slot-family path already ingests:
+#   1. SUPPRESS the box `IRAlloca` (no cell reserved for it).
+#   2. At the call: emit `IRCall(dest=<call dest>, callee, args_without_box,
+#      widths_without_box, sum(field widths))` — args via `_cell_call_args(...;
+#      skip_sret=true)` (the box dropped by its call-site `sret` attribute, Rule
+#      5; the 416r.17 policy). ret_width = Σ field widths (72 for `{i64,i8}`),
+#      matching the callee's by-value aggregate so guard-5 lands the slot family.
+#   3. Field reads (a ParsedIR POST-PASS, `_apply_consumed_sret_loads!`, keyed
+#      by ptr SSA NAME — the memcpy-source reader is NOT a `load` at LLVM level,
+#      only an `IRLoad` after the extractor's memcpy handler runs, so the rewrite
+#      cannot be keyed by an LLVM `load` ref; it matches the extracted `IRLoad`s
+#      by their ptr name instead): `IRLoad(box, W)` → `IRExtractValue(load.dest,
+#      ssa(<agg>), 0, …)`; `IRLoad(gep, W)` (gep a const-offset i8 GEP off box) →
+#      `IRExtractValue(load.dest, ssa(<agg>), field_index_of(offset), …)`. The
+#      box `alloca` and the GEP are SUPPRESSED in the block walk. The
+#      heterogeneous IRExtractValue form (`elem_width=0`,
+#      `n_elems=length(fields)`, `field_widths=[…]`, dense k order) is what BVM's
+#      extractvalue slot-copy arm consumes. Original load dest names are
+#      PRESERVED (downstream SSA references are unchanged).
+#
+# MUTUAL EXCLUSION with the forwarding recognizer (asserted): a box the
+# forwarding recognizer already claimed (`call_return_suppressed`, i.e. a
+# memcpy-to-parent-sret box) is SKIPPED here. The two never claim the same box —
+# a box is EITHER forwarded (memcpy) OR consumed (loads), and this recognizer
+# fails loud on a stray memcpy use rather than silently co-claiming. Forwarding
+# only runs when the enclosing function has an sret param; `setindex!` does not,
+# so its `call_return_suppressed` is empty and every sret-out box is consumed.
+#
+# GATED on `ptr_cells=true` (Rule 6): the whole pass returns an inert empty
+# result under `ptr_cells=false`, so the circuit / gate-count baselines are
+# byte-identical. The C-track (`.ll`) flows through the same walk with a
+# `Symbol` callee (mirroring the forwarding recognizer's P9 fallback), so a
+# hand-built `.ll` consumed-sret call reconciles identically.
+
+"""
+    ConsumedSret
+
+Result bundle from `_collect_consumed_sret`. `suppressed` is the set of LLVM
+instruction refs the block walk must SKIP (the box `alloca` and every
+constant-offset GEP off it). `call_rewrites` maps each recognised consumed
+sret-out CALL ref to the prebuilt value-ABI `IRCall` that REPLACES it (box arg
+dropped, `ret_width = Σ field widths`). `field_reads` maps each box/GEP ptr SSA
+NAME to `(agg_name, field_index, field_widths)`; the ParsedIR post-pass
+`_apply_consumed_sret_loads!` rewrites every `IRLoad(ptr=that name)` into
+`IRExtractValue(load.dest, ssa(agg_name), field_index, 0, length(field_widths),
+field_widths)`. The name key (not an LLVM `load` ref) is deliberate: a field's
+reader may be a 1-byte `llvm.memcpy` whose extractor-synthesised `IRLoad` has no
+LLVM `load` ref to key on. All three collections are empty under
+`ptr_cells=false` (Rule 6: byte-identical circuit path).
+"""
+struct ConsumedSret
+    suppressed::Set{_LLVMRef}
+    call_rewrites::Dict{_LLVMRef, IRCall}
+    field_reads::Dict{Symbol, Tuple{Symbol, Int, Vector{Int}}}
+end
+
+_empty_consumed_sret() = ConsumedSret(Set{_LLVMRef}(),
+                                      Dict{_LLVMRef, IRCall}(),
+                                      Dict{Symbol, Tuple{Symbol, Int, Vector{Int}}}())
+
+_consumed_sret_active(cs::ConsumedSret) = !isempty(cs.field_reads)
+
+# Byte offset of a constant-offset i8 GEP off the box `box_ref`. Mirrors the
+# `_try_handle_sret_gep!` byte-offset logic (single-index i8 byte-indexed GEP,
+# the opaque-pointer Julia default). Fails loud (Rule 1) on any richer GEP shape.
+function _consumed_sret_gep_offset(gep::LLVM.Instruction, box_ref::_LLVMRef,
+                                   fname)::Int
+    ops = LLVM.operands(gep)
+    length(ops) == 2 || _ir_error(gep,
+        "bennettvm-416r.16: consumed-sret box GEP in @$fname has " *
+        "$(length(ops)-1) indices; only single-index constant-offset i8 GEPs " *
+        "off the box are modelled (Rule 1 fail-loud)")
+    ops[1].ref === box_ref || _ir_error(gep,
+        "bennettvm-416r.16: consumed-sret box GEP base is not the box alloca " *
+        "in @$fname; only a direct const-offset GEP off the box is modelled")
+    idx = ops[2]
+    idx isa LLVM.ConstantInt || _ir_error(gep,
+        "bennettvm-416r.16: consumed-sret box GEP has a non-constant index in " *
+        "@$fname; only constant-offset GEPs off the box are modelled")
+    src_ty = LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(gep))
+    (src_ty isa LLVM.IntegerType && LLVM.width(src_ty) == 8) || _ir_error(gep,
+        "bennettvm-416r.16: consumed-sret box GEP source element type $src_ty " *
+        "in @$fname is not i8; only i8 byte-indexed GEPs (opaque-pointer Julia) " *
+        "are modelled (Rule 1 fail-loud)")
+    return _const_int_as_int(idx)
+end
+
+# Classify a use `user` of a box/GEP pointer `ref` as a READER (a plain `load`,
+# or an `llvm.memcpy` in which `ref` is the SOURCE operand — Julia lowers a
+# store of a returned field into a heap array as a byte memcpy FROM the box field
+# pointer). Returns `:load`, `:memcpy_src`, `:memcpy_dst` (a store INTO the box),
+# or `:other`. A `:memcpy_dst` / `:other` is rejected by the caller (Rule 1).
+function _consumed_sret_reader_kind(user::LLVM.Instruction, ref::_LLVMRef)::Symbol
+    uop = LLVM.opcode(user)
+    uop == LLVM.API.LLVMLoad && return :load
+    if uop == LLVM.API.LLVMCall
+        uops = LLVM.operands(user)
+        n = length(uops)
+        n >= 1 || return :other
+        cn = try
+            LLVM.name(uops[n])
+        catch e
+            e isa InterruptException && rethrow()
+            ""
+        end
+        startswith(cn, "llvm.memcpy.") || return :other
+        # memcpy(dst, src, N, isvolatile, callee): dst=uops[1], src=uops[2].
+        n >= 2 || return :other
+        uops[1].ref === ref && return :memcpy_dst   # store INTO the box.
+        uops[2].ref === ref && return :memcpy_src   # read FROM the field.
+        return :other
+    end
+    return :other
+end
+
+"""
+    _collect_consumed_sret(func, names, counter, ptr_cells, forwarding_suppressed)
+        -> ConsumedSret
+
+Pre-walk `func` for CONSUMED sret-out calls (bennettvm-416r.16). For each CALL
+carrying a call-site `sret` attribute (at operand param-index 1) whose sret-out
+operand is a LOCAL alloca box NOT already claimed by the forwarding recognizer,
+recognise the box's read-back shape (const-offset GEPs + field reads via plain
+`load` or a 1-byte memcpy SOURCE), suppress the box + its GEPs, build the
+value-ABI `IRCall`, and record the per-ptr-name field-read map for the ParsedIR
+post-pass. Returns an inert empty bundle when `ptr_cells=false` (Rule 6).
+
+Fail-loud (Rule 1) on: an indirect (non-`LLVM.Function`) callee; a non-struct /
+empty / bad-field sret pointee (via `_sret_struct_fields`); a box GEP whose byte
+offset matches no field offset; a store INTO the box (a memcpy whose DEST is the
+box); any OTHER box/GEP use (the address escaping via another call / `ret` /
+`ptrtoint`). Each message names the box, the offender, and the bead.
+"""
+function _collect_consumed_sret(func::LLVM.Function,
+                                names::Dict{_LLVMRef, Symbol},
+                                counter::Ref{Int},
+                                ptr_cells::Bool,
+                                forwarding_suppressed::Set{_LLVMRef})::ConsumedSret
+    ptr_cells || return _empty_consumed_sret()
+
+    suppressed    = Set{_LLVMRef}()
+    call_rewrites = Dict{_LLVMRef, IRCall}()
+    field_reads   = Dict{Symbol, Tuple{Symbol, Int, Vector{Int}}}()
+
+    kind_sret = LLVM.API.LLVMGetEnumAttributeKindForName("sret", 4)
+    fname = LLVM.name(func)
+
+    # A box GEP used by a non-reader instruction (escape) — clear message helper.
+    _reject_escape = (offender, boxname) -> _ir_error(offender,
+        "bennettvm-416r.16: consumed-sret box $(boxname) in @$fname has its " *
+        "ADDRESS escaping (used by an instruction that is neither a field load, " *
+        "a field-read memcpy SOURCE, nor a const-offset GEP) — only field reads " *
+        "are modelled (Rule 1 fail-loud)")
+
+    for bb in LLVM.blocks(func)
+        for inst in LLVM.instructions(bb)
+            LLVM.opcode(inst) == LLVM.API.LLVMCall || continue
+            # Call-site `sret` attribute at param-index 1 (the sret-out operand,
+            # Rule 5 — by attribute, never by position).
+            asret = LLVM.API.LLVMGetCallSiteEnumAttribute(inst, UInt32(1), kind_sret)
+            asret == C_NULL && continue
+            ops = LLVM.operands(inst)
+            n_ops = length(ops)
+            n_ops >= 1 || continue
+            box_ref = ops[1].ref
+            # The sret-out operand must be a LOCAL alloca (the box). A non-alloca
+            # (an sret PARAM forwarded through, a caller-supplied buffer) is NOT
+            # this recognizer's shape — leave it for the existing xrd6 /
+            # forwarding handling (skip, do not fail loud).
+            LLVM.API.LLVMIsAAllocaInst(box_ref) != C_NULL || continue
+            # MUTUAL EXCLUSION: a box the forwarding recognizer already claimed
+            # (memcpy'd to the parent sret) is NOT ours — skip it.
+            box_ref in forwarding_suppressed && continue
+
+            # Callee must be a direct in-world function (Rule 1: no indirect call).
+            callee_op = ops[n_ops]
+            callee_op isa LLVM.Function || _ir_error(inst,
+                "bennettvm-416r.16: consumed sret-out call in @$fname has a " *
+                "non-direct (indirect) callee $(callee_op); an in-world callee " *
+                "is required to reconcile the sret ABI (Rule 1 fail-loud)")
+            cname = LLVM.name(callee_op)
+            resolved = _lookup_callee(cname)
+            # Function (registered Julia callee / self-recursion) preferred; else
+            # a Symbol (the `.ll` C-track name-only form, mirroring forwarding P9).
+            callee_val::Union{Function, Symbol} =
+                resolved !== nothing ? resolved : Symbol(cname)
+
+            # sret pointee → per-field (byte_offset, width) list. FAIL LOUD via
+            # `_sret_struct_fields` on packed / non-integer / bad-width / empty
+            # struct (Bennett-dv1z rules), and on a non-struct pointee here.
+            pointee = LLVM.LLVMType(LLVM.API.LLVMGetTypeAttributeValue(asret))
+            pointee isa LLVM.StructType || _ir_error(inst,
+                "bennettvm-416r.16: consumed sret-out call to '$cname' in @$fname " *
+                "has non-struct sret pointee $pointee; only fixed-width integer " *
+                "bits-struct pointees (e.g. {i64,i8}) are modelled (Rule 1)")
+            fields, _agg_bytes = _sret_struct_fields(pointee, func)
+            field_widths = [w for (_, w) in fields]
+
+            # The aggregate SSA value the reads now bind to = the call's dest.
+            agg_name = names[inst.ref]
+            box_name = names[box_ref]
+
+            # ---- walk the box's uses ----
+            box_val = LLVM.Value(box_ref)
+            for u in LLVM.uses(box_val)
+                user = LLVM.user(u)
+                user === inst && continue                # the sret-out arg — OK.
+                uop = LLVM.opcode(user)
+                if uop == LLVM.API.LLVMGetElementPtr
+                    off = _consumed_sret_gep_offset(user, box_ref, fname)
+                    fidx = findfirst(f -> f[1] == off, fields)
+                    fidx === nothing && _ir_error(user,
+                        "bennettvm-416r.16: consumed-sret box GEP in @$fname has " *
+                        "byte offset $off matching NO field (field offsets " *
+                        "$([f[1] for f in fields])); a padding / misaligned GEP " *
+                        "off the box is not modelled (Rule 1 fail-loud)")
+                    push!(suppressed, user.ref)          # SUPPRESS the GEP.
+                    gep_name = names[user.ref]
+                    field_reads[gep_name] = (agg_name, fidx - 1, field_widths)
+                    # The GEP's own uses must all be field readers (load / memcpy
+                    # SOURCE). A store INTO it or any escape fails loud.
+                    for gu in LLVM.uses(LLVM.Value(user.ref))
+                        guser = LLVM.user(gu)
+                        rk = _consumed_sret_reader_kind(guser, user.ref)
+                        rk === :memcpy_dst && _ir_error(guser,
+                            "bennettvm-416r.16: a memcpy writes INTO consumed-sret " *
+                            "box field $(gep_name) in @$fname; the box is a " *
+                            "callee-written sret-out buffer (Rule 1 fail-loud)")
+                        (rk === :load || rk === :memcpy_src) ||
+                            _reject_escape(guser, gep_name)
+                    end
+                else
+                    rk = _consumed_sret_reader_kind(user, box_ref)
+                    if rk === :load || rk === :memcpy_src
+                        # Direct field-0 read (byte offset 0).
+                        fields[1][1] == 0 || _ir_error(user,
+                            "bennettvm-416r.16: consumed-sret box $(box_name) in " *
+                            "@$fname has no field at byte offset 0 (field offsets " *
+                            "$([f[1] for f in fields])) but is read directly " *
+                            "(Rule 1 fail-loud)")
+                        field_reads[box_name] = (agg_name, 0, field_widths)
+                    elseif rk === :memcpy_dst
+                        _ir_error(user,
+                            "bennettvm-416r.16: a memcpy writes INTO consumed-sret " *
+                            "box $(box_name) in @$fname; the box is a callee-written " *
+                            "sret-out buffer (Rule 1 fail-loud)")
+                    else
+                        _reject_escape(user, box_name)
+                    end
+                end
+            end
+
+            # ---- build the value-ABI IRCall replacing the consumed call ----
+            call_args, call_widths =
+                _cell_call_args(inst, ops, n_ops, names; skip_sret=true)
+            ret_width = sum(field_widths)
+            call_rewrites[inst.ref] =
+                IRCall(agg_name, callee_val, call_args, call_widths, ret_width)
+            push!(suppressed, box_ref)                   # SUPPRESS the box alloca.
+        end
+    end
+
+    # Mutual-exclusivity assertion (Rule 1): no box / GEP this recognizer claims
+    # may also be a forwarding-recognizer suppression.
+    isempty(intersect(suppressed, forwarding_suppressed)) || throw(AssertionError(
+        "ir_extract.jl: bennettvm-416r.16 consumed-sret and forwarding sret " *
+        "recognizers co-claimed instruction(s) in @$fname " *
+        "($(intersect(suppressed, forwarding_suppressed))) — the two must be " *
+        "mutually exclusive (a box is EITHER forwarded OR consumed)."))
+
+    return ConsumedSret(suppressed, call_rewrites, field_reads)
+end
+
+"""
+    _apply_consumed_sret_loads!(blocks, cs) -> blocks
+
+ParsedIR POST-PASS (bennettvm-416r.16). After the block walk assembles `blocks`,
+rewrite every `IRLoad` whose `ptr` is an SSAOperand naming a suppressed box /
+box-GEP (`cs.field_reads`) into the heterogeneous `IRExtractValue` reading the
+matching aggregate slot, PRESERVING the load's dest name. Then assert NO
+instruction still references a suppressed box / GEP name (a surviving reference
+would dangle onto a suppressed producer — Rule 1 fail-loud). No-op when the
+recognizer is inactive (`ptr_cells=false` or no consumed call).
+"""
+function _apply_consumed_sret_loads!(blocks::Vector{IRBasicBlock},
+                                     cs::ConsumedSret)
+    _consumed_sret_active(cs) || return blocks
+    names_of = keys(cs.field_reads)
+    for (bi, blk) in enumerate(blocks)
+        changed = false
+        new_insts = IRInst[]
+        for inst in blk.instructions
+            if inst isa IRLoad && inst.ptr isa SSAOperand &&
+               haskey(cs.field_reads, inst.ptr.name)
+                agg_name, fidx, field_widths = cs.field_reads[inst.ptr.name]
+                inst.width == field_widths[fidx + 1] || throw(AssertionError(
+                    "ir_extract.jl: bennettvm-416r.16 consumed-sret field read " *
+                    "$(inst.dest) loads $(inst.width) bits but field $fidx is " *
+                    "$(field_widths[fidx + 1]) bits wide (partial-field read " *
+                    "unsupported, Rule 1 fail-loud)."))
+                push!(new_insts, IRExtractValue(inst.dest, ssa(agg_name), fidx,
+                                                0, length(field_widths), field_widths))
+                changed = true
+            else
+                push!(new_insts, inst)
+            end
+        end
+        changed && (blocks[bi] = IRBasicBlock(blk.label, new_insts, blk.terminator))
+    end
+
+    # Dangling-reference guard (Rule 1): no surviving SSA operand may name a
+    # suppressed box / GEP (its producer was suppressed). The field loads were
+    # just rewritten away; anything else that references these names is an
+    # unmodelled box escape.
+    for blk in blocks
+        for inst in blk.instructions
+            for nm in _ir_inst_ssa_operand_names(inst)
+                nm in names_of && throw(AssertionError(
+                    "ir_extract.jl: bennettvm-416r.16 consumed-sret box / GEP name " *
+                    ":$(nm) is still referenced by $(typeof(inst)) after the field-" *
+                    "read rewrite — its producer was suppressed, so this reference " *
+                    "would dangle (an unmodelled box escape, Rule 1 fail-loud)."))
+            end
+        end
+    end
+    return blocks
+end
+
+# Collect the SSA-operand NAMES an IRInst reads (best-effort over the pointer /
+# value / aggregate operand fields the 416r.16 dangling guard cares about). Kept
+# LOCAL and conservative: it need only surface a surviving reference to a
+# suppressed box / GEP name; unknown IRInst shapes contribute nothing (the block
+# walk never produces a box-referencing op this list omits — loads/stores/GEPs/
+# calls/extractvalue cover every consumer of a box pointer).
+function _ir_inst_ssa_operand_names(inst::IRInst)::Vector{Symbol}
+    out = Symbol[]
+    _push_ssa!(out, x) = (x isa SSAOperand && push!(out, x.name); nothing)
+    if inst isa IRLoad
+        _push_ssa!(out, inst.ptr)
+    elseif inst isa IRStore
+        _push_ssa!(out, inst.ptr); _push_ssa!(out, inst.val)
+    elseif inst isa IRPtrOffset
+        _push_ssa!(out, inst.base)
+    elseif inst isa IRVarGEP
+        _push_ssa!(out, inst.base); _push_ssa!(out, inst.index)
+    elseif inst isa IRExtractValue
+        _push_ssa!(out, inst.agg)
+    elseif inst isa IRInsertValue
+        _push_ssa!(out, inst.agg); _push_ssa!(out, inst.val)
+    elseif inst isa IRInsertBits
+        _push_ssa!(out, inst.agg); _push_ssa!(out, inst.val)
+    elseif inst isa IRCall
+        for a in inst.args; _push_ssa!(out, a); end
+    end
+    return out
+end
