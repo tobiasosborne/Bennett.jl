@@ -135,6 +135,29 @@ _constexpr_opcode_name(opc) =
 _is_type_tag_global_name(s::AbstractString)::Bool =
     startswith(s, "+") && occursin(r"#\d+$", s)
 
+# ---- bennettvm-416r.13 / CW-D3 Lever 2: jl_global#NNN singleton-data globals --
+#
+# Julia's JIT also interns EMPTY-`GenericMemory` singleton pointers (the shared
+# `Memory{K}()`/`Memory{V}()` empty instances a `Dict{K,V}()` stores into its
+# keys/slots/vals fields). Their LLVM shape is BYTE-IDENTICAL to a type-tag —
+# `@"jl_global#NNN" = private constant ptr @"jl_global#NNN.jit"`, the `.jit`
+# alias being `inttoptr (i64 <non-deterministic-JIT-addr> to ptr)` — but the
+# NAME lacks the `+` type-path prefix (census Q2b, `scratchpad/scout-jlglobal-
+# census.md`). Unlike a type-tag (an identity fed to an ignored `gc_alloc_obj`
+# tag arg), a singleton is a DATA pointer: it is stored into Dict fields and
+# read as data (a length@0 field the empty singleton reports as 0; a data-ptr@8
+# field consumed only by a compile-time len-0 memset). We recognise it BY NAME
+# (never the JIT address) and model it as a zeroed 16-cell Memory header shipped
+# in `ParsedIR.globals` — the VM mints the deterministic `GLOBAL_BASE` address.
+#
+# `^…$`-anchored so it matches ONLY a bare `jl_global#<digits>` module global,
+# NOT the `@"jl_global#NNN.jit"` alias (has a `.jit` suffix) nor the drifting
+# load-result SSA names (which are also `jl_global#<digits>` but are never
+# GlobalVariables — this recogniser is only ever applied to a `GlobalVariable`
+# name / a `LLVM.globals(mod)` entry, never to an SSA load-result ref).
+_is_singleton_data_global_name(s::AbstractString)::Bool =
+    occursin(r"^jl_global#\d+$", s)
+
 # `_canonical_type_path` — strip the leading `+` and the trailing `#<digits>`,
 # yielding the run-invariant canonical type path (e.g. "Main.Base.Dict").
 # FAIL LOUD (CLAUDE.md §1) if a `+`-prefixed name lacks the `#N` suffix:

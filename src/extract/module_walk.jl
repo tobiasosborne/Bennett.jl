@@ -147,7 +147,7 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
     # synth_ptr_provenance set (entries for ptr-field structs that were
     # materialised with synthetic 64-bit addresses; consumed by the
     # downstream load-escape guard).
-    globals, synth_ptr_provenance = _extract_const_globals(mod)
+    globals, synth_ptr_provenance = _extract_const_globals(mod, ptr_cells)
 
     # Bennett-land: per-function tracking of alloca refs that received
     # synthetic-address bytes via memcpy. Populated by
@@ -915,7 +915,7 @@ non-integer-shaped field (ptr/float/vector/etc.) via
 with the precise breadcrumb fired downstream at
 `_handle_memcpy_global_src` G5 (instructions.jl).
 """
-function _extract_const_globals(mod::LLVM.Module)
+function _extract_const_globals(mod::LLVM.Module, ptr_cells::Bool=false)
     out = Dict{Symbol, Tuple{Vector{UInt64}, Int}}()
     # Bennett-land: per-module synthetic-address state for ptr-typed
     # ConstantStruct fields. `addr_assigned` maps pointee global name to
@@ -950,7 +950,36 @@ function _extract_const_globals(mod::LLVM.Module)
                 occursin("LLVMGlobalAlias", msg))
             benign ? nothing : rethrow()
         end
-        init === nothing && continue
+        if init === nothing
+            # bennettvm-416r.13 / CW-D3 Lever 2: a `jl_global#NNN` empty-
+            # GenericMemory singleton-data pointer. Its initializer is the OPAQUE
+            # `constant ptr @X.jit` whose aliasee is `inttoptr (i64 <JIT-addr>)`
+            # — a GlobalAlias LLVM.jl cannot represent, so `LLVM.initializer`
+            # THREW above and the benign catch set `init = nothing`. This throw IS
+            # the opaque-initializer signature (settled empirically 2026-07-12:
+            # every `jl_global#N` singleton throws `Unknown value kind
+            # LLVMGlobalAliasValueKind` here; a global with genuinely-readable
+            # const data NEVER throws — its initializer is a ConstantDataArray /
+            # ConstantStruct / … handled below). So the empty-vs-non-empty guard
+            # is structural: only a global whose initializer is unrepresentable
+            # reaches this arm. We model the singleton as a zeroed 16-cell Memory
+            # header (census Q3 + settled: the construction GEP is `getelementptr
+            # i8, …, 8` → cell 8; header spans cells [0..15]; length@cell0 = 0
+            # bounds `rehash!`'s copy loop; data-ptr@cell8 = 0 feeds only a
+            # compile-time len-0 memset — inert). Ship ONLY zeros + the name; the
+            # VM assigns the deterministic `GLOBAL_BASE` address (the JIT address
+            # is NEVER read — ADR 0021 D3). ptr_cells-gated (the C-cell-model /
+            # BennettVM track); inert for the circuit backend. Type-tag globals
+            # (`+Type#N`) ALSO throw here, but they are NOT DATA — their load is
+            # handled by the `_is_type_tag_global_name` arm in `instructions.jl`
+            # and they are never referenced as a `.globals` key, so a stray
+            # `.globals` entry for one would simply go unused (harmless); the
+            # name gate keeps them out regardless.
+            if ptr_cells && _is_singleton_data_global_name(LLVM.name(g))
+                out[Symbol(LLVM.name(g))] = (zeros(UInt64, 16), 8)
+            end
+            continue
+        end
 
         if init isa LLVM.ConstantDataArray
             ty = LLVM.value_type(init)
@@ -1028,6 +1057,19 @@ function _extract_const_globals(mod::LLVM.Module)
                 (UInt64[UInt64(LLVM.API.LLVMConstIntGetZExtValue(init.ref))], ew)
 
         else
+            # bennettvm-416r.13 belt-and-suspenders: the REAL `jl_global#NNN`
+            # singleton path is the `init === nothing` (GlobalAlias-throw) arm
+            # above — every current-Julia singleton throws there. This fallback
+            # catches a hypothetical future representation where the aliasee is a
+            # REPRESENTABLE pointer constant (so `LLVM.initializer` did NOT throw
+            # and we reach the `else` with a pointer-typed init that matched none
+            # of the readable-data arms). Same zeroed-16-cell header, same name +
+            # ptr-typed-init gate. Readable data always takes a real-data arm, so
+            # it can never be mis-seeded here.
+            if ptr_cells && _is_singleton_data_global_name(LLVM.name(g)) &&
+               LLVM.value_type(init) isa LLVM.PointerType
+                out[Symbol(LLVM.name(g))] = (zeros(UInt64, 16), 8)
+            end
             continue
         end
     end

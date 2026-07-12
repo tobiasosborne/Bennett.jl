@@ -3544,6 +3544,27 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 push!(tag_ssa, inst.ref)
                 return IRBinOp(dest, :or, iconst(Int(id)), iconst(0), 64)
             end
+            # bennettvm-416r.13 / CW-D3 Lever 2: a `load ptr, ptr @"jl_global#N"`
+            # reading an empty-GenericMemory singleton-data pointer. Same LLVM
+            # shape as the type-tag arm above, but the global is a DATA pointer
+            # (a zeroed 16-cell header materialised into `.globals` by
+            # `_extract_const_globals`), not a type identity. We emit NO IRInst
+            # (drop the load) and ALIAS the load-result SSA name to the STABLE
+            # GLOBAL-VARIABLE name (`pname`): a singleton is loaded MORE THAN ONCE
+            # (each `load` result gets its own drifting SSA name — e.g. the vals
+            # singleton yields `jl_global#23383` and `jl_global#233831`), and all
+            # of them must collapse to the SINGLE canonical `.globals` key so (a)
+            # pointer identity is preserved and (b) the VM binds it once via its
+            # prepended `GLOBAL_BASE` `Define`. SSA guarantees defs precede uses,
+            # so every downstream `IRPtrOffset`/`IRStore` operand then resolves
+            # (via `_operand`) to `ssa(:jl_global#N)` = the seeded header — no
+            # dangling operand. Must run BEFORE the `haskey(names, ptr.ref)` block
+            # (a GlobalVariable operand is never an SSA name) and the fail-loud
+            # below. (Design B D3; the "loaded twice" wrinkle is load-bearing.)
+            if _is_singleton_data_global_name(pname)
+                names[inst.ref] = Symbol(pname)
+                return nothing
+            end
         end
 
         if haskey(names, ptr.ref)
@@ -3561,6 +3582,32 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             if ptr_cells && rt isa LLVM.PointerType
                 return IRLoad(dest, ssa(names[ptr.ref]), 64)
             end
+        end
+        # bennettvm-416r.13 (Design A D2, adopted): fail loud on an UNRECOGNIZED
+        # Julia JIT-global pointer load. A `ptr_cells` `load ptr, ptr
+        # @GlobalVariable` whose result is a POINTER and whose global matched
+        # NEITHER the `+Type#N` type-tag arm NOR the `jl_global#N` singleton arm
+        # (both above return on match) reaches here. `haskey(names, ptr.ref)` is
+        # false for a GlobalVariable operand, so it would otherwise fall through
+        # to the silent `return nothing` below — leaving a dangling SSA operand
+        # that KeyErrors at VM run time (the exact 416r.13 wall this bead clears).
+        # Fail loud AT THE LOAD SITE instead (Rule 1): a future third kind of
+        # interned global surfaces here, named, with the recognized kinds spelled
+        # out — never as a downstream dangling operand. Scoped to a pointer-typed
+        # result so a scalar `load iN, ptr @global` keeps its pre-existing skip.
+        if ptr_cells && ptr isa LLVM.GlobalVariable &&
+           LLVM.value_type(inst) isa LLVM.PointerType
+            _ir_error(inst,
+                "load of an UNRECOGNIZED Julia JIT global `@\"" *
+                string(LLVM.name(ptr)) * "\"` (a `constant ptr` whose load " *
+                "returns a pointer) under ptr_cells. The recognized runtime-" *
+                "global kinds are: (1) `+<dotted.Type>#<N>` type-tag globals " *
+                "(lowered to a constant identity), and (2) `jl_global#<N>` " *
+                "empty-GenericMemory singleton-data globals (modelled as a " *
+                "zeroed header in `.globals`). This global matches neither, so " *
+                "its load cannot be lowered; silently dropping it would leave a " *
+                "dangling SSA operand that KeyErrors at VM run time. Fail loud " *
+                "at the load site (bennettvm-416r.13 / CLAUDE.md §1).")
         end
         return nothing  # non-integer load — skip
     end
