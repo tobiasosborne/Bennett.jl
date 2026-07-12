@@ -175,6 +175,56 @@ function _canonical_type_path(gname::AbstractString)::String
     return replace(gname[2:end], r"#\d+$" => "")
 end
 
+# ---- Bennett-klgz / bennettvm-90l: determinism classifier for jlplt_*_got ----
+#
+# When Julia's JIT calls a runtime C entry point that has not been eagerly bound
+# (e.g. `ijl_object_id`, `memhash_seed`), it emits a PLT/GOT lazy-binding stub:
+# a global `@"jlplt_<callee>_<N>_got"` (a `constant ptr` holding the function
+# pointer), an atomic `load ptr` of that global, then an INDIRECT call through
+# the loaded SSA value. The callee name survives ONLY as the GOT global's
+# symbol — never as an `IRCall` `nameof` (verified live 2026-07-12:
+# `code_llvm(Base.ht_keyindex, Tuple{Dict{MK,Int8},MK})` →
+# `@jlplt_ijl_object_id_161_got`; `…{String,Int8}` → `@jlplt_memhash_seed_333_got`).
+#
+# Under `ptr_cells` such a load reaches the 416r.13 unrecognized-JIT-global wall
+# (instructions.jl) — which rejects it indiscriminately. The classifier below
+# lets that reject site DISTINGUISH the two hash families by demangled callee
+# name so the diagnostic names the construct (Rule 1). It ADMITS NOTHING new —
+# every family still rejects; only the message differs.
+#
+# IDENTITY hashers hash the *allocation address* of a heap object (a mutable
+# struct's default `hash` → `objectid`). That address is non-deterministic
+# across replays → the run is unreplayable → the genuine in-principle blocker of
+# ADR 0015 Decision 3 (the reversible determinism floor). CONTENT hashers
+# (`memhash_seed`, the `String` byte hash; NOT `Symbol`, which is
+# objectid-based in Base and lands in the IDENTITY bucket) are deterministic
+# and IN scope for the floor — they reject today only because runtime-callee GOT-stub
+# modeling is not yet built (a modeling gap, not a correctness floor).
+const _IDENTITY_HASH_GOT_CALLEES = Set{String}([
+    # objectid family (address-dependent) — verified stub name: `ijl_object_id`.
+    "ijl_object_id", "jl_object_id", "object_id", "objectid",
+    # pointer-identity primitives (inline to a ptrtoint today, so no GOT stub is
+    # observed — included defensively so a future JIT that emits them as stubs is
+    # still walled by name).
+    "pointer_from_objref", "jl_pointer_from_objref", "ijl_pointer_from_objref",
+])
+const _CONTENT_HASH_GOT_CALLEES = Set{String}([
+    # String content hash (fixed compile-time seed, hashing.jl) —
+    # deterministic, in-scope, not-yet-modeled. Symbol is NOT here: Base
+    # hash(::Symbol) = objectid (identity bucket; review-90l finding).
+    "memhash_seed", "memhash", "ijl_memhash_seed", "jl_memhash_seed",
+])
+
+# `_demangle_got_callee` — recover `<callee>` from a `jlplt_<callee>_<N>_got`
+# GOT-stub global name; `nothing` if `s` is not a runtime-callee GOT stub. The
+# `<N>` is a per-compilation discriminator (varies run-to-run) and is stripped,
+# exactly as the `#<digits>` suffix is stripped from a type-tag name.
+function _demangle_got_callee(s::AbstractString)::Union{String, Nothing}
+    m = match(r"^jlplt_(.+)_\d+_got$", s)
+    m === nothing && return nothing
+    return String(m.captures[1])
+end
+
 function _ptr_identity(ref::_LLVMRef)::Union{Tuple{Symbol, UInt64}, Tuple{Symbol, _LLVMRef}, Nothing}
     ref == C_NULL && return nothing
     cur = ref

@@ -3630,9 +3630,48 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         # result so a scalar `load iN, ptr @global` keeps its pre-existing skip.
         if ptr_cells && ptr isa LLVM.GlobalVariable &&
            LLVM.value_type(inst) isa LLVM.PointerType
+            gname = string(LLVM.name(ptr))
+            # Bennett-klgz / bennettvm-90l: determinism CLASSIFIER. If this is a
+            # runtime-callee GOT stub (`@"jlplt_<callee>_<N>_got"`), demangle the
+            # callee and refine the diagnostic by hash family BEFORE the generic
+            # reject. This ADMITS NOTHING NEW — both families still fail loud;
+            # only the message (and its named cause) differs. Anything that is
+            # not a GOT stub falls straight through to the generic message below,
+            # unchanged (the fdict isbits set never reaches here — its 3 ptrtoint
+            # are `+Type#N` tags handled by the type-tag arm above).
+            got_callee = _demangle_got_callee(gname)
+            if got_callee !== nothing && got_callee in _IDENTITY_HASH_GOT_CALLEES
+                _ir_error(inst,
+                    "reversible determinism floor: this `Dict` key is hashed by " *
+                    "OBJECT IDENTITY / allocation address via the runtime callee " *
+                    "`" * got_callee * "` (GOT stub `@\"" * gname * "\"`). A " *
+                    "mutable-struct key uses the default `hash` = `objectid`, " *
+                    "which hashes the object's heap ADDRESS — that address is " *
+                    "NON-DETERMINISTIC across replays, so the probe sequence (and " *
+                    "hence the reversible history) is UNREPLAYABLE. This is the " *
+                    "one genuine in-principle blocker of the reversible floor " *
+                    "(ADR 0015 Decision 3 / ADR 0017 corollary), not a modeling " *
+                    "gap. Use isbits keys (Int/Float/Char/isbits-struct) or " *
+                    "content-hashed `String` keys instead (Bennett-klgz / " *
+                    "bennettvm-90l / CLAUDE.md §1).")
+            elseif got_callee !== nothing && got_callee in _CONTENT_HASH_GOT_CALLEES
+                _ir_error(inst,
+                    "runtime-callee GOT stub `@\"" * gname * "\"` for the " *
+                    "deterministic content hash `" * got_callee * "` (the " *
+                    "`String` byte hash; `Symbol` hashing is objectid-based " *
+                    "and NOT in this bucket) is not yet modeled under " *
+                    "ptr_cells. Unlike identity hashing, a content hash IS " *
+                    "reproducible across replays and is IN SCOPE for the " *
+                    "reversible floor (ADR 0015 Decision 3) — this reject is a " *
+                    "MODELING GAP (runtime-callee GOT-stub modeling is future " *
+                    "work), NOT a correctness/determinism floor. Once the " *
+                    "extractor learns to model `jlplt_<name>_got` stubs as named " *
+                    "runtime calls, `String`-key Dicts extract here (Bennett-klgz " *
+                    "/ bennettvm-90l / CLAUDE.md §1).")
+            end
             _ir_error(inst,
                 "load of an UNRECOGNIZED Julia JIT global `@\"" *
-                string(LLVM.name(ptr)) * "\"` (a `constant ptr` whose load " *
+                gname * "\"` (a `constant ptr` whose load " *
                 "returns a pointer) under ptr_cells. The recognized runtime-" *
                 "global kinds are: (1) `+<dotted.Type>#<N>` type-tag globals " *
                 "(lowered to a constant identity), and (2) `jl_global#<N>` " *
