@@ -202,6 +202,28 @@ end
 # `sub(ptrtoint(base+off), ptrtoint(base)) = off` is base-INDEPENDENT (matches
 # the native oracle), but a base-DEPENDENT / escaping address would not.
 
+# Is `st` the Julia GenericMemory HEADER struct — the LITERAL (unnamed)
+# 2-element `{ i64, ptr }` (length, data-ptr)? CW-D4 (bennettvm-9n3y): this
+# predicate scopes the byte-granular header-GEP stamp below. Literalness
+# discriminates Julia-vs-C for ORDINARY field-access GEPs: Julia codegen emits
+# the header as an anonymous literal struct type, while clang emits NAMED
+# `%struct.T` types for C struct field accesses (test_haiy/test_nd45 pins).
+# KNOWN RESIDUAL RISK (bennettvm-jb6w, hostile-review-confirmed on clang
+# 18.1.3): clang's SysV-ABI register-coercion SPILL of a by-value
+# `struct {long; void*;}` emits a LITERAL `{i64,ptr}` GEP for the spill while
+# later accesses use the named type — the same field would be stamped 8 by one
+# GEP and 64 by the other (different VM cells, silent). No committed fixture
+# trips it; the fix (provenance-based discrimination or an ingest-time
+# two-granularity loud guard) is tracked in that bead.
+function _is_genericmemory_header_struct(st)::Bool
+    st isa LLVM.StructType || return false
+    Bool(LLVM.API.LLVMIsLiteralStruct(st)) || return false
+    els = LLVM.elements(st)
+    length(els) == 2 || return false
+    (els[1] isa LLVM.IntegerType && LLVM.width(els[1]) == 64) || return false
+    return els[2] isa LLVM.PointerType
+end
+
 # Is `gepval` a field-1 GEP of a `{i64,ptr}` GenericMemory struct (`.data`)?
 function _is_memdata_field1_gep(gepval)::Bool
     gepval isa LLVM.Instruction || return false
@@ -209,11 +231,7 @@ function _is_memdata_field1_gep(gepval)::Bool
     ops = LLVM.operands(gepval)
     length(ops) == 3 || return false
     st = LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(gepval.ref))
-    st isa LLVM.StructType || return false
-    els = LLVM.elements(st)
-    length(els) == 2 || return false
-    (els[1] isa LLVM.IntegerType && LLVM.width(els[1]) == 64) || return false
-    els[2] isa LLVM.PointerType || return false
+    _is_genericmemory_header_struct(st) || return false
     # indices [0, 1] (field-1)
     (ops[2] isa LLVM.ConstantInt && _const_int_as_int(ops[2]) == 0) || return false
     (ops[3] isa LLVM.ConstantInt && _const_int_as_int(ops[3]) == 1) || return false
@@ -3405,7 +3423,22 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 "— the BVM cell discipline (ADR 0018) requires every struct " *
                 "member to land on a 64-bit cell boundary; a packed / sub-cell " *
                 "struct is out of scope (BVM ADR 0020 D4 / chunk B)")
-            return IRPtrOffset(dest, ssa(names[base.ref]), offset_bytes, 64)
+            # CW-D4 (bennettvm-9n3y): the Julia GenericMemory HEADER — the
+            # LITERAL (unnamed) `{ i64, ptr }` struct — is stamped BYTE-granular
+            # (elem_width = 8) so BVM's per-GEP division rule
+            # (`cell = offset_bytes ÷ (elem_width÷8)`) lands the data-ptr field
+            # on byte-cell +8. Ground truth (callee_rehash!.ll:755-769,
+            # BennettVM/scratchpad): the SAME field is read through TWO shapes —
+            # this word-shaped `{i64,ptr}` field-1 GEP (element path) AND the
+            # byte-shaped `gep i8 %m, 8` `.ptr_ptr` (fill!/memset path, runtime
+            # length, live). The old 64-bit stamp mapped them to cell +1 vs
+            # cell +8 — two cells for one field. Byte granularity is FORCED by
+            # the already-shipped 416r.13 singleton headers (length@byte-cell 0,
+            # data-ptr@byte-cell 8). A NAMED C `%struct.T` (even `{i64, ptr}`-
+            # shaped) keeps the word-granular 64-bit stamp — the C tier is
+            # byte-identical (see `_is_genericmemory_header_struct`).
+            ew_gep = _is_genericmemory_header_struct(src_type_gep) ? 8 : 64
+            return IRPtrOffset(dest, ssa(names[base.ref]), offset_bytes, ew_gep)
         end
         # Bennett-qal5 / U16: anything that reaches here is either a
         # multi-index GEP (`length(ops) > 2`, e.g. `getelementptr

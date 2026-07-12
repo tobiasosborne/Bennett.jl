@@ -391,6 +391,13 @@ runfile("test_k3ej_ircall_symbol_c_ptr_param.jl")
 # 64) via LLVM.offsetof (D4). Default (gate-off) keeps every Julia-path
 # fail-loud (U114/U16/U81) byte-identical. void-return left for chunk C.
 runfile("test_haiy_ptr_cells_store_load_gep.jl")
+# bennettvm-9n3y (CW-D4) — the Julia GenericMemory HEADER struct GEP (the
+# LITERAL `{ i64, ptr }` shape) is stamped BYTE-granular (elem_width 8) under
+# ptr_cells, unifying the word-shaped element path with the byte-shaped
+# fill!/memset `.ptr_ptr` path AND the 416r.13 singleton headers on ONE cell
+# (+8). A NAMED C `%struct.T {i64,ptr}` keeps elem_width 64 (C tier
+# byte-identical). Includes the programmatic fdict memory_data_ptr sweep.
+runfile("test_9n3y_memheader_gep.jl")
 # Bennett-nd45 / BVM ADR 0020 (CW-C2 chunk C) — C call emission under the
 # `ptr_cells` gate: libc + in-module call → Symbol-callee IRCall (D5a); void
 # call (sentinel dest) + void return (IRRet() void form, ret_width 0) (D5b);
