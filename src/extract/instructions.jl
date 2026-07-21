@@ -2491,21 +2491,34 @@ function _cell_call_args(inst::LLVM.Instruction, ops, n_ops::Int,
     return (args, widths)
 end
 
-# Bennett-lbot / CW-D (ADR 0017): fuse an `extractvalue` off an overflow-arith
-# intrinsic (`llvm.{smul,umul,sadd,uadd}.with.overflow.iN`, result `{iN,i1}`)
-# into a scalar IRInst. The `{iN,i1}` aggregate is never modeled; both fields are
-# re-derived directly from the intrinsic call's operands `[a, b, callee]`:
+# Bennett-lbot / Bennett-a70z / CW-D (ADR 0017): fuse an `extractvalue` off an
+# overflow-arith intrinsic (`llvm.{smul,umul,sadd,uadd}.with.overflow.iN`, result
+# `{iN,i1}`) into scalar IRInsts. The `{iN,i1}` aggregate is never modeled; both
+# fields are re-derived directly from the intrinsic call's operands `[a, b, callee]`:
 #   - idx 0 (wrapped product/sum) → IRBinOp(dest, :mul|:add, a, b, N)
-#   - idx 1 (overflow bit)        → IRBinOp(dest, :add, iconst(0), iconst(0), 1)
-#     ONLY when the op is PROVABLY no-overflow, else FAIL LOUD.
+#   - idx 1 (overflow bit)        → computed EXACTLY when ≥1 operand is a
+#     compile-time ConstantInt `c` (Bennett-a70z; formerly walled unless
+#     provably zero). With `x` the other operand, the bit is the admissible-
+#     interval membership test  bit = (x < L) | (x > U)  where [L, U] is the
+#     EXACT no-overflow input interval for (op, signedness, c, N), folded to
+#     constants at extraction time (`_ovf_admissible_range`, Int128 arithmetic).
+#     SOUNDNESS: mul/add by fixed c is strictly monotone in x, so the LangRef
+#     condition "infinite-precision x∘c unrepresentable in iN" is exactly a
+#     contiguous-interval complement — the emitted bit agrees with the intrinsic
+#     for ALL 2^N inputs; a runtime bit of 1 flows through the already-extracted
+#     or-chain into the utzc `:__unreachable__` halt sink, the faithful analogue
+#     of the throw the native code takes. Emission: ≤ 2 IRICmp + 1
+#     IRBinOp(:or, w=1); constant-false arms (bound at/outside the domain edge)
+#     are folded away, so one-sided cases are a single IRICmp carrying the
+#     extractvalue's own dest (zero `counter` consumption — klgz determinism).
 #
-# CRITICAL fold predicate: the provably-no-overflow constant set for MUL is
-# `{0,1}` ONLY — NOT `{-1,0,1}`. Signed `smul(x,-1) = -x` overflows at x = INT_MIN
-# (`-2^(N-1) * -1 = 2^(N-1)` is unrepresentable), so `-1` is NOT admitted. For ADD
-# the set is `{0}` (x+0 never overflows). A wrong placeholder-0 would route away
-# from the throw the native code takes on overflow — UNSOUND — so anything else
-# fails loud (CLAUDE.md §1) rather than guessing.
-function _fuse_overflow_extractvalue(call, cn, idx, dest, inst, names)
+# The lbot fold-to-zero set (MUL c ∈ {0,1} — NOT -1: `smul(INT_MIN,-1)`
+# overflows; ADD c = 0) short-circuits to the byte-identical
+# IRBinOp(dest,:add,0,0,1) shape of the original lbot fuse. TWO DYNAMIC
+# operands still FAIL LOUD (general mul-high/add-carry is future work): a
+# placeholder-0 would route away from the throw the native code takes — UNSOUND
+# (CLAUDE.md §1).
+function _fuse_overflow_extractvalue(call, cn, idx, dest, inst, names, counter)
     idx in (0, 1) || _ir_error(inst,
         "extractvalue index $idx out of range for overflow intrinsic $cn " *
         "(only 0=result, 1=overflow-bit). (Bennett-lbot)")
@@ -2518,17 +2531,110 @@ function _fuse_overflow_extractvalue(call, cn, idx, dest, inst, names)
         # wrap matches the intrinsic's low-N-bits result field).
         return IRBinOp(dest, op, _operand(a, names), _operand(b, names), N)
     end
-    # idx == 1: overflow bit — iconst(0) ONLY when provably no-overflow.
-    ca = a isa LLVM.ConstantInt ? _const_int_as_int(a) : nothing
-    cb = b isa LLVM.ConstantInt ? _const_int_as_int(b) : nothing
-    provably_zero = op === :mul ? (ca in (0, 1) || cb in (0, 1)) :   # x*0, x*1 never overflow
-                                  (ca == 0 || cb == 0)               # x+0 never overflows
-    provably_zero || _ir_error(inst,
-        "overflow bit of $cn is not provably zero (operands $(string(a)), $(string(b))); " *
-        "general overflow-bit computation is future work — a placeholder-0 would route away " *
-        "from the throw the native code takes and is UNSOUND. (Bennett-lbot)")
-    # The overflow bit is field 1 of `{iN,i1}` — an i1. `_iwidth(inst)` == 1.
-    return IRBinOp(dest, :add, iconst(0), iconst(0), _iwidth(inst))   # bit = 0 (i1)
+    # idx == 1: overflow bit — exact for a constant operand, else FAIL LOUD.
+    # mul/add are commutative: whichever operand is ConstantInt is `c` (`b`
+    # checked first — Julia's memorynew shape puts the elsize there — but no
+    # reliance on operand order, Rule 5). Both-constant calls take the same
+    # path (const-vs-const IRICmp — exact, and rare enough not to special-case).
+    signed = startswith(cn, "llvm.s")
+    if b isa LLVM.ConstantInt
+        xv, c = a, _const_int_as_int(b)
+    elseif a isa LLVM.ConstantInt
+        xv, c = b, _const_int_as_int(a)
+    else
+        _ir_error(inst,
+            "overflow bit of $cn with two dynamic operands ($(string(a)), $(string(b))) " *
+            "is unsupported — the exact bit (Bennett-a70z) needs one compile-time-constant " *
+            "operand; general mul-high/add-carry computation is future work. A placeholder-0 " *
+            "would route away from the throw the native code takes and is UNSOUND. (Bennett-lbot)")
+    end
+    L, U, always0 = _ovf_admissible_range(op, c, N, signed)
+    # Fold-to-zero fast path: byte-identical to the lbot shape, zero counter
+    # consumption. The overflow bit is field 1 of `{iN,i1}` — `_iwidth(inst)` == 1.
+    always0 && return IRBinOp(dest, :add, iconst(0), iconst(0), _iwidth(inst))
+    xop = _operand(xv, names)
+    lt = signed ? :slt : :ult
+    gt = signed ? :sgt : :ugt
+    if L !== nothing && U !== nothing
+        t1 = _auto_name(counter)
+        t2 = _auto_name(counter)
+        return IRInst[IRICmp(t1, lt, xop, iconst(_ovf_bound_const(L, N)), N),
+                      IRICmp(t2, gt, xop, iconst(_ovf_bound_const(U, N)), N),
+                      IRBinOp(dest, :or, ssa(t1), ssa(t2), _iwidth(inst))]
+    elseif L !== nothing
+        return IRICmp(dest, lt, xop, iconst(_ovf_bound_const(L, N)), N)
+    else
+        return IRICmp(dest, gt, xop, iconst(_ovf_bound_const(U, N)), N)
+    end
+end
+
+# Bennett-a70z: the EXACT no-overflow input interval of `x ∘ c` at width N.
+# Returns `(L, U, always0)`: the dynamic operand overflows iff
+# `x < L || x > U` (each `nothing` when that arm is constant-false over the
+# whole iN domain, i.e. the bound lies at/outside the domain edge);
+# `always0 = true` iff the bit is identically 0 (mul c ∈ {0,1}, add c = 0).
+# All arithmetic in Int128 so the PROVER cannot overflow (every operand
+# magnitude ≤ 2^64; in particular `fld(typemin,-1)`-style traps are impossible).
+# `c` arrives SIGN-EXTENDED (`_const_int_as_int` uses LLVMConstIntGetSExtValue);
+# unsigned intrinsics re-decode it by masking to the low N bits. Derivation
+# (LangRef: bit = infinite-precision x∘c ∉ domain; x ↦ x∘c strictly monotone,
+# antitone for c < 0, so dividing/shifting the domain inequalities by c gives):
+#   smul c>0: [cld(smin,c), fld(smax,c)]   smul c<0: [cld(smax,c), fld(smin,c)]
+#   umul c≥2: [0, fld(umax,c)]             sadd:     [smin-c, smax-c]
+#   uadd c≥1: [0, umax-c]
+# Edge cases covered by the same formulas (pinned in test_a70z_*):
+#   c = -1   → [smin+1, 2^(N-1)→folds]: bit ⟺ x == typemin (smul(INT_MIN,-1))
+#   c = smin → [0, 1]: only x ∈ {0,1} avoid overflow.
+function _ovf_admissible_range(op::Symbol, c::Int, N::Int, signed::Bool)
+    1 <= N <= 64 || error(
+        "ir_extract.jl: _ovf_admissible_range: width $N out of range (Bennett-a70z)")
+    umax = (Int128(1) << N) - 1
+    smin = -(Int128(1) << (N - 1))
+    smax = (Int128(1) << (N - 1)) - 1
+    local L::Int128, U::Int128, dlo::Int128, dhi::Int128
+    if signed
+        sc = Int128(c)
+        dlo, dhi = smin, smax
+        if op === :mul
+            (sc == 0 || sc == 1) && return (nothing, nothing, true)
+            L = sc > 0 ? cld(smin, sc) : cld(smax, sc)
+            U = sc > 0 ? fld(smax, sc) : fld(smin, sc)
+        else  # :add
+            sc == 0 && return (nothing, nothing, true)
+            L = smin - sc
+            U = smax - sc
+        end
+    else
+        uc = Int128(c) & umax                 # masked (unsigned) decode
+        dlo, dhi = Int128(0), umax
+        if op === :mul
+            (uc == 0 || uc == 1) && return (nothing, nothing, true)
+            L = dlo
+            U = fld(umax, uc)
+        else  # :add
+            uc == 0 && return (nothing, nothing, true)
+            L = dlo
+            U = umax - uc
+        end
+    end
+    # Clamp-fold: an arm whose bound is at/outside the domain edge is a
+    # constant-false comparison over every representable x — drop it.
+    lo = L <= dlo ? nothing : L
+    hi = U >= dhi ? nothing : U
+    lo === nothing && hi === nothing && return (nothing, nothing, true)
+    return (lo, hi, false)
+end
+
+# Bennett-a70z: encode an interval bound as a ConstOperand value — the low N
+# bits, sign-extended to Int64 (the project-wide sext ConstOperand convention,
+# matching `_const_int_as_int`). Needed because unsigned-i64 bounds (e.g.
+# uadd(x,1): U = 2^64-2) exceed typemax(Int64) as mathematical integers; the
+# bit-pattern encoding is faithful since every surviving bound lies strictly
+# inside its iN domain.
+function _ovf_bound_const(b::Int128, N::Int)
+    u = UInt64(b & ((Int128(1) << N) - 1))    # low N bits, nonnegative
+    s = 64 - N
+    return Int(reinterpret(Int64, u << s) >> s)
 end
 
 function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symbol},
@@ -2846,7 +2952,7 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                startswith(cn, "llvm.umul.with.overflow.") ||
                startswith(cn, "llvm.sadd.with.overflow.") ||
                startswith(cn, "llvm.uadd.with.overflow.")
-                return _fuse_overflow_extractvalue(agg_val, cn, idx, dest, inst, names)
+                return _fuse_overflow_extractvalue(agg_val, cn, idx, dest, inst, names, counter)
             end
         end
         agg_type = LLVM.value_type(agg_val)
