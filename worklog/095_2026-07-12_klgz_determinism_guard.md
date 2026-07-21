@@ -1,5 +1,72 @@
 # worklog chunk 095 — 2026-07-12 — Bennett-klgz determinism guard
 
+## Session log — 2026-07-21 — tracker truth-up + Bennett-a70z (bsng) 3+1 design phase; impl parked as WIP
+
+**Orchestrated session (Fable orchestrator, serial subagents: auditor → scout →
+2 blind proposers → implementer). Stopped gracefully mid-implementation at user
+request; nothing lost.**
+
+### Tracker truth-up (the beads DB was ~5 weeks behind git)
+
+A read-only audit subagent reconciled beads vs git/worklogs in BOTH repos.
+Result: **17 closes** with evidence-cited reasons. Bennett.jl: `44dg`
+(superseded by utzc route-a), `eln6` (dissolved by the 9n3y byte-granular
+convention), `800b` (superseded by Option C; residual → `25dm`). BennettVM:
+`7xa` (SC9 Case B — re-verified live: `test_dict_roundtrip.jl` 34/34), `90l`,
+`416r.11/.12/.13/.4` (epic `416r` auto-closed 13/13), `6db`/`ehp`/`nm0`
+(superseded by ADR 0017 architecture), M13 chain `zg5/fu5/kl3/vw8`
+(FORCE-closed past stale planned-ordering dep edges — 7zl Lean gate + xkl were
+never real prerequisites; the dispatch shipped, `test_e2e_collatz.jl` proves it).
+`xkl` re-scoped to the closed-world route. **The three successors named in the
+BVM WORKLOG milestone block were never filed** (dolt gap) — now filed:
+`Bennett-a70z` (bsng: elsize>1 overflow prover), `Bennett-zdd6` (jb6w:
+SysV register-coercion-spill mis-stamp landmine), `bennettvm-rnhv` (san3:
+Dict growth `:__v96` undefined-SSA run wall).
+
+### Bennett-a70z — scout + 2 blind proposals (CONVERGED); designs archived
+
+Full artifacts: `docs/design/a70z/` (scout_report.md, proposal_A.md,
+proposal_B.md, ir_excerpts.txt; full .ll dumps regenerable via `code_llvm`).
+
+- **Scout ground truth:** the wall is `_fuse_overflow_extractvalue`
+  (`src/extract/instructions.jl:2509-2534`) — provably-zero only for mul
+  c∈{0,1} / add c=0. i64 rehash! has 6 `smul(%value_phi, c)` sites (c=1 slots,
+  c=8 keys/vals); the memorynew guard shape routes bit=1 → `jl_argument_error`
+  → utzc-pruned `:__unreachable__` halt sink, but the pruner is keep-branch so
+  the bit stays live as a VALUE. `%value_phi` is statically unbounded ⇒ no
+  range proof exists; the bit must be COMPUTED.
+- **Both blind proposers converged** (strong signal): emit the EXACT bit for
+  one-ConstantInt-operand `{s,u}{mul,add}.with.overflow` as constant-folded
+  interval tests — ≤2 `IRICmp` + width-1 `IRBinOp(:or)`; bounds in Int128
+  (smul c≥2: `[cld(typemin,c), fld(typemax,c)]`, c≤-2 flipped, c=-1 ⟺
+  `x==typemin`; sadd one-sided; unsigned arms need MASKED decode — LLVM.jl
+  constant decode is sign-extending). Always-0 fast path stays byte-identical
+  (protects lbot GATE (a) pins, zero counter drift). Two-dynamic-operand,
+  ssub/usub, ptr_cells=false: stay fail-loud. BVM side needs NOTHING (emitted
+  opcodes all already ingestable; byte-granular VM ready for elsize>1).
+- **Implementation is PARKED UNVERIFIED on branch `wip/a70z-overflow-bit`**
+  (commit 1f521d3d: instructions.jl +133/−27 + test_a70z_overflow_const_bit.jl,
+  583 insertions). The implementer was killed mid-first-test-run — NO green has
+  been observed. Next session: re-verify RED/GREEN from scratch (do NOT trust
+  the WIP; CLAUDE.md rule 10), then the non-regression battery
+  (test_lbot_overflow_intrinsic, test_d1b_julia_set, test_utzc_dead_block_pruner,
+  test_klgz_determinism_guard, test_416r13_jlglobal_singleton, all
+  `--check-bounds=yes`), honest lbot GATE (b) pin updates, worklog, close.
+
+### Gotchas / blockers for the next agent
+
+- **Concurrent Julia = precompile-cache corruption.** Another agent's full
+  suite run had to be killed before this session could test. ALWAYS
+  `pgrep -af julia` before any julia invocation. Laptop: single test files
+  only.
+- **`bd` dolt auto-push is BROKEN in both repos**: `git-remote-cache/.../repo.git`
+  is "not a git repository" → every close prints a push warning. Local dolt
+  store is fine (closes stick). Needs a repair (`bd dolt push` by hand /
+  re-clone the remote cache) — not attempted this session.
+- Known next walls after a70z: `Dict{Int64,Int64}` may hit a further wall
+  inside rehash! (unknown — testset (e) of the WIP test file pins it), and the
+  separate VM run-tier Dict-growth wall is `bennettvm-rnhv`.
+
 ## Session log — 2026-07-12 — Bennett-klgz: determinism CLASSIFIER at the 416r.13 GOT-stub reject site
 
 **Bead pair:** `Bennett-klgz` (front-end, this repo) + `bennettvm-90l` (BennettVM

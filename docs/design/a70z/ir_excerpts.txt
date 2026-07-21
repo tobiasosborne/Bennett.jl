@@ -1,0 +1,87 @@
+Bennett-a70z scout — IR ground truth for Dict{Int64,Int64} rehash!
+Source: code_llvm(Base.rehash!, Tuple{Dict{Int64,Int64}, Int64}; optimize=false)
+Full dumps in this dir: rehash_i64_full.ll (i64/i64 dict), rehash_i8_full.ll (i8/i8 dict).
+
+================================================================================
+1. The size operand %value_phi (newsz clamped/rounded to power of two)
+================================================================================
+top:
+  %0 = icmp slt i64 %"newsz::Int64", 16
+  %1 = xor i1 %0, true
+  br i1 %1, label %L8, label %L7
+L8:                       ; newsz >= 16 -> round up to next power of two
+  %2 = sub i64 %"newsz::Int64", 1
+  %3 = call i64 @llvm.ctlz.i64(i64 %2, i1 false)
+  %4 = sub i64 64, %3
+  %5 = icmp sle i64 0, %4
+  %6 = shl i64 1, %4
+  %7 = icmp uge i64 %4, 64
+  %8 = select i1 %7, i64 0, i64 %6
+  %9 = sub i64 0, %4
+  %10 = ashr i64 1, %9
+  %11 = icmp uge i64 %9, 64
+  %12 = select i1 %11, i64 0, i64 %10
+  %ifelse_cond = xor i1 %5, true
+  %13 = select i1 %ifelse_cond, i64 %12, i64 %8
+  br label %L19
+L19:
+  %value_phi = phi i64 [ 16, %L7 ], [ %13, %L8 ]
+
+=> %value_phi is 16 or 1 << (64 - ctlz(newsz-1)); NOT statically bounded
+   (can be 2^62, 2^63 = INT_MIN, or 0 on shift-guard edge). A static range
+   proof that value_phi*8 never overflows is NOT available from this IR.
+
+================================================================================
+2. The elsize-8 wall site (%nonemptymem5 — Memory{Int64} keys alloc)
+================================================================================
+nonemptymem5:                                     ; preds = %retval
+  %"+Core.GenericMemory#134" = load ptr, ptr @"+Core.GenericMemory#134", align 8
+  %134 = call { i64, i1 } @llvm.smul.with.overflow.i64(i64 %value_phi, i64 8)
+  %135 = extractvalue { i64, i1 } %134, 0        ; nbytes = nelems * 8
+  %136 = extractvalue { i64, i1 } %134, 1        ; overflow bit  <-- THE WALL
+  %137 = icmp slt i64 %value_phi, 0              ; nelems < 0 ?
+  %138 = or i1 %136, %137
+  %139 = icmp slt i64 9223372036854775806, %135  ; nbytes > typemax(Int64)-1 ?
+  %140 = or i1 %138, %139
+  %141 = xor i1 %140, true
+  br i1 %141, label %pass7, label %fail6
+
+fail6:                                            ; preds = %nonemptymem5
+  call void @jl_argument_error(ptr @"_j_str_invalid GenericMemory siz...#2")
+  unreachable
+
+pass7:                                            ; preds = %nonemptymem5
+  ...
+  %"Memory{Int64}[]" = call noalias nonnull align 16 dereferenceable(16) ptr
+      @jl_alloc_genericmemory_unchecked(ptr %ptls_load10, i64 %135, ptr %"+Core.GenericMemory#134")
+  %142 = getelementptr inbounds { i64, ptr }, ptr %"Memory{Int64}[]", i32 0, i32 0
+  store i64 %value_phi, ptr %142, align 8        ; length header store
+  br label %retval11
+
+=> The overflow bit %136 has EXACTLY ONE consumer: the or-chain
+   (or -> or -> xor) whose sole consumer is the conditional branch guarding
+   the throw block fail6 (jl_argument_error + unreachable).
+   The product %135 feeds (a) the icmp %139 and (b) the
+   jl_alloc_genericmemory_unchecked nbytes arg (BVM: IntrinsicGenericMemoryAlloc
+   nbytes_operand, DATA bytes, header-exclusive).
+
+================================================================================
+3. All smul sites in rehash! (i64/i64 dict) — 6 total, identical block shape
+================================================================================
+  line 371: smul(%value_phi, 1)   slots  Memory{UInt8}, count!=0 path  <- elsize 1, current prover OK
+  line 414: smul(%value_phi, 8)   keys   Memory{Int64}, count!=0 path  <- WALL
+  line 451: smul(%value_phi, 8)   vals   Memory{Int64}, count!=0 path  <- WALL
+  line 491: smul(%value_phi, 1)   slots  Memory{UInt8}, count==0 path  <- elsize 1 OK
+  line 531: smul(%value_phi, 8)   keys   Memory{Int64}, count==0 path  <- WALL
+  line 565: smul(%value_phi, 8)   vals   Memory{Int64}, count==0 path  <- WALL
+Each site: same {call, extractvalue 0, extractvalue 1, icmp slt nelems 0,
+or, icmp slt typemax-1 product, or, xor, br pass/fail} 9-inst shape,
+fail block = jl_argument_error + unreachable.
+
+================================================================================
+4. i8/i8 dict comparison (rehash_i8_full.ll)
+================================================================================
+Same 6-site structure, but ALL SIX are smul(%value_phi, 1) — slots i8, keys
+Int8, vals Int8 all have elsize 1. That is the only difference: the constant
+second operand is 8 instead of 1 at 4 of the 6 sites. Everything else
+(or-chain, fail/pass topology, alloc call) is shape-identical.
