@@ -49,6 +49,24 @@ function _a70z_fixture(intr::AbstractString, w::Int, cst::AbstractString)
 end
 
 # Two-variable smul (%y is a 2nd arg): still FAIL-LOUD (no constant operand).
+# BOTH operands compile-time constants (D3): the bit folds to a literal.
+# `%x` stays a parameter (used by the oflow arm) so the function shape matches
+# the dynamic fixtures; only the intrinsic's operands are constants.
+function _a70z_fixture_cc(intr::AbstractString, w::Int, c1::AbstractString, c2::AbstractString)
+    """
+    declare {i$w,i1} @llvm.$(intr).with.overflow.i$w(i$w, i$w)
+    define i$w @f(i$w %x) {
+    top:
+      %c = call {i$w,i1} @llvm.$(intr).with.overflow.i$w(i$w $(c1), i$w $(c2))
+      %p = extractvalue {i$w,i1} %c, 0
+      %o = extractvalue {i$w,i1} %c, 1
+      br i1 %o, label %oflow, label %ok
+    ok:    ret i$w %p
+    oflow: ret i$w %x
+    }
+    """
+end
+
 const A70Z_TWO_VAR = """
 declare {i64,i1} @llvm.smul.with.overflow.i64(i64, i64)
 define i64 @f(i64 %x, i64 %y) {
@@ -116,12 +134,28 @@ function _a70z_eval_bit(pir::ParsedIR, N::Int, xraw::Integer)
     return env[:o] == 1
 end
 
-# Direct-helper oracle predicate: bit from `_ovf_admissible_range` bounds.
+# Direct-helper oracle predicate: bit from `_ovf_admissible_range` bounds,
+# compared in MATHEMATICAL Int128 (i.e. before the ConstOperand encoding).
 function _a70z_range_bit(op::Symbol, c::Int, N::Int, signed::Bool, x::Integer)
     L, U, always0 = Bennett._ovf_admissible_range(op, c, N, signed)
     always0 && return false
     xi = Int128(x)
     return (L !== nothing && xi < L) || (U !== nothing && xi > U)
+end
+
+# Same, but THROUGH `_ovf_bound_const` — i.e. the bit the emitted IRICmp pair
+# actually computes: bounds are re-encoded as N-bit-sign-extended ConstOperand
+# values and compared with the emitted predicate's bit-pattern semantics.
+# `_a70z_range_bit` alone does NOT cover the encoder (unsigned bounds above
+# typemax(Int64) / above 2^(N-1) come back NEGATIVE); this closes that gap.
+function _a70z_encoded_bit(op::Symbol, c::Int, N::Int, signed::Bool, xraw::Integer)
+    L, U, always0 = Bennett._ovf_admissible_range(op, c, N, signed)
+    always0 && return false
+    dec(v) = signed ? _a70z_sxt(Int128(v), N) : _a70z_uns(Int128(v), N)
+    xv = dec(xraw)
+    lo = L === nothing ? false : xv < dec(Bennett._ovf_bound_const(L, N))
+    hi = U === nothing ? false : xv > dec(Bennett._ovf_bound_const(U, N))
+    return lo || hi
 end
 
 @testset "Bennett-a70z: exact constant-operand overflow bit" begin
@@ -156,6 +190,26 @@ end
             end
             @test ok
         end
+        # UNSIGNED arms, full path, exhaustive — including constants whose
+        # `_const_int_as_int` sext decode is NEGATIVE (128, 255) and whose
+        # emitted bound is likewise encoded negative (uadd c=1 → U = 254 → -2).
+        for (intr, craw) in (("umul", 2), ("umul", 3), ("umul", 128), ("umul", 255),
+                             ("uadd", 1), ("uadd", 128), ("uadd", 255))
+            cs = Int(reinterpret(Int8, UInt8(craw)))
+            (st, pir) = _extract_ll_a70z("$(intr)8_u$(craw)",
+                                         _a70z_fixture(intr, 8, string(cs)), "f"; cells=true)
+            @test st === :ok
+            st === :ok || continue
+            ok = true
+            for xraw in 0:255
+                x = UInt8(xraw)
+                oracle = intr == "umul" ? mul_with_overflow(x, UInt8(craw))[2] :
+                                          add_with_overflow(x, UInt8(craw))[2]
+                got = _a70z_eval_bit(pir, 8, xraw)
+                got == oracle || (ok = false; @error "$intr i8 mismatch" craw x oracle got; break)
+            end
+            @test ok
+        end
     end
 
     # =====================================================================
@@ -177,6 +231,96 @@ end
             end
         end
         @test bad == 0
+    end
+
+    # =====================================================================
+    # (a3) ENCODED-BOUND total sweep: same 256 c x 256 x x 4 arms, but the
+    #      bit is computed the way the EMITTED IRICmp pair computes it —
+    #      through `_ovf_bound_const` (N-bit sext ConstOperand encoding) with
+    #      the emitted predicate's bit-pattern comparison semantics. (a2)
+    #      compares mathematical Int128 bounds and therefore does NOT exercise
+    #      the encoder; unsigned bounds above 2^(N-1) come back NEGATIVE, and
+    #      an encoder off-by-one there would silently invert an arm.
+    # =====================================================================
+    @testset "(a3) encoded-bound (ConstOperand sext) i8 total sweep vs oracle" begin
+        bad = 0
+        for craw in 0:255
+            cs = Int(reinterpret(Int8, UInt8(craw)))
+            for xraw in 0:255
+                xs = reinterpret(Int8, UInt8(xraw))
+                xu = UInt8(xraw)
+                bad += (_a70z_encoded_bit(:mul, cs, 8, true,  xs)  != mul_with_overflow(xs, Int8(cs))[2])
+                bad += (_a70z_encoded_bit(:add, cs, 8, true,  xs)  != add_with_overflow(xs, Int8(cs))[2])
+                bad += (_a70z_encoded_bit(:mul, cs, 8, false, xraw) != mul_with_overflow(xu, UInt8(craw))[2])
+                bad += (_a70z_encoded_bit(:add, cs, 8, false, xraw) != add_with_overflow(xu, UInt8(craw))[2])
+            end
+        end
+        @test bad == 0
+        # i64 spot-checks of the encoder itself: bounds that do NOT fit a
+        # nonnegative Int64 must round-trip to their two's-complement pattern.
+        @test Bennett._ovf_bound_const(Int128(2)^64 - 2, 64) == -2
+        @test Bennett._ovf_bound_const(Int128(2)^63 - 1, 64) == typemax(Int64)
+        @test Bennett._ovf_bound_const(-(Int128(2)^60), 64) == -1152921504606846976
+        @test Bennett._ovf_bound_const(Int128(254), 8) == -2
+        @test Bennett._ovf_bound_const(Int128(127), 8) == 127
+        @test Bennett._ovf_bound_const(Int128(-128), 8) == -128
+    end
+
+    # =====================================================================
+    # (a4) both-operands-constant (D3): the bit folds to a LITERAL in the
+    #      lbot `IRBinOp(dest,:add,const,const,1)` shape — NOT an IRICmp pair
+    #      over two ConstOperands (that shape's only consumer on this gate is
+    #      BennettVM's ingest, which this repo cannot verify). Total i8 sweep
+    #      of the helper + full-path fixtures for the four arms.
+    # =====================================================================
+    @testset "(a4) both-constant literal fold" begin
+        bad = 0
+        for c1raw in 0:255, c2raw in 0:255
+            s1 = Int(reinterpret(Int8, UInt8(c1raw)))
+            s2 = Int(reinterpret(Int8, UInt8(c2raw)))
+            bad += (Bennett._ovf_const_bit(:mul, s1, s2, 8, true) !=
+                    (mul_with_overflow(Int8(s1), Int8(s2))[2] ? 1 : 0))
+            bad += (Bennett._ovf_const_bit(:add, s1, s2, 8, true) !=
+                    (add_with_overflow(Int8(s1), Int8(s2))[2] ? 1 : 0))
+            bad += (Bennett._ovf_const_bit(:mul, s1, s2, 8, false) !=
+                    (mul_with_overflow(UInt8(c1raw), UInt8(c2raw))[2] ? 1 : 0))
+            bad += (Bennett._ovf_const_bit(:add, s1, s2, 8, false) !=
+                    (add_with_overflow(UInt8(c1raw), UInt8(c2raw))[2] ? 1 : 0))
+        end
+        @test bad == 0
+        # i64 edges the i8 sweep cannot reach.
+        @test Bennett._ovf_const_bit(:mul, typemin(Int64), -1, 64, true) == 1
+        @test Bennett._ovf_const_bit(:mul, -1, -1, 64, true) == 0
+        @test Bennett._ovf_const_bit(:add, typemax(Int64), 1, 64, true) == 1
+        @test Bennett._ovf_const_bit(:add, -1, 1, 64, false) == 1   # 2^64-1 + 1
+        @test Bennett._ovf_const_bit(:add, -2, 1, 64, false) == 0   # 2^64-2 + 1
+        @test Bennett._ovf_const_bit(:mul, -1, -1, 64, false) == 1  # (2^64-1)^2
+
+        # Full path: i8 fixtures, one per arm, both polarities of the bit.
+        for (intr, c1, c2, want) in (("smul", "7",   "8",  0),   # 56
+                                     ("smul", "64",  "8",  1),   # 512 > 127
+                                     ("smul", "-16", "8",  0),   # -128 == typemin
+                                     ("smul", "-17", "8",  1),   # -136 < typemin
+                                     ("sadd", "127", "0",  0),
+                                     ("sadd", "127", "1",  1),
+                                     ("umul", "-64", "3",  1),   # 192*3 = 576
+                                     ("umul", "-64", "1",  0),   # 192*1 = 192
+                                     ("uadd", "-2",  "1",  0),   # 254+1 = 255
+                                     ("uadd", "-1",  "1",  1))   # 255+1 = 256
+            (st, pir) = _extract_ll_a70z("cc_$(intr)_$(c1)_$(c2)",
+                                         _a70z_fixture_cc(intr, 8, c1, c2), "f"; cells=true)
+            @test st === :ok
+            st === :ok || continue
+            insts = _all_insts_a70z(pir)
+            bit = filter(x -> x isa IRBinOp && x.dest === :o && x.op === :add &&
+                              x.width == 1 &&
+                              x.op1 isa ConstOperand && x.op1.value == want &&
+                              x.op2 isa ConstOperand && x.op2.value == 0, insts)
+            @test length(bit) == 1
+            @test !any(x -> x isa IRICmp, insts)          # no const-vs-const compare
+            @test !any(x -> x isa IRExtractValue || x isa IRCall, insts)
+            @test !any(x -> startswith(String(x.dest), "__v"), insts)  # zero counter churn
+        end
     end
 
     # =====================================================================
@@ -366,6 +510,13 @@ end
     #     "rehash! is NOT in the set"). Wall-advance is the success criterion;
     #     the NEXT wall (if any) is pinned + logged.
     #     `_known_callees` snapshot/restore (lbot GATE (d) pattern).
+    #
+    #     OBSERVED 2026-07-24 (this is the bead's exit criterion, and it is
+    #     STRONGER than wall-advance): the whole Dict{Int64,Int64} closed-world
+    #     set extracts CLEANLY under :fail_loud — there is NO next EXTRACTION
+    #     wall. Pinned as `msg == ""` plus positive structure below; the
+    #     remaining Dict{Int64,Int64} work is downstream of extraction (BVM
+    #     run-time GenericMemory grow/copy, worklog/094).
     # =====================================================================
     @testset "(e) fdict64 e2e — advances past the elsize-8 smul wall" begin
         fdict64(a::Int64, b::Int64) = (d = Dict{Int64,Int64}(); d[a] = b; d[a])
@@ -374,10 +525,11 @@ end
             copy(Bennett._known_callees)
         end
         new_wall = nothing
+        set = nothing
         try
             msg = try
-                extract_parsed_ir_set_from_julia(fdict64, Tuple{Int64,Int64};
-                                                 ptr_cells=true, on_extract_error=:fail_loud)
+                set = extract_parsed_ir_set_from_julia(fdict64, Tuple{Int64,Int64};
+                                                       ptr_cells=true, on_extract_error=:fail_loud)
                 ""   # fully closed — even stronger than wall-advance
             catch e
                 e isa InterruptException && rethrow()
@@ -388,15 +540,39 @@ end
             @test !occursin("with.overflow", lowercase(msg))
             @test !occursin("not provably zero", msg)
             @test !occursin("two dynamic operands", msg)
-            # POSITIVE inclusive disjunction of plausible CW-D2 successors.
-            @test occursin("gc_alloc_obj", msg)              ||
-                  occursin("genericmemory", lowercase(msg))  ||
-                  occursin("memoryref", lowercase(msg))      ||
-                  occursin("closed-world violation", msg)    ||
-                  msg == ""
-            # Full closure of the i64 dict set is NOT yet achieved (next wall
-            # documented via @info below + worklog); flips when it closes.
-            @test_broken msg == ""
+            # POSITIVE: full closure — no extraction wall at all.
+            @test msg == ""
+            # POSITIVE STRUCTURE: the set really contains the bodies, and the
+            # elsize-8 fuse really fired on REAL Julia IR (not just fixtures).
+            # `cld(typemin(Int64), 8) = -2^60` / `fld(typemax(Int64), 8) = 2^60-1`
+            # are the a70z bounds for `smul(%value_phi, 8)` in `rehash!`.
+            @test set !== nothing
+            if set !== nothing
+                names = String[String(p.first) for p in set]
+                @test length(set) >= 4
+                @test any(n -> startswith(n, "rehash!"), names)
+                @test any(n -> startswith(n, "setindex!"), names)
+                allins = [ins for (_, pir) in set for b in pir.blocks for ins in b.instructions]
+                los = filter(x -> x isa IRICmp && x.predicate === :slt && x.width == 64 &&
+                                  x.op2 isa ConstOperand &&
+                                  x.op2.value == -1152921504606846976, allins)
+                his = filter(x -> x isa IRICmp && x.predicate === :sgt && x.width == 64 &&
+                                  x.op2 isa ConstOperand &&
+                                  x.op2.value == 1152921504606846975, allins)
+                @test length(los) >= 1
+                @test length(los) == length(his)
+                @info "Bennett-a70z fdict64 elsize-8 fuse sites" bodies=length(set) sites=length(los)
+                # No overflow-intrinsic CALL survived anywhere in the set (the
+                # `{iN,i1}` aggregate is never modelled). NB: unrelated
+                # IRExtractValues DO legitimately survive elsewhere in the set
+                # (Julia's own aggregate returns), so the blanket
+                # "no IRExtractValue" assertion of the fixture testsets does
+                # NOT generalise to the real corpus — only this one does.
+                @test !any(x -> x isa IRCall &&
+                                occursin("with.overflow",
+                                         String(x.callee isa Symbol ? x.callee : Symbol(x.callee))),
+                           allins)
+            end
         finally
             lock(Bennett._known_callees_lock) do
                 empty!(Bennett._known_callees)

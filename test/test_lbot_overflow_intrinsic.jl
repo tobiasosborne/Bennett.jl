@@ -16,6 +16,16 @@
 #   - extractvalue-1 (overflow bit) → IRBinOp(dest, :add, iconst(0), iconst(0), 1)
 #     ONLY when the operation is PROVABLY no-overflow, else FAIL LOUD.
 #
+# SUPERSEDED IN PART BY Bennett-a70z: the "else FAIL LOUD" above now applies
+# only when BOTH operands are dynamic. With one compile-time-constant operand
+# the exact bit is COMPUTED as an admissible-interval test (≤ 2 IRICmp +
+# IRBinOp(:or)); with both constant it folds to a literal bit. GATE (b) below
+# is split accordingly: (b1) two-dynamic still walls, (b2) `sadd(%x,5)` — which
+# lbot walled — is now pinned to the exact bit against a native oracle. The
+# fold-to-zero set (mul c ∈ {0,1}, add c = 0) is byte-identical, so GATES
+# (a)/(a-variants)/(c)/(d) are untouched. Full a70z coverage:
+# test/test_a70z_overflow_const_bit.jl.
+#
 # CRITICAL fold predicate (both blind proposers independently corrected the
 # brief): the provably-no-overflow constant set for MUL is `{0,1}` ONLY — NOT
 # `{-1,0,1}`. Signed `smul(x,-1) = -x` overflows at x = INT_MIN
@@ -39,8 +49,9 @@ using Test
 using Bennett
 using Bennett: extract_parsed_ir_from_ll, extract_parsed_ir,
                extract_parsed_ir_set_from_julia,
-               ParsedIR, IRBinOp, IRCall, IRExtractValue,
+               ParsedIR, IRBinOp, IRICmp, IRCall, IRExtractValue,
                ConstOperand, SSAOperand
+using Base.Checked: add_with_overflow
 
 # --- Fixtures -------------------------------------------------------------
 
@@ -76,7 +87,8 @@ oflow: ret i64 0
 }
 """
 
-# Nonzero-const sadd(%x, 5): x+5 CAN overflow → overflow bit not provably zero.
+# Nonzero-const sadd(%x, 5): x+5 CAN overflow, so lbot walled it. Bennett-a70z
+# computes the exact bit `x > typemax(Int64) - 5` — see GATE (b2).
 const LBOT_ADD5 = """
 declare {i64,i1} @llvm.sadd.with.overflow.i64(i64, i64)
 define i64 @f(i64 %x) {
@@ -162,23 +174,74 @@ _all_insts_lbot(pir) = [ins for b in pir.blocks for ins in b.instructions]
     end
 
     # =====================================================================
-    # GATE (b) — FAIL-LOUD: the overflow bit is not provably zero.
-    #   (b1) two-variable smul(%x,%y)
-    #   (b2) nonzero-const sadd(%x,5)
+    # GATE (b1) — STILL FAIL-LOUD: two-variable smul(%x,%y). Neither operand
+    # is a compile-time constant, so no admissible-interval bound exists;
+    # general mul-high/add-carry remains future work. Bennett-a70z REPLACED
+    # the message text ("not provably zero" → "two dynamic operands"); the
+    # "Bennett-lbot" tag is deliberately retained in the new message so the
+    # historical pin stays meaningful, and "Bennett-a70z" is pinned too so a
+    # future regression to the lbot-era predicate is caught by NAME.
     # =====================================================================
-    @testset "GATE (b) — non-provably-zero overflow bit fails loud" begin
+    @testset "GATE (b1) — two-dynamic-operand smul still fails loud" begin
         (st1, msg1) = _extract_ll_lbot("twovar", LBOT_TWO_VAR, "f"; cells=true)
         @test st1 === :err
         if st1 === :err
-            @test occursin("not provably zero", msg1)
+            @test occursin("two dynamic operands", msg1)
+            @test occursin("Bennett-a70z", msg1)
             @test occursin("Bennett-lbot", msg1)
+            @test occursin("UNSOUND", msg1)
         end
+    end
 
-        (st2, msg2) = _extract_ll_lbot("add5", LBOT_ADD5, "f"; cells=true)
-        @test st2 === :err
-        if st2 === :err
-            @test occursin("not provably zero", msg2)
-            @test occursin("Bennett-lbot", msg2)
+    # =====================================================================
+    # GATE (b2) — HONEST UPDATE (Bennett-a70z). `sadd(%x,5)` was pinned here
+    # as fail-loud ("not provably zero") because lbot could only admit a bit
+    # it could prove constant-0. a70z COMPUTES the exact bit, so this fixture
+    # legitimately extracts. The assertion is NOT weakened to "extraction
+    # succeeded": it is STRENGTHENED to a semantic check — the single emitted
+    # bit instruction is evaluated for boundary inputs and compared against
+    # `Base.Checked.add_with_overflow` at Int64. (Deep coverage — all four
+    # arms, i8-exhaustive, the encoded-bound path — lives in
+    # test_a70z_overflow_const_bit.jl; this gate pins that the FORMER WALL is
+    # now an exact bit, at the exact fixture that used to wall.)
+    # =====================================================================
+    @testset "GATE (b2) — sadd(%x,5) now yields the EXACT bit (was: walled)" begin
+        (st2, pir2) = _extract_ll_lbot("add5", LBOT_ADD5, "f"; cells=true)
+        @test st2 === :ok
+        if st2 === :ok
+            insts = _all_insts_lbot(pir2)
+            # Product unchanged: the lbot extractvalue-0 fuse.
+            prod = filter(x -> x isa IRBinOp && x.dest === :p && x.op === :add &&
+                               x.width == 64 &&
+                               x.op1 isa SSAOperand && x.op1.name === :x &&
+                               x.op2 isa ConstOperand && x.op2.value == 5, insts)
+            @test length(prod) == 1
+            # The bit: sadd by c>0 can only overflow at the TOP end, so the low
+            # arm folds constant-false and a single IRICmp carries dest=:o.
+            bits = filter(x -> x isa IRICmp && x.dest === :o, insts)
+            @test length(bits) == 1
+            # No :or, no leftover aggregate plumbing, no fold-to-zero placeholder.
+            @test !any(x -> x isa IRBinOp && x.dest === :o, insts)
+            @test !any(x -> x isa IRExtractValue, insts)
+            @test !any(x -> x isa IRCall, insts)
+            if length(bits) == 1
+                b = bits[1]
+                @test b.width == 64
+                @test b.op1 isa SSAOperand && b.op1.name === :x
+                @test b.op2 isa ConstOperand
+                # SEMANTIC: evaluate the ACTUAL emitted instruction against the
+                # native oracle at every boundary of x + 5 over Int64.
+                bnd = Int128(b.op2.value)
+                evalbit(x) = b.predicate === :sgt ? (Int128(x) >  bnd) :
+                             b.predicate === :slt ? (Int128(x) <  bnd) :
+                             error("GATE (b2): unexpected predicate :$(b.predicate)")
+                for x in (typemin(Int64), typemin(Int64) + 1, Int64(-6), Int64(-5),
+                          Int64(-1), Int64(0), Int64(1),
+                          typemax(Int64) - 6, typemax(Int64) - 5,
+                          typemax(Int64) - 4, typemax(Int64) - 1, typemax(Int64))
+                    @test evalbit(x) == add_with_overflow(x, Int64(5))[2]
+                end
+            end
         end
     end
 

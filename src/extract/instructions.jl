@@ -2514,7 +2514,9 @@ end
 #
 # The lbot fold-to-zero set (MUL c ∈ {0,1} — NOT -1: `smul(INT_MIN,-1)`
 # overflows; ADD c = 0) short-circuits to the byte-identical
-# IRBinOp(dest,:add,0,0,1) shape of the original lbot fuse. TWO DYNAMIC
+# IRBinOp(dest,:add,0,0,1) shape of the original lbot fuse. BOTH operands
+# constant folds to the literal bit in the same shape (`_ovf_const_bit`).
+# TWO DYNAMIC
 # operands still FAIL LOUD (general mul-high/add-carry is future work): a
 # placeholder-0 would route away from the throw the native code takes — UNSOUND
 # (CLAUDE.md §1).
@@ -2534,13 +2536,25 @@ function _fuse_overflow_extractvalue(call, cn, idx, dest, inst, names, counter)
     # idx == 1: overflow bit — exact for a constant operand, else FAIL LOUD.
     # mul/add are commutative: whichever operand is ConstantInt is `c` (`b`
     # checked first — Julia's memorynew shape puts the elsize there — but no
-    # reliance on operand order, Rule 5). Both-constant calls take the same
-    # path (const-vs-const IRICmp — exact, and rare enough not to special-case).
+    # reliance on operand order, Rule 5).
     signed = startswith(cn, "llvm.s")
-    if b isa LLVM.ConstantInt
-        xv, c = a, _const_int_as_int(b)
-    elseif a isa LLVM.ConstantInt
-        xv, c = b, _const_int_as_int(a)
+    ca = a isa LLVM.ConstantInt ? _const_int_as_int(a) : nothing
+    cb = b isa LLVM.ConstantInt ? _const_int_as_int(b) : nothing
+    if ca !== nothing && cb !== nothing
+        # BOTH operands constant → fold to the LITERAL exact bit (proposal B
+        # `_ovf_const_bit`). Deliberate (Bennett-a70z D3): the interval path
+        # would emit `IRICmp(ConstOperand, ConstOperand)`, whose only consumer
+        # on this gate is BennettVM's ingest (ptr_cells=true never reaches
+        # src/lowering/) — an out-of-repo shape this repo cannot verify. The
+        # literal fold reuses the SAME `IRBinOp(dest,:add,const,const,1)` shape
+        # BVM already ingests today on the fold-to-zero path, is exact by
+        # construction, and consumes no `counter` names (klgz determinism).
+        bit = _ovf_const_bit(op, ca, cb, N, signed)
+        return IRBinOp(dest, :add, iconst(bit), iconst(0), _iwidth(inst))
+    elseif cb !== nothing
+        xv, c = a, cb
+    elseif ca !== nothing
+        xv, c = b, ca
     else
         _ir_error(inst,
             "overflow bit of $cn with two dynamic operands ($(string(a)), $(string(b))) " *
@@ -2635,6 +2649,28 @@ function _ovf_bound_const(b::Int128, N::Int)
     u = UInt64(b & ((Int128(1) << N) - 1))    # low N bits, nonnegative
     s = 64 - N
     return Int(reinterpret(Int64, u << s) >> s)
+end
+
+# Bennett-a70z (D3): both operands compile-time constants → the exact overflow
+# bit is a LITERAL, evaluated in Int128 (`|x·c| ≤ 2^126` for N ≤ 64, so the
+# evaluation itself cannot overflow). `ca`/`cb` arrive SIGN-EXTENDED from width
+# N (`_const_int_as_int`); unsigned arms re-decode by masking, exactly as
+# `_ovf_admissible_range` does. Returns 0 or 1 (LangRef: the bit is set iff the
+# infinite-precision result is unrepresentable in the iN domain).
+function _ovf_const_bit(op::Symbol, ca::Int, cb::Int, N::Int, signed::Bool)
+    1 <= N <= 64 || error(
+        "ir_extract.jl: _ovf_const_bit: width $N out of range (Bennett-a70z)")
+    if signed
+        x, y = Int128(ca), Int128(cb)
+        lo = -(Int128(1) << (N - 1))
+        hi = (Int128(1) << (N - 1)) - 1
+    else
+        m = (Int128(1) << N) - 1
+        x, y = Int128(ca) & m, Int128(cb) & m
+        lo, hi = Int128(0), m
+    end
+    r = op === :mul ? x * y : x + y
+    return (r < lo || r > hi) ? 1 : 0
 end
 
 function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symbol},

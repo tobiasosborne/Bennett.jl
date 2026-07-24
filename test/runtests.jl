@@ -554,6 +554,17 @@ runfile("test_utzc_dead_block_pruner.jl")
 # ADD const == 0), else FAIL LOUD. Unblocks fdict `rehash!` (the GenericMemory
 # alloc-size check `smul(newsz,1)`). ptr_cells-gated: circuit path byte-identical.
 runfile("test_lbot_overflow_intrinsic.jl")
+# Bennett-a70z / CW-D (ADR 0017) — EXACT constant-operand overflow bit, the
+# successor to lbot's provably-zero-only fuse. When one operand of
+# `llvm.{s,u}{mul,add}.with.overflow.iN` is a compile-time ConstantInt `c`, the
+# overflow bit is COMPUTED (not walled) as the constant-folded admissible-
+# interval membership test `bit = (x < L) | (x > U)` on the dynamic operand —
+# ≤ 2 IRICmp + 1 IRBinOp(:or, w=1), bounds from cld/fld in Int128. Both operands
+# constant folds to a literal bit; both dynamic still FAILS LOUD. This clears
+# the `smul(%value_phi, 8)` elsize-8 wall in `rehash!` and closes extraction of
+# the whole `Dict{Int64,Int64}` closed-world set. ptr_cells-gated: circuit path
+# byte-identical.
+runfile("test_a70z_overflow_const_bit.jl")
 # Bennett-8bys / CW-D (ADR 0017) — VARIABLE-size `llvm.memset.p0.i64` under the
 # closed-world `ptr_cells` gate. Predicate 5 (non-const N) routes to a bare
 # IRCall(:memset,[dst_cell,byte,nbytes],[64,8,64],64) → BVM's reversible
