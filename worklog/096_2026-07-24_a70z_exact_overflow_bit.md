@@ -152,3 +152,50 @@ ptr_cells-gated, the circuit path cannot move) · `test_lf14_ptr_return_cells.jl
 547/547 · `test_d1b_julia_set.jl` 33/33 +1 broken (pre-existing) ·
 `test_utzc_dead_block_pruner.jl` 31/31 · `test_yd4f_undef_phi_cells.jl` 25/25.
 Full `Pkg.test()` NOT run in this leg — gated by the orchestrator.
+
+### Orchestrator gate + cross-repo verification (same session, after the implementer leg)
+
+**Bennett.jl full `Pkg.test()`: 690398 Pass / 3 Broken / 690401 total, 28m37s,
+`JULIA_NUM_THREADS=32`, heavy tests ON** (a strictly stronger gate than the
+`BENNETT_JL_PIN.md` entry's previous `BENNETT_HEAVY_TESTS=0` run). Zero
+failures, zero errors. The 3 Broken are entirely pre-existing: `@test_broken`
+counts are byte-identical between this branch and pre-merge `main`
+(`runtests.jl` 1, `test_d1b_julia_set.jl` 3, `test_hygiene_aqua_jet.jl` 2,
+`test_memory_corpus.jl` 2, `test_mixed_width.jl` 1, `test_value_eager.jl` 1).
+a70z in fact *removed* one broken — the WIP's `@test_broken msg == ""` became a
+real `@test`. The pin's older "2 pre-existing Broken" was measured with heavy
+tests OFF; the third lives in the heavy block.
+
+**Cross-repo (the half the implementer explicitly left unverified): DISCHARGED,
+with ZERO BennettVM source changes.** `Dict{Int64,Int64}` goes all four stages —
+extract (4 bodies) → `lower_vm` (552-block `VMProgram`, all 8 a70z `IRICmp`s
+become width-64 `Define`s and the 4 `:or`s width-1 `Define`s) → run (664 steps,
+`fdict64(3,7) == 7`, `fdict64(5,9) == 9`) → `unrun!` (exact initial state, empty
+history, `step_count == 0`) under **both** L2 and L3. New
+`BennettVM.jl/test/test_a70z_dict64_roundtrip.jl`, 347 assertions,
+mutation-proved (`_A70Z_HI + 1` → 11 failures), hostile-reviewed. BennettVM full
+suite 7820/7820.
+
+**Two findings from the cross-repo leg worth keeping:**
+
+* **`__vN` SSA names COLLIDE across bodies in a multi-body closed-world run.**
+  A first probe read the fuse bit `__v152` by name and got `1099511628136`
+  = `ARENA_BASE (2^40) + 360` — a heap pointer belonging to a *different
+  frame's* identically-named value. Any name-keyed inspection of a closed-world
+  multi-body trajectory is frame-ambiguous; resolve `_instruction_at(prog, pc)`
+  and read frame-exactly instead.
+* **The overflowing arm is DYNAMICALLY UNREACHABLE and always will be.** The
+  only operand value the real trajectory ever presents is `16` (the initial
+  `Dict` slot count) — 57 binades from either boundary — and a `Dict` with more
+  than `2^60` slots cannot be allocated. So `bit == 1` can never be covered by
+  execution; it is covered arithmetically instead (upstream `(a)`/`(a2)`/`(a3)`
+  oracle sweeps, and a downstream `(d0)` testset asserting the bounds are
+  *tight*, not merely sound, against `Base.Checked.mul_with_overflow`). Do not
+  read the absent dynamic coverage as a gap that a better test could close.
+
+**Environmental caveat on the BVM number (see `bennettvm-5o86`):** 7820 is
+*lower* than the pin's previous 9848 because **this box has no clang**, so the
+clang-gated e2e blocks self-skip per the T5-corpus convention. Environmental,
+not a regression — a70z only added a test file. But it means a "green" here is
+~20 % weaker than one from the other box, announced only by two easily-missed
+`@info` lines.
