@@ -1,5 +1,88 @@
 # worklog chunk 095 — 2026-07-12 — Bennett-klgz determinism guard
 
+## Session log — 2026-07-24 — cross-repo beads sync (Bennett.jl + BennettVM.jl), second pass
+
+Operational session, no source/compiler changes. Re-ran the worklog-090 playbook
+on a DIFFERENT machine (`/home/tobiasosborne/...`, not the `/home/tobias/...`
+box that produced the 2026-07-21 truth-up commits). Both repos were already at
+`origin` HEAD (0 ahead / 0 behind after `git fetch`) — the divergence was
+entirely *inside* the beads layer, and it was the SAME two failure modes 090
+documented. The playbook held; nothing new was learned about it, which is
+itself the finding worth recording.
+
+### BennettVM.jl — local dolt DB lagged the committed jsonl (the jsonl-only model)
+
+`bd stats` read **216 issues / 129 closed / 2 in_progress**, but the git-tracked
+`.beads/issues.jsonl` (committed 2026-07-21 in `4ca1f1f`) held **217 issues +
+1 memory / 143 closed**. Concretely: `bd show bennettvm-7xa` said **OPEN** while
+the jsonl had it **closed 2026-07-21T12:20:22Z** — i.e. the local DB still
+believed the P0 SC9-Case-B gate was open. This is the exact hazard 090 flagged:
+BennettVM's `.beads/embeddeddolt/` is NOT git-tracked, so `git pull` moves the
+jsonl and leaves the dolt DB behind. `bd import` healed it in one step
+("Imported 217 issues and 1 memories"), landing on 217 / 143 closed / 74 open
+with the `case-b-closed-world-settled` memory intact.
+
+**Nothing to commit on the VM side** — `git status .beads/` was clean after the
+import (bd did NOT auto-re-export and re-dirty the jsonl this time, unlike the
+090 session; do not assume it will stay that way — check).
+
+### Bennett.jl — the dolt store was current, the jsonl was 5 weeks stale
+
+Mirror image, per the dolt-in-git model. The dolt store (git-tracked, source of
+truth here) read **595 issues + 9 memories**; `issues.jsonl` was pinned at the
+**593 issues / 0 memories** last exported 2026-07-19. Cause: commit `9c1b77e`
+(the 2026-07-21 truth-up) touched ONLY `noms/journal.idx` — the jsonl was never
+re-exported alongside it. Semantic delta recovered by `bd export`:
+
+- **+2 issues never in the jsonl**: `Bennett-a70z` (in_progress) and
+  `Bennett-zdd6` (open) — both filed by the 2026-07-21 truth-up.
+- **3 status changes**: `44dg`, `800b`, `eln6` open/in_progress → **closed**.
+- **+9 memories**: the tracked export had *zero*. (090 blamed a bd version whose
+  default export dropped memories; the current bd includes them by default and
+  `--no-memories` is the opt-out. So the memory-dropping gotcha is FIXED
+  upstream — but it means a fresh export now legitimately *grows* the file.)
+- **Format churn**: current bd stamps `"_type":"issue"` on every record, so the
+  raw diff touches all 593 pre-existing lines. That is cosmetic; the semantic
+  diff above is what justified the commit. **Diff semantically, not by line
+  count** (090 lesson 1) — here the line-diff would have looked alarming and the
+  semantics were real, the inverse of the 090 BennettVM case where a 435-line
+  diff was pure churn.
+
+### `repo_state.json` machine-path ping-pong — CONFIRMED, second sighting
+
+090 lesson 2 predicted this and it fired exactly as described: merely *reading*
+the DB (`bd stats` / `bd memories`) rewrote
+`.beads/embeddeddolt/beads/.dolt/repo_state.json`'s `backup_export` URL from
+origin's `file:///home/tobias/...` to this box's `file:///home/tobiasosborne/...`.
+Committing that would ping-pong the field forever between the user's two
+machines. **Reverted, not committed.**
+
+Same treatment for the rest of the dolt churn: `noms/journal.idx` (+87 B),
+`noms/vvvv…` (+731 B) and an emptied `git-remote-cache/…/FETCH_HEAD`. Attribution
+was by **mtime** — every dirty file was stamped within this session's 17:50–17:56
+window, and no file under `.dolt/` carried a 2026-07-21 mtime, proving the bytes
+were read-side bookkeeping (plus the failed dolt auto-push truncating FETCH_HEAD)
+and NOT uncommitted bead work. `git checkout -- .beads/embeddeddolt/` restored a
+consistent snapshot; `bd stats` still read 595 / 9 memories / `a70z` present
+afterwards, so nothing was lost. **The mtime check is the cheap way to decide
+whether dolt dirt is real** — add it to the playbook.
+
+`bd dolt push` still fails (`Error 1105 … did not send all necessary objects`
+against the HTTPS remote) — expected, per the user's standing note; git-over-SSH
+is the transport for both repos.
+
+### Leftovers deliberately NOT touched
+
+- `Bennett.jl/AGENTS.md` — untracked, and a **stale fork of CLAUDE.md**: it still
+  names `worklog/038` as the top chunk and still tells agents to "re-run
+  `python3 scripts/shard_worklog.py` if structure drifts", which CLAUDE.md now
+  explicitly forbids (the script wipes every chunk file). Left untracked; do not
+  commit it as-is, and do not follow it.
+- `BennettVM.jl/references/{ad-and-checkpointing,foundational,implementations,quantum-uncomputation,reverse-debugging,reversible-ir,reversible-isa,reversible-languages}/`
+  — untracked literature drops, owner's call whether they belong in git.
+- A junk memory in Bennett.jl's DB, key `list`, body `list` (a mis-typed
+  `bd remember`). Harmless; now visible in the tracked export.
+
 ## Session log — 2026-07-21 — tracker truth-up + Bennett-a70z (bsng) 3+1 design phase; impl parked as WIP
 
 **Orchestrated session (Fable orchestrator, serial subagents: auditor → scout →
