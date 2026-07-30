@@ -23,6 +23,7 @@
 # Oracle throughout: Base.Checked.{mul,add}_with_overflow at native width.
 
 using Test
+using Random: MersenneTwister
 using Bennett
 using Bennett: extract_parsed_ir_from_ll, extract_parsed_ir_set_from_julia,
                ParsedIR, IRBinOp, IRICmp, IRCall, IRExtractValue,
@@ -157,6 +158,123 @@ function _a70z_encoded_bit(op::Symbol, c::Int, N::Int, signed::Bool, xraw::Integ
     hi = U === nothing ? false : xv > dec(Bennett._ovf_bound_const(U, N))
     return lo || hi
 end
+
+# --- Bennett-tl1l: N ∈ {16, 32} coverage helpers --------------------------
+#
+# `_a70z_range_bit` / `_a70z_encoded_bit` above recompute `_ovf_admissible_range`
+# once per x. That is fine at N=8 (256 x values) but not at N=16 (65536 x per
+# constant). Both helpers are PURE functions of `(op, c, N, signed)`, so the
+# wide sweeps below hoist the call out of the x loop and sweep through a
+# type-stable closure. Semantics are identical: a DROPPED arm (`nothing`) is
+# encoded as a sentinel bound that can never fire (`typemin`/`typemax(Int128)`),
+# which is exactly what "constant-false comparison over the whole iN domain"
+# means. Sanity-checked against the per-x helpers at N=8 in (a5).
+
+# Number of surviving comparison arms — 0 (fold-to-zero), 1 (ONE-SIDED: a single
+# IRICmp carrying the extractvalue's own dest) or 2 (two IRICmp + width-1 :or).
+function _a70z_arity(op::Symbol, c::Int, N::Int, signed::Bool)
+    L, U, always0 = Bennett._ovf_admissible_range(op, c, N, signed)
+    always0 && return 0
+    return (L !== nothing ? 1 : 0) + (U !== nothing ? 1 : 0)
+end
+
+# Mathematical-Int128 bound predicate (the `_a70z_range_bit` semantics, hoisted).
+function _a70z_range_pred(op::Symbol, c::Int, N::Int, signed::Bool)
+    L, U, always0 = Bennett._ovf_admissible_range(op, c, N, signed)
+    always0 && return (_x -> false)
+    lo = L === nothing ? typemin(Int128) : L    # sentinel: `x < typemin` never fires
+    hi = U === nothing ? typemax(Int128) : U    # sentinel: `x > typemax` never fires
+    return let lo = Int128(lo), hi = Int128(hi)
+        x -> (Int128(x) < lo) | (Int128(x) > hi)
+    end
+end
+
+# ENCODED-bound predicate (the `_a70z_encoded_bit` semantics, hoisted): bounds go
+# through `_ovf_bound_const` and are compared with the emitted predicate's
+# bit-pattern semantics. Argument is the RAW N-bit pattern of x.
+function _a70z_encoded_pred(op::Symbol, c::Int, N::Int, signed::Bool)
+    L, U, always0 = Bennett._ovf_admissible_range(op, c, N, signed)
+    always0 && return (_x -> false)
+    dec(v) = signed ? _a70z_sxt(Int128(v), N) : _a70z_uns(Int128(v), N)
+    lo = L === nothing ? typemin(Int128) : dec(Bennett._ovf_bound_const(L, N))
+    hi = U === nothing ? typemax(Int128) : dec(Bennett._ovf_bound_const(U, N))
+    return let lo = Int128(lo), hi = Int128(hi), sg = signed, w = N
+        xraw -> begin
+            xv = sg ? _a70z_sxt(Int128(xraw), w) : _a70z_uns(Int128(xraw), w)
+            (xv < lo) | (xv > hi)
+        end
+    end
+end
+
+# Boundary-adjacent raw N-bit probes: domain edges, 0/1/2, and L-2..L+2 /
+# U-2..U+2 around each surviving interval endpoint. NB the probe SELECTION reads
+# `_ovf_admissible_range` (the function under test) — that is sound because the
+# selection only decides WHERE to look; every assertion's ORACLE is
+# `Base.Checked` at the native width. Returns raw N-bit patterns as `UInt32`
+# (only used at N ≤ 32).
+function _a70z_probes(op::Symbol, c::Int, N::Int, signed::Bool)
+    L, U, _ = Bennett._ovf_admissible_range(op, c, N, signed)
+    m  = _a70z_mask(N)
+    ps = Int128[0, 1, 2, m, m - 1, m - 2,
+                Int128(1) << (N - 1), (Int128(1) << (N - 1)) - 1]
+    for b in (L, U)
+        b === nothing && continue
+        for d in -2:2
+            push!(ps, (b + d) & m)
+        end
+    end
+    return unique(UInt32[UInt32(v & m) for v in ps])
+end
+
+# Compiled sweep kernels. Both closures come in as TYPE PARAMETERS so their
+# calls are statically dispatched — a global-scope loop over ~10^7 x values
+# through a `::Function`-typed binding would be dynamic and unacceptably slow.
+# `xraws` carries RAW N-bit patterns in the matching unsigned type. Returns the
+# number of oracle disagreements across BOTH readings (mathematical + encoded).
+function _a70z_sweep_signed(p::P, q::Q, c::T, mulp::Bool,
+                            xraws)::Int where {P, Q, T <: Signed}
+    bad = 0
+    for xraw in xraws
+        x = reinterpret(T, xraw)
+        o = mulp ? mul_with_overflow(x, c)[2] : add_with_overflow(x, c)[2]
+        bad += (p(Int128(x)) != o) + (q(Int128(xraw)) != o)
+    end
+    return bad
+end
+
+function _a70z_sweep_unsigned(p::P, q::Q, c::U, mulp::Bool,
+                              xraws)::Int where {P, Q, U <: Unsigned}
+    bad = 0
+    for xr in xraws
+        xraw = U(xr)
+        o = mulp ? mul_with_overflow(xraw, c)[2] : add_with_overflow(xraw, c)[2]
+        bad += (p(Int128(xraw)) != o) + (q(Int128(xraw)) != o)
+    end
+    return bad
+end
+
+# Curated constants, N = 16. Chosen to hit every arm and its folding boundary:
+# domain edges, ±1/±2, the c = -1 one-sided smul trigger, the fold set {0,1}
+# (mul) / {0} (add), a √domain value (181 ≈ √32767, where L and U are tight),
+# and a few mid-range/power-of-two values.
+const _A70Z_C16_SMUL = Int16[-32768, -32767, -16384, -256, -181, -3, -2, -1,
+                             0, 1, 2, 3, 181, 256, 16384, 32766, 32767]
+const _A70Z_C16_SADD = Int16[-32768, -32767, -100, -5, -1, 0, 1, 5, 100,
+                             32766, 32767]
+const _A70Z_C16_UMUL = UInt16[0, 1, 2, 3, 181, 182, 255, 256, 257,
+                              32767, 32768, 32769, 65534, 65535]
+const _A70Z_C16_UADD = UInt16[0, 1, 2, 100, 32768, 65534, 65535]
+
+# Curated constants, N = 32 (same rationale; 46341 ≈ √typemax(Int32), 8 is the
+# real-corpus elsize constant from the `Dict{Int64,Int64}` rehash! site).
+const _A70Z_C32_SMUL = Int32[-2147483648, -2147483647, -1073741824, -65536,
+                             -46341, -8, -3, -2, -1, 0, 1, 2, 3, 8, 46341,
+                             65536, 1073741824, 2147483646, 2147483647]
+const _A70Z_C32_SADD = Int32[-2147483648, -2147483647, -1000, -5, -1, 0, 1, 5,
+                             1000, 2147483646, 2147483647]
+const _A70Z_C32_UMUL = UInt32[0, 1, 2, 3, 8, 65535, 65536, 65537, 2147483647,
+                              2147483648, 2147483649, 4294967294, 4294967295]
+const _A70Z_C32_UADD = UInt32[0, 1, 2, 1000, 2147483648, 4294967294, 4294967295]
 
 @testset "Bennett-a70z: exact constant-operand overflow bit" begin
 
@@ -320,6 +438,263 @@ end
             @test !any(x -> x isa IRICmp, insts)          # no const-vs-const compare
             @test !any(x -> x isa IRExtractValue || x isa IRCall, insts)
             @test !any(x -> startswith(String(x.dest), "__v"), insts)  # zero counter churn
+        end
+    end
+
+    # =====================================================================
+    # (a5) Bennett-tl1l — N = 16 CURATED-CONSTANT / FULL-x sweep.
+    #      Residual gap (3) of Bennett-a70z: `_ovf_admissible_range` /
+    #      `_ovf_bound_const` were total-swept only at N = 8, with N = 64
+    #      spot-checks; widths 16 and 32 had NO direct coverage. Here every one
+    #      of the 65536 i16 inputs is checked, for each curated constant, in
+    #      BOTH the mathematical-Int128 and the `_ovf_bound_const`-ENCODED
+    #      readings, against `Base.Checked` at Int16/UInt16. (A full 65536 x
+    #      65536 all-pairs sweep is deliberately NOT run — the constant space is
+    #      already totally swept at N = 8, and the formulas are width-generic.)
+    # =====================================================================
+    @testset "(a5) N=16 curated constants x full 65536-input sweep vs oracle" begin
+        # The hoisted closures agree with the per-x helpers used by (a2)/(a3) —
+        # i.e. the speed-up below introduces no semantic drift.
+        drift = 0
+        for craw in 0:255
+            cs = Int(reinterpret(Int8, UInt8(craw)))
+            for (op, sg) in ((:mul, true), (:add, true), (:mul, false), (:add, false))
+                p = _a70z_range_pred(op, cs, 8, sg)
+                q = _a70z_encoded_pred(op, cs, 8, sg)
+                for xraw in 0:255
+                    xv = sg ? Int128(reinterpret(Int8, UInt8(xraw))) : Int128(xraw)
+                    drift += (p(xv) != _a70z_range_bit(op, cs, 8, sg, xv))
+                    drift += (q(xraw) != _a70z_encoded_bit(op, cs, 8, sg, xraw))
+                end
+            end
+        end
+        @test drift == 0
+
+        # ARM ARITY — the emission SHAPE at N=16 (0 = fold-to-zero literal,
+        # 1 = ONE-SIDED single IRICmp, 2 = two IRICmp + width-1 :or).
+        @test _a70z_arity(:mul,  0, 16, true) == 0
+        @test _a70z_arity(:mul,  1, 16, true) == 0
+        @test _a70z_arity(:add,  0, 16, true) == 0
+        @test _a70z_arity(:mul, -1, 16, true) == 1   # U = 2^15 folds at the edge
+        @test all(c -> _a70z_arity(:mul, Int(c), 16, true) == 2,
+                  filter(c -> !(c in (Int16(-1), Int16(0), Int16(1))), _A70Z_C16_SMUL))
+        # EVERY signed add is one-sided (one bound always leaves the domain) ...
+        @test all(c -> _a70z_arity(:add, Int(c), 16, true) == (c == 0 ? 0 : 1),
+                  _A70Z_C16_SADD)
+        # ... and EVERY unsigned op is one-sided (L = 0 = the domain floor).
+        @test all(c -> _a70z_arity(:mul, Int(reinterpret(Int16, c)), 16, false) ==
+                       (c in (UInt16(0), UInt16(1)) ? 0 : 1), _A70Z_C16_UMUL)
+        @test all(c -> _a70z_arity(:add, Int(reinterpret(Int16, c)), 16, false) ==
+                       (c == UInt16(0) ? 0 : 1), _A70Z_C16_UADD)
+
+        allx16 = UInt16(0):UInt16(65535)      # every representable i16 input
+        bad = 0
+        for (cs16, op, mulp) in Iterators.flatten((
+                ((c, :mul, true)  for c in _A70Z_C16_SMUL),
+                ((c, :add, false) for c in _A70Z_C16_SADD)))
+            c = Int(cs16)
+            bad += _a70z_sweep_signed(_a70z_range_pred(op, c, 16, true),
+                                      _a70z_encoded_pred(op, c, 16, true),
+                                      cs16, mulp, allx16)
+        end
+        for (cu16, op, mulp) in Iterators.flatten((
+                ((c, :mul, true)  for c in _A70Z_C16_UMUL),
+                ((c, :add, false) for c in _A70Z_C16_UADD)))
+            c = Int(reinterpret(Int16, cu16))     # sext decode, as extraction does
+            bad += _a70z_sweep_unsigned(_a70z_range_pred(op, c, 16, false),
+                                        _a70z_encoded_pred(op, c, 16, false),
+                                        cu16, mulp, allx16)
+        end
+        @test bad == 0
+
+        # `_ovf_bound_const` at N = 16 directly (the sext encoder).
+        @test Bennett._ovf_bound_const(Int128(65534), 16) == -2
+        @test Bennett._ovf_bound_const(Int128(32768), 16) == -32768
+        @test Bennett._ovf_bound_const(Int128(32767), 16) == 32767
+        @test Bennett._ovf_bound_const(Int128(-32768), 16) == -32768
+        @test Bennett._ovf_bound_const(Int128(0), 16) == 0
+
+        # BOTH-CONSTANT fold at N = 16 (`_ovf_const_bit`), curated pairs.
+        for (c1, c2) in ((Int16(181), Int16(181)),      # 32761 fits
+                         (Int16(182), Int16(181)),      # 32942 overflows
+                         (Int16(-32768), Int16(-1)),    # smul(INT16_MIN,-1)
+                         (Int16(32767), Int16(1)),
+                         (Int16(-1), Int16(-1)))
+            @test Bennett._ovf_const_bit(:mul, Int(c1), Int(c2), 16, true) ==
+                  (mul_with_overflow(c1, c2)[2] ? 1 : 0)
+            @test Bennett._ovf_const_bit(:add, Int(c1), Int(c2), 16, true) ==
+                  (add_with_overflow(c1, c2)[2] ? 1 : 0)
+            u1, u2 = reinterpret(UInt16, c1), reinterpret(UInt16, c2)
+            @test Bennett._ovf_const_bit(:mul, Int(c1), Int(c2), 16, false) ==
+                  (mul_with_overflow(u1, u2)[2] ? 1 : 0)
+            @test Bennett._ovf_const_bit(:add, Int(c1), Int(c2), 16, false) ==
+                  (add_with_overflow(u1, u2)[2] ? 1 : 0)
+        end
+    end
+
+    # =====================================================================
+    # (a6) Bennett-tl1l — N = 32: curated constants x (boundary-adjacent
+    #      probes + a SEEDED random sweep). 2^32 inputs cannot be enumerated,
+    #      so the x set is (i) every value within ±2 of each surviving interval
+    #      endpoint, the domain edges and 0/1/2, and (ii) a fixed-seed
+    #      MersenneTwister pool of 2^17 raw patterns shared across all
+    #      constants (> 10^5 x values). Oracle: `Base.Checked` at Int32/UInt32.
+    # =====================================================================
+    @testset "(a6) N=32 curated constants — boundary probes + seeded random" begin
+        @test _a70z_arity(:mul,  0, 32, true) == 0
+        @test _a70z_arity(:mul,  1, 32, true) == 0
+        @test _a70z_arity(:add,  0, 32, true) == 0
+        @test _a70z_arity(:mul, -1, 32, true) == 1
+        @test all(c -> _a70z_arity(:mul, Int(c), 32, true) == 2,
+                  filter(c -> !(c in (Int32(-1), Int32(0), Int32(1))), _A70Z_C32_SMUL))
+        @test all(c -> _a70z_arity(:add, Int(c), 32, true) == (c == 0 ? 0 : 1),
+                  _A70Z_C32_SADD)
+        @test all(c -> _a70z_arity(:mul, Int(reinterpret(Int32, c)), 32, false) ==
+                       (c in (UInt32(0), UInt32(1)) ? 0 : 1), _A70Z_C32_UMUL)
+        @test all(c -> _a70z_arity(:add, Int(reinterpret(Int32, c)), 32, false) ==
+                       (c == UInt32(0) ? 0 : 1), _A70Z_C32_UADD)
+
+        rng  = MersenneTwister(20260730)          # fixed literal seed (klgz)
+        pool = rand(rng, UInt32, 1 << 17)
+        @test length(pool) >= 100_000
+
+        bad = 0
+        nprobe = 0
+        for (cs32, op, mulp) in Iterators.flatten((
+                ((c, :mul, true)  for c in _A70Z_C32_SMUL),
+                ((c, :add, false) for c in _A70Z_C32_SADD)))
+            c = Int(cs32)
+            p = _a70z_range_pred(op, c, 32, true)
+            q = _a70z_encoded_pred(op, c, 32, true)
+            probes = _a70z_probes(op, c, 32, true)
+            nprobe += length(probes)
+            bad += _a70z_sweep_signed(p, q, cs32, mulp, probes)
+            bad += _a70z_sweep_signed(p, q, cs32, mulp, pool)
+        end
+        for (cu32, op, mulp) in Iterators.flatten((
+                ((c, :mul, true)  for c in _A70Z_C32_UMUL),
+                ((c, :add, false) for c in _A70Z_C32_UADD)))
+            c = Int(reinterpret(Int32, cu32))     # sext decode, as extraction does
+            p = _a70z_range_pred(op, c, 32, false)
+            q = _a70z_encoded_pred(op, c, 32, false)
+            probes = _a70z_probes(op, c, 32, false)
+            nprobe += length(probes)
+            bad += _a70z_sweep_unsigned(p, q, cu32, mulp, probes)
+            bad += _a70z_sweep_unsigned(p, q, cu32, mulp, pool)
+        end
+        @test bad == 0
+        @test nprobe >= 300          # non-vacuity of the boundary-probe half
+
+        @test Bennett._ovf_bound_const(Int128(4294967294), 32) == -2
+        @test Bennett._ovf_bound_const(Int128(2147483648), 32) == -2147483648
+        @test Bennett._ovf_bound_const(Int128(2147483647), 32) == 2147483647
+        @test Bennett._ovf_bound_const(Int128(-2147483648), 32) == -2147483648
+        @test Bennett._ovf_bound_const(Int128(0), 32) == 0
+
+        for (c1, c2) in ((Int32(46341), Int32(46341)),   # 2147488281 > typemax
+                         (Int32(46340), Int32(46340)),   # 2147395600 fits
+                         (Int32(-2147483648), Int32(-1)),
+                         (Int32(2147483647), Int32(1)),
+                         (Int32(-1), Int32(-1)))
+            @test Bennett._ovf_const_bit(:mul, Int(c1), Int(c2), 32, true) ==
+                  (mul_with_overflow(c1, c2)[2] ? 1 : 0)
+            @test Bennett._ovf_const_bit(:add, Int(c1), Int(c2), 32, true) ==
+                  (add_with_overflow(c1, c2)[2] ? 1 : 0)
+            u1, u2 = reinterpret(UInt32, c1), reinterpret(UInt32, c2)
+            @test Bennett._ovf_const_bit(:mul, Int(c1), Int(c2), 32, false) ==
+                  (mul_with_overflow(u1, u2)[2] ? 1 : 0)
+            @test Bennett._ovf_const_bit(:add, Int(c1), Int(c2), 32, false) ==
+                  (add_with_overflow(u1, u2)[2] ? 1 : 0)
+        end
+    end
+
+    # =====================================================================
+    # (a7) Bennett-tl1l — FULL EXTRACTION PATH at N ∈ {16, 32}: the helper
+    #      sweeps above are unit-level; this drives the same widths through
+    #      `_fuse_overflow_extractvalue` and pins the EMITTED shape (one-sided
+    #      = a single IRICmp carrying the extractvalue's own dest and NO
+    #      width-1 :or; two-sided = 2 IRICmp + 1 :or), then evaluates the
+    #      emitted instructions against `Base.Checked`.
+    # =====================================================================
+    @testset "(a7) full-path i16/i32 emission shape + semantics" begin
+        # i16, exhaustive over all 65536 inputs.
+        for (intr, cst, sg, arity) in (("smul", 181, true, 2),
+                                       ("smul", -1,  true, 1),
+                                       ("sadd", 100, true, 1),
+                                       ("umul", 300, false, 1),
+                                       ("uadd", 1,   false, 1))
+            cs = sg ? cst : Int(reinterpret(Int16, UInt16(cst)))
+            (st, pir) = _extract_ll_a70z("$(intr)16_$(cst)",
+                                         _a70z_fixture(intr, 16, string(cs)), "f"; cells=true)
+            @test st === :ok
+            st === :ok || continue
+            insts = _all_insts_a70z(pir)
+            cmps = filter(x -> x isa IRICmp, insts)
+            ors  = filter(x -> x isa IRBinOp && x.op === :or && x.width == 1, insts)
+            @test length(cmps) == arity
+            @test length(ors) == (arity == 2 ? 1 : 0)
+            if arity == 1
+                @test cmps[1].dest === :o            # ONE-SIDED: own dest, no :or
+                @test !any(x -> startswith(String(x.dest), "__v"), insts)
+            end
+            @test !any(x -> x isa IRExtractValue || x isa IRCall, insts)
+            ok = true
+            for xraw in 0:65535
+                oracle = if sg
+                    x = reinterpret(Int16, UInt16(xraw))
+                    intr == "smul" ? mul_with_overflow(x, Int16(cst))[2] :
+                                     add_with_overflow(x, Int16(cst))[2]
+                else
+                    x = UInt16(xraw)
+                    intr == "umul" ? mul_with_overflow(x, UInt16(cst))[2] :
+                                     add_with_overflow(x, UInt16(cst))[2]
+                end
+                got = _a70z_eval_bit(pir, 16, xraw)
+                got == oracle || (ok = false; @error "$intr i16 mismatch" cst xraw oracle got; break)
+            end
+            @test ok
+        end
+
+        # i32, boundary probes + a seeded random pool (2^32 is not enumerable).
+        rng32 = MersenneTwister(730202607)
+        for (intr, cst, sg, arity) in (("smul", 46341, true, 2),
+                                       ("smul", -1,    true, 1),
+                                       ("sadd", -1000, true, 1),
+                                       ("umul", 3,     false, 1),
+                                       ("uadd", 2147483648, false, 1))
+            cs = sg ? cst : Int(reinterpret(Int32, UInt32(cst)))
+            (st, pir) = _extract_ll_a70z("$(intr)32_$(cst)",
+                                         _a70z_fixture(intr, 32, string(cs)), "f"; cells=true)
+            @test st === :ok
+            st === :ok || continue
+            insts = _all_insts_a70z(pir)
+            cmps = filter(x -> x isa IRICmp, insts)
+            ors  = filter(x -> x isa IRBinOp && x.op === :or && x.width == 1, insts)
+            @test length(cmps) == arity
+            @test length(ors) == (arity == 2 ? 1 : 0)
+            if arity == 1
+                @test cmps[1].dest === :o        # ONE-SIDED: own dest, no :or
+                @test !any(x -> startswith(String(x.dest), "__v"), insts)
+            end
+            @test all(x -> x.width == 32, cmps)
+            @test !any(x -> x isa IRExtractValue || x isa IRCall, insts)
+            op = (intr == "smul" || intr == "umul") ? :mul : :add
+            xs = copy(_a70z_probes(op, cs, 32, sg))
+            append!(xs, rand(rng32, UInt32, 4096))
+            ok = true
+            for xraw in xs
+                oracle = if sg
+                    x = reinterpret(Int32, xraw)
+                    op === :mul ? mul_with_overflow(x, Int32(cst))[2] :
+                                  add_with_overflow(x, Int32(cst))[2]
+                else
+                    op === :mul ? mul_with_overflow(xraw, UInt32(cst))[2] :
+                                  add_with_overflow(xraw, UInt32(cst))[2]
+                end
+                got = _a70z_eval_bit(pir, 32, xraw)
+                got == oracle || (ok = false; @error "$intr i32 mismatch" cst xraw oracle got; break)
+            end
+            @test ok
         end
     end
 
