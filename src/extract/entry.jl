@@ -58,7 +58,24 @@ function extract_parsed_ir(f, arg_types::Type{<:Tuple};
                            mem::Symbol=:auto,
                            ptr_cells::Bool=false)
     ir_string = sprint(io -> code_llvm(io, f, arg_types; debuginfo=:none, optimize, dump_module=true))
+    return _parsed_ir_from_ir_string(ir_string; preprocess=preprocess, passes=passes,
+                                     use_memory_ssa=use_memory_ssa, mem=mem,
+                                     ptr_cells=ptr_cells)
+end
 
+# Bennett-40ys: the TAIL of `extract_parsed_ir`, factored out VERBATIM so the
+# by-value entry (`extract_parsed_ir`, above) and the by-signature entry
+# (`extract_parsed_ir_by_sig`, below) share every pass-pipeline step, every
+# fail-loud and the memssa stamp. ONLY the IR *source* differs between them
+# (`code_llvm` vs `_code_llvm_by_sig`), so the two entries cannot drift — which
+# is what lets the by-sig path inherit the by-value path's tested behaviour
+# wholesale (Rule 12: no duplicated lowering).
+function _parsed_ir_from_ir_string(ir_string::AbstractString;
+                                   preprocess::Bool=false,
+                                   passes::Vector{String}=String[],
+                                   use_memory_ssa::Bool=false,
+                                   mem::Symbol=:auto,
+                                   ptr_cells::Bool=false)
     effective_passes = String[]
     if preprocess
         append!(effective_passes, DEFAULT_PREPROCESSING_PASSES)
@@ -100,6 +117,43 @@ function extract_parsed_ir(f, arg_types::Type{<:Tuple};
                           result.synth_ptr_provenance)
     end
     return result
+end
+
+"""
+    extract_parsed_ir_by_sig(sig::Type{<:Tuple}; optimize=false, preprocess=false,
+        passes=String[], use_memory_ssa=false, mem=:auto, ptr_cells=false) -> ParsedIR
+
+`extract_parsed_ir` for a callee that cannot be named by a VALUE. `sig` is the
+FULL specTypes signature `Tuple{callee_key, argtypes...}` — the un-split form of
+a `transitive_callees` pair (`_spectypes_of` reassembles it).
+
+Needed because a closure or functor callee key discovered by the closed-world
+walker has no `.instance` to hand `code_llvm`: Julia 1.12 outlines `_growend!`'s
+slow path into a closure, so every `push!`-bearing function has one
+(Bennett-40ys). See `src/extract/sig_llvm.jl` for why a signature suffices and
+for the Rule 5/9 caveat on the internals involved.
+
+Every kwarg, pass-pipeline step and fail-loud is SHARED with `extract_parsed_ir`
+via `_parsed_ir_from_ir_string`; only the IR source differs.
+
+`entry_function` selection is deliberately left at `nothing`
+(`_find_entry_function`'s "first `julia_*` with a body" rule) — identical to
+`extract_parsed_ir`, and correct here: the requested method is emitted first in
+its own module, ahead of the `jfptr_*` wrapper (which does not start with
+`julia_`) and any co-emitted callee.
+"""
+function extract_parsed_ir_by_sig(@nospecialize(sig::Type);
+                                  optimize::Bool=false,
+                                  preprocess::Bool=false,
+                                  passes::Vector{String}=String[],
+                                  use_memory_ssa::Bool=false,
+                                  mem::Symbol=:auto,
+                                  ptr_cells::Bool=false)
+    ir_string = _code_llvm_by_sig(sig; optimize=optimize, dump_module=true,
+                                  debuginfo=:none)
+    return _parsed_ir_from_ir_string(ir_string; preprocess=preprocess, passes=passes,
+                                     use_memory_ssa=use_memory_ssa, mem=mem,
+                                     ptr_cells=ptr_cells)
 end
 
 # Shared plumbing for the external-IR entry points. Takes an already-parsed

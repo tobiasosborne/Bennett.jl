@@ -88,6 +88,75 @@ function _lookup_callee(llvm_name::String)
     end
 end
 
+# ---- Bennett-40ys: callees known by NAME but not by VALUE ----
+#
+# `_known_callees` is `Dict{String, Function}` and `register_callee!` takes an
+# `f::Function`. An INSTANCE-LESS callable — a closure or a functor, i.e. a
+# callable type with fields and therefore no `.instance` — has no `Function`
+# value to register, so it cannot live there.
+#
+# It still needs to be registered SOMEWHERE, because of what happens at the
+# CALLER's extraction. Without an entry, `_lookup_callee` misses; under
+# `ptr_cells=true` the miss falls into the ADR-0020-D5 arm and emits
+# `IRCall(dest, Symbol("j_Adder40ys_2978"), …)` — the MANGLED LLVM name. That
+# name is unusable downstream: BennettVM's `_vm_dispatch_name` does no
+# demangling, so `j_Adder40ys_2978` sanitises to `j_Adder40ys_2978` while the
+# closed-world set's table key `Adder40ys#<digest>` sanitises (via
+# `_vm_funcname`) to `Adder40ys` — the call would never bind, and the `_<NNN>`
+# suffix drifts between extractions anyway (Rule 5).
+#
+# So this registry maps an LLVM-visible BARE name to the BARE canonical Symbol
+# the emitted `IRCall` should carry. Bare, NOT the digested set key: BVM strips
+# the digest from TABLE keys but call sites carry bare names, and the closed-
+# world check's `bare_to_key` map is keyed the same way.
+#
+# CASE PRESERVATION (deliberate divergence from `_lookup_callee`): the lookup
+# below lowercases only for the PREFIX match and takes the capture from the
+# ORIGINAL string. `_lookup_callee` lowercases the capture too, which silently
+# breaks any capitalised callee (`julia_Adder_770` → `:adder`); that is a real
+# latent bug, tracked separately as Bennett-wh1p, and is NOT touched here —
+# changing it could alter which callees resolve on the circuit path (Rule 6,
+# gate-count baselines). This new path must simply not inherit it: a functor is
+# named after its TYPE, so capitalisation is the common case, not the exception.
+const _known_callee_names = Dict{String, Symbol}()   # guarded by _known_callees_lock
+
+"""
+    register_callee_name!(llvm_bare::AbstractString, canonical::Symbol) -> Nothing
+
+Register an instance-less callable (closure / functor) by NAME. `llvm_bare` is
+the bare name Julia's codegen mangles into the LLVM symbol (i.e. `mi.def.name`,
+NOT `nameof(type)`); `canonical` is the bare Symbol the emitted `IRCall` should
+carry. See this file's Bennett-40ys section for why a name-only registry is
+needed and why it is separate from `_known_callees`.
+"""
+function register_callee_name!(llvm_bare::AbstractString, canonical::Symbol)
+    lock(_known_callees_lock) do
+        _known_callee_names[String(llvm_bare)] = canonical
+    end
+    return nothing
+end
+
+"""
+    _lookup_callee_name(llvm_name::String) -> Union{Symbol, Nothing}
+
+Name-registry counterpart of [`_lookup_callee`](@ref): exact match first, then
+the `julia_<name>_<NNN>` / `j_<name>_<NNN>` demangle. CASE-PRESERVING (see the
+section comment above). Returns the canonical bare callee Symbol, or `nothing`.
+"""
+function _lookup_callee_name(llvm_name::String)
+    lock(_known_callees_lock) do
+        haskey(_known_callee_names, llvm_name) && return _known_callee_names[llvm_name]
+        # Case-INSENSITIVE on the `julia_`/`j_` prefix only; the capture keeps
+        # the original casing (Bennett-40ys — a functor is named after its type).
+        m = match(r"^(?:julia_|j_)(.+)_(\d+)$"i, llvm_name)
+        if m !== nothing
+            fname = m.captures[1]
+            haskey(_known_callee_names, fname) && return _known_callee_names[fname]
+        end
+        return nothing
+    end
+end
+
 # ---- value identity via C pointer ----
 
 const _LLVMRef = LLVM.API.LLVMValueRef

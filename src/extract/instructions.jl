@@ -2673,6 +2673,73 @@ function _ovf_const_bit(op::Symbol, ca::Int, cb::Int, N::Int, signed::Bool)
     return (r < lo || r > hi) ? 1 : 0
 end
 
+
+# Bennett-40ys: the Bennett-xrd6 registered-callee cell-ABI emission, HOISTED
+# out of `_convert_instruction` so it can be shared by the two callee-resolution
+# arms that both need it (Rule 12 — no duplicated lowering):
+#
+#   * `_lookup_callee` hit  — a registered Julia `Function` callee;
+#   * `_lookup_callee_name` hit — an INSTANCE-LESS callee (closure / functor)
+#     registered by NAME only, because no `Function` value exists to register
+#     (see `callees.jl`'s Bennett-40ys section).
+#
+# `callee` is therefore `Union{Function, Symbol}` — exactly the `IRCall.callee`
+# union (Bennett-k3ej / BVM ADR 0020 D1). The body is otherwise VERBATIM the
+# pre-hoist xrd6 arm, so its existing tests continue to pin it unchanged.
+function _emit_cell_call(inst::LLVM.Instruction, ops, n_ops::Int,
+                         names::Dict{_LLVMRef, Symbol}, cname::AbstractString,
+                         dest::Symbol, callee::Union{Function, Symbol})
+    # Bennett-xrd6: closed-world cell ABI for a registered callee
+    # whose result is CONSUMED locally (read back from an sret-out
+    # box, or used as a returned cell) — NOT gate-inlined. Carries
+    # pointer args (incl. the sret-out box ptr as arg 1) as 64-bit
+    # VM cells so the read-back loads of the box resolve, and uses
+    # the void/ptr → 64 ret_width SENTINEL: an sret-convention call
+    # has a `void` LLVM return, and a Dict-returning call a `ptr`
+    # return — neither has a scalar width of its own. The Function
+    # callee is kept (clean nameof for closed-world linkage); the
+    # IRCall shape is identical to the C-track / isolation D5 form
+    # BennettVM already consumes.
+    #
+    # Fail-loud (CLAUDE.md §1): if this is an sret-convention call,
+    # validate the sret pointee is a fixed-width integer bits-struct
+    # (reusing the Bennett-dv1z `_sret_struct_fields` rules: reject
+    # non-StructType pointee, packed structs, non-integer fields,
+    # widths ∉ {8,16,32,64}) BEFORE trusting the read-back machinery
+    # to unpack the box. A genuinely-unsupported sret shape rejects
+    # here, never silently miscompiles.
+    kind_sret = LLVM.API.LLVMGetEnumAttributeKindForName("sret", 4)
+    asret = LLVM.API.LLVMGetCallSiteEnumAttribute(inst, UInt32(1), kind_sret)
+    if asret != C_NULL
+        pointee = LLVM.LLVMType(LLVM.API.LLVMGetTypeAttributeValue(asret))
+        pointee isa LLVM.StructType || _ir_error(inst,
+            "sret-convention call to '$(cname)' has pointee " *
+            "$(pointee); only fixed-width integer bits-struct sret " *
+            "pointees (e.g. {i64,i8}) are modelled on the " *
+            "consumed-call path (Bennett-xrd6)")
+        # Side-effecting validation (return discarded): rejects
+        # packed / non-integer / bad-width fields loud (Bennett-dv1z).
+        _sret_struct_fields(pointee, LLVM.parent(LLVM.parent(inst)))
+    end
+    cell_args, cell_widths = _cell_call_args(inst, ops, n_ops, names)
+    rt = LLVM.value_type(inst)
+    ret_w = if rt isa LLVM.VoidType || rt isa LLVM.PointerType
+        64                       # void sret call / ptr-returning call
+    elseif rt isa LLVM.IntegerType
+        Int(LLVM.width(rt))
+    elseif rt isa LLVM.ArrayType
+        _type_width(rt)          # NTuple [N x iM] wide return
+    else
+        _ir_error(inst,
+            "registered call to '$(cname)' has unsupported return " *
+            "type $(rt) under ptr_cells; only void, integer, " *
+            "pointer (cell), and [N x iM] aggregate returns are " *
+            "modelled (Bennett-xrd6). A by-value StructType return " *
+            "must use the sret convention.")
+    end
+    return IRCall(dest, callee, cell_args, cell_widths, ret_w)
+end
+
 function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symbol},
                               counter::Ref{Int},
                               lanes::Dict{_LLVMRef, Vector{IROperand}}=Dict{_LLVMRef, Vector{IROperand}}();
@@ -3098,55 +3165,7 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             callee = _lookup_callee(cname)
             if callee !== nothing
                 if ptr_cells
-                    # Bennett-xrd6: closed-world cell ABI for a registered callee
-                    # whose result is CONSUMED locally (read back from an sret-out
-                    # box, or used as a returned cell) — NOT gate-inlined. Carries
-                    # pointer args (incl. the sret-out box ptr as arg 1) as 64-bit
-                    # VM cells so the read-back loads of the box resolve, and uses
-                    # the void/ptr → 64 ret_width SENTINEL: an sret-convention call
-                    # has a `void` LLVM return, and a Dict-returning call a `ptr`
-                    # return — neither has a scalar width of its own. The Function
-                    # callee is kept (clean nameof for closed-world linkage); the
-                    # IRCall shape is identical to the C-track / isolation D5 form
-                    # BennettVM already consumes.
-                    #
-                    # Fail-loud (CLAUDE.md §1): if this is an sret-convention call,
-                    # validate the sret pointee is a fixed-width integer bits-struct
-                    # (reusing the Bennett-dv1z `_sret_struct_fields` rules: reject
-                    # non-StructType pointee, packed structs, non-integer fields,
-                    # widths ∉ {8,16,32,64}) BEFORE trusting the read-back machinery
-                    # to unpack the box. A genuinely-unsupported sret shape rejects
-                    # here, never silently miscompiles.
-                    kind_sret = LLVM.API.LLVMGetEnumAttributeKindForName("sret", 4)
-                    asret = LLVM.API.LLVMGetCallSiteEnumAttribute(inst, UInt32(1), kind_sret)
-                    if asret != C_NULL
-                        pointee = LLVM.LLVMType(LLVM.API.LLVMGetTypeAttributeValue(asret))
-                        pointee isa LLVM.StructType || _ir_error(inst,
-                            "sret-convention call to '$(cname)' has pointee " *
-                            "$(pointee); only fixed-width integer bits-struct sret " *
-                            "pointees (e.g. {i64,i8}) are modelled on the " *
-                            "consumed-call path (Bennett-xrd6)")
-                        # Side-effecting validation (return discarded): rejects
-                        # packed / non-integer / bad-width fields loud (Bennett-dv1z).
-                        _sret_struct_fields(pointee, LLVM.parent(LLVM.parent(inst)))
-                    end
-                    cell_args, cell_widths = _cell_call_args(inst, ops, n_ops, names)
-                    rt = LLVM.value_type(inst)
-                    ret_w = if rt isa LLVM.VoidType || rt isa LLVM.PointerType
-                        64                       # void sret call / ptr-returning call
-                    elseif rt isa LLVM.IntegerType
-                        Int(LLVM.width(rt))
-                    elseif rt isa LLVM.ArrayType
-                        _type_width(rt)          # NTuple [N x iM] wide return
-                    else
-                        _ir_error(inst,
-                            "registered call to '$(cname)' has unsupported return " *
-                            "type $(rt) under ptr_cells; only void, integer, " *
-                            "pointer (cell), and [N x iM] aggregate returns are " *
-                            "modelled (Bennett-xrd6). A by-value StructType return " *
-                            "must use the sret convention.")
-                    end
-                    return IRCall(dest, callee, cell_args, cell_widths, ret_w)
+                    return _emit_cell_call(inst, ops, n_ops, names, cname, dest, callee)
                 end
                 # gate-inlining ABI (circuit path, ptr_cells=false): integer args
                 # ONLY — pointers (pgcstack, by-ref aggregates) are skipped because
@@ -3167,6 +3186,26 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 ret_w = _iwidth(inst)
                 return IRCall(dest, callee, call_args, call_widths, ret_w)
             end
+        end
+
+        # Bennett-40ys: an INSTANCE-LESS callee (closure / functor) registered
+        # by NAME. `_lookup_callee` cannot hold it — `_known_callees` is
+        # `Dict{String,Function}` and there is no `Function` value — so it is
+        # resolved from `_known_callee_names` here and emitted through the SAME
+        # cell-ABI helper as a registered `Function` callee, carrying the BARE
+        # canonical Symbol instead of the drift-prone mangled `j_<name>_<NNN>`
+        # (which BennettVM's `_vm_dispatch_name` cannot bind to the set's table
+        # key). Must sit BEFORE the ADR-0020-D5 miss arm below, which would
+        # otherwise emit exactly that mangled name.
+        #
+        # `ptr_cells=false` deliberately gets NO hook: an instance-less callee
+        # cannot be gate-inlined, because `lower_call!` re-extracts the callee
+        # body from a `Function` value that does not exist. It falls through to
+        # the U15 fail-loud below, which names the situation explicitly.
+        if ptr_cells && n_ops >= 1
+            cn = _lookup_callee_name(cname)
+            cn === nothing ||
+                return _emit_cell_call(inst, ops, n_ops, names, cname, dest, cn)
         end
 
         # BVM ADR 0020 D5 (CW-C2 chunk C): call emission on a `_lookup_callee`
@@ -3365,7 +3404,20 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         is_inline_asm = n_ops == 0 || LLVM.API.LLVMIsAInlineAsm(ops[n_ops]) != C_NULL
         is_inline_asm && _ir_error(inst,
             "inline-asm call is not supported (Bennett-5oyt / U15)")
-        # Unregistered callee or unrecognised intrinsic.
+        # Unregistered callee or unrecognised intrinsic. Bennett-40ys: if the
+        # callee IS a registered instance-less callable, say so — the failure is
+        # then a MODE mismatch (gate-inlining vs the VM cell ABI), not a missing
+        # registration, and "call register_callee!" would be actively misleading
+        # advice for a callable that has no `Function` value to register.
+        if _lookup_callee_name(cname) !== nothing
+            _ir_error(inst,
+                "call to '$(cname)' resolves to a registered INSTANCE-LESS callee " *
+                "(closure / functor) but ptr_cells=false. Instance-less callables " *
+                "are modelled only under ptr_cells=true (the BennettVM cell ABI); " *
+                "they cannot be gate-inlined on the circuit path, because " *
+                "`lower_call!` re-extracts the callee body from a `Function` value " *
+                "that does not exist for them (Bennett-40ys / Bennett-5oyt / U15)")
+        end
         _ir_error(inst,
             "call to '$(cname)' has no registered callee handler or " *
             "intrinsic pattern; register via `register_callee!` or " *

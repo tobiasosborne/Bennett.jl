@@ -91,34 +91,142 @@ const _D1B_MODELED_HEAP_INTRINSICS = Set{Symbol}((
 # closed-world check. `k.parameters[1]` is the `E` inside `Type{E}`.
 _is_throw_leaf(k) = k isa Type && k <: Type && (k.parameters[1] <: Exception)
 
-# Recover the callable from a transitive_callees key. `Type{T}` (a constructor
-# callee) → the type `T` itself; a singleton `typeof(g)` → the function instance
-# `g`. (A `typeof(g)` key has an EMPTY `parameters` SimpleVector, so the naive
-# `k.parameters[1]` would BoundsError — dispatch on `Type{<:Type}` vs `Type`
-# disambiguates.)
-_callable_of_key(k::Type{<:Type}) = k.parameters[1]
-_callable_of_key(k::Type)         = k.instance
+"""
+    _callee_key_kind(k) -> Symbol
 
-# Bare (unmangled, un-digested) name of a callee key. Used both for the
-# canonical key prefix and for the linkage `bare_to_key` map.
-_nameof_of(k::Type{<:Type}) = nameof(k.parameters[1])
-_nameof_of(k::Type)         = nameof(k.instance)
+Classify a `transitive_callees` callee key by the shape that determines how its
+LLVM IR is obtained. TOTAL over the shapes the walker can produce; every other
+input fails loud (Rule 1) naming the key, its `typeof`, why it is unsupported,
+and the bead.
 
-# Content-addressed digest of an argtype Tuple, deterministic WITHIN a process
-# (Rule 5): `hash(::DataType)` is content-based — same argtypes → same digest in
+  * `:constructor`  — `Type{T}` (e.g. `Type{BoundsError}`); the callable is `T`.
+  * `:singleton`    — `typeof(g)` for a plain function `g`; the callable is
+                      `g = k.instance`.
+  * `:instanceless` — a concrete callable struct type with NO `.instance`:
+                      a CLOSURE (`Base.var"#_growend!##0#_growend!##1"{…}`) or a
+                      FUNCTOR. It has no value, only a signature; its IR comes
+                      from `extract_parsed_ir_by_sig` (Bennett-40ys).
+
+This exists because `.instance` used to be read unconditionally, both here
+(`_callable_of_key`) and in the naming helper — so a closure key produced a bare
+`UndefRefError: access to undefined reference` with no file, no key and no
+context, from a registration loop OUTSIDE any try/catch. Asking "which kind of
+key is this?" exactly ONCE makes `.instance` structurally unreachable for
+anything but `:singleton`, so that crash cannot recur for ANY key shape.
+"""
+function _callee_key_kind(@nospecialize k)
+    k isa Type || error(
+        "julia_set.jl: unsupported transitive_callees callee key `$(k)` " *
+        "(typeof = $(typeof(k))): not a Type. Callee keys are `typeof(g)` or " *
+        "`Type{T}` (callgraph.jl `_split_spectypes`). Reached from the " *
+        "closed-world registration/extraction loop " *
+        "(extract_parsed_ir_set_from_julia). Julia $(VERSION). Rule 1: no " *
+        "silent skip — extend _callee_key_kind (Bennett-40ys).")
+    k <: Type && return :constructor
+    isdefined(k, :instance) && return :singleton
+    # `Core.OpaqueClosure` is instance-less too, but needs a DIFFERENT codegen
+    # entry (`get_oc_code_rt` / the closure's own `.world`, per codeview.jl's
+    # OpaqueClosure branch), so the by-signature path would silently emit the
+    # wrong thing. Reject BEFORE the generic :instanceless arm — we have no
+    # evidence of one in this corpus, and building support speculatively would
+    # be guessing (Rule 9).
+    k <: Core.OpaqueClosure && error(
+        "julia_set.jl: unsupported transitive_callees callee key `$(k)`: " *
+        "a Core.OpaqueClosure. OpaqueClosures are instance-less but require a " *
+        "different codegen entry point than closures/functors do (the " *
+        "by-signature path in sig_llvm.jl reproduces the ORDINARY " *
+        "_dump_function branch, not the OpaqueClosure branch), so admitting " *
+        "one here would emit the wrong IR. Julia $(VERSION). Rule 1/9: fail " *
+        "loud rather than guess (Bennett-40ys).")
+    (isconcretetype(k) && isstructtype(k)) && return :instanceless
+    error(
+        "julia_set.jl: unsupported transitive_callees callee key `$(k)` " *
+        "(typeof = $(typeof(k))): not a constructor `Type{T}`, not a singleton " *
+        "(`.instance` is undefined), and not a concrete callable struct type " *
+        "(isconcretetype=$(isconcretetype(k)), isstructtype=$(isstructtype(k))). " *
+        "Reached from the closed-world registration/extraction loop " *
+        "(extract_parsed_ir_set_from_julia); the typed call graph produced a key " *
+        "this producer cannot turn into codegen input. Julia $(VERSION). Rule 1: " *
+        "no silent skip — extend _callee_key_kind (Bennett-40ys).")
+end
+
+# Recover the callable VALUE from a transitive_callees key. `Type{T}` (a
+# constructor callee) → the type `T` itself; a singleton `typeof(g)` → the
+# function instance `g`.
+#
+# Bennett-40ys: this is now used ONLY for REGISTRATION (`register_callee!` needs
+# a `Function` value), never on the extraction path — extraction goes through
+# `_callee_key_kind` + `extract_parsed_ir_by_sig`. The `:instanceless` arm fails
+# loud rather than reading `.instance`, which is what used to `UndefRefError`.
+function _callable_of_key(@nospecialize(k))
+    kind = _callee_key_kind(k)
+    kind === :constructor && return k.parameters[1]
+    kind === :singleton   && return k.instance
+    error("julia_set.jl: _callable_of_key: callee key `$(k)` is :$(kind) — it " *
+          "has no callable VALUE (a closure / functor is a callable TYPE with " *
+          "fields; `.instance` is undefined). Use `_callee_key_kind` and the " *
+          "by-signature extraction path instead (Bennett-40ys).")
+end
+
+"""
+    _callee_barename(k, at::Type{<:Tuple}) -> Symbol
+
+Bare (unmangled, un-digested) name of a callee key — the canonical-key prefix
+and the `bare_to_key` linkage name.
+
+The RULE, one line: **the barename is the name Julia's codegen mangles into the
+LLVM symbol.** For the two pre-existing arms that is `nameof` of the callable,
+unchanged. For an instance-less key it is `mi.def.name` — the METHOD name.
+
+`nameof(k)` is WRONG here and the mistake is easy to make: for a closure it
+returns the closure's TYPE name (`#_mk40ys##0#_mk40ys##1`), which matches NO
+LLVM symbol, whereas the emitted define is `@"julia_#_mk40ys##0_1531"` — i.e.
+`mi.def.name == Symbol("#_mk40ys##0")`. A barename that matches no symbol makes
+`_closed_world_check!` report a spurious closed-world violation. (This is the
+same reason the singleton arm reads `nameof(k.instance)` and not `nameof(k)`:
+`nameof(typeof(g)) == Symbol("#g")`.)
+
+`k.name.singletonname` agrees on 1.12, but `mi.def.name` is what codegen itself
+reads, so it is the defensible source and the one fewer version-gated field
+(Rule 5). The test cross-checks them.
+"""
+function _callee_barename(@nospecialize(k), at::Type{<:Tuple})::Symbol
+    kind = _callee_key_kind(k)
+    kind === :constructor && return nameof(k.parameters[1])
+    kind === :singleton   && return nameof(k.instance)
+    return _method_instance_of_sig(_spectypes_of(k, at)).def.name
+end
+
+# Content-addressed digest of a signature Tuple, deterministic WITHIN a process
+# (Rule 5): `hash(::DataType)` is content-based — same signature → same digest in
 # this process; `objectid` would drift even within a process. Keys are never
 # serialized cross-process, so `hash`'s build-seed variation across processes is
 # irrelevant (N2). 8 hex chars is collision-safe at the handful of callees a
 # single closed-world set contains (a collision trips the dup-key assert — loud).
-_argtype_digest(at) = string(hash(at); base=16)[1:8]
+#
+# `lpad` before slicing: `string(hash(x); base=16)` drops leading zero nibbles,
+# so a hash with a high-order zero would `BoundsError` on `[1:8]` (p ≈ 2^-28 per
+# call — rare enough to never have been seen, common enough to eventually bite).
+_argtype_digest(at) = lpad(string(hash(at); base=16), 16, '0')[1:8]
 
 # Canonical set key: `Symbol("<barename>#<digest>")`. The digest is 8 hex chars
 # (no `#`), so the LAST `#` always separates barename from digest — recover the
 # barename with `rsplit(key, "#"; limit=2)[1]`, NOT `split(...)[1]`, since a
 # closure/gensym barename (e.g. `#9`) itself contains `#` (S1). The key never
 # matches the mangled `_<NNN>` LLVM suffix, so it stays distinct from LLVM names.
+#
+# Bennett-40ys: the digest is taken over the FULL specTypes, not over `argtypes`
+# alone. A closure carries all of its state in the callee KEY and has
+# `argtypes == Tuple{}`, so an argtypes-only digest is a CONSTANT for every
+# closure in the process: `push!(::Vector{Int64})` and `push!(::Vector{Int8})`
+# outline to genuinely different `#_growend!##0` bodies that collided onto one
+# canonical key and tripped the duplicate-key assert. Digesting the specTypes is
+# strictly more correct for EVERY key (the callee key was previously absent from
+# the content address entirely), and BennettVM only requires the SHAPE
+# `#<8hex>`, never a particular value.
 _canonical_callee_key(callee_key, argtypes)::Symbol =
-    Symbol(_nameof_of(callee_key), "#", _argtype_digest(argtypes))
+    Symbol(_callee_barename(callee_key, argtypes), "#",
+           _argtype_digest(_spectypes_of(callee_key, argtypes)))
 
 # Demangle an LLVM-mangled callee Symbol to its bare name. Reuses the EXACT
 # regex from `_lookup_callee` (callees.jl): `julia_<name>_<NNN>` / `j_<name>_<NNN>`
@@ -267,7 +375,7 @@ function extract_parsed_ir_set_from_julia(f, argtypes::Type{<:Tuple};
     live_callees = Tuple{Any,DataType}[]
     for (k, at) in callees
         if drop_throw_leaves && _is_throw_leaf(k)
-            push!(throw_leaf_names, _nameof_of(k))
+            push!(throw_leaf_names, _callee_barename(k, at))
         else
             push!(live_callees, (k, at))
         end
@@ -276,15 +384,19 @@ function extract_parsed_ir_set_from_julia(f, argtypes::Type{<:Tuple};
     out = Pair{Symbol,ParsedIR}[]
     skipped = Tuple{Symbol,Any}[]   # (canonical_key, exception) — for :skip diagnostics.
 
-    # Local extraction helper honouring on_extract_error.
-    function _extract_one(canonical_key::Symbol, callable, at)
+    # Local extraction helper honouring on_extract_error. `what` is a short
+    # description of the extraction subject for the fail-loud message; `thunk`
+    # produces the ParsedIR (by VALUE via `extract_parsed_ir` for a singleton /
+    # constructor key, by SIGNATURE via `extract_parsed_ir_by_sig` for an
+    # instance-less one — Bennett-40ys).
+    function _extract_one(canonical_key::Symbol, what, at, thunk)
         try
-            return extract_parsed_ir(callable, at; optimize=optimize, mem=mem, ptr_cells=ptr_cells)
+            return thunk()
         catch e
             e isa InterruptException && rethrow()
             if on_extract_error === :fail_loud
                 error("julia_set.jl: extract_parsed_ir_set_from_julia: extraction FAILED for " *
-                      "callee `$(canonical_key)` (callable=$(callable), argtypes=$(at)) — " *
+                      "callee `$(canonical_key)` (callable=$(what), argtypes=$(at)) — " *
                       "$(sprint(showerror, e)). This is an accepted closed-world wall " *
                       "(e.g. U14 atomic-load / dv1z heterogeneous-sret / U81 ptr-width); " *
                       "pass on_extract_error=:skip to tolerate it (CW-D2 runway).")
@@ -305,27 +417,54 @@ function extract_parsed_ir_set_from_julia(f, argtypes::Type{<:Tuple};
     # in the same process (e.g. the test_bd5f_heap_m4 Dict-rejection tests, which
     # run after this in runtests.jl) could see `setindex!`/`rehash!` spuriously
     # registered and take a different rejection path (Rule 7: interlocked state).
-    local _registry_snapshot
+    #
+    # Bennett-40ys: an INSTANCE-LESS callee (closure / functor) has no `Function`
+    # value, so it cannot go into `_known_callees` at all. It is registered by
+    # NAME instead (`_known_callee_names`), which is what makes the caller's
+    # IRCall carry the bare canonical name rather than the mangled, drift-prone
+    # `j_<name>_<NNN>` that BennettVM cannot bind. That registry gets the SAME
+    # snapshot/scoped-restore discipline (S2), including on the throwing path.
+    local _registry_snapshot, _name_registry_snapshot
     lock(_known_callees_lock) do
         _registry_snapshot = copy(_known_callees)
+        _name_registry_snapshot = copy(_known_callee_names)
     end
-    _my_registered_keys = String[]   # registry keys THIS call adds (for a scoped restore)
+    _my_registered_keys = String[]        # `_known_callees` keys THIS call adds
+    _my_registered_names = String[]       # `_known_callee_names` keys THIS call adds
     try
-        # Register every live Function callee (idempotent; `Type{T}` constructor
-        # callees are not registerable and don't appear as in-module calls).
-        for (k, _at) in live_callees
-            callable = _callable_of_key(k)
-            if callable isa Function
-                register_callee!(callable)
-                push!(_my_registered_keys, string(nameof(callable)))
+        # Register every live callee, by VALUE where one exists and by NAME
+        # otherwise (idempotent; `Type{T}` constructor callees are not
+        # registerable and don't appear as in-module calls).
+        for (k, at) in live_callees
+            if _callee_key_kind(k) === :instanceless
+                bare = _callee_barename(k, at)
+                register_callee_name!(string(bare), bare)
+                push!(_my_registered_names, string(bare))
+            else
+                callable = _callable_of_key(k)
+                if callable isa Function
+                    register_callee!(callable)
+                    push!(_my_registered_keys, string(nameof(callable)))
+                end
             end
         end
 
-        # (3) per-callee extraction.
+        # (3) per-callee extraction. An instance-less key is extracted from its
+        # SIGNATURE (there is no value to hand `code_llvm`); every other key
+        # keeps the by-value path byte-identically.
         for (k, at) in live_callees
             canonical_key = _canonical_callee_key(k, at)
-            callable = _callable_of_key(k)
-            pir = _extract_one(canonical_key, callable, at)
+            pir = if _callee_key_kind(k) === :instanceless
+                sig = _spectypes_of(k, at)
+                _extract_one(canonical_key, sig, at,
+                             () -> extract_parsed_ir_by_sig(sig; optimize=optimize,
+                                                            mem=mem, ptr_cells=ptr_cells))
+            else
+                callable = _callable_of_key(k)
+                _extract_one(canonical_key, callable, at,
+                             () -> extract_parsed_ir(callable, at; optimize=optimize,
+                                                     mem=mem, ptr_cells=ptr_cells))
+            end
             pir === nothing && continue
             push!(out, canonical_key => pir)
         end
@@ -335,8 +474,11 @@ function extract_parsed_ir_set_from_julia(f, argtypes::Type{<:Tuple};
         # directly (the callee-key helpers expect a `typeof`/`Type{T}` *key*, not
         # the callable itself).
         if include_root
-            root_key = Symbol(nameof(f), "#", _argtype_digest(argtypes))
-            root_pir = _extract_one(root_key, f, argtypes)
+            root_key = Symbol(nameof(f), "#",
+                              _argtype_digest(Base.signature_type(f, argtypes)))
+            root_pir = _extract_one(root_key, f, argtypes,
+                                    () -> extract_parsed_ir(f, argtypes; optimize=optimize,
+                                                            mem=mem, ptr_cells=ptr_cells))
             if root_pir !== nothing
                 pushfirst!(out, root_key => root_pir)
             end
@@ -374,6 +516,14 @@ function extract_parsed_ir_set_from_julia(f, argtypes::Type{<:Tuple};
                     _known_callees[key] = _registry_snapshot[key]
                 else
                     delete!(_known_callees, key)
+                end
+            end
+            # Bennett-40ys: same discipline for the name-only registry.
+            for key in _my_registered_names
+                if haskey(_name_registry_snapshot, key)
+                    _known_callee_names[key] = _name_registry_snapshot[key]
+                else
+                    delete!(_known_callee_names, key)
                 end
             end
         end

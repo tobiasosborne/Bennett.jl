@@ -419,6 +419,21 @@ runfile("test_d1a_transitive_callees.jl")
 # HONEST tripwire (Gate E): bodies hit the U81/U14/dv1z walls (the accepted
 # closed-world runway, cleared by CW-D2), so >=4 is @test_broken not faked green.
 runfile("test_d1b_julia_set.jl")
+# Bennett-40ys — INSTANCE-LESS callee keys (closures + functors) in the
+# closed-world walker. `transitive_callees` keys a callee by its specTypes head;
+# for a plain function that head is a singleton `typeof(g)` with a `.instance`,
+# but Julia 1.12 outlines `_growend!`'s slow path into a CLOSURE, so every
+# `push!`-bearing function yielded a fields-bearing callable type whose
+# `.instance` is undefined — a bare `UndefRefError` from the registration loop,
+# outside any try/catch. Fix: a TOTAL `_callee_key_kind` classifier (no key
+# shape can reach `.instance` unless it is a singleton) plus by-SIGNATURE IR
+# emission (src/extract/sig_llvm.jl), since Julia's own codegen never needed the
+# value — only `signature_type(f, t)`, which the call graph already holds.
+# Also: the canonical key now digests the FULL specTypes (a closure's argtypes
+# are `Tuple{}` for ALL closures, so an argtypes-only digest collided distinct
+# bodies), and instance-less call sites bind to the BARE name so BennettVM can
+# resolve them. `push!` still walls — at Bennett-dv1z (sret-of-pointer), NAMED.
+runfile("test_40ys_instanceless_callees.jl")
 # Bennett-CW-D2 / bennettvm-416r.12 — close the fdict closed-world set: the 4th
 # classifier bucket (_D1B_MODELED_HEAP_INTRINSICS, mirrors BVM _HEAP_DISPATCH)
 # tolerates modeled heap/runtime intrinsics (gc_alloc_obj, memset,
