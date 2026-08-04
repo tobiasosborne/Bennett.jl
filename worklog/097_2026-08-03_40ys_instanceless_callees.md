@@ -1,5 +1,74 @@
 # Worklog chunk 097 — 2026-08-03 — 40ys instance-less callees (xkl frontier)
 
+## Session log — 2026-08-04 — Bennett-7wsz: ptr-typed sret fields under ptr_cells; xkl closure frontier advances to the 416r.13 JIT-global wall
+
+Same orchestrated session as 40ys (below), second bead. 3+1: two blind Opus
+proposers CONVERGED again; Opus implementer; Sonnet hostile review
+ACCEPT-WITH-CONDITIONS (zero claims falsified across 9 attack vectors).
+
+### What landed
+
+- `_sret_struct_fields(st, func; ptr_cells=false)` admits `LLVM.PointerType`
+  sret fields at width 64 under the gate ONLY (addrspace-0 only; pointersize==8
+  asserted; both rejects loud). `_detect_sret` gains a threaded `ptr_cells`
+  kwarg (was called unconditionally from module_walk — the exact leak channel).
+- `_try_handle_sret_scalar_store!` accepts `store ptr` with WIDTH-based (not
+  type-equality) field matching — REQUIRED because Julia's split-roots ABI
+  stores literal `i64 -1` into ptr-TYPED sret slots. Slot selection stays
+  exact-byte-offset (`findfirst` on offset), so width relaxation cannot land a
+  store in the wrong field (hostile-review-verified, adversarial i32 probe).
+- **`return_roots` is modeled VERBATIM as an ordinary 64-bit out-pointer param
+  — NO fusion.** Both proposers proved independently: callee stores the
+  GC-tracked field into `return_roots` and writes `i64 -1` into the matching
+  sret slot; the jfptr wrapper reassembles `{sret[0], return_roots[0]}`. A
+  future agent "fixing" the -1 sentinel by splicing return_roots into the
+  aggregate would be a SILENT POINTER MISCOMPILE — anti-fusion pinning tests
+  (ConstOperand(-1) shape + a dat+mem-1 arithmetic witness) + a 45-line
+  SEMANTICS block in sret.jl record the evidence.
+- BVM: **zero src changes** (guard-5 `ret_width==sum` 128==128 takes the
+  value-ABI branch — read, not trusted). New `test_7wsz_ptr_sret_vm.jl` (160):
+  sret({ptr,i64}) fixture family E2E (extract → lower_vm → run == native
+  oracle → unrun! exact, L2+L3, per-step inverse) + a hand-built split-roots
+  `.ll` pair proving the return_roots store crosses frames on the VM and
+  IRInsertBits+ConstOperand(-1) lowers.
+
+### Gotchas (hard-won)
+
+1. **"Advances to the next wall" is NOT monotone in program order.** Clearing
+   the 416r.16 PRE-WALK wall exposed the body walk's FIRST instruction: the
+   push! ROOT lands on the pgcstack inline-asm wall (Bennett-5oyt/U15), NOT the
+   forecast U114 store-{ptr,ptr}. Both proposals' root forecast was measured
+   with an UNGATED monkey-patch — wall forecasts must state the gate value.
+   The SET/closure frontier DID advance as forecast: unrecognized JIT global
+   `@jl_diverror_exception` (bennettvm-416r.13 family).
+2. **A const-field Julia fixture cannot pin IRInsertBits+ConstOperand** —
+   `S(p,-1)` constant-folds to `IRRet(ConstOperand(...))`. Hand-built `.ll` is
+   the only honest route to that path.
+3. **The auto-SROA dependency is now tripwired**: `_mk7wsz`'s O0 form is a
+   16-byte whole-aggregate memcpy; it reaches the scalar-store arm only because
+   `_module_has_sret` prepends `sroa,mem2reg`. Testset (A) pins it.
+4. `_emit_cell_call` hardcodes ptr_cells=true — correct today (both call sites
+   inside `if ptr_cells`, verified), named in a comment; a future refactor
+   calling it from a non-gated path would silently admit ptr sret fields onto
+   the circuit path.
+
+### Beads
+
+7wsz closed. Filed: Bennett-0ncn (P3, tighten bare-numeral wall-marker
+disjunctions — hostile review R4). Homogeneous `[N x ptr]` stays rejected
+(deliberate asymmetry, rationale-tested). Next frontier for xkl: the
+`jl_diverror_exception` JIT-global materialization (416r.13 family), then
+`jl_genericmemory_copy_slice`/alloc inside the closure body, then iwo9
+ptrtoint (Bennett-kvdv).
+
+### Gates (orchestrator-run, fresh subprocesses)
+
+- BennettVM full `Pkg.test`: **9791/9791** (= 9631 + 160 new).
+- Bennett.jl full `Pkg.test`: **690748 Pass / 3 Broken (pre-existing), 29m49.5s** (implementer run: 690747/3 — a benign +1 pass-count run-to-run delta, Broken identical).
+- gate-count regression 39/39 byte-identical; legacy dv1z/sret rejects
+  unchanged (ptr_cells=false byte-identical).
+
+
 ## Session log — 2026-08-03 — Bennett-40ys: instance-less (closure/functor) closed-world callees; xkl diagnosis; push! now fails loud at dv1z
 
 Orchestrated session (Fable orchestrator; Sonnet scout + hostile reviewer, 2 blind

@@ -432,8 +432,20 @@ runfile("test_d1b_julia_set.jl")
 # Also: the canonical key now digests the FULL specTypes (a closure's argtypes
 # are `Tuple{}` for ALL closures, so an argtypes-only digest collided distinct
 # bodies), and instance-less call sites bind to the BARE name so BennettVM can
-# resolve them. `push!` still walls — at Bennett-dv1z (sret-of-pointer), NAMED.
+# resolve them. `push!` still walls — since Bennett-7wsz at the unrecognised
+# JIT global `@jl_diverror_exception` (bennettvm-416r.13), NAMED.
 runfile("test_40ys_instanceless_callees.jl")
+# Bennett-7wsz — ptr-TYPED sret struct FIELDS under `ptr_cells=true`: a pointer
+# sret field is one 64-bit VM cell (ADR 0018 §A), admitted in BOTH
+# `_sret_struct_fields` (the field-layout predicate, reached from the callee
+# `_detect_sret`, the caller 416r.16 recognizer, and `_emit_cell_call`) AND
+# `_try_handle_sret_scalar_store!` (`store ptr` into a field — what Julia emits
+# post-auto-SROA). Gated: `ptr_cells=false` stays byte-identical, because on the
+# circuit path pointer args are DROPPED from `ParsedIR.args` and an ungated
+# admission silently miscompiles. `return_roots` is modelled VERBATIM as an
+# ordinary out-pointer, `i64 -1` sentinel and all — testset (E) pins the
+# UNFUSED shape on purpose.
+runfile("test_7wsz_ptr_sret_fields.jl")
 # Bennett-CW-D2 / bennettvm-416r.12 — close the fdict closed-world set: the 4th
 # classifier bucket (_D1B_MODELED_HEAP_INTRINSICS, mirrors BVM _HEAP_DISPATCH)
 # tolerates modeled heap/runtime intrinsics (gc_alloc_obj, memset,

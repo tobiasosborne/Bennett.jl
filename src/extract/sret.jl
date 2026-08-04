@@ -59,7 +59,7 @@ struct SretInfo
 end
 
 """
-    _detect_sret(func) -> Union{Nothing, SretInfo}
+    _detect_sret(func; ptr_cells=false) -> Union{Nothing, SretInfo}
 
 Detect the LLVM `sret` parameter attribute on `func`. Returns `nothing` if no
 sret parameter is present — the non-sret path is byte-identical to the
@@ -76,8 +76,15 @@ an `ArrayType` is the EXISTING homogeneous arm (byte-identical); a `StructType`
 of fixed-width integer fields is the NEW heterogeneous arm (`_sret_struct_fields`);
 anything else still rejects loud (the `sret pointee` substring is pinned by
 `test_land_ptrfield_struct.jl`).
+
+Bennett-7wsz: `ptr_cells` is forwarded VERBATIM to `_sret_struct_fields`, which
+admits `PointerType` fields as 64-bit VM cells only under the gate. This
+function is called UNCONDITIONALLY from `_module_to_parsed_ir_on_func`, so the
+kwarg's `false` default is what keeps the circuit path byte-identical — do not
+"simplify" it away.
 """
-function _detect_sret(func::LLVM.Function)::Union{Nothing, SretInfo}
+function _detect_sret(func::LLVM.Function;
+                      ptr_cells::Bool=false)::Union{Nothing, SretInfo}
     kind_sret = LLVM.API.LLVMGetEnumAttributeKindForName("sret", 4)
     found = nothing
     for (i, p) in enumerate(LLVM.parameters(func))
@@ -106,7 +113,8 @@ function _detect_sret(func::LLVM.Function)::Union{Nothing, SretInfo}
                              false, nothing)
         elseif ty isa LLVM.StructType
             # ---- Heterogeneous arm (Bennett-dv1z, NEW) ----
-            fields, agg_bytes = _sret_struct_fields(ty, func)
+            fields, agg_bytes = _sret_struct_fields(ty, func;
+                                                    ptr_cells=ptr_cells)
             found = SretInfo(i, p.ref, ty, length(fields), 0, 0, agg_bytes,
                              true, fields)
         else
@@ -119,8 +127,57 @@ function _detect_sret(func::LLVM.Function)::Union{Nothing, SretInfo}
     return found
 end
 
+# ===========================================================================
+# SEMANTICS — Julia's SPLIT-ROOTS sret ABI and the `i64 -1` sentinel.
+# (Bennett-7wsz. Read this BEFORE "fixing" a -1 you see in an sret slot.)
+#
+# When a returned aggregate contains a GC-TRACKED field, Julia 1.12 codegen
+# splits the return in two. Verbatim from the outlined `_growend!` closure
+# (`MemoryRef` return, LLVM `sret({ptr,ptr})`), post-SROA:
+#
+#     define void @"julia_#_growend!##0"(
+#         ptr ... sret({ ptr, ptr }) %sret_return,      ; the sret buffer
+#         ptr ... dereferenceable(8) %return_roots,     ; an ORDINARY out-ptr
+#         ptr %"#self#", ptr %".roots.#self#") {
+#     L93:
+#       store ptr %fca.0, ptr %sret_return              ; untracked field -> sret
+#       store ptr %fca.1, ptr %return_roots             ; TRACKED field -> roots
+#       %g = getelementptr inbounds i8, ptr %sret_return, i32 8
+#       store i64 -1, ptr %g                            ; the tracked SLOT gets -1
+#       ret void }
+#
+# `%return_roots` carries NO distinguishing LLVM attribute (`noalias nocapture
+# noundef nonnull align 8 dereferenceable(8)` — the same set any out-pointer
+# gets). Nothing in the emitted IR says which sret slot is a sentinel; the
+# trackedness lives in Julia's TYPES, not in the LLVM.
+#
+# The CALLER reassembles. From the `jfptr_` jlcall wrapper in the same module:
+#
+#       call void @"julia_#_growend!##0"(ptr sret({ptr,ptr}) %sret_box, ptr %0, ...)
+#       %20 = load ptr, ptr %0                          ; from return_roots
+#       memcpy(%box_field0, %sret_box+0, 8)             ; field 0 <- sret+0
+#       store atomic ptr %20, ptr %box_field1 unordered ; field 1 <- return_roots[0]
+#
+# `%sret_box+8` — the slot holding the `-1` — is NEVER read by anybody.
+#
+# DECISION: MODEL BOTH HALVES VERBATIM. NO detection, NO fusion, NO reject.
+#   * `return_roots` is an ordinary `ptr` parameter ⇒ one 64-bit VM cell under
+#     `ptr_cells` (`_cell_call_args`); the callee's write is a plain
+#     `IRStore(..., 64)` and the caller's read a plain `IRLoad(..., 64)`.
+#     Nothing in this file touches it, and nothing should.
+#   * The `-1` in the sret slot is emitted as `ConstOperand(-1)` inside the
+#     `IRInsertBits` chain. That is EXACT: the hardware puts -1 there too.
+#
+# DO NOT "REPAIR" THE SENTINEL BY SPLICING `return_roots` INTO THE AGGREGATE.
+# The slot<->root pairing would have to be GUESSED from sentinel-store
+# detection plus roots-store ordering — a heuristic sitting directly on a
+# returned POINTER value, i.e. a silent pointer miscompile when it is
+# backwards. `test/test_7wsz_ptr_sret_fields.jl` testset (E) pins the UNFUSED
+# shape precisely so such a change goes red and lands the reader here.
+# ===========================================================================
+
 """
-    _sret_struct_fields(st, func) -> (Vector{Tuple{Int,Int}}, Int)
+    _sret_struct_fields(st, func; ptr_cells=false) -> (Vector{Tuple{Int,Int}}, Int)
 
 Bennett-dv1z: extract the per-field layout of a heterogeneous integer
 bits-struct sret pointee. Returns `(fields, agg_byte_size)` where `fields` is a
@@ -129,12 +186,31 @@ datalayout via `LLVMOffsetOfElement`, NEVER IR-text parsing or `index * width`
 — the fields are NOT contiguous when padding is present) and `agg_byte_size` is
 the padded ABI size (`LLVMSizeOfType`).
 
+Bennett-7wsz: under `ptr_cells=true` a `PointerType` field is admitted as ONE
+64-bit VM cell (BVM ADR 0018 §A) — the identical value class a `ptr` argument
+(`_cell_call_args`), a `ptr` return (ADR 0020 D3) and a `ptr` load/store (D4)
+already carry; 7wsz merely lets it appear in a FIELD of an aggregate return.
+
+THE GATE IS A CORRECTNESS REQUIREMENT, NOT A STYLE CHOICE. `ptr_cells=false`
+is the circuit / `mem=:heap` path, where pointer arguments are DROPPED from
+`ParsedIR.args` and a pointer has no cell semantics at all; an ungated
+admission was demonstrated live to extract a ptr-field sret callee there with
+`ret_width=192`, i.e. a silent miscompile. Every caller must pass the gate
+explicitly (three call sites: `_detect_sret`, `_collect_consumed_sret`,
+`_emit_cell_call`).
+
 Rejects loud (CLAUDE.md §1) on:
   * packed structs (different layout rules — out of scope)
-  * any non-`IntegerType` field (pointer / float / nested struct / vector)
+  * any non-`IntegerType` field — float / nested struct / vector ALWAYS,
+    and pointer fields too UNLESS `ptr_cells=true`
+  * a `PointerType` field in a non-zero address space, even under the gate
+    (Julia's GC-tracked addrspace 10/11 is not a flat arena cell — Bennett-7wsz)
+  * a datalayout whose pointer size is not 8 bytes (the 64 would mis-pack
+    against the datalayout's own field offsets)
   * any integer field whose width ∉ {8, 16, 32, 64}
 """
-function _sret_struct_fields(st::LLVM.StructType, func::LLVM.Function)
+function _sret_struct_fields(st::LLVM.StructType, func::LLVM.Function;
+                             ptr_cells::Bool=false)
     fname = LLVM.name(func)
     LLVM.ispacked(st) && error(
         "ir_extract.jl: sret pointee $st in @$fname is a packed struct; only " *
@@ -148,11 +224,38 @@ function _sret_struct_fields(st::LLVM.StructType, func::LLVM.Function)
         "fixed-width integer bits-struct fields are supported (Bennett-dv1z)")
     fields = Tuple{Int,Int}[]
     for (k, fty) in enumerate(elem_tys)
-        fty isa LLVM.IntegerType || error(
-            "ir_extract.jl: sret struct field $(k-1) has type $fty in @$fname; " *
-            "only fixed-width integer bits-struct fields are supported " *
-            "(pointer/float/nested-struct/vector fields are rejected — Bennett-dv1z)")
-        w = LLVM.width(fty)
+        w = if fty isa LLVM.IntegerType
+            Int(LLVM.width(fty))
+        elseif ptr_cells && fty isa LLVM.PointerType
+            # Bennett-7wsz: one pointer == one 64-bit VM cell (ADR 0018 §A).
+            # Rule 1: the address space and the datalayout's pointer size are
+            # ASSERTED, never assumed — addrspace 10/11 is Julia's GC-tracked
+            # space (not a flat arena address), and on a non-64-bit datalayout
+            # the hardcoded 64 would silently disagree with the `LLVM.offsetof`
+            # field offsets computed just below.
+            as = LLVM.addrspace(fty)
+            as == 0 || error(
+                "ir_extract.jl: sret struct field $(k-1) is a pointer in " *
+                "address space $as in @$fname; only addrspace(0) pointer " *
+                "fields are modelled as 64-bit VM cells (Julia's GC-tracked " *
+                "addrspace 10/11 is not a flat arena address — Bennett-7wsz)")
+            ps = Int(LLVM.pointersize(dl))
+            ps == 8 || error(
+                "ir_extract.jl: sret struct field $(k-1) is a pointer but the " *
+                "module datalayout's pointer size is $ps bytes (not 8) in " *
+                "@$fname; the 64-bit VM cell model requires a 64-bit pointer " *
+                "target (Bennett-7wsz)")
+            64
+        else
+            ptr_hint = fty isa LLVM.PointerType ?
+                " (pointer fields are admitted as 64-bit VM cells ONLY under " *
+                "ptr_cells=true — Bennett-7wsz)" : ""
+            error(
+                "ir_extract.jl: sret struct field $(k-1) has type $fty in @$fname; " *
+                "only fixed-width integer bits-struct fields are supported " *
+                "(pointer/float/nested-struct/vector fields are rejected — " *
+                "Bennett-dv1z)" * ptr_hint)
+        end
         w ∈ (8, 16, 32, 64) || error(
             "ir_extract.jl: sret struct field $(k-1) has width $w in @$fname, " *
             "not in {8,16,32,64}; only fixed-width integer bits-struct fields " *
@@ -637,17 +740,39 @@ end
 #     padding, so byte offset is not `slot * eb`). A store whose byte offset
 #     hits no field exactly (padding byte, misalignment, partial-field write)
 #     is rejected loud.
+#
+# Bennett-7wsz (SECOND ADMISSION ARM — load-bearing, do not drop): under
+# `ptr_cells=true` a `store ptr` into an sret field is a 64-bit VM cell store.
+# This arm is REQUIRED, not optional: Julia's O0 codegen writes a ptr sret
+# field via `alloca` + `memcpy`, which the pipeline's auto-prepended SROA
+# (`_module_has_sret` → entry.jl) canonicalises into exactly this scalar
+# `store ptr`. Admitting the FIELD in `_sret_struct_fields` without this arm
+# re-walls `push!` one instruction later.
+#
+# The field match below is on WIDTH ONLY (`sw == fw`), never LLVM type
+# equality — see the SEMANTICS block above `_sret_struct_fields`: Julia stores
+# the literal `i64 -1` sentinel into a ptr-TYPED field under the split-roots
+# ABI, so a type-equality match would reject real Julia codegen.
 function _try_handle_sret_scalar_store!(inst::LLVM.Instruction, byte_off::Int,
                                          val::LLVM.Value, ew::Int, eb::Int, n::Int,
                                          slot_values::Dict{Int, IROperand},
                                          names::Dict{_LLVMRef, Symbol},
                                          suppressed::Set{_LLVMRef},
-                                         sret_info::SretInfo)::Bool
+                                         sret_info::SretInfo,
+                                         ptr_cells::Bool=false)::Bool
     vt = LLVM.value_type(val)
-    vt isa LLVM.IntegerType || _ir_error(inst,
-        "sret store at byte offset $byte_off has non-integer value " *
-        "type $vt; only integer stores are supported")
-    sw = LLVM.width(vt)
+    sw = if vt isa LLVM.IntegerType
+        Int(LLVM.width(vt))
+    elseif ptr_cells && vt isa LLVM.PointerType
+        64                        # Bennett-7wsz: one pointer == one cell
+    else
+        ptr_hint = vt isa LLVM.PointerType ?
+            " (pointer stores are modelled as 64-bit VM cells ONLY under " *
+            "ptr_cells=true — Bennett-7wsz)" : ""
+        _ir_error(inst,
+            "sret store at byte offset $byte_off has non-integer value " *
+            "type $vt; only integer stores are supported" * ptr_hint)
+    end
 
     local slot::Int
     if sret_info.is_hetero
@@ -690,7 +815,12 @@ function _try_handle_sret_scalar_store!(inst::LLVM.Instruction, byte_off::Int,
                 "conditional sret coverage is a planned extension)")
         end
     end
-    slot_values[slot] = _operand(val, names)
+    # Bennett-7wsz: the `ptr_cells` kwarg here is LOAD-BEARING, not cosmetic —
+    # `store ptr null` into an sret field (the C/Julia field-init idiom)
+    # resolves to `iconst(0)` only under the gate (Bennett-beaw); without it
+    # `_operand` hits the U80 ConstantPointerNull fail-loud. `ptr_cells=false`
+    # passes `false` ⇒ byte-identical.
+    slot_values[slot] = _operand(val, names; ptr_cells=ptr_cells)
     push!(suppressed, inst.ref)
     return true
 end
@@ -792,7 +922,7 @@ function _collect_sret_writes(func::LLVM.Function, sret_info::SretInfo,
                     end
                     _try_handle_sret_scalar_store!(inst, byte_off, val, ew, eb, n,
                                                     slot_values, names, suppressed,
-                                                    sret_info) && continue
+                                                    sret_info, ptr_cells) && continue
                 end
             end
         end
@@ -1221,7 +1351,11 @@ function _collect_consumed_sret(func::LLVM.Function,
                 "bennettvm-416r.16: consumed sret-out call to '$cname' in @$fname " *
                 "has non-struct sret pointee $pointee; only fixed-width integer " *
                 "bits-struct pointees (e.g. {i64,i8}) are modelled (Rule 1)")
-            fields, _agg_bytes = _sret_struct_fields(pointee, func)
+            # Bennett-7wsz: pass the gate explicitly (it is `true` on every
+            # reachable path here — this recognizer early-returns when it is
+            # false — but the call site states it rather than relying on that).
+            fields, _agg_bytes = _sret_struct_fields(pointee, func;
+                                                     ptr_cells=ptr_cells)
             field_widths = [w for (_, w) in fields]
 
             # The aggregate SSA value the reads now bind to = the call's dest.

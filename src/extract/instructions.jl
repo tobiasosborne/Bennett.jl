@@ -2719,7 +2719,11 @@ function _emit_cell_call(inst::LLVM.Instruction, ops, n_ops::Int,
             "consumed-call path (Bennett-xrd6)")
         # Side-effecting validation (return discarded): rejects
         # packed / non-integer / bad-width fields loud (Bennett-dv1z).
-        _sret_struct_fields(pointee, LLVM.parent(LLVM.parent(inst)))
+        # Bennett-7wsz: `ptr_cells=true` is STRUCTURAL here — `_emit_cell_call`
+        # is the cell ABI arm by construction (both call sites gate on
+        # `ptr_cells`), so a ptr sret FIELD is admitted as a 64-bit cell.
+        _sret_struct_fields(pointee, LLVM.parent(LLVM.parent(inst));
+                            ptr_cells=true)
     end
     cell_args, cell_widths = _cell_call_args(inst, ops, n_ops, names)
     rt = LLVM.value_type(inst)

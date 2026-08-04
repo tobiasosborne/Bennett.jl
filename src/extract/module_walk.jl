@@ -168,7 +168,11 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
 
     # Bennett-dv1z: detect sret calling convention. When present, the LLVM
     # return type is `void`; the aggregate shape comes from the sret attribute.
-    sret_info = _detect_sret(func)
+    # Bennett-7wsz: the gate is threaded so a ptr-typed sret FIELD is admitted
+    # (as a 64-bit VM cell) only on the cell path — never on the circuit path,
+    # where pointer args are dropped from `ParsedIR.args` and a ptr field would
+    # silently miscompile.
+    sret_info = _detect_sret(func; ptr_cells=ptr_cells)
 
     # Return type derivation — sret overrides the void return with the
     # aggregate described by the sret attribute.

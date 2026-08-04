@@ -59,16 +59,21 @@
 #   (H) REGISTRY HYGIENE — the name registry is restored on BOTH the returning
 #       and the throwing path.
 #   (I) THE BEAD'S EXIT CRITERION — `push!` no longer `UndefRefError`s; it
-#       reaches the NEXT honest wall (Bennett-dv1z, sret-of-pointer) with that
-#       wall's own named message.
+#       reaches the NEXT honest wall with that wall's own named message.
+#       ADVANCED by Bennett-7wsz (2026-08-04): was Bennett-dv1z
+#       (sret-of-pointer), now the unrecognised JIT global
+#       `@jl_diverror_exception` (bennettvm-416r.13).
 #
 # # Honest boundary
 #
-# `push!` still does NOT extract. Its closure returns `sret({ ptr, ptr })` and
-# `_sret_struct_fields` admits only fixed-width integer bits-struct fields —
-# that is bead **Bennett-dv1z**, deliberately NOT fixed here. Gate (I) asserts
-# the wall is REACHED and NAMED; when dv1z lands, (I) goes red, which is the
-# signal to advance it to the next wall — do not simply delete it.
+# `push!` still does NOT extract. Its closure returns `sret({ ptr, ptr })`;
+# Bennett-7wsz taught `_sret_struct_fields` to admit ptr fields as 64-bit VM
+# cells under `ptr_cells=true`, so the closure now walks its BODY and dies on
+# `load ptr, ptr @jl_diverror_exception` (bennettvm-416r.13) instead. The root
+# has its own separate wall — the U15 `movq %fs:0` pgcstack read
+# (Bennett-5oyt). Gate (I) asserts the wall is REACHED and NAMED; when the
+# named wall's bead lands, (I) goes red, which is the signal to advance it to
+# the next wall — do not simply delete it.
 #
 # Fixtures are locally named (`*_40ys`) per the D1a generic-collision lesson
 # (`test_d1b_julia_set.jl:31-34`), and no unit gate depends on a Base-internal
@@ -354,7 +359,7 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
         @test isempty(_B40._known_callee_names)
         _B40.extract_parsed_ir_set_from_julia(_root40ys, Tuple{Int64}; ptr_cells=true)
         @test isempty(_B40._known_callee_names)
-        # Throwing path: push! walls at dv1z (gate I) — the finally must still fire.
+        # Throwing path: push! walls (gate I) — the finally must still fire.
         try
             _B40.extract_parsed_ir_set_from_julia(_push40ys, Tuple{Int64}; ptr_cells=true)
         catch e
@@ -410,10 +415,21 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
     end
 
     # ------------------------------------------------------------------
-    # (I) THE BEAD: push! no longer crashes opaquely; it walls at dv1z.
-    #     Version-observational (see the file header's honest boundary).
-    #     When Bennett-dv1z lands this goes RED — that is the signal to
-    #     advance the assertion to the next wall, NOT to delete it.
+    # (I) THE BEAD: push! no longer crashes opaquely; it walls at a NAMED
+    #     wall. Version-observational (see the file header's honest
+    #     boundary). When the named wall's bead lands this goes RED — that
+    #     is the signal to advance the assertion to the next wall, NOT to
+    #     delete it.
+    #
+    #     ADVANCED by Bennett-7wsz (2026-08-04): ptr-typed sret struct
+    #     fields are now admitted under `ptr_cells=true`, so the closure no
+    #     longer dies at the dv1z `_sret_struct_fields` reject. It now walks
+    #     its body and lands on the UNRECOGNISED Julia JIT global
+    #     `@jl_diverror_exception` (bennettvm-416r.13) from the growth-factor
+    #     `div`. Pinned as an occursin-DISJUNCTION (the test_lf14 landing
+    #     convention): which body of the set fails first is registration /
+    #     iteration order, which is not a contract — the root's own wall is
+    #     the U15 `movq %fs:0` pgcstack read (Bennett-5oyt).
     # ------------------------------------------------------------------
     @testset "(I) push! reaches the NEXT named wall, not an UndefRefError" begin
         e = try
@@ -427,8 +443,17 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
         @test !(e isa UndefRefError)
         @test e isa ErrorException
         @test !occursin("access to undefined reference", e.msg)
-        @test occursin("sret", e.msg)
-        @test occursin("Bennett-dv1z", e.msg)
+        # the closure key is still named (the 40ys instance-less arm works)
+        @test occursin("_growend!", e.msg)
+        # the OLD (Bennett-dv1z ptr-sret-field) wall is GONE — 7wsz cleared it
+        @test !occursin("Bennett-dv1z", e.msg)
+        @test !occursin("sret struct field", e.msg)
+        # ... and we land on one of the NAMED successor walls
+        @test occursin("jl_diverror_exception", e.msg) ||
+              occursin("UNRECOGNIZED Julia JIT global", e.msg) ||
+              occursin("bennettvm-416r.13", e.msg) ||
+              occursin("Bennett-lgzx", e.msg) || occursin("U114", e.msg) ||
+              occursin("Bennett-5oyt", e.msg) || occursin("U15", e.msg)
     end
 
     # ==================================================================
@@ -459,7 +484,9 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
     #
     # Live repro pinned below: `push!` under `:skip` returns TWO bodies,
     # both unrelated `throw_*` helpers, with the root absent — because
-    # the root AND the `_growend!` closure both wall at Bennett-dv1z.
+    # the root AND the `_growend!` closure both still wall (post-7wsz: the
+    # closure on `@jl_diverror_exception` / 416r.13, the root on the U15
+    # `movq %fs:0` pgcstack read / Bennett-5oyt).
     #
     # DESIRED behaviour (Bennett-9tg3): fail loud naming the root key.
     # ------------------------------------------------------------------
