@@ -580,7 +580,15 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
                                      synth_ptr_allocas=synth_ptr_allocas,
                                      ptr_cells=ptr_cells,
                                      tag_ids=tag_ids,
-                                     tag_ssa=tag_ssa)
+                                     tag_ssa=tag_ssa,
+                                     # Bennett-3vf2 / CW-D: the dead-use drop
+                                     # needs the SAME pruner set this loop uses
+                                     # at :444. Computed above (:426) BEFORE any
+                                     # instruction is converted, so it is
+                                     # complete here — a live block preceding
+                                     # its dead consumer still sees the full set.
+                                     # Empty at ptr_cells=false.
+                                     dead_blocks=dead_blocks)
             catch e
                 e isa InterruptException && rethrow()
                 msg = sprint(showerror, e)

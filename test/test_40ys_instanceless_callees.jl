@@ -430,6 +430,14 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
     #     convention): which body of the set fails first is registration /
     #     iteration order, which is not a contract — the root's own wall is
     #     the U15 `movq %fs:0` pgcstack read (Bennett-5oyt).
+    #
+    #     ADVANCED AGAIN by Bennett-3vf2 (2026-08-04): the four hoisted
+    #     `load ptr, ptr @jl_diverror_exception` sites are now DROPPED (every
+    #     use lies in a Bennett-utzc dead block), so the 416r.13 wall is
+    #     gone and the closure walks on to `llvm.memmove.p0.p0.i64` at
+    #     `%L79` — Bennett-8bys / Bennett-37mt, explicitly out of 3vf2's
+    #     scope. The negatives below are the anti-regression half: the
+    #     diverror wall must not quietly re-open.
     # ------------------------------------------------------------------
     @testset "(I) push! reaches the NEXT named wall, not an UndefRefError" begin
         e = try
@@ -448,10 +456,14 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
         # the OLD (Bennett-dv1z ptr-sret-field) wall is GONE — 7wsz cleared it
         @test !occursin("Bennett-dv1z", e.msg)
         @test !occursin("sret struct field", e.msg)
+        # the PREVIOUS (bennettvm-416r.13 JIT-global) wall is GONE — 3vf2
+        # cleared it; these negatives keep it from re-opening unnoticed
+        @test !occursin("jl_diverror_exception", e.msg)
+        @test !occursin("UNRECOGNIZED Julia JIT global", e.msg)
         # ... and we land on one of the NAMED successor walls
-        @test occursin("jl_diverror_exception", e.msg) ||
-              occursin("UNRECOGNIZED Julia JIT global", e.msg) ||
-              occursin("bennettvm-416r.13", e.msg) ||
+        @test occursin("memmove", e.msg) ||
+              occursin("Bennett-8bys", e.msg) ||
+              occursin("Bennett-37mt", e.msg) ||
               occursin("Bennett-lgzx", e.msg) || occursin("U114", e.msg) ||
               occursin("Bennett-5oyt", e.msg) || occursin("U15", e.msg)
     end
@@ -484,9 +496,9 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
     #
     # Live repro pinned below: `push!` under `:skip` returns TWO bodies,
     # both unrelated `throw_*` helpers, with the root absent — because
-    # the root AND the `_growend!` closure both still wall (post-7wsz: the
-    # closure on `@jl_diverror_exception` / 416r.13, the root on the U15
-    # `movq %fs:0` pgcstack read / Bennett-5oyt).
+    # the root AND the `_growend!` closure both still wall (post-3vf2: the
+    # closure on `llvm.memmove.p0.p0.i64` / Bennett-8bys, the root on the
+    # U15 `movq %fs:0` pgcstack read / Bennett-5oyt).
     #
     # DESIRED behaviour (Bennett-9tg3): fail loud naming the root key.
     # ------------------------------------------------------------------

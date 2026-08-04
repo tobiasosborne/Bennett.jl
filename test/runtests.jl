@@ -572,6 +572,18 @@ runfile("test_583s_memdata_bounds.jl")
 # frontier (bennettvm-416r.12). Two Rule-1 guards: no-live-escape + throw-skeleton
 # surprise guard. ptr_cells-gated: default path byte-identical.
 runfile("test_utzc_dead_block_pruner.jl")
+# Bennett-3vf2 / CW-D — the DEAD-USE DROP, the dual of the utzc pruner above.
+# Julia hoists `load ptr, ptr @jl_diverror_exception` into the LIVE predecessor
+# of a divisor-validity guard diamond, so the load SURVIVES the pruner even
+# though its sole consumer (`ijl_throw` in the `unreachable` arm) does not, and
+# hit the bennettvm-416r.13 unrecognised-JIT-global reject. Under `ptr_cells`, a
+# non-volatile / non-atomic `load ptr, ptr @GlobalVariable` with >= 1 use, ALL of
+# whose uses sit in `dead_blocks`, is now DROPPED (no IRInst, no `.globals`
+# entry, no SSA alias; the `names` entry is deleted so a surviving reference
+# fails loud in `_operand`). Name-AGNOSTIC by design — soundness is a theorem
+# about the pruner, not a Julia naming convention. Advances the `push!` closure
+# frontier to `llvm.memmove` (Bennett-8bys / 37mt).
+runfile("test_3vf2_dead_use_global_load.jl")
 # Bennett-lbot / CW-D (ADR 0017) — overflow-arith intrinsics
 # (`llvm.{smul,umul,sadd,uadd}.with.overflow.iN`, result `{iN,i1}`) under the
 # closed-world `ptr_cells` gate. The `{iN,i1}` aggregate is NEVER modeled (its i1

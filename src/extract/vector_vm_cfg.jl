@@ -21,6 +21,72 @@ function _vec_vm_dead_blocks(func::LLVM.Function)::Set{_LLVMRef}
     return dead
 end
 
+# ---- Bennett-3vf2 / CW-D: DEAD-USE analysis — the dual of the utzc pruner ----
+#
+# The Bennett-utzc pruner (`module_walk.jl:444-450`) empties every block in
+# `dead_blocks`: its body becomes `IRInst[]` and its terminator becomes
+# `IRBranch(nothing, :__unreachable__, nothing)`. That gives value flow across
+# the live/dead boundary three exhaustive rules:
+#
+#   defined DEAD, used LIVE  → `_assert_dead_block_no_live_escape` — FAIL LOUD
+#                              (the use would dangle after pruning)
+#   defined LIVE, used DEAD  → HERE (Bennett-3vf2) — the definition is DROPPABLE:
+#                              no emitted IRInst can reference it
+#   defined LIVE, used LIVE  → the ordinary path / the 416r.13 reject
+#
+# **Drop soundness (the theorem).** Let `d` be an instruction in a live block,
+# every use of which lies in a block `b ∈ dead_blocks`. The pruner replaces each
+# such `b`'s body with `IRInst[]`, so NO `IRInst` in the emitted `ParsedIR`
+# references `d`. Emitting nothing for `d` therefore cannot leave a dangling SSA
+# operand. If `d` is additionally a non-volatile, non-atomic `load`, it has no
+# observable effect either, so the drop is semantics-preserving. ∎
+#
+# **COUPLING (read before widening `_vec_vm_dead_blocks`).** The theorem is
+# parametric in `dead_blocks`: it holds for exactly the set the pruner actually
+# EMPTIES. Widening the set above (say, to `llvm.trap`-terminated blocks) widens
+# both consistently and stays sound — but if anyone ever makes the pruner KEEP a
+# block that is still in `dead_blocks`, the theorem breaks silently. Keep the two
+# definitions in lockstep.
+#
+# **φ corollary (do NOT "fix" this into edge-attribution).** A φ node's use is
+# conceptually attributed to its INCOMING EDGE, not to the φ's own block, so a
+# naive parent-block test could in principle mis-classify a φ in a live block fed
+# from a dead block. That configuration is IMPOSSIBLE here: a block terminated by
+# `unreachable` has zero successors, hence is never anybody's predecessor, hence
+# never supplies a φ incoming value. So a φ USER in a live block is always a
+# genuine live use (→ fail loud) and a φ user in a dead block is a dead use. The
+# plain parent-block test is exact.
+#
+# Conservative in both directions: zero uses ⇒ `false` (a use-less unrecognised
+# load is evidence the walker's picture is incomplete, not evidence of a modelled
+# construct — refusing costs nothing and CLAUDE.md §1 prefers loud). A non-
+# `Instruction` user (no parent block) ⇒ `false`.
+function _all_uses_in_dead_blocks(inst::LLVM.Instruction,
+                                  dead::Set{_LLVMRef})::Bool
+    n = 0
+    for u in LLVM.uses(inst)
+        n += 1
+        usr = LLVM.user(u)
+        usr isa LLVM.Instruction || return false
+        LLVM.parent(usr).ref in dead || return false
+    end
+    return n > 0
+end
+
+# Diagnostic companion: the label of the first use-site block that is NOT dead
+# (i.e. the one that disqualified the drop), or `nothing` if every use is dead /
+# there are no uses. Used only to make the 416r.13 reject name the live block.
+function _first_live_use_block(inst::LLVM.Instruction,
+                               dead::Set{_LLVMRef})::Union{Nothing,String}
+    for u in LLVM.uses(inst)
+        usr = LLVM.user(u)
+        usr isa LLVM.Instruction || return "<non-instruction user>"
+        blk = LLVM.parent(usr)
+        blk.ref in dead || return LLVM.name(blk)
+    end
+    return nothing
+end
+
 # The prelude-exit block: the LAST allocation-skeleton block, which branches
 # INTO the loop. Identified ROBUSTLY (independent of which/how-many GC boxes
 # codegen emits) by the loop-bound test it contains: a Julia `for i in 1:n`

@@ -479,11 +479,19 @@ top:
         # the OLD wall is gone
         @test !occursin("Bennett-dv1z", msg)
         @test !occursin("sret struct field", msg)
-        # ... and we land on one of the two NAMED successor walls:
-        #   ROOT    — U114 whole-struct `store { ptr, ptr }`
-        #   CLOSURE — unrecognised Julia JIT global @jl_diverror_exception
-        @test occursin("jl_diverror_exception", msg) ||
-              occursin("UNRECOGNIZED Julia JIT global", msg) ||
+        # ... and we land on one of the NAMED successor walls:
+        #   ROOT    — U114 whole-struct `store { ptr, ptr }` / U15 pgcstack
+        #   CLOSURE — `llvm.memmove.p0.p0.i64` (Bennett-8bys / Bennett-37mt)
+        #
+        # ADVANCED by Bennett-3vf2 (2026-08-04): the closure's
+        # `@jl_diverror_exception` disjunct is GONE — those hoisted loads are
+        # now dropped (every use is in a utzc dead block), so the closure walks
+        # on to memmove. Negatives added so the wall cannot silently re-open.
+        @test !occursin("jl_diverror_exception", msg)
+        @test !occursin("UNRECOGNIZED Julia JIT global", msg)
+        @test occursin("memmove", msg) ||
+              occursin("Bennett-8bys", msg) ||
+              occursin("Bennett-37mt", msg) ||
               occursin("Bennett-lgzx", msg) ||
               occursin("U114", msg) ||
               occursin("StructType", msg)

@@ -1,5 +1,87 @@
 # Worklog chunk 097 — 2026-08-03 — 40ys instance-less callees (xkl frontier)
 
+## Session log — 2026-08-04 — Bennett-3vf2: dead-use global-load drop; xkl wall 3 cleared; frontier is now memmove (8bys)
+
+Third bead of the 40ys/7wsz session. 3+1 where the proposers genuinely
+DIVERGED — the adjudication and its verification are the story.
+
+### The wall and the design fork
+
+`_growend!` has 4 identical div-guard diamonds (`sdiv` by literal 4/8) whose
+guard is literally `and i1 true, (or i1 true, X)` — structurally dead — but
+Julia HOISTS the `load ptr, ptr @jl_diverror_exception` into the LIVE
+predecessor block; its only use is `ijl_throw` inside the unreachable-
+terminated fail block. The global matches neither recognized global-name kind,
+so the generic UNRECOGNIZED-JIT-global reject fired. Proposer A: census
+whitelist of Julia's 6 `jl_*_exception` singletons + use-shape assertion.
+Proposer B: name-agnostic "dead-use drop" — drop any otherwise-rejected
+GlobalVariable ptr load iff EVERY use's parent block is in the utzc
+`dead_blocks` set (sound because the pruner empties those blocks: nothing
+emitted can reference the def). B also showed `@jl_sym#convert` is one codegen
+hoist away from re-walling any whitelist. ADJUDICATION: B's mechanism + A's
+near-miss diagnostics (live-use exception-singleton rejects name the live
+block).
+
+### The correction chain (Rule 10 vindicated twice)
+
+B "falsified" the scout with an `addrspacecast ptr→addrspace(12)` direct-use
+sighting — which the implementer then showed was a DUMP ARTIFACT: on the real
+extraction path (`_code_llvm_by_sig(optimize=false, dump_module=true)` + the
+`sroa,mem2reg` prepend) there are ZERO addrspacecasts in the function; the
+load's direct use IS the throw. Every layer's claim got re-verified by the
+next layer, and each round found something. Wall forecasts and IR claims are
+only valid for the EXACT pipeline configuration that produced them.
+
+### What landed
+
+- The arm sits AFTER the klgz GOT-stub classifier (determinism diagnostics
+  keep priority) and carves out only the generic reject. Pure drop: no IRInst,
+  no alias, `delete!(names,…)` so survivors fail loud in `_operand`. Helpers
+  (`_all_uses_in_dead_blocks`/`_first_live_use_block` + soundness theorem + φ
+  corollary) live in vector_vm_cfg.jl NEXT TO `_vec_vm_dead_blocks` so the
+  coupling is pinned at the oracle. Atomic loads DECLINED explicitly (fence
+  semantics ≠ value semantics; acquire loads DO reach the arm since ares).
+  Zero-use loads still reject — that conservatism is what keeps 416r13's
+  `weird_global#5` fixture green (verified principled, not incidental).
+- Hostile review found a STRONGER soundness argument than the design docs: SSA
+  domination alone makes dead-block-def → live-block-use structurally
+  impossible in verifier-valid IR (a block with no successors dominates only
+  itself).
+- push! corpus now lands on `llvm.memmove.p0.p0.i64` (Bennett-8bys/37mt — the
+  next xkl wall, already tracked). ptr_cells=false byte-identical
+  (fingerprint-compared, not "extracts ok"); gate-count 39/39.
+- BVM: zero src changes; E2E fixture — the benign diamond runs to `:halted`
+  (never the `:__unreachable__` error sink), `div(n,4)` for 7 values incl.
+  negatives, exact unrun! under L2+L3 (104 asserts).
+
+### Gotchas
+
+1. `return` inside `@testset begin…end` silently aborts the enclosing testset
+   — a RED run can under-report to 2 assertions. Use `if`, never early return.
+2. `LLVM.isvolatile` isn't exported by this LLVM.jl; use
+   `LLVM.API.LLVMGetVolatile`/`LLVMGetOrdering`.
+3. Volatile loads never reach the arm (4mmt/U14 guard unconditional) but
+   ATOMIC loads do (ares relaxed that half) — the arm's atomic decline is
+   live code, its volatile check is documented belt-and-braces.
+4. test_7wsz gate (J) is a SECOND wall-marker that flips on frontier advance,
+   not just test_40ys (I). Both now carry negative pins
+   (!occursin("jl_diverror_exception")) — the disjunctions alone would not
+   guard a re-open (hostile review R6 of 7wsz; Bennett-0ncn).
+
+### Beads
+
+3vf2 closed. Filed: GOT-stub/dead-use interaction fixture (P3, hostile-review
+R3 — unclassified jlplt stub with all-dead uses falls through klgz into the
+drop, sound but unpinned). Frontier for xkl: Bennett-8bys/37mt (memmove
+lowering), then iwo9 ptrtoint (kvdv); root separately at pgcstack (5oyt).
+
+### Gates (orchestrator-run, fresh subprocesses)
+
+- BennettVM full `Pkg.test`: **9895/9895**, 4m00.9s.
+- Bennett.jl full `Pkg.test`: **690811 Pass / 3 Broken (pre-existing)**, 28m56.6s (implementer run 690810/3 — benign +1 run-to-run pass-count delta, Broken identical).
+- Implementer runs: Bennett 690810/3B 26m02s; BVM 9895/9895 3m51s.
+
+
 ## Session log — 2026-08-04 — Bennett-7wsz: ptr-typed sret fields under ptr_cells; xkl closure frontier advances to the 416r.13 JIT-global wall
 
 Same orchestrated session as 40ys (below), second bead. 3+1: two blind Opus

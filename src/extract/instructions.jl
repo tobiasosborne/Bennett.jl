@@ -2772,7 +2772,18 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                               # `module_walk.jl` (the sole owner) and mutated in
                               # place. Only consulted under `ptr_cells=true`.
                               tag_ids::Dict{String, Int64}=Dict{String, Int64}(),
-                              tag_ssa::Set{_LLVMRef}=Set{_LLVMRef}())
+                              tag_ssa::Set{_LLVMRef}=Set{_LLVMRef}(),
+                              # Bennett-3vf2 / CW-D: the Bennett-utzc pruner's
+                              # dead-block set for THIS function, threaded from
+                              # `module_walk.jl` (the sole owner — it computes it
+                              # once at :426, BEFORE the first instruction is
+                              # converted, and is itself ptr_cells-gated so the
+                              # set is EMPTY at ptr_cells=false). Consulted only
+                              # by the dead-use drop in the load handler. The
+                              # empty default keeps the two non-module_walk
+                              # callers (`heap.jl`, `vector_vm_cfg.jl`, neither of
+                              # which forwards `ptr_cells` either) byte-identical.
+                              dead_blocks::Set{_LLVMRef}=Set{_LLVMRef}())
     opc = LLVM.opcode(inst)
     dest = names[inst.ref]
 
@@ -3867,6 +3878,104 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                     "runtime calls, `String`-key Dicts extract here (Bennett-klgz " *
                     "/ bennettvm-90l / CLAUDE.md §1).")
             end
+
+            # ---- Bennett-3vf2 / CW-D: the DEAD-USE DROP -------------------
+            # Third recognized disposition for an unrecognised JIT-global
+            # pointer load — and, unlike the two arms above, NOT a name rule.
+            #
+            # Julia's codegen HOISTS `load ptr, ptr @jl_diverror_exception` into
+            # the LIVE predecessor of a divisor-validity guard diamond whose
+            # throwing arm is `unreachable`-terminated (measured on the real
+            # `Base._growend!` closure: 4 sites, `%L13 %L20 %L25 %pass57`, one
+            # use each — a `call void @ijl_throw(ptr %exc)` in the DEAD `%fail*`
+            # arm). The Bennett-utzc pruner discards the consumer's block BODY,
+            # but the hoisted load itself sits in a KEPT block and reaches here.
+            #
+            # So: DROP the load iff it is non-volatile, non-atomic, has >= 1 use,
+            # and EVERY use's parent block is in the utzc `dead_blocks` set. The
+            # soundness argument is a THEOREM ABOUT THE PRUNER, not a claim about
+            # Julia's naming conventions — see `_all_uses_in_dead_blocks` in
+            # `vector_vm_cfg.jl` for the proof, the φ corollary, and the coupling
+            # note. Because it is name-agnostic it also covers the OTHER
+            # unrecognised global kinds already present in that same function
+            # (`@jl_sym#convert#N`, whose loads happen to sit inside dead blocks
+            # today) with no Julia-version drift surface.
+            #
+            # The drop is PURE: no `IRInst`, no `.globals` entry, no SSA alias
+            # (contrast the singleton arm above, which aliases BECAUSE surviving
+            # instructions read the pointer as data). And it `delete!`s the
+            # load's `names` entry: if the theorem were ever wrong, `_operand`
+            # then fails LOUD ("unknown operand ref … the producing instruction
+            # was skipped") instead of dangling into a VM-run-time KeyError —
+            # exactly the failure mode bennettvm-416r.13 exists to prevent.
+            # (`dest = names[inst.ref]` is read at the top of this function, so
+            # the deletion cannot orphan anything already emitted.)
+            #
+            # PLACEMENT is deliberate: AFTER the Bennett-klgz GOT-stub
+            # classifier, so the determinism-floor diagnostics keep priority (a
+            # `jlplt_*_got` load with all-dead uses would be droppable by the
+            # theorem, but masking a determinism-floor reject to save a dead
+            # instruction is a bad trade — CLAUDE.md §1). It carves out ONLY the
+            # generic reject below.
+            #
+            # `volatile` is currently unreachable here (the Bennett-4mmt / U14
+            # guard at the top of the load handler rejects it unconditionally);
+            # it is re-checked anyway because that guard's ATOMIC half WAS later
+            # relaxed under `ptr_cells` by Bennett-ares, so the same could happen
+            # to the volatile half. An observable I/O event is never droppable.
+            # Atomic loads in the ares relaxable band DO reach here, and are
+            # deliberately NOT dropped: the drop is only proven for a plain load.
+            _3vf2_vol = LLVM.API.LLVMGetVolatile(inst) != 0
+            _3vf2_atomic = LLVM.API.LLVMGetOrdering(inst) !=
+                           LLVM.API.LLVMAtomicOrderingNotAtomic
+            if !_3vf2_vol && !_3vf2_atomic &&
+               _all_uses_in_dead_blocks(inst, dead_blocks)
+                delete!(names, inst.ref)
+                return nothing
+            end
+
+            # Not droppable — say WHY, at the load site, in the reject below.
+            _3vf2_n_uses = 0
+            for _ in LLVM.uses(inst)
+                _3vf2_n_uses += 1
+            end
+            _3vf2_live_blk = _first_live_use_block(inst, dead_blocks)
+            _3vf2_why = if _3vf2_vol
+                " Bennett-3vf2 (dead-use drop) declined it: the load is " *
+                "VOLATILE — an observable I/O event, never droppable."
+            elseif _3vf2_atomic
+                " Bennett-3vf2 (dead-use drop) declined it: the load is " *
+                "ATOMIC. Bennett-ares lets a relaxable-band ordering through " *
+                "the U14 guard under ptr_cells, but the dead-use drop is only " *
+                "proven for a PLAIN load, so an atomic global load still fails " *
+                "loud here."
+            elseif _3vf2_n_uses == 0
+                " Bennett-3vf2 (dead-use drop) declined it: the load result " *
+                "has ZERO uses. A use-less unrecognised global load is not " *
+                "evidence of a modelled construct — it is evidence that the " *
+                "walker's picture of this function is incomplete — so it is " *
+                "refused rather than swallowed (CLAUDE.md §1)."
+            elseif _3vf2_live_blk !== nothing
+                " Bennett-3vf2 (dead-use drop) declined it: this load's " *
+                "result IS used in the LIVE block `%" * _3vf2_live_blk *
+                "`. Only a load whose EVERY use lies in a provably-dead " *
+                "(`unreachable`-terminated, body-pruned by Bennett-utzc) block " *
+                "may be dropped — there, nothing survives to reference it. A " *
+                "live use means the value is genuinely READ and dropping it " *
+                "would dangle." *
+                (occursin(r"^jl_[a-z_]+_exception$", gname) ?
+                 " NOTE: `@\"" * gname * "\"` is one of Julia's pre-allocated " *
+                 "exception singletons (a `JL_GLOBALLY_ROOTED jl_value_t *` in " *
+                 "julia.h). Its load is normally consumed ONLY by an " *
+                 "`ijl_throw` in an `unreachable` arm, so a LIVE use is " *
+                 "unexpected: either codegen's guard-diamond idiom changed, or " *
+                 "the exception OBJECT is genuinely being read (e.g. a `catch` " *
+                 "handler inspecting it). The closed world does not model that " *
+                 "runtime object — there is no arena cell that IS it — so this " *
+                 "needs its own bead, not a wider drop rule." : "")
+            else
+                ""
+            end
             _ir_error(inst,
                 "load of an UNRECOGNIZED Julia JIT global `@\"" *
                 gname * "\"` (a `constant ptr` whose load " *
@@ -3877,7 +3986,8 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 "zeroed header in `.globals`). This global matches neither, so " *
                 "its load cannot be lowered; silently dropping it would leave a " *
                 "dangling SSA operand that KeyErrors at VM run time. Fail loud " *
-                "at the load site (bennettvm-416r.13 / CLAUDE.md §1).")
+                "at the load site (bennettvm-416r.13 / CLAUDE.md §1)." *
+                _3vf2_why)
         end
         return nothing  # non-integer load — skip
     end
