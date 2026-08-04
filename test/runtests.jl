@@ -623,6 +623,18 @@ runfile("test_8bys_variable_memset.jl")
 # malformed-arity / non-SSA-pointer all still fail loud. Unblocks the `_growend!`
 # grow-copy (xkl wall 4); the push! set now advances to the iwo9 ptrtoint wall.
 runfile("test_vau9_variable_memmove.jl")
+# Bennett-jbko / CW-D (ADR 0017) — the `MemoryRef` concurrent-mutation guard
+# (`_growend!` %L84, xkl frontier wall 5). Under `ptr_cells` a
+# `ptrtoint ptr %p to i64` is admitted as the width-64 cell identity
+# IRBinOp(dest,:or,src,iconst(0),64) iff the SOURCE is a certified cell-valued
+# pointer SSA (extractvalue of a StructType ptr field / load ptr, addrspace 0,
+# 64->64) and EVERY use is an `icmp eq`/`ne` against an in-model value or the
+# zero cell. The use gate is what preserves Bennett-8g7m (whose ordering reject
+# is TYPE-based, hence launderable through a coercion); the source whitelist is
+# what excludes the Bennett-cc0 M2b width-0 `phi`/`select` sentinel. 583s-rooted
+# sources stay on the 583s arm. ptr_cells=false ⇒ no arm ⇒ circuit path
+# byte-identical. push! now advances to the U114/lgzx `store {ptr,ptr}` wall.
+runfile("test_jbko_ptr_identity_icmp.jl")
 # Bennett-jfw6: mem=:vm Case A Vector/GenericMemory extraction recognizer (shape + fail-loud matrix).
 runfile("test_jfw6_vec_vm_extract.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message

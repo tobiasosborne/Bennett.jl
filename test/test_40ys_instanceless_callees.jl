@@ -447,6 +447,26 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
     #     generic Bennett-iwo9 / CW-D3 Lever 1 reject (an unrecognised
     #     pointer↔integer round-trip source). A `!occursin("memmove")`
     #     negative joins the diverror ones.
+    #
+    #     ADVANCED AGAIN by Bennett-jbko (2026-08-04): that `%L84` ptrtoint is
+    #     the `MemoryRef` concurrent-mutation guard, and it is now ADMITTED as
+    #     the width-64 cell identity `IRBinOp(:or, src, 0, 64)` under the
+    #     use-scoped identity-icmp gate. The closure walks past `%L84` (and
+    #     past the utzc-pruned `%L90` throw arm) and dies in `%L93` on the
+    #     LIVE whole-struct `store { ptr, ptr } %memory_ref, ptr %1`
+    #     (Bennett-lgzx / U114).
+    #
+    #     NOTE — MEASURED, and it CORRECTS the jbko bead's own forecast: the
+    #     bead predicted an 8-byte sret-reassembly memcpy next. There is no
+    #     such live memcpy first; the only 8-byte `llvm.memcpy` sits behind two
+    #     LIVE aggregate stores. Both jbko proposals reproduced this
+    #     independently.
+    #
+    #     The two negatives below are NOT decoration. This gate's landing
+    #     disjunction ALREADY admitted `Bennett-lgzx`/`U114` before jbko, so
+    #     the testset did NOT go red on landing — without the negatives the
+    #     marker would silently stop tracking the frontier (the Bennett-0ncn
+    #     lesson, applied in advance).
     # ------------------------------------------------------------------
     @testset "(I) push! reaches the NEXT named wall, not an UndefRefError" begin
         e = try
@@ -472,10 +492,17 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
         # the PREVIOUS (llvm.memmove) wall is GONE — vau9 routes it
         @test !occursin("memmove", e.msg)
         @test !occursin("not yet lowered to reversible gates", e.msg)
+        # the PREVIOUS (`%L84` ptrtoint) wall is GONE — jbko admits it
+        @test !occursin("Bennett-iwo9", e.msg)
+        @test !occursin("ptrtoint", e.msg)
         # ... and we land on one of the NAMED successor walls
-        @test occursin("Bennett-iwo9", e.msg) ||
-              occursin("ptrtoint", e.msg) || occursin("inttoptr", e.msg) ||
-              occursin("Bennett-lgzx", e.msg) || occursin("U114", e.msg) ||
+        # MEASURED (2026-08-04, --check-bounds=yes): the closure fails first,
+        # on `store { ptr, ptr } %memory_ref15, ptr %1` in `%L93`. Kept as a
+        # DISJUNCTION rather than a literal pin because WHICH body of the set
+        # fails first is registration/iteration order, which is not a contract
+        # (the test_lf14 convention this gate has always followed).
+        @test occursin("Bennett-lgzx", e.msg) || occursin("U114", e.msg) ||
+              occursin("store of non-integer type", e.msg) ||
               occursin("Bennett-5oyt", e.msg) || occursin("U15", e.msg)
     end
 

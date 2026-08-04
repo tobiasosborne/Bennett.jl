@@ -228,13 +228,25 @@ end
 
     # ======================================================================
     # (g) THE ADVANCEMENT PIN — the push! closed-world set walks PAST memmove
-    #     and lands on the Bennett-iwo9 ptrtoint-equality wall.
+    #     and lands on the Bennett-lgzx / U114 whole-struct-store wall.
     #
     #     Version-observational (the test_lf14 / test_40ys wall-marker
     #     convention). When the NEXT bead lands this goes RED — that is the
     #     signal to ADVANCE the assertion, not to delete it.
+    #
+    #     ADVANCED by Bennett-jbko (2026-08-04): this testset DID go red on
+    #     landing — it was the only one of the three push!-set wall markers
+    #     whose landing disjunction did NOT already admit lgzx/U114, so it is
+    #     the one that actually tracked. The `%L84`
+    #     `ptrtoint ptr %.ref.ptr_or_offset to i64` is the `MemoryRef`
+    #     concurrent-mutation guard and is now ADMITTED as a use-scoped
+    #     width-64 cell identity. The closure walks past `%L84` and past the
+    #     utzc-pruned `%L90` throw arm, and dies in `%L93` on the LIVE
+    #     whole-struct `store { ptr, ptr } %memory_ref15, ptr %1`
+    #     (Bennett-lgzx / U114). MEASURED — and it corrects the jbko bead's own
+    #     forecast, which predicted an 8-byte sret-reassembly memcpy next.
     # ======================================================================
-    @testset "(g) push! set advances PAST memmove to the iwo9 ptrtoint wall" begin
+    @testset "(g) push! set advances PAST memmove to the lgzx store wall" begin
         before = lock(Bennett._known_callees_lock) do
             copy(Bennett._known_callees)
         end
@@ -255,13 +267,18 @@ end
                 # this the disjunction below would not notice a re-open.
                 @test !occursin("memmove", msg)
                 @test !occursin("not yet lowered to reversible gates", msg)
-                # POSITIVE: the NEW wall is the ptrtoint of a MemoryRef's
-                # `.ref.ptr_or_offset` in `_growend!`'s %L84 — the generic
-                # Bennett-iwo9 / CW-D3 Lever 1 reject (an unrecognised
-                # pointer↔integer round-trip source).
-                @test occursin("Bennett-iwo9", msg) ||
-                      occursin("ptrtoint", msg) ||
-                      occursin("inttoptr", msg) ||
+                # LOAD-BEARING NEGATIVE: the `%L84` ptrtoint wall is CLEARED
+                # by Bennett-jbko. Without these the disjunction below would
+                # not notice a re-open (the Bennett-0ncn lesson).
+                @test !occursin("Bennett-iwo9", msg)
+                @test !occursin("ptrtoint", msg)
+                # POSITIVE: the NEW wall is the LIVE whole-struct
+                # `store { ptr, ptr }` in `_growend!`'s %L93 (Bennett-lgzx /
+                # U114). Kept as a disjunction because WHICH body of the set
+                # fails first is registration/iteration order, not a contract.
+                @test occursin("Bennett-lgzx", msg) ||
+                      occursin("U114", msg) ||
+                      occursin("store of non-integer type", msg) ||
                       occursin("Bennett-5oyt", msg) || occursin("U15", msg)
                 # the closure key is still named (the 40ys instance-less arm)
                 @test occursin("_growend!", msg)

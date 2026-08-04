@@ -1,5 +1,77 @@
 # Worklog chunk 098 — 2026-08-04 — vau9 memmove routing (xkl wall 4)
 
+## Session log — 2026-08-04 — Bennett-jbko: ptr-identity ptrtoint arm (xkl wall 5) — LANDED UNREVIEWED at wind-up; hostile review is Bennett-a8nw
+
+⚠️ **READ THIS FIRST, NEXT AGENT**: the jbko implementation is committed with
+full suites green (IMPLEMENTER-run: Bennett 690955 Pass / 3 Broken, 30m20s;
+BVM 10379/10379; gate-count 39/39) but the arc's HOSTILE-REVIEW step was NOT
+run — the user called wind-up. **Bennett-a8nw (P1) tracks the pending review;
+do not close Bennett-jbko until it passes.** The review brief (8 open risks)
+is in the implementer report; the top items: the DISJUNCTIVE arm entry widens
+jbko's message territory vs the generic iwo9 reject; the `:load` source-kind
+arm is broader than the corpus needs (bounded by the use gate); transitive
+uses are checked one level deep (phi/select-forwarded icmp conservatively
+rejects); the phi-ptr width-0-sentinel negative test is the file's most
+load-bearing test.
+
+### What landed (5th bead of the 2026-08-03/04 arc; full 3+1, proposers CONVERGED on mechanism (b))
+
+- New arm in instructions.jl (after 583s, pinned disjoint by
+  `_memdata_root(src) === nothing`): a `ptrtoint ptr→i64` under ptr_cells is
+  admitted as the identity `IRBinOp(:or, src, 0, 64)` IFF the source is a
+  CERTIFIED cell-valued ptr SSA (extractvalue of a ptr struct field, or
+  load ptr; addrspace 0; NOT phi/select — those carry the cc0-M2b width-0
+  sentinel and coercing one silently reads an unmaterialised cell) AND every
+  use is `icmp eq/ne` AND the icmp's other side is an SSA cell or zero/null
+  (non-zero literals reject). Ordering compares reject NAMING 8g7m — the use
+  gate is the ONLY thing preventing an address-magnitude compare laundering
+  onto the integer icmp path (8g7m's own guard is type-based).
+- Determinism argument (in the arm's comment block): both operands are
+  same-trajectory cells of the deterministic injective bump allocator; eq/ne
+  is invariant under the address↦cell map; jbko adds ZERO expressive power
+  over 8g7m's already-admitted pointer icmp — it only lets the same
+  comparison be spelled through a coercion.
+- ZERO BVM src changes (fifth in a row). BVM E2E: guard-match runs the ok
+  branch, guard-mismatch runs into the ConcurrencyViolationError diamond and
+  HALTS at the `:__unreachable__` sink — and `unrun!` STILL returns the exact
+  initial state with drained history (a TRAPPED program is fully reversible;
+  first time this is pinned anywhere). Allocator injectivity is a runnable
+  assertion: first malloc's coerced cell == ARENA_BASE == the captured cell.
+- Frontier findings (both proposers, independently, on the REAL gated path):
+  the bead's forecast was WRONG — no live sret-reassembly memcpy; the next
+  wall is TWO live `store {ptr,ptr}` at L93 (**Bennett-p06b**, wall 6,
+  extraction side; the lgzx message fires but lgzx is the closed fail-loud
+  bead, not the capability); then the `%idxend` ptrtoint bounds cluster
+  rooted at a MemoryRef field-0 load (**Bennett-foz5**, wall 7 — needs a
+  583s ROOT extension under its own subtraction proof). **Bennett-kvdv
+  CLOSED as stale** (ht_keyindex2 extracts clean in both bounds modes;
+  583s subsumed it); test_59zi's check-bounds else-branch is unreachable
+  dead code (P3 bead filed).
+
+### Gotchas
+
+1. **Only ONE of the three push!-set wall markers actually tracked this
+   frontier advance** — 40ys (I) and 7wsz (J) disjunctions already admitted
+   lgzx/U114, so they stayed green; test_vau9 gate (g) was the one that went
+   red. A wall marker whose disjunction admits the SUCCESSOR wall stops being
+   a marker the moment it lands; the `!occursin` negatives are the only
+   load-bearing half (Bennett-0ncn in action).
+2. The jbko arm cannot perturb any previously-green extraction BY
+   CONSTRUCTION: everything reaching its position previously hit the
+   unconditional generic reject (iwo9/583s both return on match) — the diff
+   only turns rejects into admissions or changes reject messages.
+3. Sandbox note: backgrounded `sleep` does not advance a running Pkg.test
+   between tool calls — foreground waits only.
+
+### Gates
+
+- IMPLEMENTER-run (fresh subprocesses, exit 0, summaries captured verbatim):
+  Bennett.jl **690955 Pass / 3 Broken (pre-existing)**, 30m19.9s;
+  BennettVM **10379/10379**, 4m10.8s; gate-count 39/39.
+- Orchestrator re-gate: WAIVED at user wind-up ("do not run full test suite
+  again"). The a8nw review should re-gate if it changes anything.
+
+
 ## Session log — 2026-08-04 — Bennett-vau9: variable-size memmove routes to IRCall(:memmove) under ptr_cells; xkl wall 4 cleared; walls 5+6 precisely located
 
 Fourth bead of the 2026-08-03/04 orchestrated arc (40ys → 7wsz → 3vf2 → vau9).

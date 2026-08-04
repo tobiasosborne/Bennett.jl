@@ -283,6 +283,160 @@ function _verify_memdata_bounds_cluster(pt::LLVM.Instruction, src)::Bool
     return saw
 end
 
+# ---- Bennett-jbko / CW-D: identity-use ptrtoint (pointer-equality guards) ----
+#
+#   %po = extractvalue { ptr, ptr } %ref, 0   ; a CERTIFIED 64-bit cell (6bu3)
+#   %c  = ptrtoint ptr %po to i64             ; a no-op RE-TYPING under ptr_cells
+#   %eq = icmp eq i64 %captured, %c           ; the ONLY admitted use shape
+#
+# ============================================================================
+# WHY `icmp eq`/`ne` OF A COERCED IN-MODEL POINTER IS DETERMINISTIC/REVERSIBLE
+# ============================================================================
+#
+# THE REPRESENTATION. Under `ptr_cells` a pointer is not an address in the
+# host's sense; it is one Int64 **VM cell value** (ADR 0018 §A). BennettVM
+# assigns those values with a DETERMINISTIC BUMP ALLOCATOR over its arena
+# (`IntrinsicMalloc` / `gc_alloc_obj` / `jl_alloc_genericmemory_unchecked` all
+# return `ARENA_BASE + s.arena_top`, `ARENA_BASE = Int64(1) << 40` frozen at
+# compile time), and `arena_top` advances by a span determined solely by the
+# program text and its inputs. No ASLR, no allocator nondeterminism. So for a
+# fixed program and fixed inputs, the value in every pointer cell is a pure
+# function of the execution trajectory, and copying a pointer (load/store,
+# insertvalue/extractvalue, a call argument) copies the cell value verbatim.
+# `ptrtoint` is therefore a PURE RETYPE, NOT A COMPUTATION: the cell already
+# *is* the 64-bit integer, and there is nothing to convert.
+#
+# WHY THE VALUE MAY BE COMPARED BUT NOT COMPUTED WITH (oracle match). Write
+# `φ : native address ↦ VM cell value` for the (injective) representation map.
+# The extracted program must agree with native Julia on every observable, so
+# the extractor may only admit operations `op` with `op(φ(x), φ(y)) = op(x, y)`
+# — operations INVARIANT UNDER ANY INJECTIVE RELABELLING OF ADDRESSES.
+#
+#   * `eq` / `ne` ARE invariant: `φ(x) = φ(y) ⟺ x = y` for injective φ (a bump
+#     cursor never hands the same base out twice within a trajectory). Pointer
+#     equality is a LOCATION-IDENTITY predicate and identity survives
+#     relabelling; equivalently, shifting the whole arena shifts both operands
+#     equally and leaves `a == b` unchanged. This base-independence is the
+#     direct analogue of Bennett-583s's base CANCELLATION, and it is what makes
+#     the result a SOURCE-LEVEL fact rather than a LAYOUT fact.
+#   * ORDERING (`ult`, `slt`, …) is NOT invariant: it compares address
+#     MAGNITUDES, a property of the allocator's layout (and UB across
+#     allocations in C). φ is injective but emphatically not monotone.
+#   * ARITHMETIC is NOT invariant: it exposes ARENA_BASE to integer
+#     computation, and BVM addressing is CELL-granular while native addressing
+#     is byte-granular, so φ is not even affine — `φ(x) + 8` denotes nothing.
+#   * ESCAPE into memory / a call / a `ret` / an `inttoptr` is NOT invariant:
+#     once the coerced value leaves, the extractor can no longer prove its
+#     consumers are φ-invariant, and a later `inttoptr` would dereference an
+#     arena-relative integer as an address.
+#
+# jbko ADDS ZERO EXPRESSIVE POWER over what the model already has. Bennett-8g7m
+# / U80 (`instructions.jl:~2917`) ALREADY admits `icmp eq/ne` over
+# POINTER-TYPED operands and already rejects ordering over them with exactly
+# this argument. jbko only lets the SAME comparison be spelled through a
+# coercion — which is what Julia emits when one side is a CAPTURED copy of the
+# pointer that was stored as a plain `i64`. In the real corpus (`_growend!`
+# `%L84`) Julia compares BOTH halves of one `MemoryRef`, and the `.mem` half
+# already goes through `icmp eq ptr`; jbko admits the other half of the SAME
+# comparison.
+#
+# REVERSIBILITY is inherited, not argued specially: the coercion lowers to a
+# BVM `Define` (via `IRBinOp`) and the comparison to a `Define` carrying the
+# predicate (via `IRICmp`). Both are non-destructive SSA creates, reversed by
+# the standard L2/L3 machinery. The VM never learns an operand was a pointer.
+#
+# FAILURE MODE IF THE MODEL IS NEVERTHELESS WRONG: in Julia codegen these
+# comparisons guard a throw block, which the Bennett-utzc pruner replaces with
+# the `:__unreachable__` sink — so a wrong answer HALTS LOUDLY rather than
+# silently producing a wrong value (Rule 1 property of the surrounding shape).
+# ============================================================================
+
+# (P2) Is `v` a pointer SSA value that `ptr_cells` has CERTIFIED as ONE 64-bit
+# cell? Deliberately a POSITIVE WHITELIST of the two producer shapes that are
+# PROVEN to stamp width 64 — NOT an "is a pointer" test:
+#
+#   * `extractvalue` of a StructType ptr field → `_struct_field_widths` stamps
+#     64 ("a pointer is one Int64 VM cell, ADR 0018 §A"), and
+#   * `load` with a PointerType result under `ptr_cells` → `IRLoad(…, 64)`
+#     (the Bennett-ares arm, "ptr→cell width 64").
+#
+# A pointer-typed `phi` / `select` carries the Bennett-cc0 M2b WIDTH-0
+# SENTINEL: its routing is recorded in `ptr_provenance` at LOWERING time rather
+# than as a value. Coercing one would emit an `:or` identity reading a cell
+# that was NEVER MATERIALISED — a SILENT miscompile, not a loud one. Everything
+# outside the whitelist (including cases that are probably sound, e.g. a
+# `julia.gc_alloc_obj` call result) is REJECTED: Rule 1 prefers a conservative
+# loud reject to an unverified admission. Widening this is a one-line change
+# PLUS a fixture. Depth-0 by design — no chain walk, no recursion.
+# Returns `:extractvalue`, `:load`, or `:none`.
+function _jbko_cell_ptr_src_kind(v)::Symbol
+    v isa LLVM.Instruction || return :none
+    ty = LLVM.value_type(v)
+    ty isa LLVM.PointerType || return :none
+    LLVM.addrspace(ty) == 0 || return :none          # addrspace-0 only (cf. 7wsz)
+    opc = LLVM.opcode(v)
+    if opc == LLVM.API.LLVMExtractValue
+        return LLVM.value_type(LLVM.operands(v)[1]) isa LLVM.StructType ?
+               :extractvalue : :none
+    elseif opc == LLVM.API.LLVMLoad
+        return :load
+    end
+    return :none
+end
+
+# Human-readable description of a ptrtoint source, for the (P2) fail-loud.
+function _jbko_src_kind_name(v)::String
+    v isa LLVM.Argument && return "a function argument"
+    v isa LLVM.Instruction || return "a non-instruction value (global/alias/constexpr)"
+    opc = LLVM.opcode(v)
+    if opc == LLVM.API.LLVMExtractValue
+        return "an `extractvalue` of a NON-struct aggregate"
+    end
+    return "a `$(_llvm_opcode_name(opc))`"
+end
+
+# (P3)+(P4) The dual of `_verify_memdata_bounds_cluster`: that gate proves a
+# coerced address never escapes a base-CANCELLING subtraction, this one proves
+# it never escapes an EQUALITY test. Both say "the coerced integer is used only
+# in a way whose result is independent of ARENA_BASE" — the sole soundness
+# boundary.
+#
+# EVERY use of `pt` must be an `icmp` with predicate eq/ne whose SIBLING
+# operand is an in-model 64-bit value (an SSA instruction or a function
+# argument) or the ZERO cell (null — Bennett-beaw). A NON-ZERO integer literal
+# is a test against a hard-coded host address, which is layout-dependent by
+# construction and has no portable meaning — rejected. A ptrtoint with NO uses
+# is rejected too: a use-less coercion is evidence the walker's picture is
+# incomplete, and surprises are loud (Rule 1 / the 583s conservatism).
+#
+# Returns `nothing` when every use is admissible, else a SHORT STRING naming
+# the offending use (so the fail-loud says which one).
+function _jbko_identity_use_violation(pt::LLVM.Instruction)::Union{Nothing,String}
+    saw = false
+    for u in LLVM.uses(pt)
+        saw = true
+        usr = LLVM.user(u)
+        usr isa LLVM.Instruction || return "a non-instruction user"
+        uopc = LLVM.opcode(usr)
+        uopc == LLVM.API.LLVMICmp ||
+            return "a use that is a `$(_llvm_opcode_name(uopc))`, not an icmp"
+        pred = LLVM.predicate(usr)
+        pred in (LLVM.API.LLVMIntEQ, LLVM.API.LLVMIntNE) ||
+            return "an ORDERING icmp (predicate :$(_pred_to_sym(pred)))"
+        ops = LLVM.operands(usr)
+        length(ops) == 2 || return "an icmp with $(length(ops)) operands"
+        sib = ops[1].ref == pt.ref ? ops[2] : ops[1]
+        if sib isa LLVM.ConstantInt
+            _const_int_as_int(sib) == 0 ||
+                return "an icmp against the NON-ZERO integer literal " *
+                       "$(_const_int_as_int(sib))"
+        elseif !(sib isa LLVM.Instruction || sib isa LLVM.Argument)
+            return "an icmp whose other operand is not an in-model SSA value"
+        end
+    end
+    return saw ? nothing : "NO uses at all"
+end
+
 """
     _gc_loaded_dst_elem_ref(gep_val) -> Union{Nothing, Tuple{_LLVMRef,_LLVMRef,Int}}
 
@@ -3066,6 +3220,91 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 "inttoptr-deref, store, hash, or a cross-allocation difference). " *
                 "An escaping base-dependent address would break oracle match " *
                 "(Bennett-583s / CW-D; CLAUDE.md §1).")
+            return IRBinOp(dest, :or, _operand(src, names), iconst(0), 64)
+        end
+        # Bennett-jbko / CW-D: IDENTITY-USE ptrtoint. Julia's `MemoryRef`
+        # concurrent-mutation guard (`_growend!` `%L84`) compares a MemoryRef's
+        # CURRENT data pointer against a CAPTURED copy of it that codegen read
+        # back as a plain `i64`:
+        #
+        #   %po = extractvalue { ptr, ptr } %.ref, 0     ; current data ptr
+        #   %cap = load i64, ptr %self_plus_56           ; captured copy (a CELL)
+        #   %c  = ptrtoint ptr %po to i64                ; <-- THIS ARM
+        #   %eq = icmp eq i64 %cap, %c                   ; the ONLY use of %c
+        #
+        # Admitted as the width-64 cell identity iff (P1) both widths are 64,
+        # (P2) the source is a CERTIFIED cell-valued pointer SSA
+        # (`_jbko_cell_ptr_src_kind`), and (P3)+(P4) every use is an
+        # `icmp eq`/`ne` against an in-model value or the zero cell
+        # (`_jbko_identity_use_violation`). The full determinism argument is in
+        # the helper block above `_jbko_cell_ptr_src_kind`.
+        #
+        # THE USE GATE IS LOAD-BEARING: Bennett-8g7m's ordering-reject is
+        # TYPE-based (it fires only when an icmp operand has PointerType), so an
+        # UNGATED ptrtoint would launder an address-MAGNITUDE compare onto the
+        # plain-integer icmp path and silently disable 8g7m. Do not "simplify"
+        # it away — `test_jbko_ptr_identity_icmp.jl` gate (C) is the pin.
+        #
+        # PLACEMENT: this arm sits AFTER the 583s arm and is additionally pinned
+        # by `_memdata_root(src) === nothing`, so the two contracts are
+        # STRUCTURALLY DISJOINT regardless of ordering: a memdata-rooted source
+        # stays 583s's, under 583s's own (subtraction) proof and its own reject
+        # messages. Proposer A argued for placing jbko FIRST so that a
+        # `.data`-base coercion whose uses are all `icmp eq/ne` would be admitted
+        # rather than hitting 583s's cluster fail-loud; that widening has NO
+        # corpus witness today, and a destructive probe showed that perturbing
+        # `_memdata_root` breaks 583s's L58 cluster. If such a witness ever
+        # appears it is a one-line ordering change (move this block above the
+        # 583s block and drop the `_memdata_root` pin).
+        #
+        # `LLVMPtrToInt`-only, exactly as 583s is: an `inttoptr` of an
+        # identity-compared address IS the forbidden escape and falls through to
+        # the generic fail-loud below. Inside the `&& ptr_cells` block ⇒ the
+        # circuit path is byte-identical (no arm at all when the gate is off).
+        #
+        # The entry condition is a DISJUNCTION so that BOTH near-miss classes
+        # get a jbko-named diagnostic rather than the generic "not a type tag"
+        # message: a certified source with a bad USE, and a bad SOURCE whose
+        # uses are the admissible identity shape.
+        if opc == LLVM.API.LLVMPtrToInt && src isa LLVM.Instruction &&
+           _memdata_root(src) === nothing && haskey(names, src.ref) &&
+           (_jbko_cell_ptr_src_kind(src) !== :none ||
+            _jbko_identity_use_violation(inst) === nothing)
+            srt = LLVM.value_type(src)
+            drt = LLVM.value_type(inst)
+            src_w = srt isa LLVM.PointerType ? 64 : _iwidth(src)
+            dst_w = drt isa LLVM.PointerType ? 64 : _iwidth(inst)
+            (src_w == 64 && dst_w == 64) || _ir_error(inst,
+                "ptrtoint of an in-model pointer at a NON-64-bit width " *
+                "(src=$(src_w) dst=$(dst_w)) under ptr_cells — genuine pointer " *
+                "arithmetic, not a cell identity (Bennett-jbko / CW-D). A " *
+                "pointer is ONE Int64 VM cell (ADR 0018 §A); only the 64-bit " *
+                "coercion confined to an equality test is modelled, because a " *
+                "narrower cast truncates the cell value (CLAUDE.md §1).")
+            _jbko_cell_ptr_src_kind(src) === :none && _ir_error(inst,
+                "ptrtoint under ptr_cells whose source is NOT a CERTIFIED " *
+                "cell-valued pointer SSA (Bennett-jbko / CW-D). The source is " *
+                "$(_jbko_src_kind_name(src)); only an `extractvalue` of a " *
+                "StructType pointer field or a `load` of a pointer (addrspace " *
+                "0) is certified to be stamped at width 64. In particular a " *
+                "pointer-typed `phi`/`select` carries the Bennett-cc0 M2b " *
+                "WIDTH-0 SENTINEL — its routing lives in `ptr_provenance` at " *
+                "LOWERING time, not as a value — so coercing one would read a " *
+                "cell that was NEVER MATERIALISED (a SILENT miscompile). " *
+                "Rejected to fail fast (CLAUDE.md §1).")
+            viol = _jbko_identity_use_violation(inst)
+            viol === nothing || _ir_error(inst,
+                "ptrtoint under ptr_cells whose result is NOT confined to a " *
+                "pointer-IDENTITY test (Bennett-jbko / CW-D) — found $(viol). " *
+                "EVERY use must be an `icmp eq`/`icmp ne` against an in-model " *
+                "SSA value or the zero cell (null, Bennett-beaw). An ORDERING " *
+                "compare, arithmetic, a store, a ret, an inttoptr, or a " *
+                "comparison against a non-zero literal address would make the " *
+                "result depend on the BVM arena LAYOUT rather than on a " *
+                "source-level property. Ordering in particular is the " *
+                "Bennett-8g7m / U80 address-MAGNITUDE rule, whose guard is " *
+                "TYPE-based — this use gate is precisely what stops a coercion " *
+                "from laundering an ordering compare around it (CLAUDE.md §1).")
             return IRBinOp(dest, :or, _operand(src, names), iconst(0), 64)
         end
         _ir_error(inst,

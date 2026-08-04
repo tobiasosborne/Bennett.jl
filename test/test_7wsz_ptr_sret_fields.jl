@@ -494,15 +494,29 @@ top:
         # to `IRCall(:memmove)` → BVM's overlap-safe `IntrinsicMemmove`, so the
         # closure walks past `%L79` to the `%L84` ptrtoint. Its negative joins
         # the diverror ones.
+        #
+        # ADVANCED AGAIN by Bennett-jbko (2026-08-04): the `%L84` ptrtoint IS
+        # the `MemoryRef` concurrent-mutation guard and is now admitted as a
+        # use-scoped width-64 cell identity, so that disjunct is GONE too. The
+        # closure now dies in `%L93` on the LIVE whole-struct
+        # `store { ptr, ptr }` (Bennett-lgzx / U114) — MEASURED, and it
+        # corrects the jbko bead's own "sret-reassembly memcpy next" forecast.
+        #
+        # The `Bennett-iwo9` / `ptrtoint` NEGATIVES are load-bearing: the
+        # landing disjunction already admitted `Bennett-lgzx`/`U114`/
+        # `StructType` before jbko, so this gate did NOT go red on landing.
+        # Without the negatives the marker would silently stop tracking the
+        # frontier (the Bennett-0ncn lesson, applied in advance).
         @test !occursin("jl_diverror_exception", msg)
         @test !occursin("UNRECOGNIZED Julia JIT global", msg)
         @test !occursin("memmove", msg)
         @test !occursin("not yet lowered to reversible gates", msg)
-        @test occursin("Bennett-iwo9", msg) ||
-              occursin("ptrtoint", msg) || occursin("inttoptr", msg) ||
-              occursin("Bennett-lgzx", msg) ||
+        @test !occursin("Bennett-iwo9", msg)
+        @test !occursin("ptrtoint", msg)
+        @test occursin("Bennett-lgzx", msg) ||
               occursin("U114", msg) ||
-              occursin("StructType", msg)
+              occursin("StructType", msg) ||
+              occursin("store of non-integer type", msg)
     end
 
     # =====================================================================
