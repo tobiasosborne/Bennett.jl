@@ -438,6 +438,15 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
     #     `%L79` — Bennett-8bys / Bennett-37mt, explicitly out of 3vf2's
     #     scope. The negatives below are the anti-regression half: the
     #     diverror wall must not quietly re-open.
+    #
+    #     ADVANCED AGAIN by Bennett-vau9 (2026-08-04): that memmove now
+    #     ROUTES to `IRCall(:memmove)` → BVM's overlap-safe
+    #     `IntrinsicMemmove` under `ptr_cells`, so the closure walks past
+    #     `%L79` and dies at `%L84` on
+    #     `%coercion = ptrtoint ptr %.ref.ptr_or_offset to i64` — the
+    #     generic Bennett-iwo9 / CW-D3 Lever 1 reject (an unrecognised
+    #     pointer↔integer round-trip source). A `!occursin("memmove")`
+    #     negative joins the diverror ones.
     # ------------------------------------------------------------------
     @testset "(I) push! reaches the NEXT named wall, not an UndefRefError" begin
         e = try
@@ -460,10 +469,12 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
         # cleared it; these negatives keep it from re-opening unnoticed
         @test !occursin("jl_diverror_exception", e.msg)
         @test !occursin("UNRECOGNIZED Julia JIT global", e.msg)
+        # the PREVIOUS (llvm.memmove) wall is GONE — vau9 routes it
+        @test !occursin("memmove", e.msg)
+        @test !occursin("not yet lowered to reversible gates", e.msg)
         # ... and we land on one of the NAMED successor walls
-        @test occursin("memmove", e.msg) ||
-              occursin("Bennett-8bys", e.msg) ||
-              occursin("Bennett-37mt", e.msg) ||
+        @test occursin("Bennett-iwo9", e.msg) ||
+              occursin("ptrtoint", e.msg) || occursin("inttoptr", e.msg) ||
               occursin("Bennett-lgzx", e.msg) || occursin("U114", e.msg) ||
               occursin("Bennett-5oyt", e.msg) || occursin("U15", e.msg)
     end
@@ -496,9 +507,10 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
     #
     # Live repro pinned below: `push!` under `:skip` returns TWO bodies,
     # both unrelated `throw_*` helpers, with the root absent — because
-    # the root AND the `_growend!` closure both still wall (post-3vf2: the
-    # closure on `llvm.memmove.p0.p0.i64` / Bennett-8bys, the root on the
-    # U15 `movq %fs:0` pgcstack read / Bennett-5oyt).
+    # the root AND the `_growend!` closure both still wall (post-vau9: the
+    # closure on the `%L84` `ptrtoint ptr %.ref.ptr_or_offset` /
+    # Bennett-iwo9, the root on the U15 `movq %fs:0` pgcstack read /
+    # Bennett-5oyt).
     #
     # DESIRED behaviour (Bennett-9tg3): fail loud naming the root key.
     # ------------------------------------------------------------------

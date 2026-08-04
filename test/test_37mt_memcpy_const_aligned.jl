@@ -146,7 +146,13 @@ using Bennett
         end
     end
 
-    @testset "memmove always fails loud → 8bys" begin
+    # Bennett-vau9 (2026-08-04) narrowed "always" to "on the CIRCUIT path":
+    # under the closed-world `ptr_cells` gate a memmove now routes to
+    # `IRCall(:memmove)` → BVM's overlap-safe `IntrinsicMemmove`. This testset
+    # uses the DEFAULT `ptr_cells=false`, i.e. the circuit path, where the
+    # legacy reject stands unchanged. The gated counterpart (same fixture,
+    # same instruction, gate on) is `test_vau9_variable_memmove.jl` (c).
+    @testset "memmove fails loud → 8bys on the circuit path (ptr_cells=false)" begin
         path = joinpath(@__DIR__, "fixtures", "ll", "37mt_memmove_reject.ll")
         @test_throws ErrorException Bennett.extract_parsed_ir_from_ll(
             path; entry_function="memmove_user")

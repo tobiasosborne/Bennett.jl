@@ -581,8 +581,8 @@ runfile("test_utzc_dead_block_pruner.jl")
 # whose uses sit in `dead_blocks`, is now DROPPED (no IRInst, no `.globals`
 # entry, no SSA alias; the `names` entry is deleted so a surviving reference
 # fails loud in `_operand`). Name-AGNOSTIC by design — soundness is a theorem
-# about the pruner, not a Julia naming convention. Advances the `push!` closure
-# frontier to `llvm.memmove` (Bennett-8bys / 37mt).
+# about the pruner, not a Julia naming convention. Advanced the `push!` closure
+# frontier to `llvm.memmove` (Bennett-8bys / 37mt), since routed by Bennett-vau9.
 runfile("test_3vf2_dead_use_global_load.jl")
 # Bennett-lbot / CW-D (ADR 0017) — overflow-arith intrinsics
 # (`llvm.{smul,umul,sadd,uadd}.with.overflow.iN`, result `{iN,i1}`) under the
@@ -613,6 +613,16 @@ runfile("test_a70z_overflow_const_bit.jl")
 # Unblocks fdict `rehash!` zeroing the fresh Dict.slots Memory (variable length).
 # ptr_cells-gated: circuit path byte-identical.
 runfile("test_8bys_variable_memset.jl")
+# Bennett-vau9 / CW-D (ADR 0017) — the memmove SIBLING of 8bys. Under the
+# closed-world `ptr_cells` gate an `llvm.memmove.p0.p0.i64` routes to a bare
+# IRCall(:memmove,[dst_cell,src_cell,nbytes],[64,64,64],64) → BVM's overlap-safe
+# IntrinsicMemmove (src snapshotted before the dest write; L2 dest-range delta
+# reverses it), instead of the unconditional "not yet lowered" reject. Unlike
+# memset there is NO legacy const-N unroll, so the WHOLE arm is gated and const-N
+# routes too; ptr_cells=false keeps the legacy reject. Volatile / non-p0 /
+# malformed-arity / non-SSA-pointer all still fail loud. Unblocks the `_growend!`
+# grow-copy (xkl wall 4); the push! set now advances to the iwo9 ptrtoint wall.
+runfile("test_vau9_variable_memmove.jl")
 # Bennett-jfw6: mem=:vm Case A Vector/GenericMemory extraction recognizer (shape + fail-loud matrix).
 runfile("test_jfw6_vec_vm_extract.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message

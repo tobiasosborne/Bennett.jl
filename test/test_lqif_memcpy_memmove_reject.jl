@@ -8,7 +8,12 @@
 #   - the existing `lqif_memcpy_reject.ll` fixture uses `alloca i64`,
 #     which now hits the Phase 1 `alloca elem_w must be 8` predicate
 #     and fails loud with a `Bennett-8bys` reference (not `lqif`).
-#   - llvm.memmove ALWAYS fails loud → Bennett-8bys.
+#   - llvm.memmove fails loud → Bennett-8bys on the CIRCUIT path. Bennett-vau9
+#     (2026-08-04) narrowed this from "always": under the closed-world
+#     `ptr_cells` gate a memmove routes to `IRCall(:memmove)` → BVM's
+#     overlap-safe `IntrinsicMemmove`. The testset below uses the DEFAULT
+#     `ptr_cells=false`, so it pins the unchanged circuit-path reject; the
+#     gated counterpart lives in `test_vau9_variable_memmove.jl`.
 #
 # Per-shape green-path coverage for memcpy lives in
 # `test/test_37mt_memcpy_const_aligned.jl`.

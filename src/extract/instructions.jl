@@ -2026,10 +2026,11 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     # fall through to a precise fail-loud naming Bennett-8bys (catch-all
     # for byte-granularity / variable-size / overlap / wider-elem-w
     # allocas) or Bennett-haod (deferred sub-bead for global-variable
-    # source pointers). memmove ALWAYS fails loud → 8bys (overlap is
+    # source pointers). memmove fails loud on the CIRCUIT path (overlap is
     # unreachable in the reversible model regardless of pointer
-    # disjointness). The Phase 0 (Bennett-lqif) blanket fail-loud is
-    # superseded by this arm.
+    # disjointness); under the closed-world `ptr_cells` gate it routes to
+    # `IRCall(:memmove)` instead — see the Bennett-vau9 arm below. The
+    # Phase 0 (Bennett-lqif) blanket fail-loud is superseded by this arm.
     #
     # Why byte-granular chunks (rather than the bead's "(N/8) at 64-bit
     # granularity" wording): the existing `lower_ptr_offset!`
@@ -2043,13 +2044,99 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     # bead's "N is multiple of 8 bytes" wording becomes moot — any
     # positive N works.
     if startswith(cname, "llvm.memmove.")
+        # Bennett-vau9 / CW-D (ADR 0017): under the closed-world `ptr_cells`
+        # gate a memmove routes to
+        #   IRCall(dest, :memmove, [dst_cell, src_cell, nbytes], [64,64,64], 64)
+        # → BennettVM's `IntrinsicMemmove` (`:memmove` ∈ `_HEAP_DISPATCH`,
+        # ingest_call.jl; forward snapshots the whole src range BEFORE writing
+        # dest, so OVERLAP is safe by construction, and the L2 dest-range delta
+        # reverses it — the clobbered src cells are a subset of the dest range,
+        # so no src delta is needed). Unblocks `_growend!`, whose grow-copy
+        # moves the old elements into the newly allocated buffer.
+        #
+        # This mirrors the ratified Bennett-8bys variable-size-memset D5b
+        # void-call shape (predicate 5 of `_handle_memset_arm`), with two
+        # deliberate differences:
+        #
+        #   * TWO SSA pointer operands (dst AND src), both required to resolve
+        #     to `SSAOperand` cells — `IntrinsicMemmove` takes two `Symbol`
+        #     pointer names.
+        #   * NO legacy const-N unroll to preserve: memmove has ALWAYS failed
+        #     loud, so the WHOLE arm is gated on `ptr_cells` and a CONST byte
+        #     count routes through the same `IRCall` (BVM resolves an `Int64`
+        #     `nbytes_operand` just as happily as a `Symbol`). Consequence:
+        #     under `ptr_cells=false` the legacy reject stands for every shape,
+        #     byte-identically except for the added Bennett-vau9 clause naming
+        #     the gate.
+        #
+        # `n_v` is passed through `_operand` WITHOUT `ptr_cells=true`: it is a
+        # byte COUNT, not a pointer, and BVM's `_cell_count` divides it by 8.
+        #
+        # DOWNSTREAM BOUNDARY (not this arm's job, but know it exists): BVM's
+        # `_enforce_julia_heap_tier!` fails loud on an `IntrinsicMemmove` in a
+        # JULIA-tier program (`gc_alloc_obj` / `jl_alloc_genericmemory_*`
+        # allocs, byte-granular cells) because the `÷8` span would copy an
+        # eighth of a byte range — bead `bennettvm-rxgy` tracks the byte-exact
+        # `IntrinsicMemmoveBytes` (sibling of the existing
+        # `IntrinsicMemsetBytes`). Routing here is still right: extraction
+        # must not wall on a shape the VM models, and the tier mismatch
+        # arrives LOUDLY at `lower_vm`, not as a silent short copy.
+        if ptr_cells
+            # Predicate 1: addrspace 0 on BOTH pointers (encoded in the
+            # intrinsic name — mirrors the memcpy arm's prefix check).
+            startswith(cname, "llvm.memmove.p0.p0.") || _ir_error(inst,
+                "$(cname): memmove with a non-default pointer address space " *
+                "is not supported. Bennett.jl's cell model is " *
+                "single-address-space; cross-space moves need explicit " *
+                "lowering. (Bennett-vau9 — addrspace 0 only)")
+
+            n_ops_mm = length(ops)
+            n_ops_mm >= 5 || _ir_error(inst,
+                "$(cname): malformed memmove call (expected 4 args + callee, " *
+                "got $(n_ops_mm - 1) args). (Bennett-vau9)")
+
+            dst_v = ops[1]
+            src_v = ops[2]
+            n_v   = ops[3]
+            vol_v = ops[4]
+
+            # Predicate 2: isvolatile must be a ConstantInt (malformed-IR
+            # guard — LangRef requires an immarg here) with value 0.
+            vol_v isa LLVM.ConstantInt || _ir_error(inst,
+                "$(cname): isvolatile arg is not an i1 immarg constant " *
+                "(value=$(string(vol_v))). LangRef requires an immarg here; " *
+                "malformed IR. (Bennett-vau9)")
+            _const_int_as_int(vol_v) == 0 || _ir_error(inst,
+                "$(cname): volatile memmove is not supported. Bennett.jl's " *
+                "reversible model has no observable side-effect ordering for " *
+                "memory; volatile semantics cannot be honoured. Recompile " *
+                "without the volatile attribute. (Bennett-vau9 — Rule 1)")
+
+            # Predicate 3: BOTH pointers must resolve to SSA cells.
+            dst_op = _operand(dst_v, names; ptr_cells=true)
+            dst_op isa SSAOperand || _ir_error(inst,
+                "$(cname): memmove DST is not an SSA pointer cell (got " *
+                "$(dst_op)); BVM's IntrinsicMemmove needs a Symbol dest_ptr. " *
+                "(Bennett-vau9)")
+            src_op = _operand(src_v, names; ptr_cells=true)
+            src_op isa SSAOperand || _ir_error(inst,
+                "$(cname): memmove SRC is not an SSA pointer cell (got " *
+                "$(src_op)); BVM's IntrinsicMemmove needs a Symbol src_ptr. " *
+                "(Bennett-vau9)")
+
+            return IRCall(dest, :memmove,
+                          IROperand[dst_op, src_op, _operand(n_v, names)],
+                          Int[64, 64, 64], 64)
+        end
         _ir_error(inst,
             "$(cname): memmove is not yet lowered to reversible gates. " *
             "Memmove permits src/dst overlap and reversibility forbids " *
             "destructive in-place overwrite, so static disjointness is " *
             "required and Bennett.jl has no alias analysis to prove it. " *
             "Tracked in Bennett-8bys (Phase 3: byte-granularity / " *
-            "variable-size / overlap / memmove). " *
+            "variable-size / overlap / memmove); under the closed-world " *
+            "`ptr_cells` gate it routes to BVM's overlap-safe " *
+            "IntrinsicMemmove instead (Bennett-vau9). " *
             "(Bennett-37mt Phase 1 — memmove deferred to Bennett-8bys)")
     end
     if startswith(cname, "llvm.memcpy.")
