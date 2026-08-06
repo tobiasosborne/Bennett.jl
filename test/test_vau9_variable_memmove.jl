@@ -289,19 +289,40 @@ end
                 # CLEARED by Bennett-p06b. These are the new load-bearing half.
                 @test !occursin("Bennett-lgzx", msg)
                 @test !occursin("store of non-integer type", msg)
-                # ... and p06b's OWN rejects did NOT fire: the corpus store was
-                # ADMITTED, not re-rejected under a new name.
-                @test !occursin("Bennett-p06b", msg)
-                # POSITIVE: the NEW wall is the `%idxend41` GenericMemory
-                # `.data`-base ptrtoint (Bennett-583s, bead Bennett-foz5).
-                # Kept as a disjunction because WHICH body of the set fails
-                # first is registration/iteration order, not a contract.
-                @test occursin("Bennett-583s", msg) ||
-                      occursin("base-cancelling", msg) ||
-                      occursin("Bennett-foz5", msg) ||
-                      occursin("Bennett-5oyt", msg) || occursin("U15", msg)
-                # the closure key is still named (the 40ys instance-less arm)
-                @test occursin("_growend!", msg)
+                # ... and p06b's OWN rejects did NOT fire on the `%L93`
+                # MemoryRef write-back this gate is about. NARROWED TWICE by
+                # Bennett-foz5, because wall 8 IS a p06b reject and a blanket
+                # negative cannot survive — but DELETING it would lose the
+                # intent, so keep BOTH narrowings (they fail for different
+                # reasons, which is the point):
+                #   * BODY SCOPE — preserves the original intent exactly:
+                #     p06b must not reject anything in the CLOSURE body. Wall 8
+                #     is in the ROOT body (`_pushvau9`). This recycles the
+                #     retired `occursin("_growend!")` positive as the negative's
+                #     scope term, so nothing is thrown away.
+                @test !(occursin("Bennett-p06b", msg) && occursin("_growend!", msg))
+                #   * DISCRIMINATOR — fails LOUD if the p06b reject SHAPE drifts:
+                #     the only p06b reject tolerated here is the byte-granular
+                #     `gc_alloc_obj` target refusal. A p06b re-rejection of
+                #     `%L93` under a new name turns this red even in the root
+                #     body, which the body-scoped form alone would not catch.
+                @test !occursin("Bennett-p06b", msg) || occursin("gc_alloc_obj", msg)
+                # LOAD-BEARING NEGATIVE: wall 7 — the `%idxend41` memdata bounds
+                # cluster — is CLEARED by Bennett-foz5 (ADR 0017 §4a).
+                @test !occursin("Bennett-583s", msg)
+                @test !occursin("base-cancelling", msg)
+                # POSITIVE: the NEW wall is wall 8 (Bennett-bvmd) — the ROOT
+                # body's `julia.gc_alloc_obj`-backed aggregate-store target,
+                # refused because BennettVM stamps that tier BYTE-granular
+                # (CW-D4 / bennettvm-9n3y). Kept as a disjunction because WHICH
+                # body of the set fails first is registration/iteration order,
+                # not a contract. Non-numeral anchors only (Bennett-0ncn: a bare
+                # numeral can false-match a future bead tag).
+                @test occursin("gc_alloc_obj", msg) || occursin("BYTE-granular", msg)
+                # `occursin("_growend!", msg)` is DROPPED as a POSITIVE: the wall
+                # moved to the ROOT body, so the closure name is legitimately
+                # absent. It survives above as the body-scope term of the p06b
+                # negative — retired from one role, reused in another.
             end
         finally
             lock(Bennett._known_callees_lock) do

@@ -495,8 +495,13 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
         @test !(e isa UndefRefError)
         @test e isa ErrorException
         @test !occursin("access to undefined reference", e.msg)
-        # the closure key is still named (the 40ys instance-less arm works)
-        @test occursin("_growend!", e.msg)
+        # `occursin("_growend!", e.msg)` was DROPPED as a POSITIVE by
+        # Bennett-foz5: wall 7 is cleared, so the wall moved to the ROOT body
+        # and the closure name is legitimately absent. The 40ys instance-less
+        # arm is still proved by gate (C) above, which extracts the closure key
+        # DIRECTLY from the signature — a stronger pin than a substring in a
+        # wall message ever was. The name survives below as the body-scope term
+        # of the p06b negative.
         # the OLD (Bennett-dv1z ptr-sret-field) wall is GONE — 7wsz cleared it
         @test !occursin("Bennett-dv1z", e.msg)
         @test !occursin("sret struct field", e.msg)
@@ -518,19 +523,31 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
         @test !occursin("Bennett-lgzx", e.msg)
         @test !occursin("store of non-integer type", e.msg)
         # ... and p06b's OWN rejects did NOT fire on the corpus store: it was
-        # ADMITTED, not re-rejected under a new name.
-        @test !occursin("Bennett-p06b", e.msg)
-        # ... and we land on one of the NAMED successor walls
-        # MEASURED (2026-08-06, --check-bounds=yes): the closure fails first,
-        # on `%94 = ptrtoint ptr %memory_data53 to i64` in `%idxend41`
-        # (Bennett-583s / bead Bennett-foz5). Kept as a DISJUNCTION rather than
-        # a literal pin because WHICH body of the set fails first is
-        # registration/iteration order, which is not a contract (the test_lf14
-        # convention this gate has always followed).
-        @test occursin("Bennett-583s", e.msg) ||
-              occursin("base-cancelling", e.msg) ||
-              occursin("Bennett-foz5", e.msg) ||
-              occursin("Bennett-5oyt", e.msg) || occursin("U15", e.msg)
+        # ADMITTED, not re-rejected under a new name. NARROWED TWICE by
+        # Bennett-foz5 (wall 8 IS a p06b reject, so a blanket negative cannot
+        # survive — but deleting it would lose the intent). Keep BOTH forms:
+        #   * BODY SCOPE — the original intent, exactly: p06b must not reject
+        #     anything in the CLOSURE body. Wall 8 is in the ROOT body.
+        @test !(occursin("Bennett-p06b", e.msg) && occursin("_growend!", e.msg))
+        #   * DISCRIMINATOR — the only p06b reject tolerated here is the
+        #     byte-granular `gc_alloc_obj` target refusal, so a re-rejection of
+        #     the corpus store under a new name still turns this red.
+        @test !occursin("Bennett-p06b", e.msg) || occursin("gc_alloc_obj", e.msg)
+        # LOAD-BEARING NEGATIVE: wall 7 — the `%idxend41` memdata bounds cluster
+        # — is CLEARED by Bennett-foz5 (ADR 0017 §4a, the CONFINED-VALUE
+        # contract). Without these the positive below would not notice a re-open.
+        @test !occursin("Bennett-583s", e.msg)
+        @test !occursin("base-cancelling", e.msg)
+        # ... and we land on the NAMED successor wall.
+        # MEASURED (2026-08-06, --check-bounds=yes): wall 8 (Bennett-bvmd) —
+        # the ROOT body's `julia.gc_alloc_obj`-backed aggregate-store target,
+        # refused because BennettVM stamps that tier BYTE-granular (CW-D4 /
+        # bennettvm-9n3y). Kept as a DISJUNCTION rather than a literal pin
+        # because WHICH body of the set fails first is registration/iteration
+        # order, which is not a contract (the test_lf14 convention this gate has
+        # always followed). Non-numeral anchors only — the Bennett-0ncn lesson:
+        # a bare numeral can false-match a future bead tag.
+        @test occursin("gc_alloc_obj", e.msg) || occursin("BYTE-granular", e.msg)
     end
 
     # ==================================================================
@@ -559,12 +576,19 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
     # instance-less arm's: `:skip` records the failure and continues,
     # and the root's `if root_pir !== nothing` guard just... skips it.
     #
-    # Live repro pinned below: `push!` under `:skip` returns TWO bodies,
-    # both unrelated `throw_*` helpers, with the root absent — because
-    # the root AND the `_growend!` closure both still wall (post-vau9: the
-    # closure on the `%L84` `ptrtoint ptr %.ref.ptr_or_offset` /
-    # Bennett-iwo9, the root on the U15 `movq %fs:0` pgcstack read /
-    # Bennett-5oyt).
+    # Live repro pinned below: `push!` under `:skip` returns a set with the
+    # root ABSENT and nothing said so.
+    #
+    # UPDATED by Bennett-foz5 (2026-08-06) — the GAP is unchanged, the
+    # SURROUNDING FACTS moved. Pre-foz5 the set was TWO bodies, both
+    # unrelated `throw_*` leaves, because the root AND the `_growend!`
+    # closure both walled. foz5 clears wall 7, so the closure now extracts
+    # COMPLETELY (measured: 52 blocks, 3 `IRCall`s) and joins the set — the
+    # root alone still walls (wall 8, Bennett-bvmd). The result is a
+    # SHARPER demonstration of the same gap, not a weaker one: the set now
+    # contains a substantial body with outgoing calls, so it looks even
+    # more like a successful extraction, while the one body that could
+    # serve as an entry is still missing and still unannounced.
     #
     # DESIRED behaviour (Bennett-9tg3): fail loud naming the root key.
     # ------------------------------------------------------------------
@@ -576,18 +600,30 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
         @test out isa Vector{Pair{Symbol,_B40.ParsedIR}}
 
         keys_ = first.(out)
-        # THE BUG: the root is NOT in the set, and nothing said so.
+        # THE BUG, unchanged by foz5: the root is NOT in the set, and
+        # nothing said so.
         @test !any(k -> startswith(String(k), "_push40ys#"), keys_)
-        # ...and what IS returned is two unrelated throw helpers, i.e. a
-        # "closed world" consisting entirely of leaves.
-        @test length(out) == 2
+        # ...and what IS returned is the two throw leaves PLUS the
+        # `_growend!` closure that Bennett-foz5 unblocked.
+        @test length(out) == 3
         @test any(k -> startswith(String(k), "throw_boundserror#"), keys_)
         @test any(k -> startswith(String(k), "throw_inexacterror#"), keys_)
-        # Neither body calls the other and neither is reachable from an
-        # entry — the set is structurally useless, yet indistinguishable
-        # from success at the call site.
-        @test all(p -> isempty([i for b in p.second.blocks
-                                for i in b.instructions if i isa _B40.IRCall]), out)
+        @test any(k -> occursin("_growend!", String(k)), keys_)
+        # WHY THE SET IS STILL STRUCTURALLY USELESS. The old evidence ("no
+        # body calls any other") is retired: the closure DOES carry
+        # `IRCall`s now. The invariant that actually matters is the `!any`
+        # assertion above — NO member of the set is the entry, so the
+        # `lower_vm(set; entry=first(set).first)` idiom the comment above
+        # warns about would silently elect a leaf `throw_*` stub as the
+        # program's entry point. (A `first(out)`-specific restatement of that
+        # was dropped in review: it is strictly implied by `!any`, and pinning
+        # iteration order would be a Rule-5 hazard for no gain.)
+        # The closure is a genuine body, which is what makes the silent drop
+        # MORE dangerous than before: the set now looks like a real
+        # extraction result.
+        gk = only([k for k in keys_ if occursin("_growend!", String(k))])
+        gp = only([p.second for p in out if p.first === gk])
+        @test length(gp.blocks) > 10
     end
 
     # ------------------------------------------------------------------

@@ -534,12 +534,25 @@ top:
         # did NOT fire on the corpus store (it was ADMITTED, not re-rejected).
         @test !occursin("Bennett-lgzx", msg)
         @test !occursin("store of non-integer type", msg)
-        @test !occursin("Bennett-p06b", msg)
-        @test occursin("Bennett-583s", msg) ||
-              occursin("base-cancelling", msg) ||
-              occursin("Bennett-foz5", msg) ||
-              occursin("Bennett-5oyt", msg) ||
-              occursin("U15", msg)
+        # ADVANCED AGAIN by Bennett-foz5 (2026-08-06): wall 7 — the `%idxend41`
+        # split-captured-MemoryRef bounds cluster — is CLEARED under the ADR
+        # 0017 §4a CONFINED-VALUE contract, and the chain now walls in the ROOT
+        # body on the `julia.gc_alloc_obj` BYTE-granular aggregate-store target
+        # (wall 8, Bennett-bvmd, CW-D4 / bennettvm-9n3y).
+        #
+        # The p06b negative is NARROWED TWICE rather than deleted: wall 8 IS a
+        # p06b reject, so a blanket negative cannot survive, but the intent
+        # ("p06b did not re-reject the corpus store in the CLOSURE") must not be
+        # lost. BODY SCOPE keeps that intent; the DISCRIMINATOR additionally
+        # fails loud if the tolerated p06b reject changes shape.
+        @test !(occursin("Bennett-p06b", msg) && occursin("_growend!", msg))
+        @test !occursin("Bennett-p06b", msg) || occursin("gc_alloc_obj", msg)
+        # LOAD-BEARING NEGATIVE: wall 7 is CLEARED. Without these the positive
+        # below would not notice a re-open.
+        @test !occursin("Bennett-583s", msg)
+        @test !occursin("base-cancelling", msg)
+        # POSITIVE: wall 8. Non-numeral anchors only (Bennett-0ncn).
+        @test occursin("gc_alloc_obj", msg) || occursin("BYTE-granular", msg)
     end
 
     # =====================================================================

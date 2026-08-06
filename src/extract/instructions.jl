@@ -854,6 +854,305 @@ function _verify_memdata_bounds_cluster(pt::LLVM.Instruction, src)::Bool
     return saw
 end
 
+# ============================================================================
+# ---- Bennett-foz5 / CW-D: the CONFINED-VALUE contract (ADR 0017 §4a) ----
+# ============================================================================
+#
+# THE SHAPE THIS EXISTS FOR (xkl frontier wall 7). Julia's `@boundscheck`
+# cluster under `--check-bounds=yes` for a CLOSURE-CAPTURED `MemoryRef`
+# (`_growend!` `%idxend41`) computes a pointer difference across the two halves
+# of a SPLIT ref — codegen puts the `.ptr_or_offset` half inline in the closure
+# environment struct and hoists the GC-tracked `.mem` half into the roots array:
+#
+#   %mem   = load ptr, (gep i8 %".roots.#self#", 16)   ; the .mem half
+#   %d     = load ptr, (gep inbounds i8 %"#self#", 56) ; the .ptr_or_offset half
+#   %e     = getelementptr i8, ptr %d, i64 %byteoff
+#   %mdata = load ptr, (gep {i64,ptr} %mem, 0, 1)      ; _memdata_root == %mem
+#   %s     = sub i64 (ptrtoint %e), (ptrtoint %mdata)  ; ROOTS ARE DISJOINT
+#   %c     = icmp ult i64 %s, %bytelen
+#   br i1 (%c & !%ovflw), %idxend62, %oob              ; %oob = throw + unreachable
+#
+# WHY Bennett-583s CANNOT BE WIDENED TO COVER IT. 583s's base-cancellation
+# proof IS syntactic root equality (`_verify_memdata_bounds_cluster` demands
+# `_memdata_root(sib) == root`). Here the two operands descend from two
+# DIFFERENT function `Argument`s with no SSA edge between them. The only
+# in-body witness pairing them is a `insertvalue {ptr,ptr}` that is DEAD — it
+# survives solely because extraction mandates `optimize=false`, so building a
+# soundness gate on it is a direct Rule 5 violation. The alternative witness is
+# the byte-offset convention ("closure field +56 is field 0 of the captured
+# ref; roots slot +16 is its field 1"), which is exactly the Julia ABI/codegen
+# layout class Rule 5 forbids. And the fact itself is CROSS-FUNCTION: it
+# depends on how the CALLER materialised the ref. Julia does not even assume
+# the halves agree — the `%L84` `ConcurrencyViolationError` guard in this very
+# body exists to compare them. There is no extraction-local oracle-match proof,
+# and there never will be.
+#
+# ALSO NOT DONE, DELIBERATELY: extending `_memdata_root` to a new ROOT shape.
+# Probe `p07_steal.jl` measured that doing so makes the 583s arm CLAIM jbko's
+# `%L84` corpus witness (whose use is an `icmp eq`, so 583s's cluster gate then
+# fails and 583s ERRORS) — regressing the chain to a wall EARLIER than wall 7.
+# This arm is gated on the ptrtoint's USE SHAPE, never on its source provenance,
+# which makes that steal STRUCTURALLY IMPOSSIBLE rather than merely absent: (C1)
+# demands every use be a `sub`, `_jbko_identity_use_violation` demands every use
+# be an `icmp eq`/`ne`, and a non-empty use set cannot satisfy both. Arm order
+# is therefore not load-bearing between foz5 and jbko (it still is for the four
+# advanced wall markers — do not reorder).
+#
+# THE SECOND PROOF (weaker than oracle match, and PROVED rather than assumed).
+# `_foz5_confined_dead_bounds` establishes that the coerced value's ENTIRE
+# influence on the program is a dead-throw branch condition:
+#
+#   (C0) the SOURCE pointer is a CERTIFIED MATERIALISED CELL — `_foz5_cert_src_kind`
+#        — and is a named, non-suppressed instruction;
+#   (C1) `pt` has >= 1 use and EVERY use is a 2-operand i64 `sub` whose sibling
+#        operand is itself a `ptrtoint`;
+#   (C2) each such `sub` has >= 1 use and EVERY use is an `icmp`;
+#   (C3) the transitive i1 use-closure of each such `icmp` contains only i1
+#        `and`/`or`/`xor` (each with >= 1 use) and CONDITIONAL `br`s consuming
+#        the value as their CONDITION operand, and every such `br` has at least
+#        one successor in the Bennett-utzc pruned dead-block set.
+#
+# THEOREM. Let `τ` be the extracted values transitively derived from `pt`
+# through (C1)-(C3). By construction no member of `τ` is stored, returned,
+# `inttoptr`ed, `zext`ed, `select`ed on, or `phi`'d, so the ONLY consumers of
+# `τ` outside `τ` are the conditional `br`s of (C3): `τ` influences execution
+# solely through the successor choice there. Take such a `br c, %T, %F` with
+# (wlog) `%F` in the dead set. The pruner empties `%F` and gives it
+# `IRBranch(:__unreachable__)` (`module_walk.jl`), which BennettVM materialises
+# as a loud halt. If NATIVE takes `%T`: either the extracted condition agrees
+# (trajectories coincide — everything outside `τ` is computed by the
+# pre-existing, already-sound model) or it does not, and the extracted program
+# HALTS LOUDLY. If NATIVE takes `%F`: `%F` is `unreachable`-terminated and
+# `_assert_dead_block_is_throw_skeleton` has proved it a throw-family skeleton,
+# so native THROWS and has no return value. ∎
+#
+#   >>> GUARANTEE: for every input on which NATIVE RETURNS A VALUE, the
+#   >>> extracted program returns the SAME value or HALTS at the
+#   >>> `:__unreachable__` sink. (ADR 0017 §4a.)
+#
+# WHAT IS *NOT* GUARANTEED — READ THIS BEFORE REUSING THE ARM. The theorem says
+# nothing about the native-THROWS column: the throw may be MISSED, and on the
+# native-returns column the halt may be SPURIOUS. Neither direction is
+# authorised; both are UNBOUNDED by the theorem. ADR 0017 §4a records this as a
+# downgrade of Decision-item-4's "faithful reversible throw" from PROVED to
+# UNPROVED for confined guards. Do NOT read "oracle match or loud halt" as
+# "oracle match": that misreading is the arm's chief hazard, and gate (B) of
+# `test/test_foz5_confined_bounds.jl` is its executable refutation.
+#
+# WHY THIS IS NOT Bennett-lbot. lbot rules (shipped message, ~line 3417) that a
+# "placeholder-0 would route away from the throw the native code takes and is
+# UNSOUND". That ruling stands and is REAFFIRMED here: this arm FABRICATES
+# NOTHING. It admits an OPERAND as the same cell identity 583s emits, and the
+# compare, the i1 algebra and the branch are all emitted verbatim by the generic
+# paths — the guard bit is still COMPUTED, from real in-model cells. Emitting a
+# zero cell (or eliding the cluster) to make the guard provably weaker would be
+# lbot's harm class, made worse by measurement: BennettVM has no region table
+# and three monotone cursors (`bennettvm-pdqx`), so a missed bounds throw is an
+# UNDETECTABLE adjacent-allocation clobber, and ADR 0018 §E defines an unstored
+# load as 0. That route was proposed, adjudicated and REJECTED — see
+# `docs/design/foz5/proposal_B.md` and the worklog.
+#
+# VALIDATION DEBT (disclosed). No runtime evidence about either unproven
+# direction can exist until wall 8 clears, because the corpus still walls in the
+# ROOT body before BennettVM can execute it: bead **Bennett-bvmd**. What IS
+# measured: BennettVM stamps the Julia tier BYTE-granular (`_byte_cells`,
+# `BennettVM/src/ir/intrinsics.jl`) and a byte GEP lowers to `IRVarGEP(_,_,_,8)`,
+# so `D_vm - M.data_vm` is byte-exact whenever the closure slot was written by
+# extracted code — i.e. the unprovable premise is EXPECTED to hold in the closed
+# world. Expected is not proved; the contract claims only the theorem.
+#
+# COUPLING (see also `vector_vm_cfg.jl`): (C3) consumes the `dead_blocks` set
+# THREADED FROM `module_walk.jl`, which is the very set the utzc pruner empties.
+# Never re-derive "terminator is unreachable" locally — the two must stay one
+# set by construction, not by agreement.
+
+const _FOZ5_I1ALG = (LLVM.API.LLVMAnd, LLVM.API.LLVMOr, LLVM.API.LLVMXor)
+const _FOZ5_DEPTH = 8          # the `_memdata_root` / `_param_ptr_root_ref` idiom
+const _FOZ5_CLOSURE_CAP = 32   # i1-closure size cap (surprise guard, Rule 1)
+
+_foz5_is_i1(v)::Bool = (t = LLVM.value_type(v);
+                        t isa LLVM.IntegerType && LLVM.width(t) == 1)
+
+# (C0) Is `v` a pointer SSA the walk PROVABLY materialises as one 64-bit cell?
+#
+# A POSITIVE WHITELIST, never an "is a pointer" test. Three admitted producers,
+# each of which emits a node that DEFINES the cell:
+#
+#   * `load` of a pointer      -> `IRLoad(_, _, 64)`      (the Bennett-ares arm)
+#   * `extractvalue` of a StructType pointer field -> `_struct_field_widths`
+#                                 stamps 64 ("a pointer is one Int64 VM cell")
+#   * `getelementptr`          -> `IRPtrOffset` / `IRVarGEP` (measured: a byte
+#                                 GEP emits `IRVarGEP(_,_,_,8)`)
+#
+# READ THE EXACT DEPTH DISCIPLINE — it differs per arm, deliberately, and the
+# ADR text is written to match it (foz5 hostile review D2):
+#
+#   * **`getelementptr`: RECURSIVE ON THE BASE.** A GEP's emitted node is an
+#     OFFSET from its base operand, so the GEP is only a materialised cell if
+#     its base is. The walk therefore follows the base chain to its ROOT and
+#     requires the root to be certified in turn. This is what refuses a
+#     PointerType `phi`/`select` (below) with a GEP interposed — WITHOUT the
+#     recursion, `%pg = getelementptr i8, ptr %ph, i64 %off` bypasses the
+#     sentinel refusal with ONE instruction (hostile-review fixtures B1 / C6,
+#     both ADMITTED pre-fix). It also refuses a `GlobalVariable`-rooted GEP
+#     (fixture B3), whose base is a global symbol rather than a cell.
+#     INDEX CONSTNESS IS NOT REQUIRED, unlike `_p06b_slot_key`'s canonicalising
+#     walk: the corpus's own element GEP has a VARIABLE index
+#     (`getelementptr i8, ptr %d, i64 %bo`), and the index is irrelevant here —
+#     the sentinel question is about the BASE, not the displacement.
+#
+#   * **`load`: DEPTH-0 ON PURPOSE, and this is a real scope boundary.** The
+#     VALUE a load produces is a FRESH materialised cell (`IRLoad(dest, …, 64)`
+#     defines `dest`) no matter where its ADDRESS came from. So a load through
+#     a sentinel-valued address — `%pg = load ptr, ptr %ph` with `%ph` a ptr
+#     `phi` (fixture B2) — is still admitted here, and foz5 adds NOTHING to
+#     that hazard: the `IRLoad` reading the never-materialised address cell is
+#     emitted by the LOAD ARM whether or not any `ptrtoint` follows. **The
+#     address-sentinel question belongs to the load arm, not to this
+#     predicate.** foz5's own theorem caps the consequence for the coerced
+#     value at a wrong branch choice, i.e. at a loud halt. Pinned as a
+#     KNOWN-ADMITTED gate (B2) rather than hidden.
+#     One thing the load arm does NOT cover, so it is refused HERE: a `load`
+#     whose POINTER OPERAND is a `GlobalVariable`. The bennettvm-416r.13 /
+#     CW-D3 Lever 2 singleton-data alias arm (~line 5080) intercepts
+#     `load ptr, ptr @"jl_global#N"`, emits **NO IRInst at all**, and instead
+#     ALIASES the load-result name to the global symbol. Such a load is
+#     "registered" but never materialised as a cell, and `_p06b_suppressed_refs`
+#     does not contain it (that set holds only sret boxes), so neither the
+#     `haskey(names, …)` nor the `suppressed_refs` check in (C0) catches it.
+#     Pre-fix, fixtures C1/C2 emitted `IRBinOp(:or, SSAOperand(:jl_global#77),
+#     0, 64)` — an `:or` identity over a GLOBAL BASE SYMBOL. Refused by the
+#     three lines below; pinned by gates (C1)/(C2).
+#
+# EVERYTHING ELSE IS REFUSED. The load-bearing refusal is the PointerType
+# `phi`/`select`: it carries the Bennett-cc0 M2b WIDTH-0 SENTINEL — its routing
+# is recorded in `ptr_provenance` at LOWERING time rather than as a value — so
+# coercing one emits an `:or` identity over a cell that was NEVER MATERIALISED.
+# The confinement theorem would cap the damage at a halt, but that class is a
+# SILENT miscompile and Rule 1 prefers a conservative loud reject to an
+# unverified admission. Pinned by gates (N) direct, (B1)/(C6) via a GEP.
+#
+# NOT `_jbko_cell_ptr_src_kind`: that whitelist is `load`/`extractvalue` only
+# and would refuse the corpus's `getelementptr`-sourced element half. The two
+# lists are deliberately different sizes for deliberately different contracts.
+function _foz5_cert_src_kind(v, depth::Int=0)::Symbol
+    depth > _FOZ5_DEPTH && return :none
+    v isa LLVM.Instruction || return :none           # Argument / GlobalVariable / const
+    ty = LLVM.value_type(v)
+    ty isa LLVM.PointerType || return :none
+    LLVM.addrspace(ty) == 0 || return :none          # addrspace-0 only (cf. 7wsz)
+    opc = LLVM.opcode(v)
+    if opc == LLVM.API.LLVMLoad
+        # The 416r.13 singleton-data alias arm emits nothing for this shape.
+        LLVM.operands(v)[1] isa LLVM.GlobalVariable && return :none
+        return :load
+    elseif opc == LLVM.API.LLVMExtractValue
+        return LLVM.value_type(LLVM.operands(v)[1]) isa LLVM.StructType ?
+               :extractvalue : :none
+    elseif opc == LLVM.API.LLVMGetElementPtr
+        # A GEP is an OFFSET from its base — certified only if the base is.
+        return _foz5_cert_src_kind(LLVM.operands(v)[1], depth + 1) === :none ?
+               :none : :gep
+    end
+    return :none                                     # phi / select / call / ...
+end
+
+# (C3) Does the i1 value `v` reach ONLY dead-edge conditional branches, through
+# i1 algebra only? The generic "this i1 steers nothing but a dead-throw branch"
+# walker — Bennett-sku0's candidate fix (b) is this predicate verbatim, so name
+# and document it generically rather than as a foz5 private (CLAUDE.md §12).
+#
+# POLARITY-AGNOSTIC BY CONSTRUCTION: it asks whether SOME successor is dead, and
+# never reads `LLVM.successors(br)[2]` as "the false target". A design that
+# depends on that operand-order convention has an undeclared LLVM.jl API
+# premise; this one does not. Pinned GREEN by gate (B2).
+#
+# Conservative in every direction: a use-less i1 is `false` (a value that steers
+# nothing is evidence the walker's picture is incomplete — the 583s `saw`
+# discipline); an unconditional `br`, a `select`, a `zext`, a `phi`, a `switch`,
+# a `call`, a `store`, a `ret` are all outside the whitelist and REJECT. Drift
+# in the emitted i1 algebra therefore degrades to the EXISTING loud wall, never
+# to a silent admission.
+function _foz5_i1_confined(v, dead_blocks::Set{_LLVMRef},
+                           seen::Set{_LLVMRef}, depth::Int=0)::Bool
+    depth > _FOZ5_DEPTH && return false
+    length(seen) > _FOZ5_CLOSURE_CAP && return false
+    v isa LLVM.Instruction || return false
+    _foz5_is_i1(v) || return false
+    v.ref in seen && return true                     # already proved on this walk
+    push!(seen, v.ref)
+    saw = false
+    for u in LLVM.uses(v)
+        saw = true
+        usr = LLVM.user(u)
+        usr isa LLVM.Instruction || return false
+        uopc = LLVM.opcode(usr)
+        if uopc == LLVM.API.LLVMBr
+            (usr isa LLVM.BrInst && LLVM.isconditional(usr)) || return false
+            # The value must be the CONDITION, not (defensively) anything else.
+            LLVM.condition(usr).ref == v.ref || return false
+            any(s -> s.ref in dead_blocks, LLVM.successors(usr)) || return false
+        elseif uopc in _FOZ5_I1ALG
+            _foz5_is_i1(usr) || return false
+            _foz5_i1_confined(usr, dead_blocks, seen, depth + 1) || return false
+        else
+            return false
+        end
+    end
+    return saw
+end
+
+# (C0)+(C1)+(C2)+(C3). The whole confined-value predicate for a `ptrtoint`.
+# PURE: no mutation of `names` / `suppressed_refs` / `dead_blocks`, so the arm
+# may call it in both its entry condition and its admission condition and get
+# the same answer — which is why foz5 introduces NO fall-through into the jbko
+# arm and the a8nw ordering note stays literally true.
+function _foz5_confined_dead_bounds(pt::LLVM.Instruction,
+                                    names::Dict{_LLVMRef, Symbol},
+                                    suppressed_refs::Set{_LLVMRef},
+                                    dead_blocks::Set{_LLVMRef})::Bool
+    isempty(dead_blocks) && return false             # no sink ⇒ nothing to confine
+    src = LLVM.operands(pt)[1]
+    # (C0) certified, materialised, emitted.
+    _foz5_cert_src_kind(src) === :none && return false
+    src isa LLVM.Instruction || return false
+    haskey(names, src.ref) || return false
+    src.ref in suppressed_refs && return false
+    saw = false
+    for u in LLVM.uses(pt)
+        saw = true
+        usr = LLVM.user(u)
+        # (C1) every use is a 2-operand i64 `sub` of two ptrtoints. The WIDTH
+        # check is load-bearing, not decoration (hostile review D3): the arm's
+        # own width guard covers the ptrtoint's result, not the `sub`'s, so a
+        # `trunc`-then-`sub i32` cluster would otherwise satisfy the prose while
+        # differencing truncated cell values. It also keeps the predicate safe
+        # for the Bennett-sku0 reuse, which will call it on shapes this corpus
+        # never produces.
+        (usr isa LLVM.Instruction && LLVM.opcode(usr) == LLVM.API.LLVMSub) || return false
+        let st = LLVM.value_type(usr)
+            (st isa LLVM.IntegerType && LLVM.width(st) == 64) || return false
+        end
+        ops = LLVM.operands(usr)
+        length(ops) == 2 || return false
+        sib = ops[1].ref == pt.ref ? ops[2] : ops[1]
+        (sib isa LLVM.Instruction &&
+         LLVM.opcode(sib) == LLVM.API.LLVMPtrToInt) || return false
+        # (C2) every use of the `sub` is an `icmp`, and (C3) each icmp's i1
+        # closure lands only on dead-edge branches.
+        sub_saw = false
+        for su in LLVM.uses(usr)
+            sub_saw = true
+            susr = LLVM.user(su)
+            (susr isa LLVM.Instruction &&
+             LLVM.opcode(susr) == LLVM.API.LLVMICmp) || return false
+            _foz5_i1_confined(susr, dead_blocks, Set{_LLVMRef}()) || return false
+        end
+        sub_saw || return false
+    end
+    return saw
+end
+
 # ---- Bennett-jbko / CW-D: identity-use ptrtoint (pointer-equality guards) ----
 #
 #   %po = extractvalue { ptr, ptr } %ref, 0   ; a CERTIFIED 64-bit cell (6bu3)
@@ -3822,25 +4121,61 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         # iwo9 fail-loud below. Sits inside the `&& ptr_cells` block, so the
         # circuit path is byte-identical (no arm at all → the ptrtoint opcode
         # hits the pre-existing "unsupported LLVM opcode" wall).
+        #
+        # Bennett-foz5 / CW-D (ADR 0017 §4a): the arm's ENTRY and its ADMISSION
+        # each gain a SECOND DISJUNCT — the CONFINED-VALUE contract. 583s keeps
+        # FIRST REFUSAL in both (`||` short-circuits), so every cluster the
+        # base-cancellation proof owns is decided byte-identically and the
+        # confined contract is never consulted for it. The second disjunct is
+        # gated on the ptrtoint's USE SHAPE, not on its source provenance:
+        # `_memdata_root` is NOT widened (that widening was measured to steal
+        # jbko's `%L84` witness — see the foz5 helper block above).
+        #
+        # THE ARM STILL ALWAYS RETURNS OR ERRORS. `_foz5_confined_dead_bounds`
+        # is pure, so entry-via-confinement IMPLIES admission-via-confinement:
+        # foz5 introduces NO fall-through, and the jbko
+        # `_memdata_root(src) === nothing` pin below therefore keeps its exact
+        # current meaning and its exact current status (redundant today,
+        # load-bearing the moment 583s grows a fall-through).
         if opc == LLVM.API.LLVMPtrToInt && src isa LLVM.Instruction &&
-           _memdata_root(src) !== nothing
+           (_memdata_root(src) !== nothing ||
+            _foz5_confined_dead_bounds(inst, names, suppressed_refs, dead_blocks))
             srt = LLVM.value_type(src)
             drt = LLVM.value_type(inst)
             src_w = srt isa LLVM.PointerType ? 64 : _iwidth(src)
             dst_w = drt isa LLVM.PointerType ? 64 : _iwidth(inst)
+            # SOURCE-AGNOSTIC WORDING (the a8nw review-D5 defect class, which
+            # jbko already fixed for itself): under the foz5 entry disjunct a
+            # NON-memdata source reaches this check, so the message must not
+            # assert the pointer is a `GenericMemory .data` base — nothing has
+            # established that. Gate (3) of `test_583s_memdata_bounds.jl` pins
+            # the substrings "583s" and "width"/"64"; keep them on any reword.
             (src_w == 64 && dst_w == 64) || _ir_error(inst,
-                "ptrtoint of a GenericMemory .data base at a NON-64-bit width " *
+                "ptrtoint under ptr_cells at a NON-64-bit width " *
                 "(src=$(src_w) dst=$(dst_w)) — genuine pointer arithmetic, not a " *
-                "cell identity (Bennett-583s / CW-D). Only the 64-bit .data-base " *
-                "round-trip confined to a base-cancelling bounds check is modelled " *
-                "(CLAUDE.md §1).")
-            _verify_memdata_bounds_cluster(inst, src) || _ir_error(inst,
+                "cell identity (Bennett-583s / CW-D; Bennett-foz5). A pointer is " *
+                "ONE Int64 VM cell (ADR 0018 §A); only the 64-bit round-trip — " *
+                "confined either to a base-cancelling bounds check " *
+                "(`_verify_memdata_bounds_cluster`) or to a dead-throw bounds " *
+                "check (`_foz5_confined_dead_bounds`) — is modelled, because a " *
+                "narrower cast truncates the cell value (CLAUDE.md §1).")
+            (_verify_memdata_bounds_cluster(inst, src) ||
+             _foz5_confined_dead_bounds(inst, names, suppressed_refs, dead_blocks)) ||
+                _ir_error(inst,
                 "ptrtoint of a GenericMemory .data base under ptr_cells whose " *
                 "result is NOT confined to a same-Memory base-cancelling bounds " *
                 "check (a use is not a same-root sub(ptrtoint,ptrtoint); e.g. " *
-                "inttoptr-deref, store, hash, or a cross-allocation difference). " *
-                "An escaping base-dependent address would break oracle match " *
-                "(Bennett-583s / CW-D; CLAUDE.md §1).")
+                "inttoptr-deref, store, hash, or a cross-allocation difference) " *
+                "— predicate `_verify_memdata_bounds_cluster`. An escaping " *
+                "base-dependent address would break oracle match " *
+                "(Bennett-583s / CW-D; CLAUDE.md §1). AND its result is not " *
+                "CONFINED to a dead-throw bounds check either — predicate " *
+                "`_foz5_confined_dead_bounds` (Bennett-foz5 / ADR 0017 §4a): " *
+                "the source must be a certified materialised cell and EVERY use " *
+                "must run sub(ptrtoint,ptrtoint) → icmp → i1-and/or/xor → a " *
+                "conditional br with a utzc-pruned `:__unreachable__` successor, " *
+                "so that a value we cannot prove equals the native oracle can " *
+                "only ever choose a branch that halts loudly (CLAUDE.md §1).")
             return IRBinOp(dest, :or, _operand(src, names), iconst(0), 64)
         end
         # Bennett-jbko / CW-D: IDENTITY-USE ptrtoint. Julia's `MemoryRef`
@@ -3887,6 +4222,22 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         # reach this line at all. Keep it: it becomes LOAD-BEARING the moment
         # 583s grows a non-terminating (fall-through) arm, which is exactly what
         # a ROOT extension would introduce (relevant to Bennett-foz5).
+        #
+        # BENNETT-foz5 LANDED, AND THIS NOTE STILL HOLDS LITERALLY. foz5 was
+        # scoped as that ROOT extension and did NOT land as one: a root widening
+        # was measured to STEAL this arm's `%L84` corpus witness (probe
+        # `p07_steal.jl`), so foz5 instead gave the 583s arm a second
+        # USE-SHAPED disjunct (`_foz5_confined_dead_bounds`) and left
+        # `_memdata_root` byte-for-byte untouched. Because that predicate is
+        # PURE, entry-via-confinement implies admission-via-confinement, so the
+        # 583s arm STILL always returns or errors — no fall-through was
+        # introduced and this pin stays redundant rather than becoming a
+        # BLOCKER. The two arms are additionally disjoint by a STRUCTURAL
+        # argument now, independent of ordering and of `_memdata_root`: foz5
+        # requires EVERY use of the ptrtoint to be a `sub`, this arm requires
+        # EVERY use to be an `icmp eq`/`ne`, and it rejects the empty use set.
+        # Pinned by gate (O4) and gate (O2) of
+        # `test/test_foz5_confined_bounds.jl`.
         #
         # Proposer A argued for placing jbko FIRST so that a
         # `.data`-base coercion whose uses are all `icmp eq/ne` would be admitted

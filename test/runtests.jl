@@ -560,6 +560,27 @@ runfile("test_yd4f_undef_phi_cells.jl")
 # AssertionError [1 x ptr] return-type). ptr_cells-gated: circuit path
 # byte-identical.
 runfile("test_583s_memdata_bounds.jl")
+# Bennett-foz5 — CW-D (ADR 0017 §4a, the CONFINED-VALUE contract; xkl frontier
+# wall 7). The `_growend!` %idxend41 @boundscheck cluster differences the two
+# halves of a SPLIT closure-captured `MemoryRef` — `.ptr_or_offset` inline in
+# the closure env, `.mem` hoisted into the GC-roots array — so the two operands
+# descend from DIFFERENT function Arguments and 583s's base-cancellation proof
+# (which IS syntactic root equality) can never apply. Rather than widen
+# `_memdata_root` (measured to STEAL jbko's %L84 witness and regress the chain),
+# the 583s arm gains a second USE-SHAPED disjunct: a ptrtoint is admitted as the
+# SAME `:or` cell identity when its source is a certified materialised cell and
+# its ENTIRE influence is sub(ptrtoint,ptrtoint) → icmp → i1-and/or/xor → a
+# conditional br with a utzc-pruned `:__unreachable__` successor. GUARANTEE:
+# for every input on which native RETURNS, the extraction returns the same value
+# or HALTS LOUDLY. NOT guaranteed (and stated in the ADR, not hidden): the
+# native-throws column — the throw may be missed, the halt may be spurious.
+# 583s keeps FIRST REFUSAL, `_memdata_root` is untouched, no fall-through is
+# introduced (so jbko's pin stays redundant), and NOTHING is fabricated — the
+# guard bit is still computed from real in-model cells, which is what
+# distinguishes this from the Bennett-lbot placeholder-0 UNSOUND ruling.
+# ptr_cells-gated ⇒ circuit path byte-identical. push! now advances to wall 8
+# (Bennett-bvmd: the ROOT body's gc_alloc_obj BYTE-granular store target).
+runfile("test_foz5_confined_bounds.jl")
 # Bennett-utzc / CW-D (ADR 0017 §4) — the keep-branch dead-block pruner. Under
 # the closed-world `ptr_cells` gate, a block whose LLVM terminator is
 # `unreachable` (a provably-dead Julia throw arm) has its BODY dropped, its own
@@ -654,8 +675,11 @@ runfile("test_jbko_ptr_identity_icmp.jl")
 # slot key; and a value whose `insertvalue` CHAIN ROOT is not a constant
 # aggregate (BVM's `agg_dests` contract). Residual, disclosed not closed:
 # `:load` targets have no static capacity proof (Bennett-khb2).
-# ptr_cells=false ⇒ no arm ⇒ the lgzx/U114 reject byte-identical. push! now
-# advances to the %idxend41 Bennett-583s ptrtoint wall (bead Bennett-foz5).
+# ptr_cells=false ⇒ no arm ⇒ the lgzx/U114 reject byte-identical. push! then
+# advanced to the %idxend41 Bennett-583s ptrtoint wall (wall 7), which
+# Bennett-foz5 (above) has since cleared; the wall is now in the ROOT body
+# (wall 8, Bennett-bvmd) — which is why this file's own marker gate no longer
+# expects `_growend!` in the message.
 runfile("test_p06b_aggregate_store.jl")
 # Bennett-jfw6: mem=:vm Case A Vector/GenericMemory extraction recognizer (shape + fail-loud matrix).
 runfile("test_jfw6_vec_vm_extract.jl")

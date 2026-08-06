@@ -709,22 +709,48 @@ end
             # p06b regressed to a differently-worded store reject.
             @test !occursin("store of non-integer type", msg)
             @test !occursin("Bennett-lgzx", msg)
-            # ... and p06b's OWN rejects did NOT fire on the corpus store: it
-            # was ADMITTED, not re-rejected under a new name. This is the half
-            # that catches an over-tight (P3)/(P4)/(P5)/(P6).
-            @test !occursin("Bennett-p06b", msg)
+            # ... and p06b's OWN rejects did NOT fire on the `%L93` MemoryRef
+            # write-back this gate is about: it was ADMITTED, not re-rejected
+            # under a new name. This is the half that catches an over-tight
+            # (P3)/(P4)/(P5)/(P6).
+            #
+            # NARROWED TWICE by Bennett-foz5 (2026-08-06). Wall 7 is cleared, so
+            # the wall moved to the ROOT body — where p06b's (P4b) BYTE-granular
+            # `julia.gc_alloc_obj` target refusal fires, which p06b's own message
+            # already flags as "a future widening" (wall 8, Bennett-bvmd). A
+            # blanket `!occursin("Bennett-p06b")` therefore cannot survive; but
+            # DELETING it would silently retire the over-tight-reject alarm this
+            # gate exists for. Keep BOTH narrowings — they fail for different
+            # reasons, which is exactly why neither alone is enough:
+            #   * BODY SCOPE — preserves the original intent verbatim (p06b must
+            #     not reject inside the CLOSURE), recycling the retired
+            #     `occursin("_growend!")` positive as the scope term.
+            @test !(occursin("Bennett-p06b", msg) && occursin("_growend!", msg))
+            #   * DISCRIMINATOR — the ONLY p06b reject tolerated here is the
+            #     byte-granular `gc_alloc_obj` target refusal. If p06b starts
+            #     rejecting for a different reason — even in the root body —
+            #     this goes red rather than being absorbed by the body scope.
+            @test !occursin("Bennett-p06b", msg) || occursin("gc_alloc_obj", msg)
             # still-cleared predecessors (vau9 / jbko)
             @test !occursin("memmove", msg)
             @test !occursin("Bennett-iwo9", msg)
-            # POSITIVE: the successor is the `%idxend41` GenericMemory
-            # `.data`-base ptrtoint whose root `_memdata_root` does not yet
-            # recognise — Bennett-583s, i.e. bead Bennett-foz5 (wall 7).
-            # Kept as a disjunction because WHICH body of the set fails first
-            # is registration/iteration order, not a contract.
-            @test occursin("Bennett-583s", msg) ||
-                  occursin("base-cancelling", msg) ||
-                  occursin("Bennett-foz5", msg)
-            @test occursin("_growend!", msg)
+            # LOAD-BEARING NEGATIVE: wall 7 — the `%idxend41` split-captured
+            # MemoryRef bounds cluster — is CLEARED by Bennett-foz5 under the
+            # ADR 0017 §4a CONFINED-VALUE contract.
+            @test !occursin("Bennett-583s", msg)
+            @test !occursin("base-cancelling", msg)
+            # POSITIVE: the successor is wall 8 (Bennett-bvmd) — the ROOT body's
+            # `julia.gc_alloc_obj`-backed aggregate-store target, refused because
+            # BennettVM stamps that tier BYTE-granular (CW-D4 / bennettvm-9n3y).
+            # This is the FIRST wall in this chain that is NOT in a callee and
+            # NOT an extraction-shape-recognition wall — it sits on the BVM
+            # cell-granularity boundary. Kept as a disjunction because WHICH body
+            # of the set fails first is registration/iteration order, not a
+            # contract; non-numeral anchors only (the Bennett-0ncn lesson).
+            @test occursin("gc_alloc_obj", msg) || occursin("BYTE-granular", msg)
+            # `occursin("_growend!", msg)` is DROPPED as a POSITIVE — the wall
+            # moved to the ROOT body, so the closure name is legitimately absent.
+            # It survives above as the body-scope term of the p06b negative.
         end
     end
 

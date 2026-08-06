@@ -48,6 +48,20 @@ end
 # block that is still in `dead_blocks`, the theorem breaks silently. Keep the two
 # definitions in lockstep.
 #
+# **THREE consumers now share this set** (all reading the ONE instance computed
+# by `module_walk.jl` — none re-derives "terminator is unreachable" locally,
+# which is what makes the lockstep hold by construction rather than by
+# agreement):
+#   1. the Bennett-utzc pruner itself (`module_walk.jl`) — it EMPTIES them;
+#   2. Bennett-3vf2 (here) — the dead-USE drop in the load handler;
+#   3. Bennett-foz5 (`instructions.jl`, `_foz5_i1_confined`) — the CONFINED-VALUE
+#      contract (ADR 0017 §4a), which admits a `ptrtoint` it cannot prove equals
+#      the native oracle **because** its only influence is a branch with a
+#      successor IN THIS SET, so a wrong answer can only halt loudly. If a future
+#      widening ever puts a block in this set that the pruner does NOT empty,
+#      foz5's theorem breaks in the SILENT direction — that is the strongest
+#      reason the two definitions must never drift apart.
+#
 # **φ corollary (do NOT "fix" this into edge-attribution).** A φ node's use is
 # conceptually attributed to its INCOMING EDGE, not to the φ's own block, so a
 # naive parent-block test could in principle mis-classify a φ in a live block fed
