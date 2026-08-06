@@ -330,6 +330,27 @@ end
 #     consumers are φ-invariant, and a later `inttoptr` would dereference an
 #     arena-relative integer as an address.
 #
+# RESIDUAL RISK — THE eq ARGUMENT IS PROVED OVER φ-IMAGES, THE CODE CHECKS
+# LESS (hostile-review probe P1, 2026-08-06; tracked as Bennett-sku0).
+# `φ(x) = φ(y) ⟺ x = y` presupposes that BOTH operands are φ-IMAGES, i.e. both
+# are address-derived cell values. `_jbko_identity_use_violation` (~line 456)
+# checks the icmp SIBLING only for SSA-NESS (`sib isa LLVM.Instruction ||
+# sib isa LLVM.Argument`), NOT for CELL-NESS — strictly WEAKER than the
+# invariance argument above. So a sibling that is a genuinely POINTER-UNRELATED
+# integer (e.g. `%n = mul i64 %x, 7`) is ADMITTED, and the i1 it produces
+# DIVERGES from native: native compares a malloc address against 7·x, the BVM
+# compares `ARENA_BASE + k` against 7·x. The loud-halt mitigation in the
+# FAILURE-MODE paragraph below is a property of the CORPUS SHAPE (these guards
+# feed a throw block), not something this gate enforces. Reachability: no
+# corpus witness found; judged LOW (the sibling would have to be an integer
+# genuinely unrelated to any pointer) — which is why
+# the arm landed as-is rather than blocked. Candidate levers in Bennett-sku0:
+# (a) a sibling-KIND whitelist, noting that the real `_growend!` sibling
+#     `%.unbox14` is a `load i64` of a CAPTURED cell, so a naive "sibling must
+#     be ptr-typed" cell-ness test BREAKS the corpus witness; or
+# (b) requiring the resulting i1 to reach a `br` through i1 algebra only
+#     (proposal_A §7 R2).
+#
 # jbko ADDS ZERO EXPRESSIVE POWER over what the model already has. Bennett-8g7m
 # / U80 (`instructions.jl:~2917`) ALREADY admits `icmp eq/ne` over
 # POINTER-TYPED operands and already rejects ordering over them with exactly
@@ -360,6 +381,17 @@ end
 #   * `load` with a PointerType result under `ptr_cells` → `IRLoad(…, 64)`
 #     (the Bennett-ares arm, "ptr→cell width 64").
 #
+# CAVEAT ON THE `:load` ENTRY (a8nw review D4): `IRLoad(…, 64)` is NOT the only
+# disposition of a pointer-result `load`. The bennettvm-416r.13 / CW-D3 Lever 2
+# SINGLETON-DATA alias arm (~line 4202) runs FIRST for a
+# `load ptr, ptr @"jl_global#N"`: it emits NO IRInst at all and instead ALIASES
+# the load-result SSA name to the STABLE global symbol. Such a load is
+# nevertheless admitted by this whitelist (opcode `Load`, PointerType result,
+# addrspace 0), and the coercion's `_operand` then resolves to the `.globals`
+# key that the VM binds via its prepended `GLOBAL_BASE` `Define` — still a
+# 64-bit cell value, so the admission is BENIGN today. It is a second path, not
+# a second contract: anyone reworking either arm must re-check this overlap.
+#
 # A pointer-typed `phi` / `select` carries the Bennett-cc0 M2b WIDTH-0
 # SENTINEL: its routing is recorded in `ptr_provenance` at LOWERING time rather
 # than as a value. Coercing one would emit an `:or` identity reading a cell
@@ -385,6 +417,17 @@ function _jbko_cell_ptr_src_kind(v)::Symbol
 end
 
 # Human-readable description of a ptrtoint source, for the (P2) fail-loud.
+#
+# DEAD BRANCHES, DELIBERATELY KEPT (a8nw review D2). The `LLVM.Argument` arm and
+# the non-instruction fallback below are UNREACHABLE as the code stands: the arm
+# entry (~line 3331) requires `src isa LLVM.Instruction` before this is ever
+# called, so a `ptrtoint` of a ptr ARGUMENT never reaches the (P2) fail-loud —
+# it falls through to the GENERIC Bennett-iwo9 "not a recognised type-tag"
+# reject instead (a8nw probe P14). Do not delete them: a ptr argument IS stamped
+# width 64 (`module_walk.jl:306`, "one VM address cell"), so admitting it as a
+# certified source is a live widening tracked in Bennett-vckk, which makes these
+# branches reachable the same edit that adds `|| src isa LLVM.Argument` to the
+# entry condition.
 function _jbko_src_kind_name(v)::String
     v isa LLVM.Argument && return "a function argument"
     v isa LLVM.Instruction || return "a non-instruction value (global/alias/constexpr)"
@@ -3246,10 +3289,28 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         # it away — `test_jbko_ptr_identity_icmp.jl` gate (C) is the pin.
         #
         # PLACEMENT: this arm sits AFTER the 583s arm and is additionally pinned
-        # by `_memdata_root(src) === nothing`, so the two contracts are
-        # STRUCTURALLY DISJOINT regardless of ordering: a memdata-rooted source
-        # stays 583s's, under 583s's own (subtraction) proof and its own reject
-        # messages. Proposer A argued for placing jbko FIRST so that a
+        # by `_memdata_root(src) === nothing`, so the two contracts are disjoint
+        # OVER THE SHAPES `_memdata_root` RECOGNISES, regardless of ordering: any
+        # source it roots stays 583s's, under 583s's own (subtraction) proof and
+        # its own reject messages. That is NOT the stronger claim "no `.data`
+        # base ever reaches this arm" (a8nw review D3): `_memdata_root` follows
+        # only a `load` of a `{i64,ptr}` field-1 GEP, the i8 byte-offset GEP, and
+        # identity casts, so a `.data` base LAUNDERED through e.g. an
+        # `insertvalue`/`extractvalue` round-trip escapes it and DOES land here
+        # (a8nw probe P10). It is admitted SOUNDLY when it does — this arm's
+        # equality argument is about the USES, and does not care where the
+        # pointer came from (subject to the sibling RESIDUAL RISK disclosed at
+        # the determinism argument above; probe P10's own fixture compares
+        # against an i64 argument and sits under that residual) — but it is
+        # admitted under jbko's contract, not 583s's.
+        #
+        # The `_memdata_root(src) === nothing` pin is REDUNDANT today: the 583s
+        # arm above always returns or errors, so nothing memdata-rooted can
+        # reach this line at all. Keep it: it becomes LOAD-BEARING the moment
+        # 583s grows a non-terminating (fall-through) arm, which is exactly what
+        # a ROOT extension would introduce (relevant to Bennett-foz5).
+        #
+        # Proposer A argued for placing jbko FIRST so that a
         # `.data`-base coercion whose uses are all `icmp eq/ne` would be admitted
         # rather than hitting 583s's cluster fail-loud; that widening has NO
         # corpus witness today, and a destructive probe showed that perturbing
@@ -3262,10 +3323,14 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         # the generic fail-loud below. Inside the `&& ptr_cells` block ⇒ the
         # circuit path is byte-identical (no arm at all when the gate is off).
         #
-        # The entry condition is a DISJUNCTION so that BOTH near-miss classes
-        # get a jbko-named diagnostic rather than the generic "not a type tag"
+        # The entry condition is a DISJUNCTION so that two near-miss classes get
+        # a jbko-named diagnostic rather than the generic "not a type tag"
         # message: a certified source with a bad USE, and a bad SOURCE whose
-        # uses are the admissible identity shape.
+        # uses are the admissible identity shape. It does NOT cover every
+        # near-miss (a8nw review D2): the `src isa LLVM.Instruction` CONJUNCT
+        # means a ptr-ARGUMENT source still falls through to the generic
+        # Bennett-iwo9 reject below, never reaching `_jbko_src_kind_name`'s
+        # "a function argument" branch (a8nw probe P14; Bennett-vckk).
         if opc == LLVM.API.LLVMPtrToInt && src isa LLVM.Instruction &&
            _memdata_root(src) === nothing && haskey(names, src.ref) &&
            (_jbko_cell_ptr_src_kind(src) !== :none ||
@@ -3274,8 +3339,16 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             drt = LLVM.value_type(inst)
             src_w = srt isa LLVM.PointerType ? 64 : _iwidth(src)
             dst_w = drt isa LLVM.PointerType ? 64 : _iwidth(inst)
+            # WIDTH FIRST, SOURCE-CERTIFICATION SECOND: this check runs before
+            # the (P2) `_jbko_cell_ptr_src_kind` reject below, so it also fires
+            # for sources the arm would go on to REJECT as uncertified. The
+            # message must therefore NOT assert that the pointer is in-model /
+            # certified — nothing has established that yet — and states only the
+            # width fact it has (a8nw review D5). Gate (L) of
+            # `test_jbko_ptr_identity_icmp.jl` pins the substrings
+            # "Bennett-jbko" and "NON-64-bit"; keep both on any reword.
             (src_w == 64 && dst_w == 64) || _ir_error(inst,
-                "ptrtoint of an in-model pointer at a NON-64-bit width " *
+                "ptrtoint at a NON-64-bit width " *
                 "(src=$(src_w) dst=$(dst_w)) under ptr_cells — genuine pointer " *
                 "arithmetic, not a cell identity (Bennett-jbko / CW-D). A " *
                 "pointer is ONE Int64 VM cell (ADR 0018 §A); only the 64-bit " *

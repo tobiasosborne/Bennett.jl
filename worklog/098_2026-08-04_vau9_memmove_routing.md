@@ -1,5 +1,76 @@
 # Worklog chunk 098 — 2026-08-04 — vau9 memmove routing (xkl wall 4)
 
+## Session log — 2026-08-06 — Bennett-a8nw: jbko hostile review RUN → PASS-WITH-CONCERNS; disclosure landed; jbko CLOSED; frontier UNBLOCKED
+
+The review debt from the 2026-08-04 wind-up is paid. Orchestrated serially:
+hostile reviewer (Opus) → orchestrator adjudication → doc-tier implementer
+(Opus) → reviewer re-signoff on the disclosure diff (ACCEPT).
+
+### Review outcome (full report in the a8nw bead trail; probes in session scratchpad, not committed)
+
+- **VERDICT: PASS-WITH-CONCERNS.** The arm's soundness boundary (source
+  whitelist + use gate) held under ~30 adversarial probes: ordering-compare
+  laundering, mixed uses, phi/select-forwarded icmp, vector forms,
+  addrspace(11), i32/i128 widths, ConstantExpr siblings — all REJECT loudly
+  with the right bead named. The R4 width-0-sentinel negative was
+  MUTATION-PROVEN load-bearing (relaxing `_jbko_cell_ptr_src_kind` to "any
+  addrspace-0 ptr" flips tests (G)/(H) to admitting an `:or` that reads an
+  unmaterialised cell). BVM trapped-program reversal is real and non-vacuous
+  (mismatch path: 28 steps, halts at `:__unreachable__`, `unrun!` restores
+  init exactly).
+- **D1 (P1-class, the one real finding): `_jbko_identity_use_violation`
+  checks the icmp sibling for SSA-ness, NOT cell-ness** — strictly weaker
+  than the φ-image invariance argument in the arm comment. Probe P1:
+  `ptrtoint(load ptr)` vs `%n = mul i64 %x, 7` is ADMITTED → divergent i1
+  (native compares a malloc address, BVM compares ARENA_BASE+k). Proposal_A
+  §7 R2 pre-identified this and mandated a follow-up bead that was NEVER
+  FILED. Now disclosed in the arm comment and filed as **Bennett-sku0 (P2)**.
+  Tightening is contested design: the real `_growend!` sibling `%.unbox14`
+  is a `load i64` of a captured cell, so naive cell-ness breaks the corpus
+  witness; proposal_A's alternative lever is requiring the i1 to reach a
+  `br` through i1 algebra only.
+- D2–D6 doc-tier: dead diagnostic branches for argument sources (widening
+  filed as **Bennett-vckk P3**); 583s/jbko disjointness overclaim (holds only
+  over `_memdata_root`-recognised shapes — an insertvalue/extractvalue
+  laundered `.data` base escapes into jbko, probe P10); the `:load` whitelist
+  has a second disposition (`jl_global#N` singleton-data alias arm — benign,
+  resolves via GLOBAL_BASE Define); width-reject message overclaimed "in-model";
+  all corrected in a comment/message-only diff (semantics untouched,
+  reviewer re-verified per-item, gate-(L) pins retained).
+
+### Gotchas / learnings
+
+1. **The `_memdata_root(src) === nothing` pin on the jbko arm is REDUNDANT
+   today** (583s always returns-or-errors) and becomes load-bearing the
+   moment 583s gains a fall-through arm — which is exactly what the foz5
+   ROOT extension will do. Noted on Bennett-foz5; whoever does wall 7 must
+   re-check jbko/583s ordering.
+2. **"Reviewer-mandated follow-up beads must be filed before the commit
+   lands"** — proposal_A's R2 bead evaporated at wind-up and only resurfaced
+   because the hostile review re-read the proposals. If an arc is cut short,
+   the bead-filing step is the one that must NOT be skipped.
+3. The a8nw review also re-ran the whole ptr_cells family + gate-count
+   (39/39) under `--check-bounds=yes`, substantially covering the
+   orchestrator re-gate that was waived at wind-up.
+
+### Gates
+
+- Targeted (suite mode, serial): test_jbko 73/73 (re-run after nit edits),
+  test_583s 28/28, test_iwo9 30/30, test_8g7m 46/46, test_klgz 29/29,
+  test_40ys 121/121, test_7wsz 99/99, test_vau9 63/63, gate-count 39/39,
+  and the rest of the ptr_cells family (see a8nw report).
+- Full Pkg.test NOT re-run this session: the diff is comment/message-only;
+  the only code line touched is one `_ir_error` string with its pinned
+  substrings preserved (verified by grep + gate (L)).
+
+### Beads
+
+- **Bennett-a8nw CLOSED** (review run, ACCEPT signoff on disclosure).
+- **Bennett-jbko CLOSED** (review exit conditions met).
+- Filed: Bennett-sku0 (P2), Bennett-vckk (P3); note appended to Bennett-foz5.
+- Frontier unblocked: next is **Bennett-p06b** (wall 6, store {ptr,ptr},
+  CORE 3+1), then Bennett-foz5 (wall 7), BVM side bennettvm-rxgy.
+
 ## Session log — 2026-08-04 — Bennett-jbko: ptr-identity ptrtoint arm (xkl wall 5) — LANDED UNREVIEWED at wind-up; hostile review is Bennett-a8nw
 
 ⚠️ **READ THIS FIRST, NEXT AGENT**: the jbko implementation is committed with
