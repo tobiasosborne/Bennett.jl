@@ -466,7 +466,22 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
     #     disjunction ALREADY admitted `Bennett-lgzx`/`U114` before jbko, so
     #     the testset did NOT go red on landing — without the negatives the
     #     marker would silently stop tracking the frontier (the Bennett-0ncn
-    #     lesson, applied in advance).
+    #     lesson, applied in advance). It PAID OFF: the `!occursin("ptrtoint")`
+    #     negative is exactly what made this gate go RED when p06b landed.
+    #
+    #     ADVANCED AGAIN by Bennett-p06b (2026-08-06): that `%L93` whole-struct
+    #     store is now DECOMPOSED into per-field 64-bit cell stores
+    #     (extractvalue + IRPtrOffset + IRStore per field), so the lgzx / U114
+    #     disjunct is GONE. MEASURED: the closure walks past `%L93` and dies in
+    #     `%idxend41` on `%94 = ptrtoint ptr %memory_data53 to i64` — a
+    #     GenericMemory `.data`-base coercion whose root `_memdata_root` does
+    #     not yet recognise (Bennett-583s, bead Bennett-foz5, xkl wall 7).
+    #
+    #     THE BLANKET `!occursin("ptrtoint")` NEGATIVE IS RETIRED HERE. The
+    #     successor wall message CONTAINS the word `ptrtoint`, so an
+    #     opcode-scoped negative is no longer expressible. It is replaced by
+    #     ARM-scoped negatives (`Bennett-iwo9`, `type-tag` — what jbko actually
+    #     cleared) plus the NEW p06b load-bearing negatives.
     # ------------------------------------------------------------------
     @testset "(I) push! reaches the NEXT named wall, not an UndefRefError" begin
         e = try
@@ -492,17 +507,29 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
         # the PREVIOUS (llvm.memmove) wall is GONE — vau9 routes it
         @test !occursin("memmove", e.msg)
         @test !occursin("not yet lowered to reversible gates", e.msg)
-        # the PREVIOUS (`%L84` ptrtoint) wall is GONE — jbko admits it
+        # the PREVIOUS (`%L84` ptrtoint) wall is GONE — jbko admits it.
+        # ARM-scoped, NOT opcode-scoped: the successor wall is itself a
+        # ptrtoint reject, so `!occursin("ptrtoint")` is retired (see the
+        # comment block above).
         @test !occursin("Bennett-iwo9", e.msg)
-        @test !occursin("ptrtoint", e.msg)
+        @test !occursin("type-tag", e.msg)
+        # the PREVIOUS (`%L93` whole-struct store) wall is GONE — p06b
+        # decomposes it. THE NEW LOAD-BEARING NEGATIVES.
+        @test !occursin("Bennett-lgzx", e.msg)
+        @test !occursin("store of non-integer type", e.msg)
+        # ... and p06b's OWN rejects did NOT fire on the corpus store: it was
+        # ADMITTED, not re-rejected under a new name.
+        @test !occursin("Bennett-p06b", e.msg)
         # ... and we land on one of the NAMED successor walls
-        # MEASURED (2026-08-04, --check-bounds=yes): the closure fails first,
-        # on `store { ptr, ptr } %memory_ref15, ptr %1` in `%L93`. Kept as a
-        # DISJUNCTION rather than a literal pin because WHICH body of the set
-        # fails first is registration/iteration order, which is not a contract
-        # (the test_lf14 convention this gate has always followed).
-        @test occursin("Bennett-lgzx", e.msg) || occursin("U114", e.msg) ||
-              occursin("store of non-integer type", e.msg) ||
+        # MEASURED (2026-08-06, --check-bounds=yes): the closure fails first,
+        # on `%94 = ptrtoint ptr %memory_data53 to i64` in `%idxend41`
+        # (Bennett-583s / bead Bennett-foz5). Kept as a DISJUNCTION rather than
+        # a literal pin because WHICH body of the set fails first is
+        # registration/iteration order, which is not a contract (the test_lf14
+        # convention this gate has always followed).
+        @test occursin("Bennett-583s", e.msg) ||
+              occursin("base-cancelling", e.msg) ||
+              occursin("Bennett-foz5", e.msg) ||
               occursin("Bennett-5oyt", e.msg) || occursin("U15", e.msg)
     end
 

@@ -506,17 +506,40 @@ top:
         # landing disjunction already admitted `Bennett-lgzx`/`U114`/
         # `StructType` before jbko, so this gate did NOT go red on landing.
         # Without the negatives the marker would silently stop tracking the
-        # frontier (the Bennett-0ncn lesson, applied in advance).
+        # frontier (the Bennett-0ncn lesson, applied in advance). It PAID OFF:
+        # the `ptrtoint` negative is what made this gate go RED when p06b
+        # landed.
+        #
+        # ADVANCED AGAIN by Bennett-p06b (2026-08-06): the `%L93` LIVE
+        # whole-struct `store { ptr, ptr }` (the `MemoryRef` write-back) is now
+        # DECOMPOSED into per-field 64-bit cell stores under `ptr_cells`, so the
+        # lgzx / U114 / StructType disjunct is GONE. MEASURED: the closure walks
+        # past `%L93` and dies in `%idxend41` on
+        # `%94 = ptrtoint ptr %memory_data53 to i64` — a GenericMemory
+        # `.data`-base coercion whose root `_memdata_root` does not yet
+        # recognise (Bennett-583s, bead Bennett-foz5, xkl wall 7).
+        #
+        # THE BLANKET `!occursin("ptrtoint")` NEGATIVE IS RETIRED HERE: the
+        # SUCCESSOR wall message itself contains the word `ptrtoint`, so an
+        # opcode-scoped negative is no longer expressible. Replaced by
+        # ARM-scoped negatives (`Bennett-iwo9`, `type-tag` — what jbko cleared)
+        # plus the NEW p06b load-bearing negatives.
         @test !occursin("jl_diverror_exception", msg)
         @test !occursin("UNRECOGNIZED Julia JIT global", msg)
         @test !occursin("memmove", msg)
         @test !occursin("not yet lowered to reversible gates", msg)
         @test !occursin("Bennett-iwo9", msg)
-        @test !occursin("ptrtoint", msg)
-        @test occursin("Bennett-lgzx", msg) ||
-              occursin("U114", msg) ||
-              occursin("StructType", msg) ||
-              occursin("store of non-integer type", msg)
+        @test !occursin("type-tag", msg)
+        # p06b: the whole-struct store wall is CLEARED, and p06b's OWN rejects
+        # did NOT fire on the corpus store (it was ADMITTED, not re-rejected).
+        @test !occursin("Bennett-lgzx", msg)
+        @test !occursin("store of non-integer type", msg)
+        @test !occursin("Bennett-p06b", msg)
+        @test occursin("Bennett-583s", msg) ||
+              occursin("base-cancelling", msg) ||
+              occursin("Bennett-foz5", msg) ||
+              occursin("Bennett-5oyt", msg) ||
+              occursin("U15", msg)
     end
 
     # =====================================================================

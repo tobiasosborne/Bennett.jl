@@ -92,6 +92,577 @@ function _struct_field_widths(st::LLVM.StructType, inst::LLVM.Instruction,
 end
 
 """
+    _alloca_reservation(inst, names, ptr_cells) -> Union{Nothing, Tuple{Int, IROperand}}
+
+Bennett-p06b: the SINGLE SOURCE OF TRUTH for what an `alloca` actually reserves.
+Returns exactly the `(elem_width, n_elems)` pair the alloca arm passes to
+`IRAlloca`, or `nothing` when the allocated type is one the arm SILENTLY SKIPS
+(a StructType, a nested ArrayType, a float, a PointerType with the gate off).
+
+Both the alloca arm below AND `_p06b_cell_ptr_target_kind` call this. That is
+the point: an earlier revision had p06b MIRROR the arm's logic instead of
+sharing it, and the mirror drifted immediately — it read the ArrayType count
+operand that the arm DISCARDS, so `alloca [1 x i64], i32 4` certified 4 cells
+while the arm reserved 1, and a 2-field aggregate store clobbered the next
+allocation (hostile review round 2, defect N1, executed witness
+`scratchpad/h1_e2e.jl`: EXPECTED 999, ACTUAL 42). A mirrored predicate is a
+latent miscompile with a docstring; a shared one cannot drift.
+
+NOTE — the arm's ArrayType branch genuinely UNDER-RESERVES for
+`alloca [K x iM], i32 N`: it reserves K cells and ignores N. That is a
+pre-existing bug in the arm, NOT fixed here (fixing it would change gate-off
+behaviour); it is filed as **Bennett-uiqq** (P2). This helper reports what the
+arm ACTUALLY reserves, so p06b stays sound in the meantime — and p06b
+additionally refuses `N != 1` outright rather than trusting the under-reservation.
+"""
+function _alloca_reservation(inst::LLVM.Instruction,
+                             names::Dict{_LLVMRef, Symbol},
+                             ptr_cells::Bool)
+    elem_ty = LLVM.LLVMType(LLVM.API.LLVMGetAllocatedType(inst.ref))
+    ops = LLVM.operands(inst)
+    if elem_ty isa LLVM.ArrayType
+        inner = LLVM.eltype(elem_ty)
+        inner isa LLVM.IntegerType || return nothing
+        # The count operand is DELIBERATELY not consulted — that is what the
+        # arm does (Bennett-uiqq tracks the under-reservation).
+        return (Int(LLVM.width(inner)), iconst(Int(LLVM.length(elem_ty))))
+    end
+    n_elems_op = if !isempty(ops) && ops[1] isa LLVM.ConstantInt
+        iconst(_const_int_as_int(ops[1]))
+    elseif !isempty(ops) && haskey(names, ops[1].ref)
+        ssa(names[ops[1].ref])
+    else
+        iconst(1)
+    end
+    if ptr_cells && elem_ty isa LLVM.PointerType
+        return (64, n_elems_op)
+    elseif elem_ty isa LLVM.IntegerType
+        return (Int(LLVM.width(elem_ty)), n_elems_op)
+    end
+    return nothing
+end
+
+# ============================================================================
+# Bennett-p06b / CW-D — WHOLE-AGGREGATE `store` DECOMPOSITION (xkl wall 6)
+# ============================================================================
+#
+#   store { ptr, ptr } %memory_ref, ptr %1     ; `_growend!` %L93 — THE WALL
+#
+# Under `ptr_cells` this decomposes into, for each field k of the StructType,
+#
+#   IRExtractValue(fk, <agg>, k, 0, N, field_widths)   ; the 6bu3 arm's shape
+#   IRPtrOffset(ak, <p>, LLVMOffsetOfElement(S,k), 64) ; the D4 GEP arm's shape
+#   IRStore(ssa(ak), ssa(fk), 64)                      ; the ares/beaw arm's shape
+#
+# PROVENANCE. Designed as a CORE 3+1 (docs/design/p06b/proposal_A.md and
+# proposal_B.md, two blind proposers, converged mechanism). Ground truth for
+# every claim below was measured on the module the converter actually walks
+# (`_code_llvm_by_sig(...; optimize=false, dump_module=true)` followed by the
+# `["sroa","mem2reg"]` prepend `_module_has_sret` triggers at entry.jl:104-108),
+# never off a raw `code_llvm` dump: post-pass, `_growend!` has EXACTLY ONE live
+# aggregate store (proposal_A F1 / proposal_B C1 — SROA eliminates the sret
+# staging alloca and its 8-byte memcpy, and the `%oob*` siblings are in
+# Bennett-utzc-pruned dead blocks). NO live ArrayType aggregate store exists, so
+# this arm is StructType-only.
+#
+# ============================================================================
+# WHY THE DECOMPOSITION IS EXACT, DETERMINISTIC AND REVERSIBLE (klgz discipline)
+# ============================================================================
+#
+# THE REPRESENTATION. Under `ptr_cells` a pointer is one Int64 **VM cell value**
+# (ADR 0018 §A) handed out by BennettVM's deterministic, injective bump
+# allocator (see the Bennett-jbko block above for the full statement). Write
+# `φ : native address ↦ VM cell value` for that injective map and
+# `κ(p, off) = φ(p) + off÷8` for the cell the model assigns to byte offset `off`
+# from `p` under the word-granular stamp.
+#
+# THE THEOREM. For an unpacked StructType `S` with fields at byte offsets
+# `o₀…o_{N-1}`, LLVM DEFINES `store S %agg, ptr %p` to be the field-wise
+# sequence `store Tₖ (extractvalue %agg, k), (getelementptr S, ptr %p, 0, k)`
+# for every k, plus an UNSPECIFIED write to the padding bytes. This arm emits
+# exactly that sequence, so the decomposition is exact ON THE FIELDS by LLVM's
+# own semantics. Three conditions make it exact IN THE CELL MODEL as well:
+#
+#  1. EVERY FIELD OWNS EXACTLY ONE CELL. (P3) requires `oₖ == 8k` AND
+#     `field_width(k) == 64` for every k, so the fields TILE `[0, 8N)` with no
+#     gaps, no overlap and NO PADDING AT ALL. Distinct fields therefore occupy
+#     distinct cells and the N writes cannot alias. This is why a sub-cell field
+#     (`{i64,i8}`, `{i32,i32}`) is refused rather than admitted with a narrow
+#     `IRStore` width: BennettVM's `MemoryStore` writes a WHOLE cell, so a
+#     sub-cell field would need a read-modify-write of the surrounding cell,
+#     which the cell model does not express — and the "padding is unobservable"
+#     escape hatch is an argument about what no OTHER access may name, which
+#     (P5) can only check inside this function.
+#
+#  2. THE CELLS AGREE WITH EVERY OTHER WAY THE OBJECT IS ADDRESSED. The only
+#     other admitted addressing of a struct-typed object is the BVM ADR 0020 D4
+#     two-index struct GEP, which emits `IRPtrOffset(base,
+#     LLVMOffsetOfElement(S,k), ew)`. This arm calls the SAME
+#     `LLVM.offsetof` (never IR-text parsing, never `index * width` — Rule 5 /
+#     the dv1z-7wsz discipline) and stamps the SAME `ew`, so cell agreement is a
+#     SYNTACTIC IDENTITY with the D4 arm, not a claim about two code paths.
+#     MEASURED on the corpus: the store target `%1` has exactly four uses — the
+#     dropped `julia.write_barrier`, the aggregate store itself, and TWO
+#     word-granular `getelementptr {ptr,ptr}, ptr %1, i32 0, i32 {0,1}` in
+#     `%L84`. The cells this arm writes are provably the cells the existing GEP
+#     arm reads. (P5) turns that measurement into an enforced predicate, and
+#     (P1) removes the ONE type where D4 deliberately uses a DIFFERENT (byte)
+#     granularity.
+#
+#  3. DETERMINISM. Nothing in the decomposition introduces a value the model did
+#     not already have: the field values are `extractvalue` slot copies of an
+#     `insertvalue`-built family ((P6)), the addresses are constant offsets from
+#     a certified cell pointer ((P4)), and the widths come from the datalayout.
+#     For a fixed program and fixed inputs every cell written is a pure function
+#     of the execution trajectory, exactly as before. p06b ADDS ZERO EXPRESSIVE
+#     POWER over the field-wise spelling the extractor already admits — it only
+#     lets that spelling be written as one LLVM instruction.
+#
+# REVERSIBILITY is inherited, not argued specially: `IRExtractValue` → a
+# non-destructive slot-copy `Define`, `IRPtrOffset` → `Define(dest, base, :add,
+# off÷ew_bytes)`, `IRStore` → the L2/L3-logged `MemoryStore`. N independent
+# single-cell writes reverse as the reverse-ordered composition of N invertible
+# cell writes. BennettVM src changes: ZERO (E2E-proved by both proposers and by
+# `../BennettVM.jl/test/test_p06b_aggregate_store_vm.jl`).
+#
+# STORE ORDER IS IMMATERIAL. Every field value is read from the SSA aggregate
+# (registers), never from memory, so even the self-referential case (the target
+# pointer also appearing as a field value) cannot let the writes observe each
+# other. Ascending field order is chosen for determinism and diff-readability.
+#
+# RESIDUAL RISKS — the COMPLETE list. Every entry is a limitation this arm does
+# NOT close; nothing below is a guarantee. (Hostile review found TWO defects
+# that were exactly guarantees asserted in prose with no predicate behind them,
+# so this list is the contract: if it is not enforced by a named predicate
+# above, it is stated here as a hole.)
+#
+#   * **Bennett-khb2 — `:load` targets have NO CAPACITY PROOF, and this is the
+#     REAL CORPUS SHAPE.** (P4c) certifies capacity for `:alloca` and `:call`
+#     only. MEASURED 2026-08-06 on `_growend!`: the target
+#     `%1 = load ptr, ptr %0` carries NO extent metadata of any kind, its
+#     pointer operand is a GEP off a `dereferenceable(0)` ARGUMENT, and no
+#     allocation root for the object exists in this function (the adequate
+#     `gc_alloc_obj(…, 24, …)` is in the CALLER). Enforcement was intended to
+#     fall to BennettVM's out-of-reservation check (`bennettvm-pdqx`), but that
+#     check — measured — rejects only accesses landing outside ALL live
+#     reservations and does NOT reject a store clobbering an ADJACENT live
+#     allocation, which is what every witness actually does. Closing this needs
+#     pointer provenance. Pinned as a KNOWN-ADMITTED witness in
+#     `test_p06b_aggregate_store.jl` (`p06b_khb2_loadclobber`).
+#   * **(P5)'s alias closure is same-slot re-loads only.** `_p06b_alias_group`
+#     links pointer-result `load`s whose pointer operands share a CANONICAL slot
+#     key (root ref + total constant byte offset). It does NOT link: two loads
+#     of DIFFERENT slots that happen to hold the same pointer; a pointer
+#     round-tripped through memory via an intervening store; a runtime-indexed
+#     GEP (the key walk stops at the first non-constant index, by design). A
+#     byte-granular use reached only through one of those paths is invisible to
+#     (P5).
+#   * bennettvm-jb6w — the two-granularity hazard is PRE-EXISTING and shared
+#     verbatim with the D4 GEP arm. (P5) refuses any target this function can
+#     SEE addressed at two granularities, but a CALLEE that receives the cell
+#     and byte-addresses it is out of model; the closed-world check is the guard
+#     there, not this arm.
+#   * Bennett-uiqq — the alloca arm UNDER-RESERVES for `alloca [K x iM], i32 N`
+#     (it reserves K cells and discards N). Not fixed here (it would change
+#     gate-off behaviour); `_p06b_alloca_cells` refuses `N != 1` rather than
+#     trust it.
+#   * Bennett-6bu3 does not check field ADDRSPACE — a `{ptr addrspace(10), ptr}`
+#     field is stamped 64. Inherited, not created here.
+#   * an `alloca` with an UNMODELLED allocated type silently registers a name
+#     while emitting nothing (see `_alloca_reservation`). (P4) refuses to
+#     build on it; fixing the silent skip itself is a separate bead.
+#   * `julia.gc_alloc_obj` targets are REFUSED, not supported: BennettVM stamps
+#     that tier BYTE-granular. Admitting them under a byte stamp is a future
+#     widening (mechanism: emit `IRPtrOffset(_, _, 8k, 8)`), gated on the same
+#     416r.13 singleton-header argument (P1) is waiting on.
+# ============================================================================
+
+# (P4) Is `v` a pointer SSA value that `ptr_cells` has CERTIFIED as a real,
+# MATERIALISED VM cell address? Deliberately a POSITIVE WHITELIST of the three
+# producer shapes proven to leave a cell in `locals` — NOT an "is a pointer"
+# test, and emphatically NOT `haskey(names, v.ref)`: `module_walk.jl`'s naming
+# pass registers EVERY instruction whether or not the converter emits an
+# `IRInst` for it, so registration proves nothing about materialisation.
+#
+#   :load   — a pointer-result `load` whose OWN pointer operand is a registered
+#             SSA name lowers to `IRLoad(dest, …, 64)` (ADR 0020 D3). The
+#             operand condition mirrors that arm EXACTLY and is load-bearing:
+#             a `load ptr, ptr @"jl_global#N"` (bennettvm-416r.13 singleton)
+#             emits NOTHING and ALIASES the dest name to the global instead, and
+#             a load off an unregistered pointer is silently skipped.
+#   :call   — an ALLOCATOR call returning a fresh arena cell. Restricted to a
+#             NAME whitelist (`_M4_C_ALLOCATOR_NAMES` only; `julia.gc_alloc_obj`
+#             is REFUSED as byte-granular — see the :448 reject and the
+#             RESIDUAL RISKS list) because "call returning a pointer" is NOT
+#             sufficient: the
+#             `julia.gc_*` benign-prefix drop (the `benign_prefixes` tuple at
+#             ~:4243, applied at ~:4282) returns `nothing` for e.g.
+#             `julia.gc_loaded` while its dest name stays registered.
+#             CAPACITY comes from `_p06b_call_bytes` (P4c).
+#   :alloca — an alloca for which `_alloca_reservation` (the SHARED helper the
+#             alloca arm itself uses) returns a reservation, with a CERTIFIED
+#             word-granular capacity (P4c). `alloca { ptr, ptr }` (the natural
+#             LLVM target for an aggregate store!) is NOT in that set — it is
+#             the silent-skip hole.
+#
+# DELIBERATELY EXCLUDED, each with a reason rather than an omission:
+#   * `phi ptr` / `select ptr` — Bennett-cc0 M2b stamps them with the WIDTH-0
+#     SENTINEL and records their routing in `ptr_provenance` at LOWERING time
+#     rather than as a value. Offsetting off one addresses a cell that was never
+#     materialised: a SILENT miscompile, not a loud one. Same hazard class as
+#     jbko's ptrtoint whitelist, same answer.
+#   * `getelementptr` — a GEP target means the aggregate is NESTED inside a
+#     larger object, and then (P5)'s use scan over the GEP RESULT says nothing
+#     about how the PARENT object is addressed. Deferred rather than assumed.
+#   * a pointer `Argument` — a Julia NTuple-by-ref parameter (`dereferenceable(N)
+#     > 0`) is modelled as a FLAT WIRE ARRAY, not a cell, and the sret parameter
+#     is claimed by the dv1z pre-walk. Both make "argument" two models under one
+#     predicate; deferred.
+#   * a global / ConstantExpr / alias — never a registered SSA name, so it is
+#     already the pre-existing Bennett-lgzx / U114 reject (reused verbatim).
+#
+# Widening any of these is a one-line change PLUS a fixture. Depth-0 by design —
+# no chain walk, no recursion. Returns `:load`, `:call`, `:alloca`, or `:none`.
+# The constant value of `v`, or -1 if it is not a compile-time constant.
+_p06b_const(v)::Int = v isa LLVM.ConstantInt ? Int(_const_int_as_int(v)) : -1
+
+# (P4c) CAPACITY — hostile-review defect D1, a SILENT MISCOMPILE.
+#
+# The kind whitelist above certifies that the producer WOULD emit an `IRAlloca`
+# / bump the arena. It says NOTHING about HOW MANY cells were reserved. Executed
+# witness (review scratchpad `e2e2.jl` / `e2e3.jl`, 2026-08-06): an
+# `alloca i64` (ONE cell) or a `malloc(8)` (ONE cell) receiving a decomposed
+# TWO-field aggregate store overwrote the NEXT allocation's cell on both tiers —
+# EXPECTED 999, ACTUAL 42, with NO error raised. The original arm's message
+# asserted a reservation guarantee that no predicate checked; this function is
+# that predicate.
+#
+# Returns the statically CERTIFIED capacity in 64-bit cells, or -1 for
+# "statically unknown" (see the `:load` disclosure in the arm).
+function _p06b_alloca_cells(v, names::Dict{_LLVMRef, Symbol}, ptr_cells::Bool)::Int
+    r = _alloca_reservation(v, names, ptr_cells)
+    r === nothing && return -1
+    ew, nop = r
+    # `[K x i8]` reserves K BYTE cells, not word cells — the decomposition's
+    # cell arithmetic does not apply, so only a 64-bit element width counts.
+    ew == 64 || return 0
+    # N1: for an ArrayType allocated type the arm DISCARDS the count operand
+    # (Bennett-uiqq). Refuse anything but an explicit count of 1 rather than
+    # certify a reservation the arm does not make.
+    et = LLVM.LLVMType(LLVM.API.LLVMGetAllocatedType(v.ref))
+    if et isa LLVM.ArrayType
+        ops = LLVM.operands(v)
+        cnt = isempty(ops) ? 1 : _p06b_const(ops[1])
+        cnt == 1 || return 0
+    end
+    # A RUNTIME count is not a static capacity proof.
+    return nop isa ConstOperand ? nop.value : 0
+end
+
+# The byte size an allocator call reserves, or -1 if not a compile-time
+# constant. Operand positions are the callee's own ABI (the callee itself is the
+# LAST operand, per this file's convention).
+function _p06b_call_bytes(v)::Int
+    cn = _heap_callee_name(v)
+    ops = LLVM.operands(v)
+    n = length(ops)
+    if cn == "malloc"
+        return n >= 2 ? _p06b_const(ops[1]) : -1               # malloc(size)
+    elseif cn == "calloc"
+        if n >= 3
+            a = _p06b_const(ops[1]); b = _p06b_const(ops[2])
+            return (a < 0 || b < 0) ? -1 : a * b               # calloc(n, size)
+        end
+        return -1
+    elseif cn == "realloc"
+        return n >= 3 ? _p06b_const(ops[2]) : -1               # realloc(p, size)
+    end
+    return -1
+end
+
+# Returns `(kind, cells)`. `cells >= 0` is a CERTIFIED capacity in 64-bit cells;
+# `cells == -1` means statically unknown (only ever returned for `:load`, whose
+# extent is not knowable at the store site — see the arm's disclosure).
+function _p06b_cell_ptr_target_kind(v, names::Dict{_LLVMRef, Symbol},
+                                    ptr_cells::Bool,
+                                    suppressed::Set{_LLVMRef})
+    v.ref == C_NULL && return (:none, 0)
+    ty = LLVM.value_type(v)
+    ty isa LLVM.PointerType || return (:none, 0)
+    LLVM.addrspace(ty) == 0 || return (:none, 0)  # addrspace-0 only (cf. 7wsz)
+    v isa LLVM.Instruction || return (:none, 0)
+    # (P4b') D1b — CONSULT WHAT THE WALK ACTUALLY EMITTED, not what the arm
+    # would do in isolation. `module_walk.jl`'s emission loop `continue`s past
+    # every ref in `sret_writes.suppressed` / `.call_return_suppressed` /
+    # `consumed_sret.suppressed`, so a target rooted at a SUPPRESSED box alloca
+    # certifies under the type rules while NO `IRAlloca` is ever emitted for it.
+    v.ref in suppressed && return (:none, 0)
+    opc = LLVM.opcode(v)
+    if opc == LLVM.API.LLVMLoad
+        lops = LLVM.operands(v)
+        length(lops) >= 1 || return (:none, 0)
+        return haskey(names, lops[1].ref) ? (:load, -1) : (:none, 0)
+    elseif opc == LLVM.API.LLVMCall
+        cn = _heap_callee_name(v)
+        cn in _M4_C_ALLOCATOR_NAMES || return (:none, 0)
+        b = _p06b_call_bytes(v)
+        return (:call, b < 0 ? 0 : b ÷ 8)   # a non-constant size certifies 0
+    elseif opc == LLVM.API.LLVMAlloca
+        _alloca_reservation(v, names, ptr_cells) === nothing && return (:none, 0)
+        c = _p06b_alloca_cells(v, names, ptr_cells)
+        return (:alloca, c < 0 ? 0 : c)     # a runtime count certifies 0
+    end
+    return (:none, 0)
+end
+
+# Human-readable description of a REJECTED aggregate-store target, for the (P4)
+# fail-loud. Says WHY, not just WHAT.
+function _p06b_target_kind_name(v, suppressed::Set{_LLVMRef}=Set{_LLVMRef}())::String
+    v.ref == C_NULL && return "a null value ref"
+    v.ref in suppressed &&
+        return "a value the module walk SUPPRESSED (an sret / consumed-sret " *
+               "box alloca or its producing call — `module_walk.jl`'s emission " *
+               "loop `continue`s past it), so NO IRInst is emitted for it at " *
+               "all and nothing ever reserved the cells this store would write"
+    ty = LLVM.value_type(v)
+    ty isa LLVM.PointerType ||
+        return "a non-pointer value of type $(string(ty))"
+    LLVM.addrspace(ty) == 0 ||
+        return "a pointer in addrspace $(LLVM.addrspace(ty)), not the flat " *
+               "addrspace 0 arena"
+    LLVM.API.LLVMIsAArgument(v.ref) != C_NULL &&
+        return "a pointer function ARGUMENT (a `dereferenceable(N)` parameter " *
+               "is modelled as a flat wire array, not a cell, and the sret " *
+               "parameter is claimed by the dv1z pre-walk — deferred)"
+    v isa LLVM.Instruction ||
+        return "a non-instruction value (global / alias / ConstantExpr)"
+    opc = LLVM.opcode(v)
+    if opc == LLVM.API.LLVMAlloca
+        et = LLVM.LLVMType(LLVM.API.LLVMGetAllocatedType(v.ref))
+        return "an `alloca $(string(et))`, whose allocated type the alloca arm " *
+               "SILENTLY SKIPS — it emits NO IRAlloca, so nothing ever " *
+               "reserved the cells this store would write"
+    elseif opc == LLVM.API.LLVMLoad
+        return "a `load` whose own pointer operand is not a registered SSA " *
+               "name (an aliased singleton-data global load emits no IRLoad)"
+    elseif opc == LLVM.API.LLVMCall
+        cn_r = _heap_callee_name(v)
+        cn_r == "julia.gc_alloc_obj" && return (
+            "a `julia.gc_alloc_obj` call — the JULIA heap tier, which " *
+            "BennettVM stamps BYTE-granular (`_byte_cells`, " *
+            "`src/ir/intrinsics.jl:256-257`, CW-D4 / bennettvm-9n3y). This arm " *
+            "writes WORD-granular cells (base+0, base+1, …), so a Julia-idiom " *
+            "field read at byte offset 8 would land on cell base+8 and miss " *
+            "the write entirely (executed witness: EXPECTED 42, ACTUAL 0). " *
+            "Refused for exactly the reason (P1) refuses the byte-granular " *
+            "GenericMemory header STRUCT — the granularities must agree, and " *
+            "here they do not. Byte-stamped admission is a future widening")
+        return "a `call` to '$(cn_r)', which is not a recognised cell allocator"
+    elseif opc == LLVM.API.LLVMPHI || opc == LLVM.API.LLVMSelect
+        return "a `$(_llvm_opcode_name(opc))` pointer, which carries the " *
+               "Bennett-cc0 M2b WIDTH-0 SENTINEL — its routing is recorded in " *
+               "`ptr_provenance` at lowering time, so no cell was ever " *
+               "materialised to offset from"
+    end
+    return "a `$(_llvm_opcode_name(opc))`"
+end
+
+# (P5) CELL-GRANULARITY AGREEMENT over the target's OTHER address-forming uses.
+#
+# MEASURED HAZARD (proposal_B §2.2 P5): BennettVM recovers the cell index from
+# an `IRPtrOffset` as `offset_bytes ÷ (elem_width ÷ 8)`. A single-index
+# `getelementptr i8, ptr %obj, i32 8` therefore lands on cell 8, while a
+# two-index `getelementptr {ptr,ptr}, ptr %obj, i32 0, i32 1` on the SAME object
+# lands on cell 1 — TWO CELLS FOR ONE BYTE OFFSET. That split is live today in
+# the push! ROOT (`%"new::Array"` is both byte-addressed at 8/16 and
+# struct-addressed at fields 0/1). Reading through one of two disagreeing maps
+# is bennettvm-jb6w; WRITING a whole aggregate through one of them is worse, so
+# this arm refuses rather than picks a winner. Measured cost of refusing: ZERO
+# frontier progress (the root's own next wall is the Bennett-37mt/8bys memcpy,
+# two instructions later).
+#
+# EVERY `getelementptr` use of the target must be either
+#   * a two-index struct GEP whose GEPSourceElementType IS the stored struct
+#     type, with the leading constant-0 base step (word granularity, our
+#     granularity), or
+#   * a single-index GEP at the CONSTANT index 0 (byte offset 0 maps to cell 0
+#     under every stamp, so it cannot disagree).
+# Non-GEP uses (the store itself, `load`, `julia.write_barrier`, passing the
+# cell to a call) are cell-OPAQUE and accepted; the closed-world check, not this
+# arm, is the guard on what a callee does with a cell it receives.
+#
+# Returns `nothing` when every use agrees, else a SHORT STRING naming the
+# offending use (so the fail-loud says which one).
+# D3 — the alias group of the target. The scan below must be OBJECT-scoped, not
+# SSA-scoped: `%slot = load ptr, ptr %root` and a later `%slot2 = load ptr, ptr
+# %root` name the SAME object under two SSA names, and a scan over `%slot`
+# alone never sees `%slot2`'s byte GEP. That is not a synthetic worry — it is
+# the canonical Julia GC RELOAD-AFTER-SAFEPOINT shape, so it is live corpus
+# territory (hostile-review defect D3, repro `probe1_realias` / `probe25`).
+#
+# The group is `pv` plus, when `pv` is a `load`, every other `load` in the same
+# function whose POINTER OPERAND is the same SSA ref. That is the closure this
+# arm can prove; see the arm's disclosure for what it does NOT close.
+# N2 (hostile review round 2) — the alias key must be CANONICAL, not syntactic.
+# Keying the group on the load's pointer-operand SSA *ref* meant two IDENTICAL
+# `getelementptr i8, ptr %slot, i64 0` instructions produced two different keys
+# and defeated the scan entirely — and `optimize=false` (which this extractor
+# mandates, Rule 5) emits redundant GEPs routinely. Executed witness
+# `scratchpad/hostile2.ll h14_redundant_gep`: ADMITTED, VM returned 0 where
+# LLVM says 42.
+#
+# `_p06b_slot_key` folds a chain of ALL-CONSTANT-index GEPs into
+# `(root_ref, total_byte_offset)`, so every syntactic spelling of the same
+# address collapses to one key. A non-constant index stops the walk (that GEP
+# result becomes its own root) — sound, because two runtime-indexed addresses
+# cannot be proven equal here. Depth-bounded like the other walkers in this file.
+function _p06b_slot_key(v::LLVM.Value, depth::Int=0)::Tuple{_LLVMRef,Int}
+    depth > 8 && return (v.ref, 0)
+    (v isa LLVM.Instruction && LLVM.opcode(v) == LLVM.API.LLVMGetElementPtr) ||
+        return (v.ref, 0)
+    ops = LLVM.operands(v)
+    length(ops) >= 2 || return (v.ref, 0)
+    sty = LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(v.ref))
+    off = 0
+    if length(ops) == 2
+        ops[2] isa LLVM.ConstantInt || return (v.ref, 0)
+        stride = if sty isa LLVM.IntegerType
+            max(Int(LLVM.width(sty)) ÷ 8, 1)
+        else
+            dl = LLVM.datalayout(LLVM.parent(LLVM.parent(LLVM.parent(v))))
+            Int(LLVM.storage_size(dl, sty))
+        end
+        off = Int(_const_int_as_int(ops[2])) * stride
+    elseif length(ops) == 3 && sty isa LLVM.StructType
+        (ops[2] isa LLVM.ConstantInt && _const_int_as_int(ops[2]) == 0) ||
+            return (v.ref, 0)
+        ops[3] isa LLVM.ConstantInt || return (v.ref, 0)
+        dl = LLVM.datalayout(LLVM.parent(LLVM.parent(LLVM.parent(v))))
+        off = Int(LLVM.offsetof(dl, sty, _const_int_as_int(ops[3])))
+    else
+        return (v.ref, 0)
+    end
+    rroot, roff = _p06b_slot_key(ops[1], depth + 1)
+    return (rroot, roff + off)
+end
+
+# D3 — the alias group of the target. The scan below must be OBJECT-scoped, not
+# SSA-scoped: `%slot = load ptr, ptr %root` and a later `%slot2 = load ptr, ptr
+# %root` name the SAME object under two SSA names, and a scan over `%slot`
+# alone never sees `%slot2`'s byte GEP. That is not a synthetic worry — it is
+# the canonical Julia GC RELOAD-AFTER-SAFEPOINT shape, so it is live corpus
+# territory (hostile-review defect D3, repro `probe1_realias` / `probe25`).
+#
+# The group is `pv` plus, when `pv` is a `load`, every other pointer-result
+# `load` in the same function whose pointer operand has the SAME CANONICAL SLOT
+# KEY (N2). That is the closure this arm can prove; the arm's RESIDUAL RISKS
+# list states what it does NOT close.
+function _p06b_alias_group(pv::LLVM.Value)::Vector{LLVM.Value}
+    grp = LLVM.Value[pv]
+    (pv isa LLVM.Instruction && LLVM.opcode(pv) == LLVM.API.LLVMLoad) || return grp
+    pops = LLVM.operands(pv)
+    isempty(pops) && return grp
+    key = _p06b_slot_key(pops[1])
+    func = LLVM.parent(LLVM.parent(pv))
+    for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
+        inst.ref == pv.ref && continue
+        LLVM.opcode(inst) == LLVM.API.LLVMLoad || continue
+        LLVM.value_type(inst) isa LLVM.PointerType || continue
+        iops = LLVM.operands(inst)
+        (!isempty(iops) && _p06b_slot_key(iops[1]) == key) || continue
+        push!(grp, inst)
+    end
+    return grp
+end
+
+function _p06b_scan_uses(pv::LLVM.Value, st::LLVM.StructType,
+                         sib::Bool)::Union{Nothing,String}
+    where_ = sib ? "a SIBLING re-load of the same slot (`$(string(pv))`), via " : ""
+    for u in LLVM.uses(pv)
+        usr = LLVM.user(u)
+        usr isa LLVM.Instruction || return "$(where_)a non-instruction user"
+        LLVM.opcode(usr) == LLVM.API.LLVMGetElementPtr || continue
+        ops = LLVM.operands(usr)
+        (length(ops) >= 1 && ops[1].ref == pv.ref) ||
+            return "$(where_)a getelementptr that consumes the pointer as an " *
+                   "INDEX operand, not as the base"
+        if length(ops) == 3
+            sty = LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(usr.ref))
+            sty.ref == st.ref || return "$(where_)the two-index getelementptr " *
+                "`$(string(usr))`, whose source element type $(string(sty)) is " *
+                "NOT the stored struct type $(string(st))"
+            (ops[2] isa LLVM.ConstantInt && _const_int_as_int(ops[2]) == 0) ||
+                return "$(where_)the two-index getelementptr `$(string(usr))`, " *
+                       "whose first index is not the constant 0"
+        elseif length(ops) == 2
+            # D2 — the index-0 CARVE-OUT IS DROPPED. It used to admit
+            # `gep i8, ptr %p, 0` on the reasoning that byte offset 0 maps to
+            # cell 0 under every stamp. True of the GEP itself — but it emits
+            # `IRPtrOffset(_, _, 0, 8)`, a FRESH BYTE-GRANULAR BASE, and the
+            # scan is one level deep, so a `gep i8, ptr %g0, 8` off it
+            # re-derived byte-cell 8 while the store wrote cell 1: exactly the
+            # CW-D4 / 9n3y split this predicate exists to refuse (repro
+            # `probe2_gep_of_gep`). Refusing costs zero frontier progress
+            # (measured), so there is no reason to keep the hole.
+            #
+            # D7 — name the granularity ACCURATELY. A 2-op GEP strides by its
+            # SOURCE ELEMENT TYPE, which is only "byte" when that type is i8.
+            sty2 = LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(usr.ref))
+            kind = if sty2 isa LLVM.StructType
+                "struct-strided"
+            elseif sty2 isa LLVM.IntegerType && LLVM.width(sty2) == 8
+                "BYTE-granular"
+            else
+                "$(string(sty2))-strided"
+            end
+            return "$(where_)the single-index $(kind) getelementptr " *
+                   "`$(string(usr))` (source element type $(string(sty2)))"
+        else
+            return "$(where_)the $(length(ops) - 1)-index getelementptr " *
+                   "`$(string(usr))`"
+        end
+    end
+    return nothing
+end
+
+function _p06b_granularity_violation(pv::LLVM.Value,
+                                     st::LLVM.StructType)::Union{Nothing,String}
+    grp = _p06b_alias_group(pv)
+    for (i, q) in enumerate(grp)
+        v = _p06b_scan_uses(q, st, i > 1)
+        v === nothing || return v
+    end
+    return nothing
+end
+
+# (P6') D4 — CHAIN ROOT certification. (P6) checked only the OUTERMOST
+# `insertvalue`; the chain it heads may be rooted in a value BennettVM's
+# `agg_dests` never registers (repro `probe14_loadbase_iv`:
+# `insertvalue (load {ptr,ptr}), …`). Because `IRInsertValue` has NO
+# membership guard of its own on `ingest`'s side — only `IRExtractValue` does —
+# such a chain died as a CONTEXTLESS KeyError in the WRONG repo.
+#
+# A chain is certified iff every link is an `insertvalue` and the root is
+# `zeroinitializer` / `undef` / `poison` — i.e. a constant aggregate that
+# contributes no cell value and that the 6bu3 arm already lowers to the
+# `ZeroAggSentinel` / a fresh slot family. Depth-bounded like the other
+# provenance walkers in this file. Returns `nothing` if certified, else a short
+# description of the offending root.
+function _p06b_agg_chain_root_violation(v, depth::Int=0)::Union{Nothing,String}
+    depth > 8 && return "an `insertvalue` chain deeper than 8 links"
+    if v isa LLVM.ConstantAggregateZero || v isa LLVM.UndefValue ||
+       v isa LLVM.PoisonValue
+        return nothing                       # certified root
+    end
+    (v isa LLVM.Instruction && LLVM.opcode(v) == LLVM.API.LLVMInsertValue) ||
+        return "a `$(v isa LLVM.Instruction ? _llvm_opcode_name(LLVM.opcode(v)) :
+                     "non-instruction")` value (`$(string(v))`)"
+    ops = LLVM.operands(v)
+    isempty(ops) && return "a malformed `insertvalue` with no operands"
+    return _p06b_agg_chain_root_violation(ops[1], depth + 1)
+end
+
+"""
     _gc_alloc_root_ref(val, depth=0) -> Union{Nothing, _LLVMRef}
 
 Bennett-vbv9 (2026-06): the ARENA analogue of `_alloca_root_ref`. Walk the
@@ -3045,6 +3616,13 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                               # models). The C cell model must not silently alias
                               # those paths — `module_walk.jl` is the sole setter.
                               ptr_cells::Bool=false,
+                              # Bennett-p06b D1b: the refs `module_walk.jl`'s
+                              # emission loop `continue`s past (sret box allocas
+                              # and their producing calls / consumed-sret boxes).
+                              # A NAMED but NEVER-EMITTED instruction is not a
+                              # materialised cell; the p06b target certification
+                              # must consult what the walk actually emitted.
+                              suppressed_refs::Set{_LLVMRef}=Set{_LLVMRef}(),
                               # Bennett-iwo9 / CW-D3 Lever 1: extraction-local
                               # type-tag interning. `tag_ids` maps a canonical
                               # type path ("Main.Base.Dict") → dense Int64 id
@@ -4602,6 +5180,226 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             return IRStore(ssa(names[ptr.ref]),
                            _operand(val, names; ptr_cells=true), 64)
         end
+        # Bennett-p06b / CW-D (xkl wall 6): under the closed-world `ptr_cells`
+        # gate a WHOLE-AGGREGATE `store <S> %agg, ptr %p` (S an unpacked
+        # StructType of N 64-bit fields) decomposes into the field-wise
+        # sequence the extractor ALREADY admits. See the big comment block at
+        # the top of this file (search `Bennett-p06b`) for the exactness /
+        # determinism / reversibility argument and for why each predicate is a
+        # positive whitelist rather than a type test.
+        #
+        # PLACEMENT: strictly BETWEEN the ADR 0020 D3 `PointerType` cell-store
+        # arm above (disjoint predicate — a StructType is not a PointerType, so
+        # that arm is byte-identical) and the Bennett-lgzx / U114 `IntegerType`
+        # reject below (whose TEXT is untouched: this arm either returns or
+        # throws before reaching it, and with `ptr_cells=false` there is no arm
+        # at all). Every input that reaches this point today hits that
+        # unconditional throw, so NO currently-green extraction can change
+        # behaviour and the circuit path is byte-identical BY CONSTRUCTION.
+        if ptr_cells && vt isa LLVM.StructType
+            # (P1) The LITERAL `{i64,ptr}` Julia GenericMemory HEADER is the ONE
+            # struct type the D4 GEP arm stamps BYTE-granular (elem_width 8,
+            # CW-D4 / bennettvm-9n3y, forced by the shipped 416r.13 singleton
+            # headers). A word-granular store would land on cells 0/1 while its
+            # own field GEPs land on byte-cells 0/8. Mirroring the byte stamp is
+            # a one-line widening (`ew = _is_genericmemory_header_struct(vt) ?
+            # 8 : 64`) that MEASURES fine, but the missing piece is the 416r.13
+            # singleton-header interaction argument, and there is NO live
+            # `store {i64,ptr}` in the corpus — so Rule 1 prefers the
+            # conservative loud reject. A NAMED `%struct.T = type {i64,ptr}` is
+            # not a literal struct and keeps the word-granular stamp (the C-tier
+            # discriminator the haiy/nd45 pins already rely on).
+            _is_genericmemory_header_struct(vt) && _ir_error(inst,
+                "aggregate store of the LITERAL $(string(vt)) GenericMemory " *
+                "HEADER struct is not decomposable into 64-bit cells: the " *
+                "two-index struct-GEP arm stamps this ONE type at BYTE " *
+                "granularity (elem_width 8, CW-D4 / bennettvm-9n3y), so its " *
+                "field GEPs address byte-cells 0/8 while a word-granular " *
+                "store would address cells 0/1 — two cell maps for one " *
+                "object. Refused rather than mirrored: there is no live " *
+                "corpus witness and the 416r.13 singleton-header interaction " *
+                "is unverified. A NAMED `%struct.T = type {i64, ptr}` keeps " *
+                "the word-granular stamp and IS admitted. (Bennett-p06b, " *
+                "predicate `_is_genericmemory_header_struct`)")
+            # (P2) Field certification — REUSE the Bennett-6bu3 predicate, do
+            # not re-implement it (Rule 12). p06b therefore opens NO new
+            # field-shape message territory: packed / empty / i1 / float /
+            # nested-struct / vector / array fields and out-of-band integer
+            # widths all keep naming Bennett-6bu3.
+            fw_p06b = _struct_field_widths(vt, inst, ptr_cells)
+            # (P3) ONE WHOLE CELL PER FIELD, layout-derived. Offsets come from
+            # `LLVM.offsetof` → `LLVMOffsetOfElement` (never IR-text parsing,
+            # never `index * width` — Rule 5 / the dv1z-7wsz discipline) and are
+            # COMPARED against `8k`, never assumed. Stricter than (P2) on
+            # purpose: a sub-cell or padded field would need a read-modify-write
+            # of the surrounding cell, which BennettVM's whole-cell MemoryStore
+            # does not express. Re-checks the width itself rather than trusting
+            # (P2)'s width set, so a future relaxation of `_struct_field_widths`
+            # cannot silently widen this arm.
+            dl_p06b = LLVM.datalayout(LLVM.parent(LLVM.parent(LLVM.parent(inst))))
+            offs_p06b = Int[]
+            for k in 0:(length(fw_p06b) - 1)
+                off_k = Int(LLVM.offsetof(dl_p06b, vt, k))
+                (fw_p06b[k + 1] == 64 && off_k == 8 * k) || _ir_error(inst,
+                    "aggregate store of $(string(vt)) is not decomposable " *
+                    "into whole 64-bit cells: field $k has width " *
+                    "$(fw_p06b[k + 1]) bits at byte offset $(off_k) (expected " *
+                    "width 64 at offset $(8 * k) — exactly one cell per " *
+                    "field, fields tiling [0, $(8 * length(fw_p06b))) with no " *
+                    "padding). BennettVM's MemoryStore writes a WHOLE cell, so " *
+                    "a sub-cell or padded field would need a read-modify-write " *
+                    "of the surrounding cell, which the cell model (ADR 0018 " *
+                    "§A) does not express. (Bennett-p06b, predicate: the " *
+                    "`fw[k+1] == 64 && off_k == 8k` loop above)")
+                push!(offs_p06b, off_k)
+            end
+            # (P4a) The target must be a registered SSA name. D5: this reject is
+            # REACHABLE on p06b shapes, so it must carry p06b's OWN bead name.
+            # Reusing the lgzx text verbatim (as this arm first did) meant a
+            # (P4a) firing on the corpus would be misattributed to the lgzx wall
+            # by the three advanced wall markers, whose `!occursin("Bennett-lgzx")`
+            # is a LOAD-BEARING negative — and it escaped the message-hygiene
+            # sweep by construction. The lgzx cross-reference stays as CONTEXT.
+            haskey(names, ptr.ref) || _ir_error(inst,
+                "aggregate store target pointer is not a registered SSA name " *
+                "(value=$(ptr)) — likely an unsupported pointer source such as " *
+                "a global, ConstantExpr, or alias. (Bennett-p06b, predicate: " *
+                "the `haskey(names, ptr.ref)` test above. The scalar store arm " *
+                "words the same condition under its own bead; this reject is " *
+                "reached from the AGGREGATE arm and is deliberately attributed " *
+                "here, because the push! wall markers use that bead's name as a " *
+                "load-bearing negative and would otherwise misreport a p06b " *
+                "failure as the store-type wall.)")
+            # (P4b) ... AND a CERTIFIED cell pointer. Registration is NOT
+            # sufficient: `module_walk.jl` names every instruction whether or
+            # not the converter emits an IRInst for it.
+            tkind, tcells = _p06b_cell_ptr_target_kind(ptr, names, ptr_cells,
+                                                       suppressed_refs)
+            tkind === :none && _ir_error(inst,
+                "aggregate store target is not a CERTIFIED cell pointer — it " *
+                "is $(_p06b_target_kind_name(ptr, suppressed_refs)). Only a " *
+                "`load` of a pointer whose own pointer operand is a registered " *
+                "SSA name, an allocator `call` " *
+                "($(join(_M4_C_ALLOCATOR_NAMES, ", "))), or an `alloca` whose " *
+                "allocated type the alloca arm actually MODELS are admitted, " *
+                "all in addrspace 0 and none suppressed by the module walk. " *
+                "Being a registered SSA name is NOT sufficient: the naming " *
+                "pass registers EVERY instruction, so decomposing into an " *
+                "unmaterialised name would hand BennettVM stores into cells " *
+                "nothing ever reserved. (Bennett-p06b, predicate " *
+                "`_p06b_cell_ptr_target_kind`)")
+            # (P4c) ... AND it must have CERTIFIED CAPACITY for all N cells.
+            # Hostile-review defect D1, a SILENT MISCOMPILE: (P4b) proves an
+            # IRAlloca/arena bump happens, NOT that it reserves >= N cells.
+            # `tcells == -1` is the `:load` case ONLY — see the disclosure
+            # below. Enforced by `_p06b_alloca_cells` / `_p06b_call_bytes`.
+            #
+            # HONEST DISCLOSURE FOR `:load` TARGETS (prose-vs-predicate rule —
+            # D1 and D2 were both messages asserting guarantees no code
+            # checked, so this paragraph states ONLY what is enforced).
+            # `tcells == -1` means the capacity is NOT CERTIFIED and NOTHING
+            # BELOW CHECKS IT. This is the REAL CORPUS SHAPE: `_growend!`'s
+            # store target is `%1 = load ptr, ptr %0` where
+            # `%0 = getelementptr i8, ptr %".roots.#self#", 0`. MEASURED
+            # (2026-08-06): the load carries NO extent metadata of any kind
+            # (`dereferenceable`, `dereferenceable_or_null`, `align`, `range`,
+            # … all absent), its pointer operand is a GEP off a function
+            # ARGUMENT whose `dereferenceable` is 0, and NO allocation root for
+            # the pointed-to object exists in this function — the adequate
+            # `gc_alloc_obj(…, i64 24, …)` lives in the CALLER. So no local
+            # predicate can establish the extent, and this arm does not pretend
+            # to. Enforcement is deferred to BennettVM's out-of-reservation
+            # bounds check, bead `bennettvm-pdqx`. NOTE, precisely: that check
+            # rejects accesses landing outside ALL live reservations; it does
+            # NOT reject a store that clobbers an ADJACENT live allocation
+            # (measured — the arena/stack membership predicate admits both cells
+            # of every one of the D1 repros). Closing THAT class needs pointer
+            # provenance, which neither repo has. Tracked as a residual.
+            (tcells >= 0 && tcells < length(fw_p06b)) && _ir_error(inst,
+                "aggregate store target reserves only $(tcells) 64-bit cell(s) " *
+                "but the decomposition of $(string(vt)) writes " *
+                "$(length(fw_p06b)) — the surplus cells belong to the NEXT " *
+                "allocation and would be silently CLOBBERED (executed witness: " *
+                "an `alloca i64` / `malloc(8)` receiving a 2-field store " *
+                "overwrote its neighbour, EXPECTED 999 ACTUAL 42, no error). A " *
+                "capacity of 0 means the reservation is not a compile-time " *
+                "constant (a runtime `alloca` count or a non-constant allocator " *
+                "size) or is not word-granular (e.g. `[K x i8]` reserves BYTE " *
+                "cells), neither of which is a static capacity proof. " *
+                "(Bennett-p06b, predicate `_p06b_alloca_cells` / " *
+                "`_p06b_call_bytes`)")
+            # (P5) Cell-granularity agreement across the target's other
+            # address-forming uses — the CW-D4 / 9n3y split guard.
+            gviol = _p06b_granularity_violation(ptr, vt)
+            gviol === nothing || _ir_error(inst,
+                "aggregate store target is addressed at BOTH the WORD " *
+                "granularity of this store's struct fields (cell stride 8 " *
+                "bytes) and an incompatible granularity, via $(gviol). " *
+                "BennettVM recovers a cell as `offset_bytes ÷ (elem_width ÷ " *
+                "8)`, so the same byte offset would map to two different VM " *
+                "cells (the CW-D4 / bennettvm-9n3y split). Refusing to WRITE " *
+                "a whole aggregate through one of two disagreeing cell maps. " *
+                "(Bennett-p06b, predicate `_p06b_granularity_violation` / " *
+                "`_p06b_alias_group`)")
+            # (P6) The value must be an `insertvalue` INSTRUCTION. This is
+            # forced by BennettVM's own contract, not by taste: ingest fails
+            # loud unless an `IRExtractValue.agg` names a value in `agg_dests`,
+            # which is populated from `IRInsertValue.dest` (BennettVM
+            # `src/ir/ingest.jl`, bead `bennettvm-acq`). A `zeroinitializer`
+            # resolves to the ZeroAggSentinel (explicitly rejected there); a
+            # `load {ptr,ptr}` is SILENTLY SKIPPED by the load arm while its
+            # dest name stays registered, so it would name a never-built slot
+            # family; `undef`/`poison` have no value a reversible VM could
+            # invent and later restore. Rule 1: fail at the earliest point that
+            # knows why, in the repo that owns the reason.
+            (val isa LLVM.Instruction &&
+             LLVM.opcode(val) == LLVM.API.LLVMInsertValue) || _ir_error(inst,
+                "aggregate store value $(val) is not an `insertvalue` " *
+                "instruction. The decomposition reads each field with " *
+                "`IRExtractValue`, whose aggregate MUST name a value in " *
+                "BennettVM's `agg_dests` registry — populated ONLY from " *
+                "`IRInsertValue.dest` (bead `bennettvm-acq`). A " *
+                "`zeroinitializer` / `undef` / `load`-produced aggregate has " *
+                "no per-slot family, and a reversible VM cannot invent a " *
+                "field value it could not later restore. (Bennett-p06b, " *
+                "predicate: the `LLVMInsertValue` opcode test above)")
+            # (P6') D4 — ... and so must its whole CHAIN, down to the root.
+            # Checking only the outermost link admitted
+            # `insertvalue (load {ptr,ptr}), …`: `IRInsertValue` has no
+            # `agg_dests` membership guard on the ingest side (only
+            # `IRExtractValue` does), so that chain died as a CONTEXTLESS
+            # KeyError in the WRONG repo.
+            let croot = _p06b_agg_chain_root_violation(val)
+                croot === nothing || _ir_error(inst,
+                    "aggregate store value $(val) heads an `insertvalue` chain " *
+                    "whose ROOT is not certified: it bottoms out in $(croot). " *
+                    "Only a `zeroinitializer` / `undef` / `poison` root is " *
+                    "admitted — a root BennettVM's `agg_dests` never registers " *
+                    "gives the chain no per-slot family, and `IRInsertValue` " *
+                    "(unlike `IRExtractValue`) has NO membership guard at " *
+                    "ingest, so the failure would surface as a contextless " *
+                    "KeyError in the BennettVM repo instead of here. " *
+                    "(Bennett-p06b, predicate " *
+                    "`_p06b_agg_chain_root_violation`)")
+            end
+            # EMIT: field-ascending extract → offset → store triples. Every
+            # constructor call is byte-identical IN FORM to the arm that
+            # already emits it (`instructions.jl` extractvalue arm / D4 GEP arm
+            # / D3 store arm), which is what makes cell agreement a syntactic
+            # identity rather than a claim about two code paths.
+            base_p06b = ssa(names[ptr.ref])
+            agg_p06b = _operand(val, names)
+            out_p06b = IRInst[]
+            for k in 0:(length(fw_p06b) - 1)
+                fname = _auto_name(counter)
+                push!(out_p06b, IRExtractValue(fname, agg_p06b, k,
+                                               0, length(fw_p06b), fw_p06b))
+                aname = _auto_name(counter)
+                push!(out_p06b, IRPtrOffset(aname, base_p06b, offs_p06b[k + 1], 64))
+                push!(out_p06b, IRStore(ssa(aname), ssa(fname), 64))
+            end
+            return out_p06b
+        end
         # Bennett-lgzx / U114: was `vt isa LLVM.IntegerType || return nothing`
         # — silent drop violated CLAUDE.md §1. Error loud with the
         # actual stored-value type so the user can debug.
@@ -4628,57 +5426,20 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
     # n_elems is :const if the operand is a ConstantInt, else :ssa (dynamic —
     # lowering currently rejects :ssa).
     if opc == LLVM.API.LLVMAlloca
-        elem_ty = LLVM.LLVMType(LLVM.API.LLVMGetAllocatedType(inst.ref))
-        # Bennett-munq (2026-05-03) accepted `[K x i8]` ArrayType allocas
-        # alongside `iN` IntegerType, mapping `alloca [K x i8]` to
-        # `IRAlloca(dest, elem_w=8, n_elems=K)`. Bennett-ixiz (2026-05-16)
-        # lifted the `LLVM.width(inner) == 8` gate to accept any integer
-        # inner width, e.g. `[K x i16]` → `IRAlloca(_, 16, iconst(K))`.
-        # Nested ArrayType (`[K x [M x i8]]`) is still silently dropped
-        # because the inner of a nested ArrayType is itself ArrayType,
-        # not IntegerType (the `inner isa LLVM.IntegerType` guard rejects
-        # the nested case). Future-deferred to Bennett-8bys catch-all.
-        if elem_ty isa LLVM.ArrayType
-            inner = LLVM.eltype(elem_ty)
-            inner isa LLVM.IntegerType || return nothing
-            n_arr = LLVM.length(elem_ty)
-            return IRAlloca(dest, LLVM.width(inner), iconst(n_arr))
-        end
-        # BVM ADR 0020 D5c (CW-C2 chunk C): `alloca ptr` under the C-track gate.
-        # The C local-pointer idiom is `%t.addr = alloca ptr; store ptr %t, ptr
-        # %t.addr` — a one-cell slot holding a pointer VALUE. Without this arm
-        # the extractor returns `nothing` for the pointer-typed alloca (the
-        # silent-skip below), so the matching `store ptr`/`load ptr` (D3) would
-        # target a dest with NO prior `IRAlloca` and BVM would see a store to an
-        # unallocated cell (worklog-079 / the Bennett-haiy chunk-C assumption).
-        # Emit `IRAlloca(dest, 64, 1)` — exactly one 64-bit cell (a pointer is
-        # one Int64 VM cell, ADR 0018 §A). An `alloca ptr, i32 N` (a pointer
-        # ARRAY) carries the constant/SSA count through the same `n_elems_op`
-        # logic as the integer arm. Gate-off: a pointer-typed alloca keeps the
-        # pre-existing silent-skip (`return nothing`) — the C cell model never
-        # aliases the circuit/:heap alloca paths.
-        if ptr_cells && elem_ty isa LLVM.PointerType
-            ops = LLVM.operands(inst)
-            n_elems_op = if !isempty(ops) && ops[1] isa LLVM.ConstantInt
-                iconst(_const_int_as_int(ops[1]))
-            elseif !isempty(ops) && haskey(names, ops[1].ref)
-                ssa(names[ops[1].ref])
-            else
-                iconst(1)
-            end
-            return IRAlloca(dest, 64, n_elems_op)
-        end
-        elem_ty isa LLVM.IntegerType || return nothing
-        elem_w = LLVM.width(elem_ty)
-        ops = LLVM.operands(inst)
-        n_elems_op = if !isempty(ops) && ops[1] isa LLVM.ConstantInt
-            iconst(_const_int_as_int(ops[1]))
-        elseif !isempty(ops) && haskey(names, ops[1].ref)
-            ssa(names[ops[1].ref])
-        else
-            iconst(1)  # scalar alloca with no explicit count
-        end
-        return IRAlloca(dest, elem_w, n_elems_op)
+        # Bennett-p06b: the whole reservation decision lives in ONE place,
+        # `_alloca_reservation`, which p06b's target certification also calls.
+        # PROVABLY BEHAVIOUR-PRESERVING vs the pre-p06b arm: the helper is that
+        # arm's own branch logic verbatim (Bennett-munq / Bennett-ixiz ArrayType
+        # mapping with the count operand discarded; the ADR 0020 D5c gated
+        # `alloca ptr` -> 64; the integer case), and every type it returns
+        # `nothing` for already fell through to a `return nothing`.
+        # SHARING rather than mirroring is load-bearing: the mirror this
+        # replaced drifted on the ArrayType count operand and produced a silent
+        # clobber (hostile review N1). The arm's own under-reservation for
+        # `alloca [K x iM], i32 N` is Bennett-uiqq, deliberately NOT fixed here.
+        r_alloca = _alloca_reservation(inst, names, ptr_cells)
+        r_alloca === nothing && return nothing
+        return IRAlloca(dest, r_alloca[1], r_alloca[2])
     end
 
     # Bennett-3ptu — CW-D2 lever: DROP `fence` under the closed-world / BennettVM

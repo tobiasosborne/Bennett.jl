@@ -633,8 +633,30 @@ runfile("test_vau9_variable_memmove.jl")
 # is TYPE-based, hence launderable through a coercion); the source whitelist is
 # what excludes the Bennett-cc0 M2b width-0 `phi`/`select` sentinel. 583s-rooted
 # sources stay on the 583s arm. ptr_cells=false ⇒ no arm ⇒ circuit path
-# byte-identical. push! now advances to the U114/lgzx `store {ptr,ptr}` wall.
+# byte-identical. push! advanced to the U114/lgzx `store {ptr,ptr}` wall, which
+# Bennett-p06b (below) has since cleared.
 runfile("test_jbko_ptr_identity_icmp.jl")
+# Bennett-p06b / CW-D (ADR 0017) — the `MemoryRef` write-back whole-aggregate
+# store (`_growend!` %L93, xkl frontier wall 6). Under `ptr_cells` a
+# `store <S> %agg, ptr %p` with S an unpacked StructType of N 64-bit fields
+# decomposes into, per field k, IRExtractValue + IRPtrOffset(offsetof(S,k), 64)
+# + IRStore(_, _, 64) — EXACTLY the field-wise spelling the 6bu3 extractvalue
+# arm, the ADR 0020 D4 struct-GEP arm and the ares/beaw `store ptr` arm already
+# admit, so cell agreement with the read side is a syntactic identity. EIGHT
+# predicates fail loud: the LITERAL {i64,ptr} GenericMemory header (byte-granular
+# under CW-D4/9n3y); the reused 6bu3 field surface; sub-cell/padded layouts; an
+# unregistered target (p06b-named, NOT the lgzx text — the wall markers use that
+# bead as a load-bearing negative); a target that is not a CERTIFIED,
+# non-SUPPRESSED cell pointer (registration is NOT enough — `alloca {ptr,ptr}`
+# emits no IRAlloca, and `julia.gc_alloc_obj` is BYTE-granular in BVM); a target
+# without a CERTIFIED >= N-cell reservation; a target with a
+# CONFLICTING-granularity use, scanned across sibling re-loads under a canonical
+# slot key; and a value whose `insertvalue` CHAIN ROOT is not a constant
+# aggregate (BVM's `agg_dests` contract). Residual, disclosed not closed:
+# `:load` targets have no static capacity proof (Bennett-khb2).
+# ptr_cells=false ⇒ no arm ⇒ the lgzx/U114 reject byte-identical. push! now
+# advances to the %idxend41 Bennett-583s ptrtoint wall (bead Bennett-foz5).
+runfile("test_p06b_aggregate_store.jl")
 # Bennett-jfw6: mem=:vm Case A Vector/GenericMemory extraction recognizer (shape + fail-loud matrix).
 runfile("test_jfw6_vec_vm_extract.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message

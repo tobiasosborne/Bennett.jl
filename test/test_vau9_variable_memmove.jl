@@ -228,7 +228,7 @@ end
 
     # ======================================================================
     # (g) THE ADVANCEMENT PIN — the push! closed-world set walks PAST memmove
-    #     and lands on the Bennett-lgzx / U114 whole-struct-store wall.
+    #     and lands on the Bennett-583s `%idxend41` ptrtoint wall.
     #
     #     Version-observational (the test_lf14 / test_40ys wall-marker
     #     convention). When the NEXT bead lands this goes RED — that is the
@@ -240,13 +240,24 @@ end
     #     the one that actually tracked. The `%L84`
     #     `ptrtoint ptr %.ref.ptr_or_offset to i64` is the `MemoryRef`
     #     concurrent-mutation guard and is now ADMITTED as a use-scoped
-    #     width-64 cell identity. The closure walks past `%L84` and past the
-    #     utzc-pruned `%L90` throw arm, and dies in `%L93` on the LIVE
-    #     whole-struct `store { ptr, ptr } %memory_ref15, ptr %1`
-    #     (Bennett-lgzx / U114). MEASURED — and it corrects the jbko bead's own
-    #     forecast, which predicted an 8-byte sret-reassembly memcpy next.
+    #     width-64 cell identity.
+    #
+    #     ADVANCED AGAIN by Bennett-p06b (2026-08-06): the `%L93` LIVE
+    #     whole-struct `store { ptr, ptr }` (the `MemoryRef` write-back) is now
+    #     DECOMPOSED into per-field cell stores, so the lgzx / U114 disjunct is
+    #     GONE too. MEASURED: the closure now dies in `%idxend41` on
+    #     `ptrtoint ptr %memory_data53 to i64` — a GenericMemory `.data`-base
+    #     coercion whose root `_memdata_root` does not recognise, i.e.
+    #     Bennett-583s, tracked as bead Bennett-foz5 (xkl wall 7).
+    #
+    #     NOTE ON THE NEGATIVES (Bennett-0ncn): the blanket
+    #     `!occursin("ptrtoint", msg)` that jbko added is RETIRED — the
+    #     SUCCESSOR wall message itself contains the word `ptrtoint`, so an
+    #     opcode-scoped negative is no longer expressible. It is replaced by
+    #     ARM-scoped negatives (`Bennett-iwo9`, `type-tag`), which are what
+    #     jbko actually cleared, plus the NEW load-bearing p06b negatives.
     # ======================================================================
-    @testset "(g) push! set advances PAST memmove to the lgzx store wall" begin
+    @testset "(g) push! set advances PAST memmove to the 583s ptrtoint wall" begin
         before = lock(Bennett._known_callees_lock) do
             copy(Bennett._known_callees)
         end
@@ -268,17 +279,26 @@ end
                 @test !occursin("memmove", msg)
                 @test !occursin("not yet lowered to reversible gates", msg)
                 # LOAD-BEARING NEGATIVE: the `%L84` ptrtoint wall is CLEARED
-                # by Bennett-jbko. Without these the disjunction below would
-                # not notice a re-open (the Bennett-0ncn lesson).
+                # by Bennett-jbko. NARROWED from the blanket
+                # `!occursin("ptrtoint")` because the SUCCESSOR wall is ITSELF
+                # a ptrtoint reject — scope the negative to the ARM that was
+                # cleared, not to the opcode (the Bennett-0ncn lesson).
                 @test !occursin("Bennett-iwo9", msg)
-                @test !occursin("ptrtoint", msg)
-                # POSITIVE: the NEW wall is the LIVE whole-struct
-                # `store { ptr, ptr }` in `_growend!`'s %L93 (Bennett-lgzx /
-                # U114). Kept as a disjunction because WHICH body of the set
-                # fails first is registration/iteration order, not a contract.
-                @test occursin("Bennett-lgzx", msg) ||
-                      occursin("U114", msg) ||
-                      occursin("store of non-integer type", msg) ||
+                @test !occursin("type-tag", msg)
+                # LOAD-BEARING NEGATIVE: the `%L93` whole-struct store wall is
+                # CLEARED by Bennett-p06b. These are the new load-bearing half.
+                @test !occursin("Bennett-lgzx", msg)
+                @test !occursin("store of non-integer type", msg)
+                # ... and p06b's OWN rejects did NOT fire: the corpus store was
+                # ADMITTED, not re-rejected under a new name.
+                @test !occursin("Bennett-p06b", msg)
+                # POSITIVE: the NEW wall is the `%idxend41` GenericMemory
+                # `.data`-base ptrtoint (Bennett-583s, bead Bennett-foz5).
+                # Kept as a disjunction because WHICH body of the set fails
+                # first is registration/iteration order, not a contract.
+                @test occursin("Bennett-583s", msg) ||
+                      occursin("base-cancelling", msg) ||
+                      occursin("Bennett-foz5", msg) ||
                       occursin("Bennett-5oyt", msg) || occursin("U15", msg)
                 # the closure key is still named (the 40ys instance-less arm)
                 @test occursin("_growend!", msg)

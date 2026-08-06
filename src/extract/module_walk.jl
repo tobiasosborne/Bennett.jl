@@ -427,6 +427,18 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
 
     # Convert blocks (second pass)
     blocks = IRBasicBlock[]
+    # Bennett-p06b D1b: the EXACT set of refs the emission loop below
+    # `continue`s past. `module_walk.jl` names every instruction in the first
+    # pass, but a suppressed one produces NO IRInst — so "registered SSA name"
+    # is not evidence that a cell was ever materialised. p06b's aggregate-store
+    # target certification consults this set rather than re-deriving what the
+    # alloca arm *would* do in isolation (hostile-review defect D1b).
+    _p06b_suppressed_refs = Set{_LLVMRef}()
+    if sret_writes !== nothing
+        union!(_p06b_suppressed_refs, sret_writes.suppressed)
+        union!(_p06b_suppressed_refs, sret_writes.call_return_suppressed)
+    end
+    union!(_p06b_suppressed_refs, consumed_sret.suppressed)
     for bb in LLVM.blocks(func)
         label = Symbol(LLVM.name(bb))
 
@@ -579,6 +591,12 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
                                      synth_ptr_provenance=synth_ptr_provenance,
                                      synth_ptr_allocas=synth_ptr_allocas,
                                      ptr_cells=ptr_cells,
+                                     # Bennett-p06b D1b: exactly the refs this
+                                     # loop `continue`s past above. A named but
+                                     # never-emitted instruction is not a
+                                     # materialised cell, so p06b's target
+                                     # certification must see this set.
+                                     suppressed_refs=_p06b_suppressed_refs,
                                      tag_ids=tag_ids,
                                      tag_ssa=tag_ssa,
                                      # Bennett-3vf2 / CW-D: the dead-use drop
