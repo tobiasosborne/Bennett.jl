@@ -301,24 +301,31 @@ end
                 #     retired `occursin("_growend!")` positive as the negative's
                 #     scope term, so nothing is thrown away.
                 @test !(occursin("Bennett-p06b", msg) && occursin("_growend!", msg))
-                #   * DISCRIMINATOR — fails LOUD if the p06b reject SHAPE drifts:
-                #     the only p06b reject tolerated here is the byte-granular
-                #     `gc_alloc_obj` target refusal. A p06b re-rejection of
-                #     `%L93` under a new name turns this red even in the root
-                #     body, which the body-scoped form alone would not catch.
-                @test !occursin("Bennett-p06b", msg) || occursin("gc_alloc_obj", msg)
+                #   * DISCRIMINATOR, INVERTED by Bennett-bvmd (xkl wall 8).
+                #     Pre-bvmd the only p06b reject tolerated here was the
+                #     byte-granular `gc_alloc_obj` target refusal; bvmd ADMITS
+                #     that tier at `elem_width = 8`, so a p06b reject naming
+                #     `gc_alloc_obj` is now the REGRESSION. This still turns red
+                #     on a p06b re-rejection of `%L93` under any name, which the
+                #     body-scoped form alone would not catch.
+                @test !(occursin("Bennett-p06b", msg) &&
+                        occursin("gc_alloc_obj", msg))
+                #   * and (P5) must not be the new wall — a (P4b)-only widening
+                #     would move the reject there and clear nothing (scout §5).
+                @test !occursin("BYTE-granular getelementptr", msg)
                 # LOAD-BEARING NEGATIVE: wall 7 — the `%idxend41` memdata bounds
                 # cluster — is CLEARED by Bennett-foz5 (ADR 0017 §4a).
+                # MEASURED still-true at wall 9 (Bennett-bvmd).
                 @test !occursin("Bennett-583s", msg)
                 @test !occursin("base-cancelling", msg)
-                # POSITIVE: the NEW wall is wall 8 (Bennett-bvmd) — the ROOT
-                # body's `julia.gc_alloc_obj`-backed aggregate-store target,
-                # refused because BennettVM stamps that tier BYTE-granular
-                # (CW-D4 / bennettvm-9n3y). Kept as a disjunction because WHICH
-                # body of the set fails first is registration/iteration order,
-                # not a contract. Non-numeral anchors only (Bennett-0ncn: a bare
-                # numeral can false-match a future bead tag).
-                @test occursin("gc_alloc_obj", msg) || occursin("BYTE-granular", msg)
+                # POSITIVE, ADVANCED by Bennett-bvmd: the NEW wall is wall 9 —
+                # the ROOT body's arena-src memcpy, whose src operand is not
+                # alloca-backed (Bennett-37mt Phase 1 / Bennett-8bys). Kept as a
+                # disjunction because WHICH body of the set fails first is
+                # registration/iteration order, not a contract. Non-numeral
+                # anchors only (Bennett-0ncn: a bare numeral can false-match a
+                # future bead tag).
+                @test occursin("memcpy", msg) || occursin("Bennett-37mt", msg)
                 # `occursin("_growend!", msg)` is DROPPED as a POSITIVE: the wall
                 # moved to the ROOT body, so the closure name is legitimately
                 # absent. It survives above as the body-scope term of the p06b

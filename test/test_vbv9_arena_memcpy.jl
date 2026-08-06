@@ -148,17 +148,43 @@ _is_doih_g3_wall(msg) =
             @test count(x -> x isa IRStore && x.width == 8, insts) == 0
 
             # The memcpy emits a fresh dst-GEP IRPtrOffset at offset 0 (the
-            # single 8-byte chunk), elem_width 64 (the arena cell width). There
-            # is also the field-GEP `getelementptr i8 %obj, 24` lowered as its
-            # own IRPtrOffset; assert the memcpy's chunk-0 cell-aligned one is
-            # present (offset 0, elem_width 64).
+            # single 8-byte chunk). There is also the field-GEP
+            # `getelementptr i8 %obj, 24` lowered as its own IRPtrOffset;
+            # assert the memcpy's chunk-0 one is present.
+            #
+            # RE-AUTHORED by Bennett-4y0d / Bennett-bvmd. This used to pin
+            # `elem_width == 64` — the ARENA CELL WIDTH — conflating the width
+            # of the VALUE each store writes (still 64, pinned above) with the
+            # bytes-per-cell SCALE BennettVM divides the byte offset by. The
+            # `julia.gc_alloc_obj` tier is reserved BYTE-granular
+            # (`_alloc_cells(::IntrinsicGCAlloc) = _byte_cells(nb)`), so the
+            # ADDRESS stamp is 8. At K == 1 the only offset is 0, and
+            # `0 ÷ 8 == 0 ÷ 1 == 0` — the CELL is byte-identical, which is
+            # exactly why this pin stayed green over a latent defect (at K == 2
+            # the old stamp put element 1 on cell +1 instead of cell +8;
+            # `test_bvmd_root_scale.jl` (H) is that gate).
             chunk_offs = filter(x -> x isa IRPtrOffset && x.offset_bytes == 0 &&
-                                     x.elem_width == 64, insts)
+                                     x.elem_width == 8, insts)
             @test length(chunk_offs) >= 1
+            # NOTE, deliberately NOT asserted here: "the cell is unchanged".
+            # At K == 1 the only chunk offset is 0 and `0 ÷ k == 0` for every
+            # k, so any such assertion on `chunk_offs` is a TAUTOLOGY (it
+            # filters `offset_bytes == 0` and then divides it). The real
+            # property — that element k of a K >= 2 arena memcpy lands on BYTE
+            # cell 8k rather than word cell k — is unrepresentable in this
+            # K == 1 fixture and is gated in
+            # `test_bvmd_root_scale.jl` (H) instead.
 
             # The dst field-GEP IRPtrOffset (byte offset 24) must be present too
             # (proves the GEP→arena chain was walked, not folded away).
             @test any(x -> x isa IRPtrOffset && x.offset_bytes == 24, insts)
+            # ... and THAT one carries a non-zero offset, so asserting its cell
+            # is load-bearing: the arena tier is BYTE-reserved
+            # (`_alloc_cells(::IntrinsicGCAlloc) = _byte_cells(nb)`), so byte 24
+            # of the object is cell +24, not word cell +3.
+            fld = only(filter(x -> x isa IRPtrOffset && x.offset_bytes == 24, insts))
+            @test fld.elem_width == 8
+            @test fld.offset_bytes ÷ (fld.elem_width ÷ 8) == 24
         end
     end
 

@@ -143,6 +143,501 @@ function _alloca_reservation(inst::LLVM.Instruction,
 end
 
 # ============================================================================
+# Bennett-bvmd / CW-D4 (xkl wall 8) — ROOT SCALE, the bytes-per-cell ratio
+# ============================================================================
+#
+# BennettVM is CELL-addressed: one `Int64` per cell, a pointer IS a cell index,
+# and `IRPtrOffset(dest, base, offset_bytes, elem_width)` lowers to
+#
+#     Define(dest, base, :add, offset_bytes ÷ (elem_width ÷ 8))
+#
+# (`BennettVM/src/ir/ingest_body.jl:534`). So `elem_width` is NOT a type width in
+# the cell model — it is exactly the object's BYTES-PER-CELL SCALE. An object's
+# cell map is therefore fixed by two numbers: the scale its addresses use, and
+# the number of cells its allocation reserved. Both are already determined, per
+# allocation shape, by BennettVM code that SHIPS TODAY:
+#
+#   | root shape                   | scale | cap      | authority (verified)      |
+#   |------------------------------|-------|----------|---------------------------|
+#   | `IRAlloca(d, ew, n)`         | ew÷8  | n        | `_lower_alloca!` reserves |
+#   |                              |       |          | `n` cells; its docstring  |
+#   |                              |       |          | states "`elem_width` (in  |
+#   |                              |       |          | bits) does NOT enter the  |
+#   |                              |       |          | address" (ingest_body.jl  |
+#   |                              |       |          | :581-586)                 |
+#   | `julia.gc_alloc_obj(_,nb,_)` | **1** | nb       | `_alloc_cells(::Intrinsic |
+#   |                              |       |          | GCAlloc) = _byte_cells(nb)|
+#   |                              |       |          | ` (intrinsics.jl:256-257) |
+#   | `malloc`/`calloc`/`realloc`  | **8** | nb÷8     | `_alloc_cells(::Intrinsic |
+#   |                              |       |          | Malloc) = _cell_count(nb)`|
+#   |                              |       |          | (intrinsics.jl:246)       |
+#   | param / global / phi / load  | UNKNOWN          | no reservation exists IN  |
+#   |                              |       |          | THIS FUNCTION             |
+#
+#   **(SC) — the scale-coherence invariant.** For every pointer root `R` whose
+#   scale is KNOWN, every `IRPtrOffset` / `IRVarGEP` derived from `R` must carry
+#   `elem_width == 8 · scale(R)`.
+#
+# (SC) is NOT an invented tier tag. The extractor does not DECIDE a granularity;
+# it READS the ratio off the same allocator table BVM's `_alloc_cells`
+# implements — the same "shared, never mirrored" discipline `_alloca_reservation`
+# already enforces between the alloca arm and `_p06b_alloca_cells` (whose mirror
+# drifted and produced a silent clobber, hostile review N1).
+#
+# (SC) subsumes the whole granularity discipline as ONE sentence: wall 8's
+# byte-stamped admission, the CW-D4 class-D split (`gep i8 %obj, 8` → cell +8 vs
+# `gep {ptr,ptr} %obj, 0, 1` → cell +1, SIX such loads on one object in the push!
+# ROOT), `Bennett-z2ia` (a byte GEP past a word-tier alloca reservation),
+# `Bennett-4y0d` (a K≥2 arena memcpy), and `bennettvm-jb6w` (the clang
+# register-coercion spill) are all instances of it.
+#
+# ENFORCEMENT IS TWO-LAYERED, and the layers are deliberately different in kind:
+#
+#   1. A SHARED STAMP at the sites that CHOOSE an `elem_width` (the D4 two-index
+#      struct-GEP arm, the p06b decomposition's emission and its (P5) scan, the
+#      vbv9 arena-memcpy dst). Because checker and emitter call ONE function,
+#      their agreement is a lemma rather than a review obligation.
+#   2. A STREAM CHECK (`_check_scale_coherence!`, module_walk.jl) over the
+#      EMITTED node list. (SC) is a property of the emitted stream, so ONE check
+#      covers all NINE `IRPtrOffset` construction sites — including the six
+#      (`heap.jl` ×2, `vectors.jl`, `instructions.jl`'s memcpy/memset/lane arms)
+#      that this arc does not touch and nobody has audited — without a nine-site
+#      patch. It runs AFTER every instruction in the function has converted, so
+#      any in-conversion fail-loud still wins and no existing message territory
+#      moves.
+#
+# Layer 1 alone drifts; layer 2 alone cannot pick the right stamp. Both.
+#
+# GATED ON `ptr_cells`. MEASURED, not reasoned: on the circuit path `elem_width`
+# is inert (the gate backend ignores the field — see `test_vz5n`'s own comment),
+# and an ungated guard fires on green circuit-path programs.
+
+# Depth bound shared with `_alloca_root_ref` / `_gc_alloc_root_ref` /
+# `_param_ptr_root_ref` — this walker introduces no new recursion SHAPE, only a
+# different bottom-out predicate (LLVM does not nest GEPs > 2 in practice).
+const _BVMD_ROOT_DEPTH = 8
+
+"""
+    _root_scale(val, names, ptr_cells, depth=0)
+        -> Union{Nothing, Tuple{Int, Int, String}}
+
+Bennett-bvmd: the scale (BYTES PER CELL) and capacity (IN THOSE CELLS) of the
+allocation `val` is derived from, or `nothing` when no allocation root exists in
+this function (a pointer parameter, a global, a `phi`/`select` pointer, a value
+loaded from memory, `julia.gc_loaded`, …).
+
+Returns `(scale_bytes, cap_cells, description)`. `cap_cells == -1` means the
+reservation is not a compile-time constant — the SCALE is still known and (SC)
+still applies; only the capacity half is unprovable.
+
+Walks the constant-GEP producer chain exactly as `_gc_alloc_root_ref` does
+(`gep_ops[1]` base step, depth-8 bound). Every row of the table above is read
+from a BennettVM authority, never invented here; the `alloca` row goes through
+`_alloca_reservation`, the SINGLE SOURCE OF TRUTH the alloca arm itself uses, so
+this walker cannot drift from what is actually reserved.
+"""
+function _root_scale(val::LLVM.Value, names::Dict{_LLVMRef, Symbol},
+                     ptr_cells::Bool, depth::Int=0)
+    depth > _BVMD_ROOT_DEPTH && return nothing
+    val.ref == C_NULL && return nothing
+    val isa LLVM.Instruction || return nothing
+    opc = LLVM.opcode(val)
+    if opc == LLVM.API.LLVMAlloca
+        r = _alloca_reservation(val, names, ptr_cells)
+        # An alloca whose allocated type the arm SILENTLY SKIPS reserves
+        # nothing, so there is no scale to be coherent with.
+        r === nothing && return nothing
+        ew, nop = r
+        (ew >= 8 && ew % 8 == 0) || return nothing
+        cap = nop isa ConstOperand ? Int(nop.value) : -1
+        return (ew ÷ 8, cap,
+                "an `alloca` reservation of " *
+                (cap < 0 ? "a RUNTIME number of" : string(cap)) * " cell(s)")
+    elseif opc == LLVM.API.LLVMCall
+        cops = LLVM.operands(val)
+        n = length(cops)
+        n >= 1 || return nothing
+        cn = try
+            LLVM.name(cops[n])
+        catch e
+            e isa InterruptException && rethrow()
+            return nothing
+        end
+        if cn == "julia.gc_alloc_obj"
+            # `_alloc_cells(::IntrinsicGCAlloc) = _byte_cells(nbytes)`: ONE cell
+            # per BYTE address, with a 64-bit value living in exactly one cell at
+            # its base byte address (cells +1…+7 are never named). The convention
+            # already shipped by bennettvm-416r.13, 9n3y and vbv9.
+            nb = (n >= 3 && cops[2] isa LLVM.ConstantInt) ?
+                 Int(_const_int_as_int(cops[2])) : -1
+            return (1, nb,
+                    "a `julia.gc_alloc_obj` BYTE-cell reservation of " *
+                    (nb < 0 ? "a RUNTIME number of" : string(nb)) * " cell(s)")
+        elseif cn in _M4_C_ALLOCATOR_NAMES
+            b = _p06b_call_bytes(val)
+            return (8, b < 0 ? -1 : b ÷ 8,
+                    "a `$(cn)` WORD-cell reservation of " *
+                    (b < 0 ? "a RUNTIME number of" : string(b ÷ 8)) * " cell(s)")
+        end
+        return nothing
+    elseif opc == LLVM.API.LLVMGetElementPtr
+        gops = LLVM.operands(val)
+        length(gops) >= 1 || return nothing
+        return _root_scale(gops[1], names, ptr_cells, depth + 1)
+    end
+    return nothing
+end
+
+"""
+    _cell_elem_width_struct_gep(base, src_type, names, ptr_cells) -> 8 | 64
+
+Bennett-bvmd: the SHARED stamp for the BVM ADR 0020 D4 two-index struct GEP and
+for every predicate that must agree with it (p06b's (P5) scan and its
+decomposition emission). Provenance where it is PROVEN, the shipped
+`_is_genericmemory_header_struct` TYPE predicate where the root is unknown.
+
+**The union is load-bearing in BOTH directions, and the ORDER matters.**
+
+  * Provenance FIRST. A `malloc(16)` object addressed by
+    `gep {i64,ptr}, ptr %p, 0, 1` is a literal `{i64,ptr}` — the type predicate
+    would stamp 8 and send the field to cell +8, which is OUTSIDE the 2-cell
+    word reservation `_alloc_cells(::IntrinsicMalloc)` makes. The reservation,
+    not the type spelling, is what fixes the cell map, so where a reservation is
+    proven it WINS.
+  * Type predicate as the FALLBACK, never as a replacement. The
+    bennettvm-416r.13 singleton headers are `load ptr, ptr @"jl_global#N"` — a
+    GLOBAL, with NO allocation root in this function, so provenance is silent
+    there. A provenance-ONLY rule would silently demote those headers to word
+    granularity and break the shipped `length@byte-cell 0 / data-ptr@byte-cell 8`
+    layout: a silent miscompile. `test_bvmd_root_scale.jl` (C) is that control.
+
+The C tier is byte-identical BY CONSTRUCTION: for `malloc`/`alloca` the scale is
+8, so `8·scale == 64` — precisely the stamp those arms already emit.
+"""
+function _cell_elem_width_struct_gep(base::LLVM.Value, src_type,
+                                     names::Dict{_LLVMRef, Symbol},
+                                     ptr_cells::Bool)::Int
+    rs = _root_scale(base, names, ptr_cells)
+    rs === nothing && return _is_genericmemory_header_struct(src_type) ? 8 : 64
+    return 8 * rs[1]
+end
+
+"""
+    _const_gep_stamp(gepval) -> Union{Nothing, Int}
+
+Bennett-bvmd: the `elem_width` the SINGLE-INDEX constant GEP arm emits for
+`gepval`, computed by the arm's own rule (source element bit width for an
+integer source type, else the legacy raw-index unit of 8 — Bennett-vz5n / U12,
+Bennett-qal5 / U16). Used by p06b's (P5) so the scan compares against what is
+ACTUALLY emitted rather than re-deriving a granularity.
+
+Returns `nothing` for a shape the arm does not emit an `IRPtrOffset` for.
+"""
+# The allocation-root REF of a pointer value (the const-GEP chain's bottom),
+# used only to test membership of the module walk's `suppressed` set. Mirrors
+# `_root_scale`'s recursion; kept separate so `_root_scale`'s signature stays
+# the shared one the stamp sites call.
+function _bvmd_root_ref(val::LLVM.Value, depth::Int=0)::Union{Nothing,_LLVMRef}
+    depth > _BVMD_ROOT_DEPTH && return nothing
+    val.ref == C_NULL && return nothing
+    val isa LLVM.Instruction || return nothing
+    if LLVM.opcode(val) == LLVM.API.LLVMGetElementPtr
+        gops = LLVM.operands(val)
+        length(gops) >= 1 || return nothing
+        return _bvmd_root_ref(gops[1], depth + 1)
+    end
+    return val.ref
+end
+
+"""
+    _check_scale_coherence!(blocks, func, names, ptr_cells, suppressed)
+
+Bennett-bvmd — the **(SC) STREAM CHECK**. Enforces, over the EMITTED node list
+of one function, that every `IRPtrOffset` / `IRVarGEP` whose base traces to an
+allocation root of PROVABLE scale carries `elem_width == 8 · scale(root)`.
+
+WHY A STREAM CHECK AND NOT NINE SITE PATCHES. `IRPtrOffset` is constructed at
+NINE places (`instructions.jl` ×6, `heap.jl` ×2, `vectors.jl`), six of which no
+one has audited for cell granularity. (SC) is a property of the emitted stream,
+so ONE check covers all nine — including sites this arc deliberately does not
+touch — and it keeps covering them when a tenth is added. That is why the guard,
+not the re-stamp, is the drift-proof half of Bennett-bvmd.
+
+WHY IT RUNS AT THE END. Every in-conversion fail-loud (`_ir_error`) is raised
+while an instruction is being converted, i.e. STRICTLY BEFORE this runs. So no
+existing message territory moves: a program that walls at (P1)/(P4b)/(P5)/lgzx/
+37mt still walls there, with the same message. This check can only add a NEW
+loud failure, and only for a program that previously extracted SILENTLY WRONG.
+
+ADMISSION BEFORE REFUSAL — the `Bennett-z2ia` half. A LOUD REFUSAL ALONE IS NOT
+SHIPPABLE, and that is a measured fact, not a preference: Julia codegen
+byte-addresses its own stack frames routinely (`alloca [N x i64]` + `gep i8 …,
+8k`), and at least three live witnesses do it — the push! ROOT's closure env,
+`test_qmv7`'s `gc_loaded` fixtures, and `test_40ys`'s boxed `Pair40ys`, the last
+of which EXTRACTS AND RUNS AND REVERSES ON THE VM TODAY
+(`../BennettVM.jl/test/test_40ys_closure_callee_vm.jl`). Refusing them would
+trade a latent hole for a functional regression.
+
+So before enforcing, this pass RE-STAMPS the accesses it can — see the ADMISSION
+block below for the preconditions and for why re-stamping the ACCESSES rather
+than widening the RESERVATION is the shipped choice (measured: the reservation
+rewrite escapes into the circuit backend and breaks it, the access re-stamp is
+provably invisible there because `lower_ptr_offset!` never reads
+`IRPtrOffset.elem_width`).
+
+A GENUINELY MIXED object — one addressed at two granularities — is re-stamped by
+nothing and REFUSED loudly. That is the case `bennettvm-jb6w` is about, and it is
+the case that was silently miscompiling.
+
+WHAT IT DOES NOT COVER (prose-vs-predicate — stated, not closed):
+  * a root reached only through memory (a pointer stored and re-loaded), a
+    `phi`/`select` pointer, or a `julia.gc_loaded` launder: the walk yields
+    `nothing` and the check is SILENT. Same residual class as
+    `_p06b_alias_group`'s same-slot closure.
+  * CAPACITY. The message REPORTS the reservation size as context, but the
+    predicate tested is scale agreement ALONE. Refusing out-of-reservation
+    accesses in the stream is a strictly larger change (it would fire on the
+    Bennett-uiqq alloca under-reservation, among others) and is left to p06b's
+    (P4c) for stores and to `bennettvm-pdqx` for the VM.
+  * a CALLEE that receives a byte-tier cell and word-addresses it. Out of model;
+    the closed-world check owns it, as it already does for `bennettvm-jb6w`.
+
+GATED ON `ptr_cells`. MEASURED: on the circuit path `IRPtrOffset.elem_width` is
+inert and an ungated guard fires on green circuit-path programs.
+
+**The gate is NOT what protects the circuit backend** — an earlier revision of
+this docstring claimed it was, and that was FALSE: `ptr_cells=true` + `lower()`
+is a live combination in this suite (`test_59zi`, `test_lf14`), so anything this
+pass writes into the ParsedIR reaches the gate path too. What actually protects
+it is the CHOICE OF EDIT: `lower_ptr_offset!` (`src/lowering/aggregate.jl:195-280`)
+slices by `offset_bytes * 8` and bumps the `PtrOrigin` index by
+`div(offset_bytes * 8, ew)` with `ew` taken from `alloca_info` — it never reads
+`IRPtrOffset.elem_width` at all. Re-stamping that field is therefore a no-op
+there, while rewriting the `IRAlloca` was not (measured: it throws in
+`_lower_store_via_shadow!`, store width 64 vs alloca elem_width 8).
+"""
+function _check_scale_coherence!(blocks::Vector{IRBasicBlock},
+                                 func::LLVM.Function,
+                                 names::Dict{_LLVMRef, Symbol},
+                                 ptr_cells::Bool,
+                                 suppressed::Set{_LLVMRef})
+    ptr_cells || return nothing
+    # Reverse the naming table: an emitted node's base is an SSA SYMBOL, and the
+    # root walk needs the LLVM value it was registered from.
+    by_name = Dict{Symbol, LLVM.Value}()
+    for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
+        nm = get(names, inst.ref, nothing)
+        nm === nothing && continue
+        # TIE-BREAK: first registration wins. The naming pass is NOT injective —
+        # the 416r.13 singleton arm at `:5669` DELIBERATELY aliases a `load ptr,
+        # ptr @"jl_global#N"` dest to the global's own name, so several loads can
+        # share one symbol. Every such collider is a ROOTLESS load (a global has
+        # no allocation root in this function), so `_root_scale` returns `nothing`
+        # for all of them and the arbitrary pick is harmless FOR THAT CLASS. It
+        # would not be harmless for a collider with differing roots; no such
+        # aliasing exists today.
+        haskey(by_name, nm) || (by_name[nm] = inst)
+    end
+
+    # ---- resolve every offset node to its allocation root, once ----
+    # `resolved[i] = (node, blk, idx, root_ref, scale, cap, what, raw)`.
+    # `raw` marks the RAW-INDEX node class: a 2-op GEP whose source element type
+    # is NOT an integer emits `IRPtrOffset(dest, base, RAW_INDEX, 8)` — the
+    # legacy U16 branch (`instructions.jl:4810-4815`), where `offset_bytes` is
+    # NOT a byte offset at all and `8` is a placeholder unit, not a granularity.
+    # (SC) is UNEVALUABLE on such a node: comparing cells needs a byte offset.
+    # They are therefore excluded from both the re-stamp trigger and the
+    # enforcement rather than acted on with a meaningless number. The underlying
+    # raw-index blind spot is pre-existing and separately filed.
+    resolved = Tuple{IRInst, IRBasicBlock, Int, Union{Nothing,_LLVMRef},
+                     Int, Int, String, Bool}[]
+    for blk in blocks, (idx, node) in enumerate(blk.instructions)
+        (node isa IRPtrOffset || node isa IRVarGEP) || continue
+        base_op = node.base
+        base_op isa SSAOperand || continue
+        bv = get(by_name, base_op.name, nothing)
+        bv === nothing && continue
+        rroot = _bvmd_root_ref(bv)
+        # A SUPPRESSED root (an sret / consumed-sret box alloca) reserves
+        # nothing — `module_walk.jl` emits no `IRAlloca` for it — so there is no
+        # cell map for these nodes to be coherent with. Same exemption p06b's
+        # (P4b') makes.
+        (rroot !== nothing && rroot in suppressed) && continue
+        rs = _root_scale(bv, names, ptr_cells)
+        rs === nothing && continue
+        raw = let gv = get(by_name, node.dest, nothing)
+            gv !== nothing && gv isa LLVM.Instruction &&
+            LLVM.opcode(gv) == LLVM.API.LLVMGetElementPtr &&
+            length(LLVM.operands(gv)) == 2 &&
+            !(LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(gv.ref))
+              isa LLVM.IntegerType)
+        end
+        push!(resolved, (node, blk, idx, rroot, rs[1], rs[2], rs[3], raw))
+    end
+
+    # ---- ADMISSION: use-directed BYTE-NORMALISATION of the RESERVATION ----
+    #
+    # The object is byte-addressed by Julia codegen but word-RESERVED by the
+    # alloca arm. Two ways to make one cell map out of that. **Both were built
+    # and measured; the reservation widening is the one that is SOUND.**
+    #
+    #   (a) widen the RESERVATION (`IRAlloca(d,64,n) → (d,8,8n)`). SHIPPED.
+    #       Expressible with ZERO BennettVM change (`_lower_alloca!` reserves
+    #       `n` cells and its docstring states `elem_width` "does NOT enter the
+    #       address"); WIRE-COUNT-NEUTRAL on the gate path
+    #       (`_lower_alloca_const_n!` allocates `elem_width * n` BITS and
+    #       `64·n == 8·8n`); STORAGE-NEUTRAL (`IState.memory` is a sparse Dict).
+    #   (b) re-stamp the ACCESSES to the root's own scale
+    #       (`IRPtrOffset(_,_,off,8) → (_,_,off,8·scale)`). **REJECTED — it is
+    #       NOT CLOSED UNDER FUNCTION BOUNDARIES**, and that is measured, not
+    #       argued. This pass runs PER FUNCTION. In the caller, the box's byte
+    #       GEPs get re-stamped to word cells; in the CALLEE the very same
+    #       object arrives as a pointer PARAMETER, whose scale is UNKNOWN, so
+    #       its byte GEPs are left alone. Caller writes cell +1, callee reads
+    #       cell +8. Executed witness: `Bennett-40ys`'s boxed `Pair40ys`
+    #       caller→callee set returned **30 where the oracle says 42**
+    #       (`../BennettVM.jl/test/test_40ys_closure_callee_vm.jl` gate (g), 28
+    #       assertions). (a) has no such hazard BY CONSTRUCTION: it changes the
+    #       reservation SIZE, never the addressing, so every function that
+    #       byte-addresses the object continues to agree with every other.
+    #
+    # The price of (a) is real and is NOT hidden: a byte-normalised `IRAlloca`
+    # also reaches the CIRCUIT backend (`ptr_cells` is an EXTRACTION flag, and
+    # `ptr_cells=true` + `lower()` is live — test_59zi, test_lf14), where the
+    # shadow-tape store/load path requires `store width == alloca elem_width`.
+    # `lower()` therefore REFUSES such a ParsedIR loudly and by name — see
+    # `_bvmd_reject_normalised_alloca!` in `src/lowering/driver.jl`.
+    #
+    # The rewrite is USE-DIRECTED, never blanket. A blanket byte-normalisation
+    # is unsound: `alloca i32, i32 8` + `gep i32 …, 3` is coherent TODAY at
+    # scale 4 and `alloca i64, i32 4` + `gep i64 …, 2` at scale 8 — both would
+    # BECOME violations under a scale of 1. Preconditions: every node off the
+    # root is byte-stamped and non-raw-index, and at least one genuinely
+    # disagrees. A MIXED object is normalised by nothing and REFUSED loudly —
+    # `bennettvm-jb6w`'s hazard, made loud. `elem_width != 64` allocas (the
+    # typed-array tier) and RUNTIME-count allocas are never touched; dynamic-`n`
+    # would need an emitted `IRBinOp(:mul, n, 8)` and changes `DynAlloca` arity
+    # in BennettVM, so it stays filed on `Bennett-z2ia`.
+    all_byte = Dict{_LLVMRef, Bool}()
+    needs = Dict{_LLVMRef, Bool}()
+    for (node, _blk, _idx, rroot, scale, _cap, _what, raw) in resolved
+        rroot === nothing && continue
+        raw && continue                      # (SC) is unevaluable — see above
+        ew = node.elem_width
+        all_byte[rroot] = get(all_byte, rroot, true) && ew == 8
+        if node isa IRPtrOffset && ew != 8 * scale && ew >= 8 && ew % 8 == 0 &&
+           node.offset_bytes ÷ (ew ÷ 8) != node.offset_bytes ÷ scale
+            needs[rroot] = true
+        end
+    end
+    normalised = Set{_LLVMRef}()
+    for (rroot, ab) in all_byte
+        (ab && get(needs, rroot, false)) || continue
+        rv = LLVM.Value(rroot)
+        LLVM.opcode(rv) == LLVM.API.LLVMAlloca || continue
+        r = _alloca_reservation(rv, names, ptr_cells)
+        r === nothing && continue
+        ew_a, nop = r
+        (ew_a == 64 && nop isa ConstOperand) || continue
+        dname = get(names, rroot, nothing)
+        dname === nothing && continue
+        n_new = 8 * Int(nop.value)
+        hit = false
+        for blk in blocks, (i, nd) in enumerate(blk.instructions)
+            nd isa IRAlloca || continue
+            nd.dest === dname || continue
+            blk.instructions[i] = IRAlloca(dname, 8, iconst(n_new))
+            hit = true
+        end
+        hit && push!(normalised, rroot)
+    end
+
+    # ---- ENFORCEMENT ----
+    for (node, _blk, _idx, rroot, scale0, cap0, what0, raw) in resolved
+        raw && continue                      # (SC) is unevaluable — see above
+        norm = rroot !== nothing && rroot in normalised
+        scale = norm ? 1 : scale0
+        cap = norm ? (cap0 < 0 ? -1 : 8 * cap0) : cap0
+        what = norm ? "an `alloca` reservation BYTE-NORMALISED by Bennett-bvmd " *
+                      "to $(cap) cell(s)" : what0
+        ew = node.elem_width
+        dest = node.dest
+        base_op = node.base
+        want = 8 * scale
+        ew == want && continue
+        (ew >= 8 && ew % 8 == 0) || continue    # BVM's own divisibility guard
+        # An `IRVarGEP` carries a RUNTIME index, so there is no constant cell to
+        # compare and the vacuity exemption below MUST NOT apply to it — the
+        # predicate is bare stamp equality. (Guarding this with `node isa
+        # IRPtrOffset` is the whole fix: the previous revision set both cells to
+        # -1 for an IRVarGEP, so the exemption swallowed EVERY variable-index
+        # node and the arm was dead code — a `gep i64, ptr %obj, i64 %i` off a
+        # byte-tier `gc_alloc` box extracted silently at elem_width 64 and BVM
+        # lowered it at a stride of one cell: an 8x misaddress.)
+        cell_emitted = node isa IRPtrOffset ? node.offset_bytes ÷ (ew ÷ 8) : -1
+        cell_meant = node isa IRPtrOffset ? node.offset_bytes ÷ scale : -2
+        # VACUOUS DISAGREEMENT. A node whose own step lands on the SAME cell
+        # under both stamps addresses nothing wrongly — canonically `gep i8
+        # %obj, 0`, which Julia codegen emits constantly (a GC-roots slot
+        # address, a `%".roots.#self#"` re-base) and which maps to cell +0 under
+        # EVERY stamp. MEASURED: without this, `test_40ys` (G)/(H)/(K) go red on
+        # a byte offset of ZERO.
+        #
+        # This is NOT p06b's dropped D2 index-0 carve-out re-introduced. D2's
+        # hazard was that the carved-out GEP's RESULT becomes a fresh
+        # byte-granular base whose own deeper offsets were never re-scanned (the
+        # scan is one level deep). This check walks the FULL const-GEP chain to
+        # the allocation root at EVERY node, so `gep i8 %g0, 8` off such a base
+        # is checked against the root independently and still fires. The
+        # carve-out is safe here precisely because the closure is not one-deep.
+        (node isa IRPtrOffset && cell_emitted == cell_meant) && continue
+        where_ = node isa IRVarGEP ? "IRVarGEP" : "IRPtrOffset"
+        detail = node isa IRVarGEP ?
+            "The index is a RUNTIME value, so there is no constant cell to " *
+            "compare: BennettVM strides this node by ONE CELL per index unit, " *
+            "which is faithful only when the stamp IS the root's scale. " :
+            "BennettVM recovers the cell as `offset_bytes ÷ (elem_width ÷ 8)`, " *
+            "so byte offset $(node.offset_bytes) is addressed as cell " *
+            "base+$(cell_emitted) where the reservation means cell " *
+            "base+$(cell_meant) — two cell maps for one object" *
+            (cap >= 0 && cell_emitted >= cap ?
+             ", and cell base+$(cell_emitted) lies OUTSIDE the $(cap)-cell " *
+             "reservation (a silent adjacent-allocation clobber, which " *
+             "`bennettvm-pdqx` does NOT detect — it rejects only accesses " *
+             "outside ALL live reservations)" : "") * ". "
+        error("ir_extract.jl: SCALE-COHERENCE violation in " *
+              "@$(LLVM.name(func)): the emitted $(where_) `$(dest)` off base " *
+              "`$(base_op.name)` carries elem_width=$(ew), but its allocation " *
+              "ROOT is $(what), i.e. cells of $(scale) byte(s), so every " *
+              "offset derived from that root must be stamped " *
+              "elem_width=$(want)$(norm ? " (the reservation was ALREADY " *
+              "byte-normalised, so this object is addressed at TWO " *
+              "granularities and no single reservation can serve both)" : ""). " *
+              detail *
+              "(Bennett-bvmd, predicate `_root_scale` / " *
+              "`_check_scale_coherence!`.) The use-directed BYTE-NORMALISATION " *
+              "that admits an all-byte-addressed word-tier `alloca` did NOT " *
+              "apply here: it requires EVERY emitted offset off the root to be " *
+              "byte-stamped, and a static 64-bit reservation. Failing that " *
+              "means this object is addressed at TWO granularities and no " *
+              "single reservation can serve both — the `bennettvm-jb6w` " *
+              "hazard, made loud. Spell every access at ONE granularity. " *
+              "(A dynamic-count `alloca` is also never normalised; that case " *
+              "stays filed on Bennett-z2ia.)")
+    end
+    return nothing
+end
+
+function _const_gep_stamp(gepval::LLVM.Value)::Union{Nothing,Int}
+    (gepval isa LLVM.Instruction &&
+     LLVM.opcode(gepval) == LLVM.API.LLVMGetElementPtr) || return nothing
+    ops = LLVM.operands(gepval)
+    length(ops) == 2 || return nothing
+    sty = LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(gepval.ref))
+    return sty isa LLVM.IntegerType ? Int(LLVM.width(sty)) : 8
+end
+
+# ============================================================================
 # Bennett-p06b / CW-D — WHOLE-AGGREGATE `store` DECOMPOSITION (xkl wall 6)
 # ============================================================================
 #
@@ -271,10 +766,18 @@ end
 #   * an `alloca` with an UNMODELLED allocated type silently registers a name
 #     while emitting nothing (see `_alloca_reservation`). (P4) refuses to
 #     build on it; fixing the silent skip itself is a separate bead.
-#   * `julia.gc_alloc_obj` targets are REFUSED, not supported: BennettVM stamps
-#     that tier BYTE-granular. Admitting them under a byte stamp is a future
-#     widening (mechanism: emit `IRPtrOffset(_, _, 8k, 8)`), gated on the same
-#     416r.13 singleton-header argument (P1) is waiting on.
+#   * `julia.gc_alloc_obj` targets WERE refused here; **Bennett-bvmd (xkl wall 8)
+#     ADMITTED them**, at the byte granularity BennettVM actually reserves
+#     (`_alloc_cells(::IntrinsicGCAlloc) = _byte_cells(nb)`). The emission stamps
+#     `elem_width = 8` (`_root_scale`), (P4c) compares capacity in BYTE cells,
+#     and (P5) inverts its accept/reject sets for that tier. Crucially the D4
+#     two-index struct-GEP arm was re-stamped in the SAME change — a (P4b)-only
+#     widening would merely have flipped the defect from "store word, read byte"
+#     to "store byte, read word". The 416r.13 interaction (P1) is waiting on
+#     turned out NOT to live here at all: the singleton headers are GLOBALS with
+#     no allocation root, so the byte stamp for them still comes from the TYPE
+#     predicate, which `_cell_elem_width_struct_gep` keeps as the fallback arm
+#     of a UNION rather than replacing.
 # ============================================================================
 
 # (P4) Is `v` a pointer SSA value that `ptr_cells` has CERTIFIED as a real,
@@ -404,6 +907,18 @@ function _p06b_cell_ptr_target_kind(v, names::Dict{_LLVMRef, Symbol},
         return haskey(names, lops[1].ref) ? (:load, -1) : (:none, 0)
     elseif opc == LLVM.API.LLVMCall
         cn = _heap_callee_name(v)
+        # Bennett-bvmd (xkl wall 8): `julia.gc_alloc_obj` is ADMITTED, at the
+        # BYTE granularity BennettVM actually reserves for it
+        # (`_alloc_cells(::IntrinsicGCAlloc) = _byte_cells(nbytes)`,
+        # intrinsics.jl:256-257). The capacity is returned in the TARGET'S OWN
+        # cells — byte cells here, word cells for `malloc` — and (P4c) converts
+        # the requirement into the same unit via the store's own stamp. A
+        # non-constant `nbytes` certifies 0, exactly as `malloc` does.
+        if cn == "julia.gc_alloc_obj"
+            cops = LLVM.operands(v)
+            nb = length(cops) >= 3 ? _p06b_const(cops[2]) : -1
+            return (:gcalloc, nb < 0 ? 0 : nb)
+        end
         cn in _M4_C_ALLOCATOR_NAMES || return (:none, 0)
         b = _p06b_call_bytes(v)
         return (:call, b < 0 ? 0 : b ÷ 8)   # a non-constant size certifies 0
@@ -446,17 +961,18 @@ function _p06b_target_kind_name(v, suppressed::Set{_LLVMRef}=Set{_LLVMRef}())::S
         return "a `load` whose own pointer operand is not a registered SSA " *
                "name (an aliased singleton-data global load emits no IRLoad)"
     elseif opc == LLVM.API.LLVMCall
+        # Bennett-bvmd RETIRED the `julia.gc_alloc_obj` paragraph that used to
+        # live here. That tier is now ADMITTED at BYTE granularity (see
+        # `_p06b_cell_ptr_target_kind`), so `_p06b_cell_ptr_target_kind` never
+        # returns `:none` for it and this function is never reached with one. A
+        # gc_alloc target with a NON-CONSTANT `nbytes` certifies capacity 0 and
+        # is refused by (P4c)'s capacity message instead — which is accurate
+        # about the reason, where a "byte-granular, refused" paragraph would
+        # not be. (The retired text also pinned `bennettvm-9n3y`, a DANGLING ID
+        # in both trackers; the live filings are `Bennett-zdd6` for the
+        # literal-`{i64,ptr}` mis-stamp discriminator and `bennettvm-rxgy` for
+        # byte-exact memmove.)
         cn_r = _heap_callee_name(v)
-        cn_r == "julia.gc_alloc_obj" && return (
-            "a `julia.gc_alloc_obj` call — the JULIA heap tier, which " *
-            "BennettVM stamps BYTE-granular (`_byte_cells`, " *
-            "`src/ir/intrinsics.jl:256-257`, CW-D4 / bennettvm-9n3y). This arm " *
-            "writes WORD-granular cells (base+0, base+1, …), so a Julia-idiom " *
-            "field read at byte offset 8 would land on cell base+8 and miss " *
-            "the write entirely (executed witness: EXPECTED 42, ACTUAL 0). " *
-            "Refused for exactly the reason (P1) refuses the byte-granular " *
-            "GenericMemory header STRUCT — the granularities must agree, and " *
-            "here they do not. Byte-stamped admission is a future widening")
         return "a `call` to '$(cn_r)', which is not a recognised cell allocator"
     elseif opc == LLVM.API.LLVMPHI || opc == LLVM.API.LLVMSelect
         return "a `$(_llvm_opcode_name(opc))` pointer, which carries the " *
@@ -575,8 +1091,35 @@ function _p06b_alias_group(pv::LLVM.Value)::Vector{LLVM.Value}
     return grp
 end
 
-function _p06b_scan_uses(pv::LLVM.Value, st::LLVM.StructType,
-                         sib::Bool)::Union{Nothing,String}
+#
+# Bennett-bvmd — TIER PARAMETRISATION. `ew_store` is the stamp the decomposition
+# will actually emit (`8 · scale(root)`, or 64 when the root's scale is
+# unprovable). The two regimes are BOTH live in the corpus and neither may be
+# dropped:
+#
+#   * ew_store == 64 (WORD tier — every target admitted before bvmd, plus every
+#     scale-unknown `:load` target, which is `_growend!`'s own shape): the rule
+#     below is TODAY'S RULE VERBATIM. A single-index GEP is refused by
+#     construction, the two-index arm must carry the stored struct type and the
+#     leading constant 0. Byte-identical — the C tier and the whole
+#     (D2)/(D7)/(N2)/(D3) surface do not move.
+#   * ew_store == 8 (BYTE tier — the newly admitted `julia.gc_alloc_obj`
+#     targets): the accept/reject sets INVERT, because the arm's own emission is
+#     byte-granular. The predicate becomes a STAMP COMPARISON against
+#     `_cell_elem_width_struct_gep` / `_const_gep_stamp` — the emitter's own
+#     functions — so agreement is a syntactic identity, not a claim about two
+#     code paths.
+#
+# NOTE on what (P5) is NOT asked to carry any more. For a SCALE-KNOWN root the
+# stream check `_check_scale_coherence!` covers a strict SUPERSET of this scan
+# (every emitted node derived from the root, at any GEP depth, including nodes
+# from construction sites this file does not own). (P5) is retained regardless,
+# because for a SCALE-UNKNOWN root — `_growend!`'s `%1 = load ptr, ptr %0` off a
+# `dereferenceable(0)` argument — the stream check is silent and (P5) is the
+# ONLY guard.
+function _p06b_scan_uses(pv::LLVM.Value, st::LLVM.StructType, sib::Bool,
+                         ew_store::Int, names::Dict{_LLVMRef, Symbol},
+                         ptr_cells::Bool)::Union{Nothing,String}
     where_ = sib ? "a SIBLING re-load of the same slot (`$(string(pv))`), via " : ""
     for u in LLVM.uses(pv)
         usr = LLVM.user(u)
@@ -586,6 +1129,27 @@ function _p06b_scan_uses(pv::LLVM.Value, st::LLVM.StructType,
         (length(ops) >= 1 && ops[1].ref == pv.ref) ||
             return "$(where_)a getelementptr that consumes the pointer as an " *
                    "INDEX operand, not as the base"
+        if ew_store != 64
+            # BYTE tier — compare the stamp this use will actually be emitted
+            # with against the stamp the decomposition will emit.
+            sty_b = LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(usr.ref))
+            ew_use = if length(ops) == 3 && sty_b isa LLVM.StructType
+                _cell_elem_width_struct_gep(pv, sty_b, names, ptr_cells)
+            elseif length(ops) == 2
+                _const_gep_stamp(usr)
+            else
+                nothing
+            end
+            ew_use === nothing && return "$(where_)the " *
+                "$(length(ops) - 1)-index getelementptr `$(string(usr))`, " *
+                "whose emitted cell stamp this arm cannot determine"
+            ew_use == ew_store && continue
+            return "$(where_)the getelementptr `$(string(usr))`, which is " *
+                   "emitted at elem_width $(ew_use) (cell stride " *
+                   "$(ew_use ÷ 8) byte(s)) while this store's target is " *
+                   "addressed at elem_width $(ew_store) (cell stride " *
+                   "$(ew_store ÷ 8) byte(s))"
+        end
         if length(ops) == 3
             sty = LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(usr.ref))
             sty.ref == st.ref || return "$(where_)the two-index getelementptr " *
@@ -625,11 +1189,13 @@ function _p06b_scan_uses(pv::LLVM.Value, st::LLVM.StructType,
     return nothing
 end
 
-function _p06b_granularity_violation(pv::LLVM.Value,
-                                     st::LLVM.StructType)::Union{Nothing,String}
+function _p06b_granularity_violation(pv::LLVM.Value, st::LLVM.StructType,
+                                     ew_store::Int,
+                                     names::Dict{_LLVMRef, Symbol},
+                                     ptr_cells::Bool)::Union{Nothing,String}
     grp = _p06b_alias_group(pv)
     for (i, q) in enumerate(grp)
-        v = _p06b_scan_uses(q, st, i > 1)
+        v = _p06b_scan_uses(q, st, i > 1, ew_store, names, ptr_cells)
         v === nothing || return v
     end
     return nothing
@@ -2196,6 +2762,21 @@ function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction
     dst_op = ssa(names[dst_v.ref])
     K = div(N, ew_bytes)
     src_elem_off = div(src_byte_off, ew_bytes)
+    # Bennett-4y0d / Bennett-bvmd: the ADDRESS stamp and the ELEMENT width are
+    # two different things and were conflated here. `dst_ew` is the width of the
+    # value each store writes (64 for an arena/param cell, the alloca's element
+    # width otherwise) and must NOT change. `ptr_ew` is the bytes-per-cell SCALE
+    # of the destination's allocation root, which is what BennettVM divides the
+    # byte offset by. For an ALLOCA dst the two coincide by construction (both
+    # come from the same reservation), and for a scale-unknown PARAM dst the
+    # fallback is 64 — so this is byte-identical everywhere except the ARENA dst.
+    # There, `_alloc_cells(::IntrinsicGCAlloc)` reserves BYTE cells, so element k
+    # belongs at cell `dst + 8k`, not `dst + k`. At K == 1 the only offset is 0,
+    # which is cell 0 under EVERY stamp — which is exactly why the shipped
+    # `test_vbv9_arena_memcpy.jl` K=1 pins were green over a latent defect.
+    ptr_ew = let rs = _root_scale(dst_v, names, ptr_cells)
+        rs === nothing ? dst_ew : 8 * rs[1]
+    end
     out = IRInst[]
     sizehint!(out, 2 * K)
     for k in 0:(K - 1)
@@ -2203,7 +2784,7 @@ function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction
         word = gdata[src_elem_off + k + 1]  # 1-based indexing
         # Cast to signed Int via reinterpret (preserves bit pattern).
         ival = reinterpret(Int64, word) % Int
-        push!(out, IRPtrOffset(dst_off, dst_op, k * ew_bytes, dst_ew))
+        push!(out, IRPtrOffset(dst_off, dst_op, k * ew_bytes, ptr_ew))
         push!(out, IRStore(ssa(dst_off), iconst(ival), dst_ew))
     end
     return out
@@ -4954,12 +5535,6 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             member_k = _const_int_as_int(ops[3])
             dl_gep = LLVM.datalayout(LLVM.parent(LLVM.parent(LLVM.parent(inst))))
             offset_bytes = Int(LLVM.offsetof(dl_gep, src_type_gep, member_k))
-            offset_bytes % 8 == 0 || _ir_error(inst,
-                "two-index struct getelementptr member $(member_k) is at byte " *
-                "offset $(offset_bytes), which is not 8-byte (cell) aligned " *
-                "— the BVM cell discipline (ADR 0018) requires every struct " *
-                "member to land on a 64-bit cell boundary; a packed / sub-cell " *
-                "struct is out of scope (BVM ADR 0020 D4 / chunk B)")
             # CW-D4 (bennettvm-9n3y): the Julia GenericMemory HEADER — the
             # LITERAL (unnamed) `{ i64, ptr }` struct — is stamped BYTE-granular
             # (elem_width = 8) so BVM's per-GEP division rule
@@ -4974,7 +5549,32 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             # data-ptr@byte-cell 8). A NAMED C `%struct.T` (even `{i64, ptr}`-
             # shaped) keeps the word-granular 64-bit stamp — the C tier is
             # byte-identical (see `_is_genericmemory_header_struct`).
-            ew_gep = _is_genericmemory_header_struct(src_type_gep) ? 8 : 64
+            #
+            # Bennett-bvmd (xkl wall 8): the type predicate is now the FALLBACK
+            # arm of a UNION, not the whole rule. Where the pointer's allocation
+            # ROOT is provable, the reservation's own bytes-per-cell scale wins
+            # (`_cell_elem_width_struct_gep`), because it is the reservation —
+            # not the type spelling — that fixes the cell map. This is what
+            # closes the CW-D4 SPLIT that was live in the push! ROOT: `gep i8
+            # %obj, 8` stamped 8 (cell +8) while this arm stamped 64 (cell +1)
+            # for byte offset 8 of the SAME `julia.gc_alloc_obj` object, SIX
+            # times. The union direction is load-bearing: a provenance-ONLY rule
+            # would demote the 416r.13 singleton headers (base = a GLOBAL, no
+            # root) to word granularity — a silent miscompile.
+            ew_gep = _cell_elem_width_struct_gep(base, src_type_gep, names,
+                                                 ptr_cells)
+            # The cell-boundary guard is stated in the OBJECT'S OWN cells, not
+            # in a hard-coded 8: a byte-tier field need not be 8-byte aligned
+            # (its cell stride is 1), while a word-tier packed / sub-cell struct
+            # still fails loud exactly as before (`% 8`, byte-identical).
+            offset_bytes % (ew_gep ÷ 8) == 0 || _ir_error(inst,
+                "two-index struct getelementptr member $(member_k) is at byte " *
+                "offset $(offset_bytes), which is not $(ew_gep ÷ 8)-byte " *
+                "(cell) aligned — the BVM cell discipline (ADR 0018) requires " *
+                "every struct member to land on a cell boundary of the " *
+                "object's own granularity; a packed / sub-cell struct is out " *
+                "of scope (BVM ADR 0020 D4 / chunk B; stamp from " *
+                "`_cell_elem_width_struct_gep` / `_root_scale`, Bennett-bvmd)")
             return IRPtrOffset(dest, ssa(names[base.ref]), offset_bytes, ew_gep)
         end
         # Bennett-qal5 / U16: anything that reaches here is either a
@@ -5571,7 +6171,15 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 "corpus witness and the 416r.13 singleton-header interaction " *
                 "is unverified. A NAMED `%struct.T = type {i64, ptr}` keeps " *
                 "the word-granular stamp and IS admitted. (Bennett-p06b, " *
-                "predicate `_is_genericmemory_header_struct`)")
+                "predicate `_is_genericmemory_header_struct`) " *
+                "Bennett-bvmd NOTE (prose-vs-predicate): under bvmd the D4 " *
+                "stamp is PROVENANCE-FIRST, so for a target whose allocation " *
+                "root has a provable scale the header GEP and this store would " *
+                "now agree; the two-cell-maps sentence above describes the " *
+                "SCALE-UNKNOWN root, where the type predicate is still the " *
+                "whole rule. The refusal is retained UNCHANGED anyway — there " *
+                "is still no live corpus witness and the 416r.13 " *
+                "singleton-header interaction is still unverified.")
             # (P2) Field certification — REUSE the Bennett-6bu3 predicate, do
             # not re-implement it (Rule 12). p06b therefore opens NO new
             # field-shape message territory: packed / empty / i1 / float /
@@ -5666,10 +6274,23 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             # (measured — the arena/stack membership predicate admits both cells
             # of every one of the D1 repros). Closing THAT class needs pointer
             # provenance, which neither repo has. Tracked as a residual.
-            (tcells >= 0 && tcells < length(fw_p06b)) && _ir_error(inst,
-                "aggregate store target reserves only $(tcells) 64-bit cell(s) " *
-                "but the decomposition of $(string(vt)) writes " *
-                "$(length(fw_p06b)) — the surplus cells belong to the NEXT " *
+            #
+            # Bennett-bvmd: the comparison is now in the TARGET'S OWN CELLS.
+            # `_p06b_cell_ptr_target_kind` returns the capacity in the unit the
+            # allocator actually reserves (byte cells for `julia.gc_alloc_obj`,
+            # word cells for `malloc` / `alloca`), and the requirement is
+            # converted into that same unit by the store's own stamp. For the
+            # word tier `need == length(fw_p06b)` EXACTLY — byte-identical.
+            ew_store_p06b = let rs = _root_scale(ptr, names, ptr_cells)
+                rs === nothing ? 64 : 8 * rs[1]
+            end
+            scale_p06b = ew_store_p06b ÷ 8
+            need_p06b = (offs_p06b[end] + 8) ÷ scale_p06b
+            (tcells >= 0 && tcells < need_p06b) && _ir_error(inst,
+                "aggregate store target reserves only $(tcells) " *
+                "$(scale_p06b)-byte cell(s) but the decomposition of " *
+                "$(string(vt)) writes $(need_p06b) — the surplus cells " *
+                "belong to the NEXT " *
                 "allocation and would be silently CLOBBERED (executed witness: " *
                 "an `alloca i64` / `malloc(8)` receiving a 2-field store " *
                 "overwrote its neighbour, EXPECTED 999 ACTUAL 42, no error). A " *
@@ -5681,11 +6302,17 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 "`_p06b_call_bytes`)")
             # (P5) Cell-granularity agreement across the target's other
             # address-forming uses — the CW-D4 / 9n3y split guard.
-            gviol = _p06b_granularity_violation(ptr, vt)
+            # Bennett-bvmd: TIER-PARAMETRISED. `ew_store_p06b` is the stamp the
+            # emission below will actually use, so the scan compares against the
+            # emitter rather than against a hard-coded word granularity. For
+            # `ew_store_p06b == 64` the predicate is today's rule verbatim.
+            gviol = _p06b_granularity_violation(ptr, vt, ew_store_p06b, names,
+                                                ptr_cells)
             gviol === nothing || _ir_error(inst,
-                "aggregate store target is addressed at BOTH the WORD " *
-                "granularity of this store's struct fields (cell stride 8 " *
-                "bytes) and an incompatible granularity, via $(gviol). " *
+                "aggregate store target is addressed at BOTH the " *
+                "$(ew_store_p06b == 64 ? "WORD" : "BYTE") " *
+                "granularity of this store's struct fields (cell stride " *
+                "$(scale_p06b) bytes) and an incompatible granularity, via $(gviol). " *
                 "BennettVM recovers a cell as `offset_bytes ÷ (elem_width ÷ " *
                 "8)`, so the same byte offset would map to two different VM " *
                 "cells (the CW-D4 / bennettvm-9n3y split). Refusing to WRITE " *
@@ -5746,7 +6373,17 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 push!(out_p06b, IRExtractValue(fname, agg_p06b, k,
                                                0, length(fw_p06b), fw_p06b))
                 aname = _auto_name(counter)
-                push!(out_p06b, IRPtrOffset(aname, base_p06b, offs_p06b[k + 1], 64))
+                # Bennett-bvmd: the stamp is the TARGET ROOT'S OWN scale, from
+                # the same `_root_scale` the D4 GEP arm and (P5) consult. For a
+                # `malloc`/`alloca`/scale-unknown target this is 64 —
+                # byte-identical to the pre-bvmd literal. For a
+                # `julia.gc_alloc_obj` target it is 8, so field k lands on byte
+                # cell `o_k` and meets the byte GEPs that read it. ONE 64-bit
+                # store per field either way: BennettVM's `MemoryStore` carries
+                # no width and writes a WHOLE cell (`memory_floor.jl:156-168`),
+                # so eight single-byte stores are neither expressible nor right.
+                push!(out_p06b, IRPtrOffset(aname, base_p06b, offs_p06b[k + 1],
+                                            ew_store_p06b))
                 push!(out_p06b, IRStore(ssa(aname), ssa(fname), 64))
             end
             return out_p06b

@@ -685,6 +685,16 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
     # Post-pass: expand switch terminators into cascaded icmp + branch blocks
     blocks = _expand_switches(blocks)
 
+    # Bennett-bvmd (xkl wall 8) — the (SC) SCALE-COHERENCE stream check. Runs
+    # AFTER every instruction in this function has converted, so every
+    # in-conversion `_ir_error` still wins and no existing message territory
+    # moves; this can only ADD a loud failure, and only for a program that
+    # previously extracted SILENTLY WRONG (a byte GEP past a word-tier
+    # reservation, an `i64`-strided GEP off a byte-tier gc_alloc box, …).
+    # ptr_cells-gated: on the circuit path `elem_width` is inert.
+    _check_scale_coherence!(blocks, func, names, ptr_cells,
+                            _p06b_suppressed_refs)
+
     return ParsedIR(ret_width, args, blocks, ret_elem_widths, globals,
                     nothing, synth_ptr_provenance)
 end

@@ -831,13 +831,15 @@ end
 
     # =======================================================================
     # (W8)+(O3) CORPUS — the real gated `push!` path. Wall 7 is CLEARED and the
-    # chain advances to wall 8 (Bennett-bvmd: the ROOT body's `gc_alloc_obj`
-    # BYTE-granular aggregate-store target refusal, CW-D4 / bennettvm-9n3y).
+    # chain advances. ADVANCED by Bennett-bvmd (2026-08-06): wall 8 (the ROOT
+    # body's `gc_alloc_obj` BYTE-granular aggregate-store refusal) is now
+    # CLEARED TOO — that tier is admitted at `elem_width = 8` — so the positive
+    # moves to wall 9, the Bennett-37mt arena-src memcpy.
     #
     # (O3) rides along as the corpus anti-steal: the jbko `%L84`
     # ConcurrencyViolation witness must NOT have been poached.
     # =======================================================================
-    @testset "(W8) CORPUS — wall 7 cleared, chain advances to wall 8" begin
+    @testset "(W8) CORPUS — wall 7 cleared, chain advances to wall 9" begin
         _pushfoz5(n::Int64) = begin
             v = Int64[]; push!(v, n); @inbounds v[1]
         end
@@ -849,15 +851,23 @@ end
             e isa InterruptException && rethrow()
             sprint(showerror, e)
         end
-        @test msg != ""            # still walled — at wall 8, not wall 7
-        # LOAD-BEARING NEGATIVES: wall 7 is CLEARED.
+        @test msg != ""            # still walled — at wall 9, not wall 7 or 8
+        # LOAD-BEARING NEGATIVES: wall 7 is CLEARED. Bennett-bvmd MEASURED that
+        # these stay true at wall 9 (the scout's instruction to drop them was
+        # one bead early — wall 10 is where the escaping base-cancelling
+        # difference lives, and it sits BEHIND four memcpys).
         @test !occursin("base-cancelling", msg)
         @test !occursin("Bennett-583s", msg)
         # (O3) the jbko witness was not poached.
         @test !occursin("Bennett-jbko", msg)
         @test !occursin("ConcurrencyViolation", msg)
-        # POSITIVE: wall 8. Non-numeral anchors only (Bennett-0ncn: bare
-        # numerals can false-match a future bead tag).
-        @test (occursin("gc_alloc_obj", msg) || occursin("BYTE-granular", msg))
+        # LOAD-BEARING NEGATIVE, ADDED by Bennett-bvmd: wall 8 is CLEARED, so a
+        # p06b reject naming `gc_alloc_obj` is now a REGRESSION.
+        @test !(occursin("Bennett-p06b", msg) && occursin("gc_alloc_obj", msg))
+        # POSITIVE: wall 9 (Bennett-37mt / Bennett-8bys arena-src memcpy).
+        # Non-numeral anchors only (Bennett-0ncn: bare numerals can false-match
+        # a future bead tag); disjoined because WHICH of the four memcpys fails
+        # first is iteration order, not contract.
+        @test (occursin("memcpy", msg) || occursin("Bennett-37mt", msg))
     end
 end

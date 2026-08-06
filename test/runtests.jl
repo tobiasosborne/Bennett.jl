@@ -681,6 +681,14 @@ runfile("test_jbko_ptr_identity_icmp.jl")
 # (wall 8, Bennett-bvmd) — which is why this file's own marker gate no longer
 # expects `_growend!` in the message.
 runfile("test_p06b_aggregate_store.jl")
+# Bennett-bvmd (xkl frontier wall 8): ROOT-SCALE COHERENCE (SC) — the
+# bytes-per-cell ratio BennettVM's `_alloc_cells` already fixes per allocator,
+# read (never invented) by the extractor and enforced BOTH by a shared stamp at
+# the sites that choose an `elem_width` and by a stream check over every emitted
+# IRPtrOffset/IRVarGEP. Clears wall 8 (byte-stamped `julia.gc_alloc_obj`
+# aggregate stores), closes the CW-D4 class-D split, `Bennett-z2ia` (static
+# case, by use-directed byte-normalisation) and `Bennett-4y0d`.
+runfile("test_bvmd_root_scale.jl")
 # Bennett-jfw6: mem=:vm Case A Vector/GenericMemory extraction recognizer (shape + fail-loud matrix).
 runfile("test_jfw6_vec_vm_extract.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message

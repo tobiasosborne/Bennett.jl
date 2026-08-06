@@ -598,17 +598,43 @@ entry:
 }
 
 ; ===========================================================================
-; REJECT (P4b) N3 — `julia.gc_alloc_obj` is the JULIA heap tier, which
-; BennettVM stamps BYTE-granular (`_byte_cells`, BVM src/ir/intrinsics.jl:
-; 256-257, CW-D4 / 9n3y). p06b writes WORD-granular cells, so a Julia-idiom
-; field read at byte offset 8 lands on cell base+8 and misses the write
-; entirely: EXPECTED 42, ACTUAL 0 (scratchpad h17_e2e.jl). Dropped from the
-; allocator whitelist for exactly the reason (P1) refuses the byte-granular
-; GenericMemory header struct.
+; ADMIT (P4b) N3, BYTE-STAMPED — Bennett-bvmd (xkl wall 8) INVERTED this
+; fixture. `julia.gc_alloc_obj` is the JULIA heap tier, which BennettVM
+; reserves BYTE-granular (`_alloc_cells(::IntrinsicGCAlloc) = _byte_cells(nb)`,
+; BVM src/ir/intrinsics.jl:256-257, CW-D4). p06b USED to write WORD-granular
+; cells here, so a Julia-idiom field read at byte offset 8 landed on cell
+; base+8 and missed the write entirely: EXPECTED 42, ACTUAL 0 (scratchpad
+; h17_e2e.jl) — hence the original refusal.
+;
+; bvmd admits the tier at the granularity the RESERVATION actually uses: the
+; decomposition stamps `elem_width = 8`, so field k lands on BYTE cell `o_k`,
+; which is the cell the object's own `gep i8` readers name. The h17 repro is
+; sound under the new emission only because the D4 two-index struct-GEP arm was
+; re-stamped in the SAME change (`_cell_elem_width_struct_gep`, provenance-first
+; union) — without that, the defect would have flipped from "store word, read
+; byte" to "store byte, read word": still broken, differently.
 ; ===========================================================================
 define i64 @p06b_gc_alloc_target(ptr %tls, ptr %tag, i64 %x, i64 %y) {
 entry:
   %obj = call ptr @julia.gc_alloc_obj(ptr %tls, i64 24, ptr %tag)
+  %t0 = insertvalue { i64, i64 } zeroinitializer, i64 %x, 0
+  %agg = insertvalue { i64, i64 } %t0, i64 %y, 1
+  store { i64, i64 } %agg, ptr %obj, align 8
+  ret i64 0
+}
+
+; ===========================================================================
+; REJECT (P4c) in BYTE cells — Bennett-bvmd. The capacity guard survives the
+; admission, it just changes UNIT: `_alloc_cells(::IntrinsicGCAlloc)` reserves
+; `nbytes` BYTE cells, and a 2-field `{i64,i64}` decomposition writes bytes
+; [0,16). An 8-byte box reserves 8 byte-cells, so field 1 at cell +8 would land
+; on the NEXT arena allocation — the D1 clobber, one tier down. This is the ONE
+; gc_alloc reject that survives bvmd, and it keeps the gc_alloc arm inside the
+; (h) message-hygiene sweep.
+; ===========================================================================
+define i64 @p06b_gc_alloc_small(ptr %tls, ptr %tag, i64 %x, i64 %y) {
+entry:
+  %obj = call ptr @julia.gc_alloc_obj(ptr %tls, i64 8, ptr %tag)
   %t0 = insertvalue { i64, i64 } zeroinitializer, i64 %x, 0
   %agg = insertvalue { i64, i64 } %t0, i64 %y, 1
   store { i64, i64 } %agg, ptr %obj, align 8

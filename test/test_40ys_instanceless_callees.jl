@@ -529,25 +529,32 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
         #   * BODY SCOPE — the original intent, exactly: p06b must not reject
         #     anything in the CLOSURE body. Wall 8 is in the ROOT body.
         @test !(occursin("Bennett-p06b", e.msg) && occursin("_growend!", e.msg))
-        #   * DISCRIMINATOR — the only p06b reject tolerated here is the
-        #     byte-granular `gc_alloc_obj` target refusal, so a re-rejection of
-        #     the corpus store under a new name still turns this red.
-        @test !occursin("Bennett-p06b", e.msg) || occursin("gc_alloc_obj", e.msg)
+        #   * DISCRIMINATOR, INVERTED by Bennett-bvmd (xkl wall 8). Pre-bvmd
+        #     this tolerated exactly one p06b reject — the byte-granular
+        #     `gc_alloc_obj` target refusal. bvmd ADMITS that tier at
+        #     `elem_width = 8`, so a p06b reject NAMING `gc_alloc_obj` is now
+        #     the regression rather than the expected wall.
+        @test !(occursin("Bennett-p06b", e.msg) && occursin("gc_alloc_obj", e.msg))
+        #   * (P5) must not be the new wall — that would mean the D4 struct-GEP
+        #     re-stamp was skipped and bvmd was a no-op (scout §5, probe b06).
+        @test !occursin("BYTE-granular getelementptr", e.msg)
         # LOAD-BEARING NEGATIVE: wall 7 — the `%idxend41` memdata bounds cluster
         # — is CLEARED by Bennett-foz5 (ADR 0017 §4a, the CONFINED-VALUE
         # contract). Without these the positive below would not notice a re-open.
         @test !occursin("Bennett-583s", e.msg)
         @test !occursin("base-cancelling", e.msg)
         # ... and we land on the NAMED successor wall.
-        # MEASURED (2026-08-06, --check-bounds=yes): wall 8 (Bennett-bvmd) —
-        # the ROOT body's `julia.gc_alloc_obj`-backed aggregate-store target,
-        # refused because BennettVM stamps that tier BYTE-granular (CW-D4 /
-        # bennettvm-9n3y). Kept as a DISJUNCTION rather than a literal pin
-        # because WHICH body of the set fails first is registration/iteration
-        # order, which is not a contract (the test_lf14 convention this gate has
-        # always followed). Non-numeral anchors only — the Bennett-0ncn lesson:
-        # a bare numeral can false-match a future bead tag.
-        @test occursin("gc_alloc_obj", e.msg) || occursin("BYTE-granular", e.msg)
+        # MEASURED (2026-08-06, --check-bounds=yes), ADVANCED by Bennett-bvmd:
+        # wall 8 is CLEARED (the `julia.gc_alloc_obj` tier is admitted at
+        # `elem_width = 8`) and the successor is wall 9 — the ROOT body's
+        # arena-src memcpy, whose SRC operand `gep i8 %"new::Array", 16` is not
+        # alloca-backed (Bennett-37mt Phase 1 / Bennett-8bys). Kept as a
+        # DISJUNCTION rather than a literal pin because WHICH body of the set
+        # fails first is registration/iteration order, which is not a contract
+        # (the test_lf14 convention this gate has always followed). Non-numeral
+        # anchors only — the Bennett-0ncn lesson: a bare numeral can
+        # false-match a future bead tag.
+        @test occursin("memcpy", e.msg) || occursin("Bennett-37mt", e.msg)
     end
 
     # ==================================================================

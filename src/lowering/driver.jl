@@ -1,3 +1,106 @@
+"""
+    _bvmd_reject_normalised_alloca!(parsed)
+
+Bennett-bvmd (hostile-review defect D2): REFUSE, loudly, a ParsedIR carrying a
+BYTE-NORMALISED alloca on the CIRCUIT path.
+
+`_check_scale_coherence!` (`src/extract/instructions.jl`) rewrites
+`IRAlloca(d, 64, n)` to `IRAlloca(d, 8, 8n)` when every emitted offset off `d` is
+byte-stamped — the only way to give BennettVM ONE cell map for an object Julia
+codegen byte-addresses but the alloca arm word-reserves. That rewrite is gated on
+`ptr_cells`, which is an **EXTRACTION** flag, NOT a backend selector:
+`ptr_cells=true` + `lower()` is a live combination in this suite (`test_59zi`,
+`test_lf14`). So a normalised alloca does reach the gate backend, and the
+shadow-tape store/load path cannot execute it — `_lower_store_via_shadow!` and
+friends require `store width == alloca elem_width`, and here a 64-bit store meets
+an 8-bit element.
+
+**This is an honest fail-fast for a combination that used to work.** Before
+Bennett-bvmd the same `.ll` lowered to a circuit, because the circuit backend has
+its OWN coherent scheme (`lower_ptr_offset!` divides `offset_bytes * 8` by the
+ALLOCA's element width, so a byte GEP off a word alloca resolves correctly there).
+The normalisation is needed ONLY for the VM cell map, and it is not free.
+
+THE FIX that removes this refusal is to teach the shadow-tape lowering to span
+`width ÷ elem_width` consecutive slots for a store/load wider than the element —
+the bit range is already identical (`64·n == 8·8n`, and byte offset `o` selects
+bits `8o…8o+63` under either stamp), so it is a width-check relaxation across
+`_lower_store_via_shadow!`, `_emit_store_via_shadow_guarded!`,
+`_lower_store_via_shadow_checkpoint!`, `_lower_load_via_shadow!`,
+`_lower_load_multi_origin!` and `_pick_alloca_strategy`. That is a core change to
+the gate backend with its own gate-count obligations, so it is NOT taken here.
+
+The alternative to refusing — re-stamping the ACCESSES instead of the
+reservation — was built and REJECTED: it is not closed under function
+boundaries. See the ADMISSION block in `_check_scale_coherence!` for the executed
+witness (`Bennett-40ys`'s caller→callee `Pair40ys` set returned 30 for an oracle
+of 42).
+
+Detection is by the exact incompatibility, never by shape alone: a byte-element
+alloca is only rejected when a store or load whose width EXCEEDS that element
+width is actually addressed through it. A genuine `alloca [N x i8]` written with
+8-bit stores (Bennett-munq) is untouched.
+"""
+function _bvmd_reject_normalised_alloca!(parsed::ParsedIR)
+    # (1) byte-element allocas, by dest
+    byte_allocas = Dict{Symbol,Int}()
+    for b in parsed.blocks, i in b.instructions
+        i isa IRAlloca || continue
+        i.elem_width == 8 && i.n_elems isa ConstOperand &&
+            (byte_allocas[i.dest] = Int(i.n_elems.value))
+    end
+    isempty(byte_allocas) && return nothing
+    # (2) names transitively derived from one of them by constant offsets
+    derived = Dict{Symbol,Symbol}()      # ptr name -> alloca dest
+    for k in keys(byte_allocas); derived[k] = k; end
+    changed = true
+    while changed
+        changed = false
+        for b in parsed.blocks, i in b.instructions
+            i isa IRPtrOffset || continue
+            i.base isa SSAOperand || continue
+            haskey(derived, i.base.name) || continue
+            haskey(derived, i.dest) && continue
+            derived[i.dest] = derived[i.base.name]
+            changed = true
+        end
+    end
+    # (3) the actual incompatibility: a store/load WIDER than the element
+    for b in parsed.blocks, i in b.instructions
+        nm, w = if i isa IRStore && i.ptr isa SSAOperand
+            (i.ptr.name, i.width)
+        elseif i isa IRLoad && i.ptr isa SSAOperand
+            (i.ptr.name, i.width)
+        else
+            continue
+        end
+        root = get(derived, nm, nothing)
+        root === nothing && continue
+        w > 8 || continue
+        error("lower: ParsedIR carries the BYTE-NORMALISED `IRAlloca(:$(root), " *
+              "8, $(byte_allocas[root]))` that Bennett-bvmd's " *
+              "`_check_scale_coherence!` emits under `ptr_cells`, and a " *
+              "$(w)-bit $(i isa IRStore ? "store" : "load") is addressed " *
+              "through it. The gate backend's shadow-tape path requires " *
+              "`width == alloca elem_width` " *
+              "(`_lower_store_via_shadow!` / `_lower_load_via_shadow!`, " *
+              "src/lowering/memory.jl), so this cannot be lowered to a " *
+              "circuit. WHY THE REWRITE EXISTS: Julia codegen byte-addresses " *
+              "its own stack frames (`alloca [N x i64]` + `gep i8 …, 8k`) " *
+              "while the alloca arm word-reserves them, so without it " *
+              "BennettVM addresses cell +8k inside an N-cell reservation — a " *
+              "silent adjacent-allocation clobber. It is gated on `ptr_cells`, " *
+              "which is an EXTRACTION flag and NOT a backend selector, so it " *
+              "reaches `lower()` too. WORKAROUND: extract with " *
+              "`ptr_cells=false` for the circuit target. FIX (the bead that " *
+              "removes this refusal): relax the shadow-tape width checks to " *
+              "span `width ÷ elem_width` consecutive slots — the bit range is " *
+              "already identical, since `64·n == 8·8n`. " *
+              "(Bennett-bvmd, predicate `_bvmd_reject_normalised_alloca!`.)")
+    end
+    return nothing
+end
+
 function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=true,
                fold_constants::Bool=true, compact_calls::Bool=false,
                add::Symbol=:auto, mul::Symbol=:auto,
@@ -39,6 +142,7 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
     if mul === :auto && target === :depth
         mul = :qcla_tree
     end
+    _bvmd_reject_normalised_alloca!(parsed)
     wa = WireAllocator()
     gates = ReversibleGate[]
     vw = Dict{Symbol,Vector{Int}}()

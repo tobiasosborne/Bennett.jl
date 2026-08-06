@@ -536,23 +536,28 @@ top:
         @test !occursin("store of non-integer type", msg)
         # ADVANCED AGAIN by Bennett-foz5 (2026-08-06): wall 7 — the `%idxend41`
         # split-captured-MemoryRef bounds cluster — is CLEARED under the ADR
-        # 0017 §4a CONFINED-VALUE contract, and the chain now walls in the ROOT
+        # 0017 §4a CONFINED-VALUE contract, and the chain walled in the ROOT
         # body on the `julia.gc_alloc_obj` BYTE-granular aggregate-store target
-        # (wall 8, Bennett-bvmd, CW-D4 / bennettvm-9n3y).
+        # (wall 8, Bennett-bvmd, CW-D4).
         #
-        # The p06b negative is NARROWED TWICE rather than deleted: wall 8 IS a
-        # p06b reject, so a blanket negative cannot survive, but the intent
-        # ("p06b did not re-reject the corpus store in the CLOSURE") must not be
-        # lost. BODY SCOPE keeps that intent; the DISCRIMINATOR additionally
-        # fails loud if the tolerated p06b reject changes shape.
+        # ADVANCED ONCE MORE by Bennett-bvmd (2026-08-06): wall 8 is CLEARED —
+        # that tier is now admitted at `elem_width = 8` — so the p06b
+        # DISCRIMINATOR inverts and the positive moves to wall 9.
+        #
+        # The p06b negative stays NARROWED rather than restored to a blanket
+        # form: BODY SCOPE keeps the original intent ("p06b did not re-reject
+        # the corpus store in the CLOSURE"), the DISCRIMINATOR now fails loud if
+        # the retired gc_alloc reject ever comes back.
         @test !(occursin("Bennett-p06b", msg) && occursin("_growend!", msg))
-        @test !occursin("Bennett-p06b", msg) || occursin("gc_alloc_obj", msg)
+        @test !(occursin("Bennett-p06b", msg) && occursin("gc_alloc_obj", msg))
+        @test !occursin("BYTE-granular getelementptr", msg)
         # LOAD-BEARING NEGATIVE: wall 7 is CLEARED. Without these the positive
-        # below would not notice a re-open.
+        # below would not notice a re-open. MEASURED still-true at wall 9.
         @test !occursin("Bennett-583s", msg)
         @test !occursin("base-cancelling", msg)
-        # POSITIVE: wall 8. Non-numeral anchors only (Bennett-0ncn).
-        @test occursin("gc_alloc_obj", msg) || occursin("BYTE-granular", msg)
+        # POSITIVE: wall 9 — the arena-src memcpy (Bennett-37mt / Bennett-8bys).
+        # Non-numeral anchors only (Bennett-0ncn).
+        @test occursin("memcpy", msg) || occursin("Bennett-37mt", msg)
     end
 
     # =====================================================================
