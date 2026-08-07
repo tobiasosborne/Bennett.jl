@@ -51,6 +51,7 @@ This site follows the [Diátaxis](https://diataxis.fr) structure.
 - [Installation](getting_started/install.md)
 - [Quick start](getting_started/quickstart.md)
 - [Your first circuit](tutorials/first_circuit.md)
+- [Reading the gates](tutorials/reading_the_gates.md)
 - [Control flow & loops](tutorials/control_flow_and_loops.md)
 - [Floats & transcendentals](tutorials/floats.md)
 
