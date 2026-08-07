@@ -331,31 +331,52 @@ end
                 @test !occursin("base-cancelling", msg)
                 @test !occursin("_foz5_confined_dead_bounds", msg)
                 @test !occursin("_57hd_value_identity_cluster", msg)
-                # POSITIVE, WALL 11 — the loaded-`ptr` (`.mem`) memcpy SRC class, corpus
-                # site #4 of the sy29 census, tracked in Bennett-8bys.
-                @test occursin("Bennett-37mt", msg) && occursin("src operand", msg)
-                # ================= THE IDENTICAL-TEXT DISCRIMINATOR — READ BEFORE EDITING ==
-                # WALL 11'S REJECT TEXT IS THE SAME REJECT AS WALL 9'S: same bead tags
-                # (`Bennett-37mt` / `Bennett-8bys`), same "src operand", same "memcpy". The
-                # ONLY thing that distinguishes them is WHICH OPERAND the `_ir_error` prefix
-                # quotes — wall 9 quoted `%"new::Array.size_ptr1"`, wall 11 quotes
-                # `%"new::Array.ref.mem"`. Neither `Bennett-37mt` nor `src operand` nor
-                # `Bennett-8bys` can tell them apart, and the `udiv` discriminator is NOT
-                # constructible (the prefix quotes the ptrtoint, not the cluster). WITHOUT
-                # BOTH LINES BELOW THIS MARKER CANNOT TELL A WALL-9 REGRESSION FROM WALL-11
-                # PROGRESS. Check discriminators against the MESSAGE TEXT, never against the
-                # IR (the Bennett-sy29 lesson). Do not "simplify" these two lines away.
-                @test occursin("new::Array.ref.mem", msg)
-                @test !occursin("new::Array.size_ptr", msg)
-                # NOTE FOR WHOEVER CLEARS WALL 11: wall 12 is the p06b `alloca { ptr, ptr }`
-                # silent-skip reject at `%L16` — measured LOUD; its message names
-                # `Bennett-p06b`, `_p06b_cell_ptr_target_kind` and `SILENTLY SKIPS`, and it
-                # does NOT contain the string `Bennett-1zow`, so a marker written against
-                # that bead tag would never fire. Wall 13 is a SECOND 37mt/8bys memcpy
-                # (`memcpy operand alloca has non-integer element type`); wall 14 is a bvmd
-                # `SCALE-COHERENCE` violation on the 9xi64 closure alloca. The `%L21` /
-                # `%L43` clusters are NOT future walls — they are already admitted under
-                # ADR 0017 §4a (measured; see gate (S) of test_57hd_value_identity.jl).
+                # ===================== WALL 11 CLEARED — Bennett-5viz =====================
+                # ADVANCED by Bennett-5viz (xkl wall 11): the loaded-`ptr` (`.mem`) memcpy SRC —
+                # corpus site #4 of the sy29 census, `Bennett-8bys` territory — is now certified
+                # by `_5viz_global_src_root`, which strips the `extractvalue` with the shipped
+                # `_57hd_insertvalue_field` and canonicalises the result with `_57hd_canon`
+                # (ZERO ADR 0017 §4b change) down to the EMPTY-`GenericMemory` SINGLETON's
+                # `.globals` root; root/capacity/scale then come from `parsed.globals` via
+                # doih G8's own formula. WALL 12 is `Bennett-p06b`'s OWN reject: the
+                # `alloca { ptr, ptr }` whose allocated type the alloca arm SILENTLY SKIPS, so
+                # nothing ever reserved the cells that aggregate store would write.
+                @test occursin("Bennett-p06b", msg)
+                @test occursin("_p06b_cell_ptr_target_kind", msg)   # names the predicate
+                @test occursin("SILENTLY SKIPS", msg)
+                # ┌────────── THE `.mem` SUFFIX TRAP — MEASURED, DO NOT SHORTEN ───────────┐
+                # │ The wall-11 discriminator INVERTS here: a `Bennett-37mt` / `-8bys` src  │
+                # │ reject at the corpus is now a REGRESSION. This negative is STRONGER     │
+                # │ than the operand-name pair it replaces — it does not depend on which    │
+                # │ operand the `_ir_error` prefix happens to quote.                        │
+                # │ BUT: wall 12's message DOES contain the substring `new::Array.ref` (it  │
+                # │ quotes `store { ptr, ptr } %"new::Array.ref", …`) and does NOT contain  │
+                # │ `new::Array.ref.mem`. KEEP THE `.mem` SUFFIX — dropping it turns the    │
+                # │ line RED. Check discriminators against the MESSAGE TEXT, never against  │
+                # │ the IR: the Bennett-sy29 lesson, applied to its own successor.          │
+                # └────────────────────────────────────────────────────────────────────────┘
+                @test !occursin("Bennett-37mt", msg)
+                @test !occursin("new::Array.ref.mem", msg)
+                @test !occursin("Bennett-5viz", msg)       # 5viz must not be the new wall
+                # NOTE FOR WHOEVER CLEARS WALL 12 — all four points MEASURED on the wall-12
+                # text itself, not forecast:
+                #   * wall 12's own message contains NEITHER `Bennett-1zow` NOR
+                #     `_p06b_granularity_violation`, so a marker written against either tag
+                #     would never fire. Pin what IS there.
+                #   * wall 13 is a SECOND 37mt/8bys memcpy reject (`memcpy operand alloca has
+                #     non-integer element type` — corpus site #5's `alloca { ptr, ptr }` src,
+                #     still `Bennett-8bys` territory), so `!occursin("Bennett-37mt")` will have
+                #     to FLIP BACK to a positive one wall later; the discriminator against wall
+                #     11 at that point is the operand pair (`%0` / `env+56`, NO `.mem`).
+                #   * wall 14 is the bvmd `SCALE-COHERENCE` reject on the 9×i64 closure alloca.
+                #     It PRE-EXISTS 5viz — raised by the already-shipped site-#3 memcpy's word
+                #     stamp setting `all_byte[env] = false`, not by anything 5viz emits — and
+                #     the 5viz scout's probe `p10` measured that byte-stamping ALL THREE
+                #     env-rooted memcpys makes the ROOT extract with NO WALL AT ALL. That tier
+                #     decision is deferred to the `Bennett-bvmd` family arc (5viz scout §3);
+                #     5viz deliberately keeps the sy29 dst-stamp rule unchanged.
+                #   * the `%L21` / `%L43` clusters are NOT future walls — already admitted
+                #     under ADR 0017 §4a (gate (S) of test_57hd_value_identity.jl).
                 # `occursin("_growend!", msg)` is DROPPED as a POSITIVE: the wall
                 # moved to the ROOT body, so the closure name is legitimately
                 # absent. It survives above as the body-scope term of the p06b

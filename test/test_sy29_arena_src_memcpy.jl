@@ -86,7 +86,7 @@
 #   (h) VARIABLE-OFFSET ARENA REJECT — `gep i8 %obj, i64 %n`: the arena root
 #       resolves but the offset is not a compile-time constant, so alignment is
 #       unprovable. Rule 1 refusal.
-#   (i) THE CORPUS GATE — the push! set advances from wall 9 to wall 10 (the
+#   (i) THE CORPUS GATE — the push! set advances from wall 9 to wall 12 (the
 #       `ptrtoint %memory_data3` base-cancelling cluster, Bennett-583s /
 #       Bennett-foz5). See `docs/design/sy29_scout.md` §9.
 #
@@ -553,7 +553,7 @@ top:
     end
 
     # ======================================================================
-    # (i) THE CORPUS GATE — wall 9 → wall 10.
+    # (i) THE CORPUS GATE — wall 9 → wall 12 (walls 10/11 cleared since).
     #
     # After sy29 the push! set walls at the ROOT body's
     #   %12 = ptrtoint ptr %memory_data3 to i64
@@ -563,7 +563,7 @@ top:
     # confined-value contract legitimately declines it. Wall 10's contract is
     # NOT designed here — see `docs/design/sy29_scout.md` §9.
     # ======================================================================
-    @testset "(i) push! corpus advances from wall 9 to wall 10" begin
+    @testset "(i) push! corpus advances from wall 9 to wall 12" begin
         f = n::Int64 -> begin
             v = Int64[]; push!(v, n); @inbounds v[1]
         end
@@ -584,23 +584,30 @@ top:
         @test !occursin("_57hd_value_identity_cluster", msg)
         # sy29's OWN arm is still cleared — this negative is unchanged.
         @test !occursin("Bennett-sy29", msg)
-        # ================= THE IDENTICAL-TEXT DISCRIMINATOR — READ THIS =======
-        # THE `!occursin("Bennett-37mt")` NEGATIVE THIS GATE USED TO CARRY
-        # CANNOT SURVIVE, and deleting it silently would be the exact defect
-        # this comment exists to prevent. WALL 11 IS ALSO A 37mt REJECT — the
-        # `Bennett-8bys` "src operand is not alloca-backed" text, WORD FOR WORD
-        # the same reject sy29 cleared at wall 9. The ONLY thing that
-        # distinguishes wall-11 PROGRESS from a wall-9 REGRESSION is WHICH
-        # OPERAND the `_ir_error` prefix quotes: wall 9 quoted
-        # `%"new::Array.size_ptr1"` (sy29's arena-SRC memcpy, corpus site #3),
-        # wall 11 quotes `%"new::Array.ref.mem"` (the loaded-`ptr` `.mem` src,
-        # corpus site #4). The `udiv` discriminator is NOT constructible — the
-        # prefix quotes the ptrtoint, not the cluster. Check discriminators
-        # against the MESSAGE TEXT, never against the IR: that is sy29's own
-        # lesson, applied to sy29's own gate. Do not "simplify" these away.
-        @test occursin("Bennett-37mt", msg) && occursin("src operand", msg)
-        @test occursin("new::Array.ref.mem", msg)
+        # ===================== WALL 11 CLEARED — Bennett-5viz =====================
+        # THE IDENTICAL-TEXT DISCRIMINATOR THIS GATE CARRIED IS NOW RETIRED, and
+        # what replaces it is STRICTLY STRONGER — read why before touching it.
+        # Wall 11 WAS a second `Bennett-37mt` / `Bennett-8bys` "src operand is
+        # not alloca-backed" reject, WORD FOR WORD the one sy29 cleared at wall
+        # 9, distinguishable only by WHICH OPERAND the `_ir_error` prefix quoted
+        # (`%"new::Array.size_ptr1"` at wall 9 vs `%"new::Array.ref.mem"` at
+        # wall 11). Bennett-5viz CLEARED wall 11 — the loaded-`ptr` `.mem` src
+        # (corpus site #4) now canonicalises to the empty-`GenericMemory`
+        # SINGLETON's `.globals` root — so BOTH sites are admitted and a 37mt src
+        # reject at this corpus is now a REGRESSION of EITHER, with no operand
+        # name needed to tell them apart. Wall 12 is `Bennett-p06b`'s own
+        # `alloca { ptr, ptr }` silent-skip reject at `%L16`.
+        @test occursin("Bennett-p06b", msg)
+        @test occursin("_p06b_cell_ptr_target_kind", msg)
+        @test occursin("SILENTLY SKIPS", msg)
+        @test !occursin("Bennett-37mt", msg)
+        # KEEP THE `.mem` SUFFIX — wall 12's message DOES contain
+        # `new::Array.ref` (it quotes `store { ptr, ptr } %"new::Array.ref", …`)
+        # and does NOT contain `new::Array.ref.mem`. Dropping the suffix turns
+        # this line RED. Measured, not forecast.
+        @test !occursin("new::Array.ref.mem", msg)
         @test !occursin("new::Array.size_ptr", msg)
+        @test !occursin("Bennett-5viz", msg)   # 5viz is not the new wall
         # Walls 3/5/6/7/8 stay cleared.
         @test !(occursin("Bennett-p06b", msg) && occursin("gc_alloc_obj", msg))
         for neg in ("Bennett-jbko", "Bennett-iwo9", "Bennett-lgzx", "memmove",

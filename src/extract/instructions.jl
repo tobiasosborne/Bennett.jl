@@ -2878,6 +2878,189 @@ function _alloca_elem_width_bits(alloca_ref::_LLVMRef)::Int
     return 0
 end
 
+# ---- Bennett-5viz (2026-08-07, xkl frontier wall 11) ------------------------
+#
+# Is `v` a `load ptr, ptr @"jl_global#N"` on a SINGLETON-DATA global that
+# `_extract_const_globals` actually SEEDED into `parsed.globals`? Returns the
+# `.globals` key, or `nothing`.
+#
+# THREE CLAUSES, ALL LOAD-BEARING:
+#
+#   * `_is_singleton_data_global_name` — the recogniser that PUT the entry in
+#     `.globals` (the `bennettvm-416r.13 / CW-D3 Lever 2` arm of
+#     `_extract_const_globals`, `ptr_cells`-gated). Gating on it here keeps this
+#     arm's clientele IDENTICAL to that arm's, rather than admitting any global
+#     that happens to be dict-resident.
+#   * `haskey(globals, G)` — the CAPACITY authority. The name alone proves
+#     nothing about how many cells the VM seeds; `.globals` does, and it is the
+#     same authority doih's G8 bounds-check already uses.
+#   * `names[v] === G` — the OPERAND-RESOLUTION proof. The singleton-data arm of
+#     `_handle_load` (`~:6986`) emits NO IRInst and ALIASES the load-result SSA
+#     name to the GLOBAL's own stable name, precisely so that several loads of
+#     one singleton collapse to the single `.globals` key the VM binds at
+#     `GLOBAL_BASE`. Checking the alias landed is what makes `ssa(G)` a
+#     GUARANTEED-RESOLVABLE base for the addresses this arm emits, instead of a
+#     hopeful one. If a future refactor stops aliasing, this returns `nothing`
+#     and the arm goes conservatively dead rather than emitting a dangling
+#     operand.
+function _5viz_singleton_load(v, names::Dict{_LLVMRef, Symbol},
+                              globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}}
+                              )::Union{Nothing, Tuple{Symbol, _LLVMRef}}
+    (v isa LLVM.Instruction && LLVM.opcode(v) == LLVM.API.LLVMLoad) ||
+        return nothing
+    LLVM.value_type(v) isa LLVM.PointerType || return nothing
+    gp = LLVM.operands(v)[1]
+    gp isa LLVM.GlobalVariable || return nothing
+    gname_s = LLVM.name(gp)
+    _is_singleton_data_global_name(gname_s) || return nothing
+    gname = Symbol(gname_s)
+    haskey(globals, gname) || return nothing
+    get(names, v.ref, nothing) === gname || return nothing
+    # The GlobalVariable's OWN ref is returned so Predicate 7 can compare src
+    # and dst roots by ref, uniformly with the alloca / arena cases.
+    return (gname, gp.ref)
+end
+
+"""
+    _5viz_global_src_root(src_v, names, suppressed, ptr_cells, globals)
+        -> Union{Nothing, Tuple{Symbol, _LLVMRef}}
+
+Bennett-5viz (xkl frontier wall 11, corpus site #4 of the sy29 census; the
+`Bennett-8bys` catch-all's loaded-`ptr` memcpy-src family). The `.globals` key
+that the memcpy SRC pointer `src_v` PROVABLY roots at, paired with that global's
+own LLVM ref (for Predicate 7), or `nothing` when no such proof exists.
+
+# The corpus this exists for
+
+The push! closed-world ROOT copies the `Memory` header's `i64 length` into the
+`_growend!` closure env:
+
+    %"jl_global#93" = load ptr, ptr @"jl_global#93"          ; THE SINGLETON
+    %memory_ref     = insertvalue { ptr, ptr } %3, ptr %"jl_global#93", 1
+    store { ptr, ptr } %memory_ref, ptr %"new::Array"        ; THE WRITER
+    %9              = load ptr, ptr %8                       ; THE LOAD  ([8,16))
+    %"new::Array.ref"     = insertvalue { ptr, ptr } %10, ptr %9, 1
+    %"new::Array.ref.mem" = extractvalue { ptr, ptr } %"new::Array.ref", 1
+    call void @llvm.memcpy.p0.p0.i64(ptr %env40, ptr %"new::Array.ref.mem", 8, 0)
+
+`Int64[]` produces NO gc_alloc'd `Memory`: it yields the shared EMPTY
+`Memory{Int64}` SINGLETON, which `_extract_const_globals` already models as a
+16-BYTE ZERO BLOB in `ParsedIR.globals` under the shipped
+`bennettvm-416r.13 / CW-D3 Lever 2` arm. So the certification target is a GLOBAL
+root, and the capacity/scale authority is `.globals` — NOT an arena root.
+(This corrects the bead text; see `docs/design/5viz_scout.md` §1.2 / §6.)
+
+# What is proven, and by what
+
+  1. `_bvmd_root_ref` walks the CONST-GEP chain to the base — the SAME walk
+     `_root_byte_offset` measures its offset from, so root and offset are
+     measured from one place and cannot drift.
+  2. ONE top-level `extractvalue` is stripped by the existing
+     `_57hd_insertvalue_field`. This is PURE SSA ALGEBRA, not an analysis:
+     `extractvalue (insertvalue A, v, j), j` IS `v`, unconditionally.
+  3. If the result is already a singleton-data load, we are done — nothing to
+     canonicalise (the DIRECT shape). Otherwise:
+  4. §4a clause (i) certification `_57hd_certified` (V0) on the source, then
+  5. `_57hd_canon` — **ZERO changes to ADR 0017 §4b** — reduces it to its
+     canonical value via the (a) STORE-FORWARD clause, and the result must be a
+     singleton-data load.
+
+# ┌──────────────── THE CANON-BLOCK TRAP — MEASURED, DO NOT "TIDY" ──────────┐
+# │ `_57hd_canon` is INTRA-BLOCK BY DESIGN                                    │
+# │ (`LLVM.parent(v).ref == blk.ref || return v.ref`). The memcpy lives in     │
+# │ `%L16`; the src's definition chain lives in `%top`. Passing the MEMCPY's   │
+# │ block makes canon return its argument UNCHANGED — this whole arm becomes   │
+# │ DEAD CODE and the wall silently persists. It is fail-CLOSED, which is why  │
+# │ it would never show up as a test failure, only as a bead that "did not     │
+# │ work". Measured both ways in the scout's probe `p12`.                      │
+# │                                                                           │
+# │ `blk = LLVM.parent(stripped)` is the ONLY correct choice, and it is SOUND  │
+# │ ACROSS BLOCKS because canon establishes a fact about an SSA VALUE AT ITS   │
+# │ DEFINITION. SSA values are immutable, so the fact holds at every use, in   │
+# │ every block. The clobber window canon scans is the one between the writing │
+# │ store and the load IN THAT BLOCK — exactly the window that determines the  │
+# │ loaded value.                                                             │
+# └───────────────────────────────────────────────────────────────────────────┘
+
+PURE: read-only in `names`, `suppressed` and `globals` (`_57hd_canon` /
+`_57hd_certified` document their own purity), so calling it mid-conversion
+introduces no ordering dependence.
+
+Consulted ONLY under `ptr_cells=true`. On the circuit / `mem=:heap` model a
+`.globals` blob has no cell semantics and there is no history tape, so the
+caller stays at the byte-identical Predicate-6 fail-loud — the
+vbv9 / u2kk / qmv7 / sy29 gating pattern, unchanged.
+
+# The D1-class hazard is NOT engaged
+
+The 57hd hostile review's D1 shapes (two chains canonicalising to one uniqued
+`undef`/`poison`; a `phi` carrying the Bennett-cc0 M2b width-0 sentinel) are
+hazards of §4b's SYMMETRIC (V2) EQUALITY test — two chains compared for
+identity. This arm uses canon in SINGLE-VALUE ROOT-FINDING mode: there is no
+second chain and no equality comparison. The residual obligation is the one
+canon already carries (a wrong canonical answer ⇒ a wrong root), and canon's
+answer here is POINTER VALUE EQUALITY, the strongest aliasing statement
+available.
+"""
+function _5viz_global_src_root(src_v::LLVM.Value,
+                               names::Dict{_LLVMRef, Symbol},
+                               suppressed::Set{_LLVMRef},
+                               ptr_cells::Bool,
+                               globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}}
+                               )::Union{Nothing, Tuple{Symbol, _LLVMRef}}
+    ptr_cells || return nothing
+    isempty(globals) && return nothing
+
+    # (1) the const-GEP chain's base — `_root_byte_offset`'s own walk.
+    base_ref = _bvmd_root_ref(src_v)
+    base_ref === nothing && return nothing
+    base = LLVM.Value(base_ref)
+    base isa LLVM.Instruction || return nothing
+
+    # (2) strip ONE top-level `extractvalue` (pure SSA algebra). `_57hd_
+    # insertvalue_field` fails CLOSED when the aggregate came from a `load`, a
+    # `call` or a `phi`, or when some link is multi-index.
+    stripped = base
+    if LLVM.opcode(base) == LLVM.API.LLVMExtractValue
+        LLVM.API.LLVMGetNumIndices(base.ref) == 1 || return nothing
+        j = Int(unsafe_load(LLVM.API.LLVMGetIndices(base.ref), 1))
+        fv = _57hd_insertvalue_field(LLVM.operands(base)[1], j)
+        fv === nothing && return nothing
+        stripped = fv
+    end
+    stripped isa LLVM.Instruction || return nothing
+
+    # (3) THE DIRECT SHAPE — the value already IS the loaded singleton pointer.
+    # No analysis is involved and none is wanted: this is a syntactic identity,
+    # and it must be tested BEFORE (V0), because `_foz5_cert_src_kind` refuses a
+    # `load` whose pointer operand is a `GlobalVariable` BY NAME (the foz5
+    # hostile-review D1 patch — such a load materialises no cell). That refusal
+    # is right for foz5's contract and irrelevant to ours: we are not coercing
+    # the load's value into a cell, we are naming the `.globals` root it reads.
+    let g = _5viz_singleton_load(stripped, names, globals)
+        g === nothing || return g
+    end
+
+    # (4) §4a clause (i) — (V0). Load-bearing for the SAME reason it is in
+    # `_57hd_value_identity_cluster`: a PointerType `phi`/`select` carries the
+    # Bennett-cc0 M2b WIDTH-0 SENTINEL and is not a materialised cell.
+    _57hd_certified(stripped, names, suppressed) || return nothing
+
+    # (5) canon IN THE STRIPPED VALUE'S DEFINING BLOCK — see the boxed trap.
+    blk = LLVM.parent(stripped)
+    seq = collect(LLVM.instructions(blk))
+    order = Dict{_LLVMRef, Int}()
+    for (k, i) in enumerate(seq)
+        order[i.ref] = k
+    end
+    dl = LLVM.datalayout(LLVM.parent(LLVM.parent(blk)))
+    memo = Dict{_LLVMRef, _LLVMRef}()
+    budget = Ref(_57HD_SCAN_CAP)
+    cref = _57hd_canon(stripped, blk, seq, order, names, suppressed, ptr_cells,
+                       dl, memo, budget)
+    return _5viz_singleton_load(LLVM.Value(cref), names, globals)
+end
+
 """
     _handle_memcpy_arm(cname, inst, names, counter, ops, globals) -> Vector{IRInst}
 
@@ -2939,7 +3122,23 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
                             synth_ptr_provenance::Set{Tuple{Symbol, Int, Int}}=
                                 Set{Tuple{Symbol, Int, Int}}(),
                             synth_ptr_allocas::Set{_LLVMRef}=Set{_LLVMRef}(),
-                            ptr_cells::Bool=false)
+                            ptr_cells::Bool=false,
+                            # Bennett-5viz: the REAL `_p06b_suppressed_refs`,
+                            # threaded two hops from `_convert_instruction` via
+                            # `_handle_intrinsic`. `_57hd_canon`'s clause (iv)
+                            # consults it, and defaulting it to EMPTY would
+                            # wrongly admit a copy step through a SUPPRESSED
+                            # (sret box) store target — a store the extraction
+                            # never materialises as cells. The set is known to
+                            # be INEXACT in the other direction (it omits every
+                            # named-but-unemitted producer: the singleton-global
+                            # alias, fences, gc_preserve — Bennett-x90d); that
+                            # residual is inherited, not introduced, and is
+                            # conservative for THIS consumer, since a missing
+                            # entry can only make clause (iv) admit a store the
+                            # walk would otherwise refuse. Passing the real set
+                            # is strictly better than passing an empty one.
+                            suppressed_refs::Set{_LLVMRef}=Set{_LLVMRef}())
     # Predicate 1: addrspace 0 on both pointers (encoded in the intrinsic name).
     startswith(cname, "llvm.memcpy.p0.p0.") || _ir_error(inst,
         "$(cname): memcpy with non-default pointer address space is not " *
@@ -3152,6 +3351,76 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
     arena_src = (ptr_cells && src_root === nothing) ?
         _gc_alloc_root_ref(src_v) : nothing
 
+    # ---- Bennett-5viz (2026-08-07, xkl frontier wall 11) --------------------
+    # A LOADED POINTER src that CANONICALISES to a `.globals` SINGLETON root,
+    # under the closed-world `ptr_cells` gate. This WIDENS the sy29 src gate; it
+    # is NOT a new arm, and it changes NOTHING in ADR 0017 §4b — the whole
+    # certification is one call to `_5viz_global_src_root`, which composes the
+    # already-shipped `_57hd_insertvalue_field` + `_57hd_canon` + the
+    # `bennettvm-416r.13` `.globals` seeding. Corpus site #4 of the sy29 census
+    # (the ONLY member of its class in the ROOT), tracked under `Bennett-8bys`.
+    #
+    # THE PROVENANCE CHAIN, so nobody re-derives it:
+    #
+    #   * `Int64[]` allocates NO `Memory`. It yields the SHARED EMPTY
+    #     `Memory{Int64}` SINGLETON — a `@"jl_global#N"` whose initializer is an
+    #     unrepresentable JIT alias — which `_extract_const_globals` models as a
+    #     16-BYTE ZERO BLOB `(zeros(UInt64,16), 8)` in `ParsedIR.globals`. The
+    #     src root is therefore a GLOBAL, not an arena object. (The bead text
+    #     said "the gc_alloc'd Memory"; there is none. Scout §1.1 / §6.)
+    #   * THE COPIED VALUE IS AN `Int64`, NOT A POINTER. The memcpy's src
+    #     OPERAND is a pointer; the copied VALUE is the 8 bytes AT that address,
+    #     i.e. the `Memory` header's `{i64 length, ptr data}` field 0 =
+    #     `length`. `env+40` is the `_growend!` closure's FIFTH `Int64` field
+    #     (the env is `ptr@+0, Int64@+8…+40, Memory@+48, GenericMemoryRef@+56`
+    #     = 9 × i64; its three GC-tracked fields go to a separate
+    #     `alloca ptr, i32 3` roots array and never to the env). Hence
+    #     `src_ew = 64` below is the VALUE width and the global's stored `ew`
+    #     is the ADDRESS SCALE — Predicate 8 rejects the corpus at 8b if the two
+    #     are confused. Wall 11 refuses, one block later, a dereference the
+    #     extractor ALREADY performs: `IRLoad(:.unbox, %"new::Array.ref.mem",
+    #     64)` in `%top`. (Bead correction 2; scout §1.2.)
+    #   * THE CANON-BLOCK TRAP is inside `_5viz_global_src_root` and is boxed in
+    #     its docstring. Do not "simplify" the block choice: passing the
+    #     memcpy's block makes the arm silent DEAD CODE.
+    #
+    # DISJOINTNESS IS STRUCTURAL HERE, AND STRONGER THAN sy29's. BennettVM lays
+    # globals in a fourth address tier based at `GLOBAL_BASE = 2^48`
+    # (`BennettVM/src/ir/IState.jl`, `memory_floor.jl`), READ-ONLY; stack
+    # allocas and the arena live below it. A global-rooted src and an
+    # alloca/arena-rooted dst therefore cannot alias BY ADDRESS-SPACE
+    # CONSTRUCTION, so Predicate 7's premise holds for free. Two corollaries:
+    # (i) a canonicalised-global DST is refused — 5viz adds NO dst-side
+    # canonicalisation, so such a dst still dies at Predicate 6's DST half,
+    # which is the earliest point (CLAUDE.md §1); (ii) reading past the seeded
+    # cells hits `memory_floor.jl`'s "NOT seeded" fail-loud, which is a BACKSTOP
+    # for Predicate 6d and NOT a substitute for it — 6d is enforced below.
+    #
+    # THE DST SIDE IS DELIBERATELY UNCHANGED. `env+40` is a BYTE GEP into a
+    # WORD-tier `alloca [9 x i64]`, i.e. the `Bennett-z2ia` / `Bennett-bvmd`
+    # family, and 5viz KEEPS the sy29 stamp rule (`ptr_ew_dst` from
+    # `_root_scale`). Grounds: 5viz's dst is byte-identical IN SHAPE to the
+    # already-shipped corpus site #3 (`memcpy(env+32, %"new::Array.size", 8)`),
+    # whose word stamp is what sets `all_byte[env] = false` and therefore what
+    # BLOCKS bvmd's use-directed byte-normalisation — so WALL 14 PRE-EXISTS
+    # 5viz and 5viz neither creates nor worsens it. Flipping the dst stamp to
+    # the operand's own const-GEP granularity is a TIER decision with blast
+    # radius across three shipped arms; it belongs to the `Bennett-bvmd` family
+    # arc, and is explicitly DEFERRED there (scout §3). Recorded on that bead:
+    # the scout's probe `p10` measured that byte-stamping ALL THREE env-rooted
+    # memcpys makes the push! ROOT extract with NO WALL AT ALL.
+    #
+    # THE CIRCUIT PATH IS BYTE-IDENTICAL BY CONSTRUCTION: the whole branch is
+    # behind `ptr_cells &&` (inside the helper as well as here), so
+    # `global_src` is `nothing` at `ptr_cells=false`, Predicate 6's SRC message
+    # is unchanged character-for-character, and `test_37mt` / `test_lqif` keep
+    # their pins. The vbv9 / u2kk / qmv7 / sy29 gating pattern, unchanged.
+    gsrc = (ptr_cells && src_root === nothing && arena_src === nothing) ?
+        _5viz_global_src_root(src_v, names, suppressed_refs, ptr_cells, globals) :
+        nothing
+    global_src     = gsrc === nothing ? nothing : gsrc[1]   # the `.globals` key
+    global_src_ref = gsrc === nothing ? nothing : gsrc[2]   # the GlobalVariable
+
     (dst_root === nothing && arena_dst === nothing) && _ir_error(inst,
         "$(cname): memcpy dst operand is not alloca-backed (or " *
         "alloca-backed via a const-offset GEP). Bennett's pointer- " *
@@ -3159,15 +3428,116 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
         "phi/select/parameter sources fan out to multiple origins which " *
         "Bennett-37mt does not yet handle. Tracked in Bennett-8bys. " *
         "(Bennett-37mt Phase 1)")
-    (src_root === nothing && arena_src === nothing) && _ir_error(inst,
+    (src_root === nothing && arena_src === nothing && global_src === nothing) &&
+    _ir_error(inst,
         "$(cname): memcpy src operand is not alloca-backed (or " *
         "alloca-backed via a const-offset GEP). Same restriction as " *
         "the dst case; tracked in Bennett-8bys. (Bennett-37mt Phase 1)")
 
-    # The EFFECTIVE root of each side — an alloca ref or an arena-call ref. Used
-    # by Predicate 7 (distinctness) and by the Bennett-land carry-through.
+    # ---- Bennett-5viz Predicates 6c / 6d for the GLOBAL-ROOTED SRC ----------
+    # Stated here, next to the certification, rather than folded into the arena
+    # loops below: the arena loops are keyed on `_gc_alloc_root_offset` /
+    # `_root_scale`, and BOTH are silent for a global root (a global has no
+    # allocation root IN THIS FUNCTION, so `_root_scale` returns `nothing` and
+    # the 6d loop `continue`s). Without these lines the src side would be
+    # admitted with NO bounds check and NO alignment check at all — the exact
+    # pair of holes sy29's hostile review D2 EXECUTED (`222` vs oracle `333`
+    # from an unbounded dst; `leak = 999` from an unbounded src).
+    #
+    # Capacity is doih G8's OWN formula (`length(gdata) * ew_bytes`) — a reuse
+    # of the shipped authority, not a new one. The corpus is `0 + 8 <= 16`,
+    # FLUSH on neither bound but exercising both, and the alignment clause is
+    # exercised at offset 0.
+    global_src_off = 0
+    if global_src !== nothing
+        gdata, gew = globals[global_src]
+        # (6c-0) SCALE >= 1. A `.globals` entry with `ew < 8` would give
+        # `ew ÷ 8 == 0` — a division by zero in BennettVM's `off ÷ (ew÷8)` cell
+        # recovery. REFUSE rather than divide (CLAUDE.md §1). Unreachable via
+        # the singleton gate today (`_extract_const_globals` seeds singletons at
+        # `ew = 8`), which is exactly why it is stated rather than assumed.
+        (gew >= 8 && gew % 8 == 0) || _ir_error(inst,
+            "$(cname): memcpy src operand canonicalises to the GLOBAL " *
+            "`@$(global_src)`, whose `parsed.globals` entry has element width " *
+            "$(gew) bits. BennettVM recovers a cell as " *
+            "`offset_bytes ÷ (elem_width ÷ 8)`, so a sub-byte or non-byte-" *
+            "multiple width has no cell scale at all (`$(gew) ÷ 8 == " *
+            "$(div(gew, 8))`). Tracked in Bennett-8bys. " *
+            "(Bennett-5viz Predicate 6c, predicate `_5viz_global_src_root`)")
+        gscale = div(gew, 8)
+        # (6c-1) A 64-bit VALUE must occupy exactly ONE cell. That holds at the
+        # BYTE tier (scale 1 — the value is named by its base byte address and
+        # bytes +1…+7 are never named: the bennettvm-416r.13 / 9n3y / vbv9
+        # convention) and at the WORD tier (scale 8 — one Int64 per cell, ADR
+        # 0018 §A). At scale 2 or 4 the value would SPAN cells and no
+        # `IRLoad`/`IRStore` pair can express it.
+        (gscale == 1 || gscale == 8) || _ir_error(inst,
+            "$(cname): memcpy src operand canonicalises to the GLOBAL " *
+            "`@$(global_src)`, whose `parsed.globals` cells are $(gscale) " *
+            "byte(s) wide. This arm moves whole 64-bit VALUES, which occupy " *
+            "exactly ONE cell only at the BYTE tier (scale 1) or the WORD tier " *
+            "(scale 8); at scale $(gscale) a 64-bit value SPANS cells and no " *
+            "single-cell gather is faithful. Tracked in Bennett-8bys. " *
+            "(Bennett-5viz Predicate 6c, predicate `_5viz_global_src_root`)")
+        # (6c-2) the offset from the canonical root must be a compile-time
+        # constant, non-negative and cell-aligned. Measured from
+        # `_bvmd_root_ref`'s chain, the SAME chain `_5viz_global_src_root`
+        # certified the root through — so root and offset cannot drift apart.
+        goff = _root_byte_offset(src_v)
+        goff === nothing && _ir_error(inst,
+            "$(cname): memcpy src operand canonicalises to the GLOBAL " *
+            "`@$(global_src)`, but its byte offset from that root could not be " *
+            "resolved to a compile-time constant. One of: a RUNTIME GEP index; " *
+            "a STRUCT-typed GEP source element type; a non-zero first index " *
+            "into an `ArrayType` source; or a GEP chain deeper than " *
+            "$(_BVMD_ROOT_DEPTH). Neither cell alignment nor the in-object " *
+            "range can be shown. Tracked in Bennett-8bys. " *
+            "(Bennett-5viz Predicate 6c, predicate `_5viz_global_src_root` / " *
+            "`_root_byte_offset`)")
+        (goff >= 0 && rem(goff, 8) == 0) || _ir_error(inst,
+            "$(cname): memcpy src operand sits at byte offset $(goff) of the " *
+            "GLOBAL `@$(global_src)`, which is " *
+            (goff < 0 ? "NEGATIVE — the GEP chain points BEFORE the start of " *
+                        "the seeded blob, addressing no cell of this object at " *
+                        "all" :
+                        "not cell-aligned (a multiple of 8). BennettVM's BYTE " *
+                        "tier names a 64-bit value by its BASE byte address " *
+                        "and never names bytes +1…+7, so a sub-cell chunk " *
+                        "straddles two named cells and no `IRLoad`/`IRStore` " *
+                        "pair can express it. NOTE this is NOT a " *
+                        "scale-coherence violation — a byte GEP off a " *
+                        "byte-tier root is coherent by construction") *
+            ". Tracked in Bennett-8bys. " *
+            "(Bennett-5viz Predicate 6c, predicate `_5viz_global_src_root` / " *
+            "`_root_byte_offset`)")
+        # (6d) IN-OBJECT RANGE, against the doih G8 capacity formula. THIS IS
+        # WHAT MAKES PREDICATE 7's DISJOINTNESS ARGUMENT TRUE for this side:
+        # the `GLOBAL_BASE` tier is a monotone layout too, so a range that
+        # leaves its own blob reads the NEXT global (or unseeded space, where
+        # `memory_floor.jl` fails loud — a backstop, not a substitute).
+        gcap = length(gdata) * gscale
+        (goff + N <= gcap) || _ir_error(inst,
+            "$(cname): memcpy src operand addresses bytes " *
+            "[$(goff), $(goff + N)) of the `parsed.globals` blob " *
+            "`@$(global_src)`, which seeds only $(gcap) byte(s) " *
+            "($(length(gdata)) cell(s) × $(gscale) byte(s)) — the range leaves " *
+            "its own object. REFUSED rather than clamped: BennettVM lays its " *
+            "read-only `GLOBAL_BASE` tier out monotonically, so bytes past a " *
+            "blob belong to the NEXT global or to unseeded space, and (a) the " *
+            "copy reads another object, and (b) the distinctness guard stops " *
+            "implying disjointness. Capacity is doih G8's own formula " *
+            "(`length(gdata) * (ew ÷ 8)`). Tracked in Bennett-8bys. " *
+            "(Bennett-5viz Predicate 6d, predicate `_5viz_global_src_root` / " *
+            "`_root_byte_offset`)")
+        global_src_off = goff
+    end
+
+    # The EFFECTIVE root of each side — an alloca ref, an arena-call ref, or (5viz)
+    # the canonical `.globals` GlobalVariable ref. Used by Predicate 7
+    # (distinctness) and by the Bennett-land carry-through.
     eff_dst_root = dst_root === nothing ? arena_dst : dst_root
-    eff_src_root = src_root === nothing ? arena_src : src_root
+    eff_src_root = src_root !== nothing ? src_root :
+                   arena_src !== nothing ? arena_src : global_src_ref
 
     # Predicate 6c (Bennett-sy29): an ARENA operand's byte offset from its root
     # must be a compile-time constant AND a whole multiple of 8. See
@@ -3304,7 +3674,28 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
     # CHARACTER-IDENTICAL (`test_37mt:101` pins "same alloca"); an arena root on
     # either side gets its own text naming the enforcing predicate.
     if eff_dst_root === eff_src_root
-        if arena_dst === nothing && arena_src === nothing
+        if global_src !== nothing
+            # Bennett-5viz. UNREACHABLE TODAY BY CONSTRUCTION, and stated
+            # anyway rather than left to the arena message (which would name the
+            # wrong root kind): 5viz adds NO dst-side canonicalisation, so a dst
+            # that canonicalises to a global still dies at Predicate 6's DST
+            # half above, and no other dst kind can be `===` a GlobalVariable
+            # ref. If a future arm ever admits a global dst, THIS is the clause
+            # that must refuse the same-blob case — and the reason is a
+            # BennettVM fact: the `GLOBAL_BASE` tier is READ-ONLY, so the
+            # write has no semantics at all, quite apart from the overlap.
+            _ir_error(inst,
+                "$(cname): memcpy with src and dst rooted at the SAME " *
+                "`parsed.globals` blob `@$(global_src)` is semantically " *
+                "memmove (overlapping or in-place copy), AND the blob lives in " *
+                "BennettVM's READ-ONLY `GLOBAL_BASE` tier, which has no " *
+                "reversible write semantics. The per-cell decomposition this " *
+                "arm emits never reaches BennettVM's runtime overlap check " *
+                "(that check lives in `forward(::IntrinsicMemcpy)`, and no " *
+                "`IntrinsicMemcpy` is emitted here), so proving disjointness " *
+                "at extraction is the ONLY guard. Tracked in Bennett-8bys. " *
+                "(Bennett-5viz — generalised Predicate 7, distinct roots only)")
+        elseif arena_dst === nothing && arena_src === nothing
             _ir_error(inst,
                 "$(cname): memcpy with src and dst rooted at the same alloca is " *
                 "semantically memmove (overlapping or in-place copy). " *
@@ -3338,8 +3729,18 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
     # §A — a gc_alloc'd cell holds one Int64), and SKIPS the alloca-specific
     # `_alloca_elem_width_bits` probe: there is no `LLVMGetAllocatedType` for a
     # call result. Verbatim the vbv9 G4 structure.
+    #
+    # Bennett-5viz: a GLOBAL-ROOTED src is likewise fixed at 64 — and this is
+    # THE correction the bead needed. `src_ew` is the width of the VALUE being
+    # moved (one `Int64`: the `Memory` header's `length` field), NEVER the
+    # global's stored `.globals` element width, which is the ADDRESS SCALE and
+    # is 8 for the singleton blob. Using the global's `ew` here would make
+    # `src_ew = 8` against `dst_ew = 64` and reject the corpus at Predicate 8b
+    # with a cross-width message — the Bennett-4y0d address/value split, in the
+    # one place where getting it backwards LOOKS like a legitimate reject.
     dst_ew = arena_dst !== nothing ? 64 : _alloca_elem_width_bits(dst_root)
-    src_ew = arena_src !== nothing ? 64 : _alloca_elem_width_bits(src_root)
+    src_ew = (arena_src !== nothing || global_src !== nothing) ?
+             64 : _alloca_elem_width_bits(src_root)
     if dst_ew == 0 || src_ew == 0
         _ir_error(inst,
             "$(cname): memcpy operand alloca has non-integer element type " *
@@ -3369,11 +3770,20 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
     haskey(names, dst_v.ref) || _ir_error(inst,
         "$(cname): memcpy dst pointer is not a named SSA value. " *
         "(Bennett-37mt Phase 1)")
-    haskey(names, src_v.ref) || _ir_error(inst,
+    # Bennett-5viz: a GLOBAL-ROOTED src is addressed off the `.globals` KEY, not
+    # off the operand's own SSA name, so the operand need not be named — and on
+    # the corpus it is an `extractvalue` whose own cell the arm deliberately does
+    # not depend on. The base we emit is the STABLE global symbol the
+    # singleton-data load arm aliases every such load to, which is the SAME base
+    # the already-shipped `%top` emission uses
+    # (`IRPtrOffset(:memory_data_ptr, SSAOperand(jl_global#93), 8, 8)`), and
+    # which BennettVM binds once at `GLOBAL_BASE`. `_5viz_singleton_load`'s
+    # third clause is what proves that alias landed.
+    global_src === nothing && (haskey(names, src_v.ref) || _ir_error(inst,
         "$(cname): memcpy src pointer is not a named SSA value. " *
-        "(Bennett-37mt Phase 1)")
+        "(Bennett-37mt Phase 1)"))
     dst_op = ssa(names[dst_v.ref])
-    src_op = ssa(names[src_v.ref])
+    src_op = global_src === nothing ? ssa(names[src_v.ref]) : ssa(global_src)
 
     # Bennett-land: carry-through tagging. If src alloca was previously
     # tagged as carrying synthetic-address bytes (via a prior memcpy
@@ -3442,9 +3852,19 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
     # `_root_scale`'s `ew % 8 == 0` guard and also falls back.
     ew_bytes = div(dst_ew, 8)
     K = div(N, ew_bytes)
-    ptr_ew_src = let rs = _root_scale(src_v, names, ptr_cells)
-        rs === nothing ? src_ew : 8 * rs[1]
-    end
+    # Bennett-5viz: a GLOBAL-ROOTED src has no allocation root IN THIS FUNCTION,
+    # so `_root_scale` is silent for it (by design — see its docstring). The
+    # scale comes from the `.globals` entry instead, which is the SAME authority
+    # the capacity check above used. `global_src_off` is the constant byte offset
+    # of the operand from that root; it is 0 for every OTHER client (whose
+    # `src_op` is already the offset pointer), so the emission below is
+    # BYTE-IDENTICAL for them.
+    # (`8 * (ew ÷ 8) == ew` for the `ew % 8 == 0` the 6c-0 guard above enforces;
+    # spelled as `8 * scale` so the RULE is what is read, not the coincidence.)
+    ptr_ew_src = global_src !== nothing ? 8 * div(globals[global_src][2], 8) :
+        let rs = _root_scale(src_v, names, ptr_cells)
+            rs === nothing ? src_ew : 8 * rs[1]
+        end
     ptr_ew_dst = let rs = _root_scale(dst_v, names, ptr_cells)
         rs === nothing ? dst_ew : 8 * rs[1]
     end
@@ -3454,7 +3874,8 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
         src_off = _auto_name(counter)
         dst_off = _auto_name(counter)
         tmp     = _auto_name(counter)
-        push!(out, IRPtrOffset(src_off, src_op, k * ew_bytes, ptr_ew_src))
+        push!(out, IRPtrOffset(src_off, src_op,
+                               global_src_off + k * ew_bytes, ptr_ew_src))
         push!(out, IRPtrOffset(dst_off, dst_op, k * ew_bytes, ptr_ew_dst))
         push!(out, IRLoad(tmp, ssa(src_off), dst_ew))
         push!(out, IRStore(ssa(dst_off), ssa(tmp), dst_ew))
@@ -4352,7 +4773,12 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
                            synth_ptr_provenance::Set{Tuple{Symbol, Int, Int}}=
                                Set{Tuple{Symbol, Int, Int}}(),
                            synth_ptr_allocas::Set{_LLVMRef}=Set{_LLVMRef}(),
-                           ptr_cells::Bool=false)
+                           ptr_cells::Bool=false,
+                           # Bennett-5viz: hop 1 of 2 for the real
+                           # `_p06b_suppressed_refs` — see `_handle_memcpy_arm`'s
+                           # own kwarg for why an empty default is unsound there.
+                           # Every OTHER intrinsic in this dispatcher ignores it.
+                           suppressed_refs::Set{_LLVMRef}=Set{_LLVMRef}())
     if startswith(cname, "llvm.umax.")
         cmp_dest = _auto_name(counter)
         w = _iwidth(ops[1])
@@ -5013,7 +5439,8 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
         return _handle_memcpy_arm(cname, inst, names, counter, ops, globals;
                                   synth_ptr_provenance=synth_ptr_provenance,
                                   synth_ptr_allocas=synth_ptr_allocas,
-                                  ptr_cells=ptr_cells)
+                                  ptr_cells=ptr_cells,
+                                  suppressed_refs=suppressed_refs)
     end
     # Bennett-hao Phase 2 (Bennett-9nwt): const-c const-N memset on
     # alloca-i8-backed dst lowers to byte-granular IRPtrOffset+IRStore
@@ -6333,7 +6760,12 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             handled = _handle_intrinsic(cname, inst, names, counter, dest, ops, globals;
                                         synth_ptr_provenance=synth_ptr_provenance,
                                         synth_ptr_allocas=synth_ptr_allocas,
-                                        ptr_cells=ptr_cells)
+                                        ptr_cells=ptr_cells,
+                                        # Bennett-5viz: hop 2 of 2 — the memcpy
+                                        # arm's `_57hd_canon` call needs the REAL
+                                        # set (see its kwarg comment; Bennett-x90d
+                                        # records the set's known inexactness).
+                                        suppressed_refs=suppressed_refs)
             handled === nothing || return handled
         end
         # Known Julia function calls → IRCall for gate-level inlining

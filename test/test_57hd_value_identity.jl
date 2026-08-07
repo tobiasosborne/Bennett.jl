@@ -1187,21 +1187,24 @@ end
     end
 
     # =======================================================================
-    # (W) CORPUS — wall 10 is CLEARED; the chain advances to wall 11.
+    # (W) CORPUS — walls 10 AND 11 are CLEARED; the chain advances to wall 12.
     #
-    # ┌─────────────────────── THE IDENTICAL-TEXT TRAP ────────────────────────┐
-    # │ WALL 11'S REJECT TEXT IS THE SAME REJECT AS WALL 9'S — same bead tags  │
-    # │ (`Bennett-37mt` / `Bennett-8bys`), same "src operand", same "memcpy".  │
-    # │ The ONLY thing that distinguishes them is WHICH OPERAND the            │
-    # │ `_ir_error` prefix quotes: wall 9 quoted `%"new::Array.size_ptr1"`,    │
-    # │ wall 11 quotes `%"new::Array.ref.mem"`. The `udiv` discriminator is    │
-    # │ NOT constructible — the prefix quotes the ptrtoint, not the cluster.   │
-    # │ Without BOTH lines below this gate cannot tell a WALL-9 REGRESSION     │
-    # │ from WALL-11 PROGRESS. Check discriminators against the MESSAGE TEXT,  │
-    # │ never against the IR (the Bennett-sy29 lesson).                        │
+    # ┌──────────── §4b IS *USED* BY WALL 11'S FIX, NOT CHANGED ───────────────┐
+    # │ Bennett-5viz (xkl wall 11) certifies the loaded-`ptr` (`.mem`) memcpy   │
+    # │ SRC by composing THIS FILE'S machinery — `_57hd_insertvalue_field` to   │
+    # │ strip the `extractvalue`, then `_57hd_canon` to reduce the result to    │
+    # │ the empty-`GenericMemory` SINGLETON's `.globals` root — with ZERO       │
+    # │ change to §4b itself. THAT IS THE TRIPWIRE: if any gate in this file    │
+    # │ moves, the 5viz arc has drifted into §4b and its REDUCED verdict is     │
+    # │ void. Every other gate here must stay green UNCHANGED; only this        │
+    # │ corpus marker advances.                                                │
+    # │                                                                        │
+    # │ NOTE THE FLIP: the `!occursin("SILENTLY SKIPS")` line this gate used to │
+    # │ carry (wall 12 "must not appear yet") is now a POSITIVE — wall 12 IS    │
+    # │ that reject.                                                           │
     # └────────────────────────────────────────────────────────────────────────┘
     # =======================================================================
-    @testset "(W) CORPUS — wall 10 cleared, chain advances to wall 11" begin
+    @testset "(W) CORPUS — walls 10/11 cleared, chain advances to wall 12" begin
         msg = try
             Bennett.extract_parsed_ir_set_from_julia(_push57hd, Tuple{Int64};
                                                      ptr_cells=true)
@@ -1216,18 +1219,37 @@ end
         @test !occursin("base-cancelling", msg)
         @test !occursin("_foz5_confined_dead_bounds", msg)
         @test !occursin("_57hd_value_identity_cluster", msg)
-        # POSITIVE, wall 11 — the loaded-`ptr` (.mem) memcpy SRC class.
-        @test occursin("Bennett-37mt", msg) && occursin("src operand", msg)
-        # THE DISCRIMINATOR vs WALL 9. Do not "simplify" these two lines away.
-        @test occursin("new::Array.ref.mem", msg)
-        @test !occursin("new::Array.size_ptr", msg)
-        # Walls 12/13/14 are further on and must not appear yet. NOTE for
-        # whoever clears wall 11: wall 12 is the p06b `alloca { ptr, ptr }`
-        # silent-skip reject at `%L16` — it is LOUD, and its message names
-        # `Bennett-p06b`, `_p06b_cell_ptr_target_kind` and `SILENTLY SKIPS`,
-        # but it does NOT contain the string `Bennett-1zow`, so a marker
-        # written against that bead tag would never fire (measured).
-        @test !occursin("SILENTLY SKIPS", msg)
+        # ===================== WALL 11 CLEARED — Bennett-5viz =====================
+        # POSITIVE, wall 12 — `Bennett-p06b`'s OWN reject: the
+        # `alloca { ptr, ptr }` whose allocated type the alloca arm SILENTLY
+        # SKIPS, so nothing ever reserved the cells the aggregate store at `%L16`
+        # would write. THE `!occursin("SILENTLY SKIPS")` LINE THIS GATE USED TO
+        # CARRY IS NOW THIS POSITIVE — it flipped, it was not deleted.
+        @test occursin("Bennett-p06b", msg)
+        @test occursin("_p06b_cell_ptr_target_kind", msg)
+        @test occursin("SILENTLY SKIPS", msg)
+        # ┌────────── THE `.mem` SUFFIX TRAP — MEASURED, DO NOT SHORTEN ───────────┐
+        # │ The wall-11 discriminator INVERTS: a `Bennett-37mt` / `-8bys` src      │
+        # │ reject at the corpus is now a REGRESSION, and this negative is         │
+        # │ STRONGER than the operand-name pair it replaces (it does not depend on │
+        # │ which operand the `_ir_error` prefix quotes). BUT wall 12's message    │
+        # │ DOES contain `new::Array.ref` — it quotes                              │
+        # │ `store { ptr, ptr } %"new::Array.ref", …` — and does NOT contain       │
+        # │ `new::Array.ref.mem`. KEEP THE `.mem` SUFFIX; dropping it turns the    │
+        # │ line RED. Check discriminators against the MESSAGE TEXT, never against │
+        # │ the IR (the Bennett-sy29 lesson, applied to its own successor).        │
+        # └────────────────────────────────────────────────────────────────────────┘
+        @test !occursin("Bennett-37mt", msg)
+        @test !occursin("new::Array.ref.mem", msg)
+        @test !occursin("Bennett-5viz", msg)
+        # NOTE for whoever clears wall 12, all MEASURED at the wall-12 text:
+        # its own message contains NEITHER `Bennett-1zow` NOR
+        # `_p06b_granularity_violation`. Wall 13 is a SECOND 37mt/8bys memcpy
+        # (`memcpy operand alloca has non-integer element type`, corpus site #5),
+        # so `!occursin("Bennett-37mt")` flips back to a positive one wall later.
+        # Wall 14 is the bvmd `SCALE-COHERENCE` reject on the 9×i64 closure
+        # alloca and PRE-EXISTS 5viz (raised by the shipped site-#3 memcpy's word
+        # stamp) — deferred to the `Bennett-bvmd` family arc.
         @test !occursin("SCALE-COHERENCE", msg)
         # Walls 3/5/6/7/8/9 stay cleared.
         @test !occursin("Bennett-jbko", msg)

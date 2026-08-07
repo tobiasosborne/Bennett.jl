@@ -1,5 +1,62 @@
 # Worklog chunk 106 — 2026-08-07 — Bennett-57hd hostile review FAILED + fix cycle
 
+## Session log — 2026-08-07 — SESSION WIND-DOWN: 5viz landed UNREVIEWED-WIP (Bennett-gcf7); six-arc session retrospective
+
+### Wind-down state (user-directed, graceful)
+
+The 5viz (wall 11) implementer was stopped mid-flight at "Now the BVM E2E
+test file:" — its Bennett-side work is COMPLETE and was orchestrator-verified
+green before landing: test_5viz 91/91, ALL EIGHT marker advances green
+(sy29 98, 57hd 101, 40ys 135, 7wsz 113, bvmd 91, foz5 70, p06b 624,
+vau9 76), gate-count 39/39, all --check-bounds=yes. Landed UNREVIEWED-WIP
+per the a8nw precedent. **Bennett-gcf7 (P1) is the completion bead** —
+runtests registration, the BVM E2E gate, the hostile review, then the
+single full-suite close gate. Do NOT build walls 12-14 on the arm until
+gcf7 passes.
+
+### The session in one paragraph (2026-08-06 → 08-07)
+
+Six arcs landed and pushed in lockstep across both repos: the a8nw review
+debt paid (jbko PASS-WITH-CONCERNS, sku0/vckk filed), then FIVE frontier
+walls cleared — p06b (wall 6, aggregate stores), foz5 (wall 7, ADR 0017
+§4a CONFINED-VALUE), bvmd (wall 8, root-scale coherence), sy29 (wall 9,
+arena-src memcpy), 57hd (wall 10, ADR 0017 §4b VALUE-IDENTITY — the
+strongest contract: full oracle match, no arena premise). _growend!
+extracts completely. Ten consecutive beads with ZERO BennettVM src
+changes. Hostile reviews caught ~12 real defects pre-commit including
+FOUR executed miscompiles (p06b capacity clobber, sy29 cross-allocation
+overlap, 57hd self-store escape, bvmd's rejected route-iii cross-function
+re-stamp); every one died before landing.
+
+### Recommendations for the next agent, in priority order
+
+1. **Bennett-hk5i + bennettvm-ciff (P0, USER DIRECTIVE)** — the docs
+   epics (kickass READMEs/tutorials/animations, the
+   almost-idempotent-channels bar). These OUTRANK the frontier. Split
+   into child beads on claim; doc-work mode is binding.
+2. **Bennett-gcf7 (P1)** — complete + review the 5viz WIP (spec in the
+   bead; scout design in docs/design/5viz_scout.md).
+3. **The endgame is measured**: after 5viz, walls 12 (1zow silent-skip),
+   13 (second 8bys memcpy), 14 (env-alloca tier decision, bvmd family —
+   the 5viz scout PROVED byte-stamping the three env memcpys makes the
+   ROOT extract with NO WALL AT ALL). Then bennettvm-rxgy for the
+   full-corpus RUN.
+4. **Process rules now binding** (user-ratified this session): exactly
+   ONE full Pkg.test per arc, AFTER the review verdict + fix cycles, on
+   the final landing tree; reviewers run NO full suites; scout-with-
+   tripwire before every wall arc; prose-vs-predicate on every message
+   (bd memory); check marker discriminators against MESSAGE TEXT, not IR.
+
+### Gotchas worth re-reading before the next arc
+
+- worklog/098-106 carry the arc-by-arc lessons; the bd memories carry the
+  cross-session rules (prose-vs-predicate; h0ai layers; cwd-rerun-lf14).
+- The uinn meta-test still false-positives on prose 'catch' in
+  extract/ docstrings (Bennett-gb39) — say 'detect', or fix the scanner.
+- AGENTS.md at the repo root is stale-untracked (Bennett-6gfu); BVM's
+  references/ PDFs are untracked (user decision pending).
+
+
 Chunk 105 closed at 189 lines and this entry is ~140, which would put it past
 the ~280-line cap, so starting 106 per CLAUDE.md §0.
 
