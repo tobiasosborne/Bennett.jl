@@ -206,7 +206,7 @@ Bennett.jl/                         # Project root. PRDs and CLAUDE.md live alon
         hashcons_jenkins.jl         # Mogensen Jenkins-96 reversible hash
         popcount.jl                 # pure-integer popcount (HAMT helper)
 
-  test/                             # 274 test/*.jl files / 688k assertions / ~200 testsets / ~28 min cold Pkg.test under JULIA_NUM_THREADS=32 (as of 2026-05-23)
+  test/                             # 320 test_*.jl files (314 wired into runtests.jl) / ~692k assertions / ~28 min cold Pkg.test under JULIA_NUM_THREADS=32 (as of 2026-08-07)
     runtests.jl                     # canonical registration order
                                     # Conventions:
                                     #   test_<beadid>_*.jl    per-bead regression file (~50 files)

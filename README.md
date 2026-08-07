@@ -30,6 +30,8 @@ verify_reversibility(c)             # => true        (ancillae 0, input preserve
 gate_count(c)                       # => (total = 482, NOT = 14, CNOT = 300, Toffoli = 168)
 ```
 
+![Terminal demo: reversible_compile, simulate, verify_reversibility, toffoli_depth, controlled](docs/src/assets/demo.svg)
+
 ![The Bennett.jl pipeline: extract → lower → bennett](docs/src/assets/pipeline.svg)
 
 The compiler extracts LLVM IR from a Julia function via [LLVM.jl](https://github.com/maleadt/LLVM.jl)'s
@@ -145,7 +147,7 @@ function produces after `optimize=false` codegen:
 | **Aggregates** | `insertvalue` `extractvalue` (sret tuple returns) |
 | **Vectors** | `insertelement` `shufflevector` `extractelement` (constant lane, scalarised) |
 | **Memory** | `alloca` `load` `store` `getelementptr` |
-| **Intrinsics** | ~35 `llvm.*`: `umax/umin/smax/smin` `abs` `ctpop` `ctlz` `cttz` `bitreverse` `bswap` `fshl/fshr`, rounding, min/max, and the **transcendentals** `sqrt` `exp/exp2` `log/log2/log10` `pow` `sin/cos/tan` `asin/acos/atan` `sinh/cosh/tanh` … → soft-float |
+| **Intrinsics** | ~55 `llvm.*`: `umax/umin/smax/smin` `abs` `ctpop` `ctlz` `cttz` `bitreverse` `bswap` `fshl/fshr`, rounding, min/max, and the **transcendentals** `sqrt` `exp/exp2` `log/log2/log10` `pow` `sin/cos/tan` `asin/acos/atan` `sinh/cosh/tanh` … → soft-float |
 | **Calls** | `call` to registered callees (gate-level inlining) |
 
 **Out of scope** (filed, not on the critical path): exception handling
@@ -262,6 +264,54 @@ the forward+copy+reverse wrap entirely (validated by the U03 probe battery so a 
 claim is rejected). This is how a downstream backend cuts peak qubits — e.g. 28 → ~22 on
 Sturm.jl's N=15 Shor `mulmod`.
 
+## A look at it running
+
+Every figure below regenerates from a script in [`docs/plots/`](docs/plots/) that
+**recompiles the circuits and asserts the plotted numbers before drawing** — a
+committed image is a passing test, drawn.
+
+**The doubling law.** The pinned regression baselines for `x + 1`
+(`add=:ripple, fold_constants=true`): totals follow `total(2W) = 2·total(W) − 2`
+and Toffolis follow `T(2W) = 2·T(W) + 4` — straight lines on log–log axes. The
+exact values (58/114/226/450 total, 12/28/60/124 Toffoli) are frozen in
+[`test/test_gate_count_regression.jl`](test/test_gate_count_regression.jl); if a
+change moves them, the plot script fails before it draws.
+
+<p align="center">
+  <img src="docs/src/assets/scaling.png" alt="Gate-count scaling of x+1: total, CNOT, and Toffoli vs bit width on log-log axes" width="680"/>
+</p>
+
+**Depth is a choice.** Toffoli-depth — the latency metric that dominates
+fault-tolerant cost models — against width, per strategy. The ripple and Cuccaro
+adders are `O(W)`; QCLA pays more Toffolis to reach `O(log W)` (+4 per width
+doubling: 16/20/24/28). Same story for multipliers: the QCLA-tree reaches depth
+**56** at `W = 32` against schoolbook's **180**.
+
+<p align="center">
+  <img src="docs/src/assets/depth.png" alt="Toffoli-depth vs width: ripple/cuccaro O(W) vs qcla O(log W) adders; shift_add vs qcla_tree multipliers" width="760"/>
+</p>
+
+**Every gate of a real circuit.** `x + 1` compiled at 3 bits (`bit_width = 3`) is
+23 gates on 16 wires — small enough to read whole. The three phases of Bennett's
+construction are visible in the listing itself: ten forward gates, three copy-out
+CNOTs, and the forward gates again in exact mirror order. The
+[Reading the gates](docs/src/tutorials/reading_the_gates.md) tutorial walks every
+wire and every gate of this exact circuit.
+
+<p align="center">
+  <img src="docs/src/assets/circuit_x_plus_1.svg" alt="Gate art: the 23 gates of x+1 at 3 bits with forward, copy, and reverse phase bands" width="760"/>
+</p>
+
+**Bennett's construction, animated.** The same circuit run on `x = 3`: the thick
+trail marks wires holding `1`. Carries rise during the forward pass, the answer
+lands on the output register at the copy, and the reverse pass drives **every
+ancilla back to zero** — the invariant `verify_reversibility` enforces on every
+compiled circuit.
+
+<p align="center">
+  <img src="docs/src/assets/bennett_construction.svg" alt="Animated Bennett construction: compute, copy, uncompute — ancillae returning to zero" width="760"/>
+</p>
+
 ## Benchmark headlines
 
 From [`BENCHMARKS.md`](BENCHMARKS.md) (every circuit verified reversible):
@@ -274,7 +324,9 @@ From [`BENCHMARKS.md`](BENCHMARKS.md) (every circuit verified reversible):
 | SHA-256 round | 1 632 Toffoli | PRS15 hand-opt 683 | 2.4× |
 
 QROM's T-count is exactly `4(L-1)` and independent of `W` (the Babbush–Gidney bound; the
-raw Toffoli count is `2(L-1)`). Shadow memory is exactly `3W` / `W` CNOT with zero
+raw Toffoli count is `2(L-1)` — the pre-Bennett primitive, pinned in
+[`test/test_qrom.jl`](test/test_qrom.jl); a full compiled lookup adds the index-mask
+Toffolis on top). Shadow memory is exactly `3W` / `W` CNOT with zero
 Toffolis from the mechanism itself.
 
 ## Architecture
@@ -338,7 +390,7 @@ julia --project -e 'using Pkg; Pkg.test()'        # full suite (~28 min cold)
 julia --project test/test_increment.jl            # a single file
 ```
 
-The suite runs ~690 000 assertions across **297** test files under
+The suite runs ~692 000 assertions across **320** test files under
 `JULIA_NUM_THREADS=32`. Every test calls `verify_reversibility` or checks ancilla values
 explicitly — "runs without error" is not a passing test. Environment gates:
 `BENNETT_HEAVY_TESTS=0` skips the 17 transcendental LLVM-dispatch files (the bulk of
@@ -355,6 +407,7 @@ Full docs are a [Diátaxis](https://diataxis.fr)-structured site under
 - **Learn** — [install](docs/src/getting_started/install.md) ·
   [quick start](docs/src/getting_started/quickstart.md) ·
   [your first circuit](docs/src/tutorials/first_circuit.md) ·
+  [reading the gates](docs/src/tutorials/reading_the_gates.md) ·
   [control flow & loops](docs/src/tutorials/control_flow_and_loops.md) ·
   [floats & transcendentals](docs/src/tutorials/floats.md)
 - **Do** — [choose an arithmetic strategy](docs/src/howto/arithmetic_strategy.md) ·
@@ -398,11 +451,15 @@ dispatcher, MemorySSA ingest, and full SHA-256 shipped; the T5 persistent-DS epi
 with `:linear_scan` as the winning default.
 
 **The active frontier (mid-2026) is the reversible-VM path.** Bennett.jl is extracting
-the *internals* of Julia's `Dict` (the closed-world `fdict` workstream, under the
-`ptr_cells` pointer-cell mode) to feed the [BennettVM.jl](../BennettVM.jl) backend, which
-already round-trips end-to-end Collatz via `target = :reversible_vm`. Recent landings
-advance that extraction wall-by-wall (ptr-typed `icmp`, param-cell `memcpy`,
-sret-convention calls). The `lower.jl` and `ir_extract.jl` monoliths have been split into
+the *internals* of Julia's built-in collections under the closed-world `ptr_cells`
+pointer-cell mode to feed the [BennettVM.jl](../BennettVM.jl) backend — first `Dict`
+(the `fdict` workstream), now the `push!`-built `Vector` corpus: eleven extraction
+walls cleared wall-by-wall (aggregate `{ptr,ptr}` stores, arena- and loaded-pointer
+`memcpy` sources, and the CONFINED-VALUE / VALUE-IDENTITY admission contracts of
+BennettVM's ADR 0017 §4a/§4b), to the point that `Base._growend!` — the dynamic-growth
+heart of `Vector` — extracts completely. Collatz already round-trips end-to-end via
+`target = :reversible_vm`; the remaining walls and the full-corpus VM run are tracked
+in both repos' beads. The `lower.jl` and `ir_extract.jl` monoliths have been split into
 `src/lowering/` and `src/extract/`.
 
 **Direction** (per [`Bennett-VISION-PRD.md`](Bennett-VISION-PRD.md) and
@@ -412,7 +469,7 @@ compiler.
 
 ## Contributing
 
-Bennett.jl uses [`bd` (beads)](https://github.com/ksdgg/beads) for issue tracking (issues
+Bennett.jl uses [`bd` (beads)](https://github.com/steveyegge/beads) for issue tracking (issues
 live in the project's Dolt store, not GitHub Issues). Start with `CLAUDE.md` — the
 non-negotiable development protocols (fail-loud assertions, red-green TDD, exhaustive
 `verify_reversibility`, gate-count regression baselines).

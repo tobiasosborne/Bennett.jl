@@ -1,5 +1,62 @@
 # Worklog chunk 106 — 2026-08-07 — Bennett-57hd hostile review FAILED + fix cycle
 
+## Session log — 2026-08-07 — Bennett-hk5i P0 docs epic: all five children shipped + epic CLOSED
+
+Five children created on claim, worked serially, one commit each
+(hk5i.1–.5). Everything ground-truthed per doc-work mode: every plotted
+number, gate sequence, and REPL output re-measured against the tree
+before writing; sonnet subagents used for code queries only, all prose
+and assets authored by the orchestrator.
+
+**Shipped:** (1) `docs/plots/{theme,scaling,depth}.jl` → committed
+`scaling.png`/`depth.png` — each script recompiles the circuits, asserts
+`verify_reversibility` + the §6 pinned baselines, THEN draws (a committed
+image is a passing test, drawn). New measurements: qcla adder
+Toffoli-depth 16/20/24/28 at W=8/16/32/64 (+4 per doubling), cuccaro
+26/58/122/250, ripple 14/30/62/126; mul depth shift_add 36/84/180 vs
+qcla_tree 40/48/56 (crossover at W=16). (2) `docs/plots/circuit_svg.jl` →
+`circuit_x_plus_1.svg` (static gate art) + `bennett_construction.svg`
+(SMIL-animated, no-JS). Subject: the REAL 23-gate/16-wire x+1 at
+`bit_width=3`; script asserts the exact gate list + a bit-level replay
+for x=3. (3) `demo.cast` (hand-authored asciinema v2, outputs transcribed
+verbatim from a live REPL run) + `demo.svg` via svg-term. (4)
+`docs/src/tutorials/reading_the_gates.md` — the epic's missing tutorial;
+registered in make.jl + index; Documenter build green. (5) README drift
+audit + asset integration (demo under headline, new "A look at it
+running" section) + adjacent CLAUDE.md test-count fix.
+
+**Audit findings folded into the README:** intrinsics count is ~55 not
+~35; bd upstream is steveyegge/beads not ksdgg/beads; suite is ~692k
+assertions / 320 test files; Project-status frontier paragraph refreshed
+June→August (xkl walls, ADR 0017 §4a/§4b, `_growend!` extracts). QROM
+"14 Toffoli @ L=8" is the PRE-BENNETT primitive pinned in test_qrom.jl —
+a full compiled L=8 lookup measures 24 (index-mask Toffolis on top);
+README now says so. **Bennett-llqc (P2 bug) filed:** 5 test files exist
+on disk but were never registered in runtests.jl (test_k2w6/kh6n/mq6f/
+p19b/zc50 — silent regression-surface shrinkage). **Bennett-hh34 (P3):**
+xkl-frontier explanation essay split out as follow-up.
+
+**Gotchas for future doc/asset work:**
+- ImageMagick `convert` silently DROPS any SVG element that has an
+  `<animate>` child — an animated SVG rasterizes to just its static
+  parts. `circuit_svg.jl` has `CIRCUIT_SVG_DEBUG=1` to emit the final
+  frame statically for inspection.
+- Bare `npx svg-term` fails ("could not determine executable"); use
+  `npx --package svg-term-cli svg-term`.
+- `simulate` returns the raw output register as UInt64 under `bit_width`
+  narrowing (`0x0000000000000004`, not `4`) — tutorials wrap in `Int()`.
+- `peak_live_wires` measures the ALL-ZERO-INPUT run specifically, not a
+  worst case over inputs — word prose accordingly.
+- The 3-bit x+1 wire map (ground-truthed via sonnet agent against
+  lowering/adder/bennett_transform): w4 = entry path-predicate, w5-7 =
+  folded const 1, w8-10 sums, w11-13 carries; the trailing NOT(5)/NOT(4)
+  pair is `_fold_constants`' end-of-pass known-true materialization
+  sweep; w6/7/11 allocated but gate-free (known-false controls folded).
+- GitHub-dark safety rule used throughout: every committed SVG/PNG has
+  an OPAQUE near-white background (pipeline.svg convention), so no
+  picture/source dark-variant pairs are needed. Final GitHub-rendering
+  eyeball still owed after push (bead close notes say so).
+
 ## Session log — 2026-08-07 — SESSION WIND-DOWN: 5viz landed UNREVIEWED-WIP (Bennett-gcf7); six-arc session retrospective
 
 ### Wind-down state (user-directed, graceful)
