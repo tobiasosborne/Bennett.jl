@@ -315,17 +315,25 @@ end
                 @test !occursin("BYTE-granular getelementptr", msg)
                 # LOAD-BEARING NEGATIVE: wall 7 — the `%idxend41` memdata bounds
                 # cluster — is CLEARED by Bennett-foz5 (ADR 0017 §4a).
-                # MEASURED still-true at wall 9 (Bennett-bvmd).
-                @test !occursin("Bennett-583s", msg)
-                @test !occursin("base-cancelling", msg)
-                # POSITIVE, ADVANCED by Bennett-bvmd: the NEW wall is wall 9 —
-                # the ROOT body's arena-src memcpy, whose src operand is not
-                # alloca-backed (Bennett-37mt Phase 1 / Bennett-8bys). Kept as a
-                # disjunction because WHICH body of the set fails first is
-                # registration/iteration order, not a contract. Non-numeral
-                # anchors only (Bennett-0ncn: a bare numeral can false-match a
-                # future bead tag).
-                @test occursin("memcpy", msg) || occursin("Bennett-37mt", msg)
+                # NARROWED to BODY SCOPE by Bennett-sy29 (xkl wall 9): wall 10 IS
+                # a 583s reject, in the ROOT body, so the blanket form cannot
+                # survive — and this testset's own NAME anticipated it. Scoping
+                # to the CLOSURE preserves the original intent exactly.
+                @test !(occursin("Bennett-583s", msg) &&
+                        occursin("_growend!", msg))
+                # POSITIVE, ADVANCED AGAIN by Bennett-sy29: wall 9 (an arena root
+                # on either side of a const-size cell-aligned memcpy) is CLEARED,
+                # so the NEW wall is WALL 10 — the ROOT body's `%memory_data3`
+                # ptrtoint, whose base-cancelling difference escapes through
+                # `udiv exact` into two closure-env stores. Kept as a disjunction
+                # because WHICH predicate is named first is not a contract.
+                # Non-numeral anchors only (Bennett-0ncn: a bare numeral can
+                # false-match a future bead tag).
+                @test occursin("Bennett-583s", msg) ||
+                      occursin("Bennett-foz5", msg)
+                # NEW LOAD-BEARING NEGATIVE: wall 9 is CLEARED, so a 37mt reject
+                # is now a REGRESSION rather than the expected wall.
+                @test !occursin("Bennett-37mt", msg)
                 # `occursin("_growend!", msg)` is DROPPED as a POSITIVE: the wall
                 # moved to the ROOT body, so the closure name is legitimately
                 # absent. It survives above as the body-scope term of the p06b

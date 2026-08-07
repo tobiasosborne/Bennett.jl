@@ -551,13 +551,20 @@ top:
         @test !(occursin("Bennett-p06b", msg) && occursin("_growend!", msg))
         @test !(occursin("Bennett-p06b", msg) && occursin("gc_alloc_obj", msg))
         @test !occursin("BYTE-granular getelementptr", msg)
-        # LOAD-BEARING NEGATIVE: wall 7 is CLEARED. Without these the positive
-        # below would not notice a re-open. MEASURED still-true at wall 9.
-        @test !occursin("Bennett-583s", msg)
-        @test !occursin("base-cancelling", msg)
-        # POSITIVE: wall 9 — the arena-src memcpy (Bennett-37mt / Bennett-8bys).
-        # Non-numeral anchors only (Bennett-0ncn).
-        @test occursin("memcpy", msg) || occursin("Bennett-37mt", msg)
+        # LOAD-BEARING NEGATIVE: wall 7 is CLEARED. NARROWED to BODY SCOPE by
+        # Bennett-sy29 (xkl wall 9), because wall 10 IS a 583s reject in the ROOT
+        # body: the blanket form cannot survive, but the CLOSURE-scoped form
+        # keeps the original intent and still notices a wall-7 re-open.
+        @test !(occursin("Bennett-583s", msg) && occursin("_growend!", msg))
+        # POSITIVE, ADVANCED ONCE MORE by Bennett-sy29: wall 9 (the arena-src
+        # memcpy) is CLEARED and the successor is WALL 10 — the `%memory_data3`
+        # ptrtoint whose base-cancelling difference escapes via `udiv exact`.
+        # Non-numeral anchors only (Bennett-0ncn), disjoined because WHICH
+        # predicate is named first is not a contract.
+        @test occursin("Bennett-583s", msg) || occursin("Bennett-foz5", msg)
+        # NEW LOAD-BEARING NEGATIVE: wall 9 is CLEARED ⇒ a 37mt reject is a
+        # REGRESSION.
+        @test !occursin("Bennett-37mt", msg)
     end
 
     # =====================================================================

@@ -765,22 +765,29 @@ end
             # MemoryRef bounds cluster — is CLEARED by Bennett-foz5 under the
             # ADR 0017 §4a CONFINED-VALUE contract.
             #
-            # KEPT AS BLANKET NEGATIVES (Bennett-bvmd, MEASURED). The bvmd scout
-            # instructed dropping these because "wall 10 IS a 583s reject in the
-            # root". Measured at bvmd: the successor is wall NINE, not ten, and
-            # its message contains neither string. The trap is real but fires
-            # ONE BEAD LATER — whoever clears wall 9 must replace these two with
-            # the foz5 two-part pattern (body scope + a `udiv exact` live-value
-            # discriminator on the escaping base-cancelling difference).
-            @test !occursin("Bennett-583s", msg)
-            @test !occursin("base-cancelling", msg)
-            # POSITIVE, ADVANCED: the successor is wall 9 (Bennett-37mt /
-            # Bennett-8bys) — the arena-src memcpy whose SRC operand
-            # (`gep i8 %"new::Array", 16`) is not alloca-backed. Kept as a
-            # disjunction because WHICH body of the set fails first is
-            # registration/iteration order, not a contract; non-numeral anchors
+            # NARROWED to BODY SCOPE by Bennett-sy29 (xkl wall 9). The bvmd
+            # comment here predicted exactly this: the trap "fires ONE BEAD
+            # LATER". It has. Wall 10 IS a 583s reject, so the blanket negatives
+            # cannot survive — but deleting them would throw away their intent
+            # (wall 7 was the CLOSURE's `%idxend41` cluster, cleared by
+            # Bennett-foz5), so scope the negative to the CLOSURE body instead.
+            # bvmd's suggested `udiv exact` discriminator is NOT constructible:
+            # the `_ir_error` prefix quotes the *ptrtoint*, not the cluster, so
+            # the message text contains no `udiv` (docs/design/sy29_scout.md
+            # §10.2).
+            @test !(occursin("Bennett-583s", msg) && occursin("_growend!", msg))
+            # POSITIVE, ADVANCED AGAIN by Bennett-sy29: wall 9 (the arena-src
+            # memcpy) is CLEARED, and the successor is WALL 10 — the ROOT body's
+            # `%12 = ptrtoint ptr %memory_data3 to i64`, whose base-cancelling
+            # difference escapes through `udiv exact` into two closure-env
+            # stores. foz5 §4a clause (iii) demands every use of the `sub` be an
+            # `icmp`; the sole use is the `udiv`. Disjoined because WHICH
+            # predicate is named first is not a contract; non-numeral anchors
             # only (the Bennett-0ncn lesson).
-            @test occursin("memcpy", msg) || occursin("Bennett-37mt", msg)
+            @test occursin("Bennett-583s", msg) || occursin("Bennett-foz5", msg)
+            # NEW LOAD-BEARING NEGATIVE: wall 9 is CLEARED, so a 37mt reject is
+            # now a REGRESSION rather than the expected wall.
+            @test !occursin("Bennett-37mt", msg)
             # `occursin("_growend!", msg)` is DROPPED as a POSITIVE — the wall
             # moved to the ROOT body, so the closure name is legitimately absent.
             # It survives above as the body-scope term of the p06b negative.

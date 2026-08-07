@@ -58,7 +58,9 @@
 #       `heap.jl` ×2, `vectors.jl`) including the six no one has audited. Pinned
 #       with a shape no per-site stamp change touches.
 #   (H) Bennett-4y0d — a K≥2 global-src memcpy into a `gc_alloc` dst.
-#   (I) The CORPUS gate: the push! set advances from wall 8 to wall 9.
+#   (I) The CORPUS gate: the push! set advances to the CURRENT wall. Wall 8 at
+#       this bead; ADVANCED to wall 10 by Bennett-sy29 (which cleared wall 9,
+#       the arena-src memcpy) — the gate tracks the frontier, not a fixed wall.
 #
 # Rule 5: no LLVM formatting, instruction ordering or `#NNN` naming is pinned —
 # every assertion is programmatic over extracted `IRInst` nodes or over a
@@ -660,7 +662,7 @@ entry:
     # ======================================================================
     # (I) THE CORPUS GATE — wall 8 → wall 9.
     # ======================================================================
-    @testset "(I) push! corpus advances from wall 8 to wall 9" begin
+    @testset "(I) push! corpus advances from wall 9 to wall 10" begin
         f = n::Int64 -> begin
             v = Int64[]; push!(v, n); @inbounds v[1]
         end
@@ -671,10 +673,19 @@ entry:
         catch e
             sprint(showerror, e)
         end
-        @test msg != ""                        # still walls — walls 9/10/11 remain
-        # POSITIVE (non-numeral anchors, disjoined — which member of the memcpy
-        # set fails first is iteration order, not contract; Bennett-0ncn):
-        @test occursin("memcpy", msg) || occursin("Bennett-37mt", msg)
+        @test msg != ""                        # still walls — walls 10/11 remain
+        # POSITIVE, ADVANCED by Bennett-sy29 (xkl wall 9) to WALL 10 — the ROOT
+        # body's `%12 = ptrtoint ptr %memory_data3 to i64`, whose base-cancelling
+        # difference ESCAPES through `udiv exact` into two closure-env stores.
+        # foz5 §4a clause (iii) requires EVERY use of the `sub` to be an `icmp`;
+        # the sole use here is the `udiv`, so the confined-value contract
+        # legitimately declines it and wall 10 needs a THIRD contract.
+        # Non-numeral anchors only (Bennett-0ncn), disjoined because WHICH
+        # predicate is named first is not a contract.
+        @test occursin("Bennett-583s", msg) || occursin("Bennett-foz5", msg)
+        # NEW LOAD-BEARING NEGATIVE — wall 9 is CLEARED, so a 37mt reject is now
+        # a REGRESSION rather than the expected wall.
+        @test !occursin("Bennett-37mt", msg)
         # INVERTED discriminator: after bvmd a p06b reject naming `gc_alloc_obj`
         # is a REGRESSION, not the expected wall.
         @test !(occursin("Bennett-p06b", msg) && occursin("gc_alloc_obj", msg))
@@ -683,16 +694,18 @@ entry:
         @test !occursin("BYTE-granular getelementptr", msg)
         # bvmd's own guard must not be the new wall either.
         @test !occursin("Bennett-bvmd", msg)
-        # LOAD-BEARING NEGATIVES — walls 3/5/6/7 stay cleared. NOTE the
-        # `Bennett-583s` pair: the scout instructed dropping them as blanket
-        # negatives because "wall 10 IS a 583s reject". MEASURED at this bead:
-        # the next wall is 9, not 10, and its message contains neither string,
-        # so the blanket negatives are still true and still load-bearing.
-        # The trap is real but fires ONE BEAD LATER, at the wall-9 arc — whoever
-        # clears wall 9 must replace these two with the foz5 two-part pattern
-        # (body scope + a `udiv exact` live-value discriminator).
-        for neg in ("Bennett-583s", "base-cancelling", "Bennett-jbko",
-                    "Bennett-iwo9", "Bennett-lgzx", "memmove",
+        # BODY SCOPE — the retired blanket `!Bennett-583s` negative, narrowed
+        # rather than deleted so its original intent survives: wall 7 was the
+        # CLOSURE's `%idxend41` cluster, cleared by Bennett-foz5. Wall 10 is in
+        # the ROOT body, so a 583s reject naming `_growend!` would be a re-open
+        # of wall 7 and not the expected successor. (The bvmd-suggested
+        # `udiv exact` discriminator is NOT constructible: the `_ir_error` prefix
+        # quotes the *ptrtoint*, not the cluster, so the message text contains no
+        # `udiv` — see docs/design/sy29_scout.md §10.2.)
+        @test !(occursin("Bennett-583s", msg) && occursin("_growend!", msg))
+        # LOAD-BEARING NEGATIVES — walls 3/5/6 stay cleared. Measured still-true
+        # at wall 10.
+        for neg in ("Bennett-jbko", "Bennett-iwo9", "Bennett-lgzx", "memmove",
                     "store of non-integer type")
             @test !occursin(neg, msg)
         end

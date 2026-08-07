@@ -1277,6 +1277,104 @@ function _gc_alloc_root_ref(val::LLVM.Value, depth::Int=0)::Union{Nothing, _LLVM
 end
 
 """
+    _gc_alloc_root_offset(val, depth=0) -> Union{Nothing, Int}
+
+Bennett-sy29 (2026-08, xkl wall 9): the BYTE OFFSET of `val` from the
+`julia.gc_alloc_obj` ARENA root that `_gc_alloc_root_ref` finds for it, or
+`nothing` when the offset is not a compile-time constant (any runtime GEP index)
+or the GEP shape is one this walker does not flatten.
+
+`_gc_alloc_root_ref` returns only the ROOT; it deliberately says nothing about
+WHERE in the object the pointer lands, because vbv9's only consumer (the
+global-src dst arm) needed the root alone. The arena-src/arena-dst memcpy arm
+needs the offset as well, for one reason:
+
+  **The byte tier places a 64-bit value in exactly ONE cell, at that value's
+  BASE BYTE ADDRESS** (cells `+1…+7` are never named — the bennettvm-416r.13 /
+  9n3y / vbv9 convention). An 8-byte chunk starting at byte 4 of the object
+  therefore has no faithful single-cell gather: it straddles the named cell at
+  byte 0 and the named cell at byte 8, and neither `IRLoad` can express it.
+
+(SC) (`_check_scale_coherence!`) does NOT detect this. `gep i8 %obj, 4` off a
+byte-tier root is *perfectly scale-coherent* — stamp 8, scale 1, cell +4 — so
+the coherence invariant is satisfied by a pointer that nonetheless names a cell
+no 64-bit value lives at. This is a genuinely NEW predicate, not a copy of
+vbv9's G7 (which checks the *global's* offset, on the src side, and leaves the
+arena dst's own offset unchecked — that residual corner is filed, see the arm).
+
+(Wording note: "detect", not the obvious verb — `test_uinn_catch_narrowing.jl`
+statically scans every line of `src/extract/*.jl` for the `catch` KEYWORD and
+does not skip docstring bodies, so that verb in prose reads as an unguarded
+`catch` site and fails the meta-test. The scanner fix is Bennett-gb39.)
+
+Index arithmetic mirrors `_global_root_and_offset` exactly (first index strides
+the GEP source element type; a non-zero first index into an `ArrayType` source
+is refused; second+ indices stride the array's integer element), differing only
+in walking INSTRUCTION GEPs rather than `ConstantExpr` GEPs and in bottoming out
+at the `julia.gc_alloc_obj` call. Depth bound is `_gc_alloc_root_ref`'s.
+"""
+function _gc_alloc_root_offset(val::LLVM.Value, depth::Int=0)::Union{Nothing, Int}
+    # Reuse the ROOT predicate verbatim so the two walkers cannot disagree about
+    # what an arena root is, then defer the arithmetic to the SHARED walker.
+    _gc_alloc_root_ref(val, depth) === nothing && return nothing
+    return _root_byte_offset(val, depth)
+end
+
+"""
+    _root_byte_offset(val, depth=0) -> Union{Nothing, Int}
+
+Bennett-sy29 (hostile-review fix D2): the constant byte offset of `val` from its
+ALLOCATION ROOT, whatever kind that root is — the root-kind-agnostic sibling of
+`_gc_alloc_root_offset`, and the offset half of `_root_scale`'s capacity.
+
+Recursion is `_bvmd_root_ref`'s exactly (const-GEP chain, `gops[1]` base step,
+`_BVMD_ROOT_DEPTH` bound) so the offset it computes is measured from precisely
+the root `_root_scale` reports a capacity for. Bottoms out at ANY non-GEP
+instruction with offset 0 — the root itself. Returns `nothing` when the chain
+cannot be flattened to a constant: a runtime GEP index, a struct-typed GEP
+source, a non-zero first index into an `ArrayType` source, or depth overflow.
+
+Index arithmetic mirrors `_global_root_and_offset`.
+"""
+function _root_byte_offset(val::LLVM.Value, depth::Int=0)::Union{Nothing, Int}
+    depth > _BVMD_ROOT_DEPTH && return nothing
+    val.ref == C_NULL && return nothing
+    val isa LLVM.Instruction || return nothing
+    LLVM.opcode(val) == LLVM.API.LLVMGetElementPtr || return 0   # the root
+    gops = LLVM.operands(val)
+    length(gops) >= 2 || return nothing
+    srcty = try
+        LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(val.ref))
+    catch e
+        e isa InterruptException && rethrow()
+        return nothing
+    end
+    idx_off = 0
+    for i in 2:length(gops)
+        iv = gops[i]
+        iv isa LLVM.ConstantInt || return nothing        # runtime index
+        ival = Int(LLVM.API.LLVMConstIntGetSExtValue(iv.ref))
+        if i == 2
+            if srcty isa LLVM.IntegerType
+                idx_off += ival * div(LLVM.width(srcty), 8)
+            elseif srcty isa LLVM.ArrayType
+                ival == 0 || return nothing
+            else
+                return nothing
+            end
+        else
+            srcty isa LLVM.ArrayType || return nothing
+            inner = LLVM.eltype(srcty)
+            inner isa LLVM.IntegerType || return nothing
+            idx_off += ival * div(LLVM.width(inner), 8)
+        end
+    end
+    sub = _root_byte_offset(gops[1], depth + 1)
+    sub === nothing && return nothing
+    return sub + idx_off
+end
+
+"""
     _param_ptr_root_ref(val, depth=0) -> Union{Nothing, _LLVMRef}
 
 Bennett-u2kk (2026-06): the POINTER-PARAMETER analogue of `_alloca_root_ref` /
@@ -2055,9 +2153,25 @@ most actionable error:
   5a. dst operand is NOT a global variable (still rejected)
   5b. if src operand IS a global variable → dispatch to
       `_handle_memcpy_global_src` (doih arm)
-  6. both operands trace to an alloca (direct or via const-offset GEP)
-  7. distinct alloca roots (rejects `memcpy(p, p, N)` self-copy)
-  8. both alloca's element width is 8 bits
+  6. both operands trace to an alloca (direct or via const-offset GEP) —
+     OR, under `ptr_cells` (Bennett-sy29), to a `julia.gc_alloc_obj` ARENA
+     call via `_gc_alloc_root_ref`, on EITHER side
+  6c. (Bennett-sy29) an ARENA operand's byte offset from its root is a
+      compile-time constant and a multiple of 8 (cell-aligned)
+  6d. (Bennett-sy29, hostile-review fix D2) EACH operand's range stays
+      INSIDE its own object: `0 <= off` and `off + N <= capacity(root)`,
+      whenever `_root_scale` can prove a capacity. This is the PRECONDITION
+      that makes predicate 7's disjointness argument true — without it,
+      distinct roots do NOT imply disjoint ranges (BennettVM bump-allocates,
+      so `%a + 24` can BE `%b + 8`), and the miscompile is executed, not
+      hypothetical. Also closes a pre-existing alloca↔alloca bounds hole.
+  7. distinct ROOTS (rejects `memcpy(p, p, N)` self-copy). Generalised by
+     Bennett-sy29 from "same alloca" to "same root, whichever kind" — route
+     R1 never emits an `IntrinsicMemcpy`, so this REPLACES BennettVM's
+     runtime overlap check rather than duplicating it. Sound only in
+     combination with 6d
+  8. both operands' element width is a known non-zero integer width; an
+     ARENA side is fixed at 64 (BennettVM ADR 0018 §A)
 
 The `globals` arg is the ParsedIR globals dict threaded down from
 `_module_to_parsed_ir_on_func`; empty for non-doih invocations.
@@ -2168,32 +2282,308 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
         end
     end
 
-    dst_root === nothing && _ir_error(inst,
+    # ---- Bennett-sy29 (2026-08-07, xkl frontier wall 9) ----------------------
+    # An `julia.gc_alloc_obj` ARENA root on EITHER SIDE of the memcpy, under the
+    # closed-world `ptr_cells` gate. This is the MIRROR of the vbv9 arena-dst arm
+    # (which lives on the global-src path), carrying the Bennett-4y0d
+    # address/value stamp split applied PER SIDE. The corpus that forces it is
+    # the push! ROOT body:
+    #
+    #     %sz  = alloca i64                                   ; WORD tier, scale 8
+    #     %obj = call ptr @julia.gc_alloc_obj(_, i64 24, _)   ; BYTE tier, scale 1
+    #     %p   = getelementptr inbounds i8, ptr %obj, i32 16
+    #     call void @llvm.memcpy.p0.p0.i64(ptr %sz, ptr %p, i64 8, i1 false)
+    #
+    # — reading the boxed `Array`'s `size` field into a stack temp (3 sites), and
+    # its transposed mirror at `%L18` writing a stack temp back into arena +16.
+    #
+    # *** SOUNDNESS: THE CELL-MAP ARGUMENT FOR A MIXED-TIER PAIRING ***
+    #
+    # `IRPtrOffset(d, b, off, ew)` lowers to `Define(d, b, :add, off ÷ (ew÷8))`
+    # (`BennettVM/src/ir/ingest_body.jl:534`), so `elem_width` IS the addressed
+    # object's bytes-per-cell scale — nothing else. The two sides of this memcpy
+    # have DIFFERENT scales, and that is fine, because they are two INDEPENDENT
+    # address computations off two independent roots:
+    #
+    #   | side  | root                        | scale | stamp | cell of elem k |
+    #   |-------|-----------------------------|-------|-------|----------------|
+    #   | arena | `julia.gc_alloc_obj` (byte) | 1     | 8     | `base + 8k`    |
+    #   | alloca| `alloca i64`        (word)  | 8     | 64    | `base + k`     |
+    #
+    # The quantity the two sides SHARE is neither the offset nor the stamp: it is
+    # the 64-bit VALUE, and a 64-bit value occupies exactly ONE cell in BOTH
+    # tiers (byte tier: the cell at the value's base byte address, `+1…+7` never
+    # named — the bennettvm-416r.13 / 9n3y / vbv9 convention; word tier: cell k).
+    # So `K = N/8` and element k is the single-cell move `src_cell → dst_cell`
+    # with each cell computed under its OWN root's map. The same argument
+    # transposes for the mirror direction, and degenerates to today's shipped
+    # alloca↔alloca path when both scales are 8.
+    #
+    # *** SOUNDNESS: THE OVERLAP GUARD REPLACES A CHECK, IT DOES NOT ADD ONE ***
+    #
+    # `llvm.memcpy`'s LangRef contract forbids src/dst overlap. Route R1 (this
+    # per-cell decomposition) BYPASSES BennettVM's runtime overlap check
+    # entirely: that check lives in `forward(::IntrinsicMemcpy)`
+    # (`BennettVM/src/ir/intrinsics_bulk.jl:117-121`) and R1 never emits an
+    # `IntrinsicMemcpy` — it emits load/store pairs. R1's ascending per-element
+    # load-then-store genuinely miscopies an overlapping range. So the
+    # extraction-time distinctness guard (Predicate 7, generalised below from
+    # "same alloca ref" to "same ROOT ref, whichever kind") is LOAD-BEARING and
+    # is REPLACING the VM's check, not duplicating it.
+    #
+    # THE ASYMMETRY WITH Bennett-vau9 (variable-size memmove), restated so it is
+    # not mistaken for an inconsistency: memmove is ALLOWED to overlap and routes
+    # to `IRCall(:memmove)` precisely because BVM's `_copy_range!` snapshots the
+    # whole src range before writing (`intrinsics_bulk.jl:100-113`) — overlap-safe
+    # by construction. memmove DELEGATES overlap safety to the VM; sy29 must
+    # PROVE disjointness at extraction, because nothing downstream will.
+    #
+    # *** THE DISJOINTNESS CLAIM, STATED CORRECTLY (hostile-review fix D2) ***
+    #
+    # An earlier revision of this comment claimed flatly that "two distinct
+    # static allocation sites yield disjoint ranges, because both BVM allocators
+    # are monotone bumps". THAT IS A FALSE THEOREM, and the counterexample is
+    # EXECUTED (reviewer probe `p2_overlap_vm`): the arena bump makes a 16-byte
+    # `gc_alloc_obj` %a immediately adjacent to %b, so `%a + 24` IS `%b + 8`, and
+    # a memcpy with dst rooted at %a and src rooted at %b then has distinct roots
+    # and genuinely overlapping ranges — miscopied by this arm as `s = 222`
+    # against an oracle of `333`. Monotone bumps make distinct ALLOCATIONS
+    # disjoint; they say nothing about distinct ROOTS once a GEP walks out of its
+    # own object.
+    #
+    # The correct statement has a precondition, and Predicate 6d below ENFORCES
+    # that precondition rather than assuming it:
+    #
+    #   Two distinct allocation roots yield disjoint ranges **provided each
+    #   range stays inside its own object** — i.e. `0 <= off` and
+    #   `off + N <= capacity(root)` on BOTH operands.
+    #
+    # With 6d in force the argument is sound: both BVM allocators are monotone
+    # bumps and distinct allocas are distinct frame slots, so two IN-OBJECT
+    # ranges off distinct roots cannot intersect. For the corpus it is
+    # additionally STRUCTURAL — the src root is a `julia.gc_alloc_obj` call
+    # served out of the ARENA region (`arena_top`) and the dst root is an
+    # `alloca` served out of the STACK region (`stack_top`), different regions
+    # entirely.
+    #
+    # The guard is still deliberately NOT weakened to a general byte-range
+    # disjointness test across DIFFERENT roots: that would be a new alias
+    # analysis Bennett does not have, and CLAUDE.md Rule 1 prefers the loud
+    # refusal. 6d is not that analysis — it is a per-operand bound against a
+    # capacity `_root_scale` already reports.
+    #
+    # *** REVERSIBILITY, for the ARENA-DST direction (the mirror) ***
+    #
+    # An arena-dst memcpy DESTRUCTIVELY OVERWRITES a live cell. vbv9's STEP-0c
+    # freshness argument (gc_alloc zero-inits, field-inits hit distinct offsets)
+    # does NOT cover it — do not claim it. The correct citation is Bennett-u2kk's
+    # REVERSIBILITY JUSTIFICATION: the write is reversed by BennettVM's
+    # Bennett-1973 history tape `(cell, pre-image)`, not by a freshness
+    # precondition. Freshness is a CIRCUIT-MODEL artifact (the circuit path has
+    # no tape), which is exactly why this whole branch is `ptr_cells`-gated and
+    # the circuit path keeps failing loud at the UNCHANGED Predicate-6 walls
+    # below.
+    #
+    # *** THE CIRCUIT PATH IS BYTE-IDENTICAL, STRUCTURALLY ***
+    #
+    # Both arena roots are consulted only under `ptr_cells`, so with
+    # `ptr_cells=false` `arena_dst`/`arena_src` are `nothing`, every predicate
+    # below reduces to its pre-sy29 form, and the two Predicate-6 messages are
+    # unchanged character-for-character (the vbv9 / u2kk / qmv7 gating pattern,
+    # pinned by `test_37mt` and `test_lqif`).
+    arena_dst = (ptr_cells && dst_root === nothing) ?
+        _gc_alloc_root_ref(dst_v) : nothing
+    arena_src = (ptr_cells && src_root === nothing) ?
+        _gc_alloc_root_ref(src_v) : nothing
+
+    (dst_root === nothing && arena_dst === nothing) && _ir_error(inst,
         "$(cname): memcpy dst operand is not alloca-backed (or " *
         "alloca-backed via a const-offset GEP). Bennett's pointer- " *
         "provenance model only covers alloca and GEP-of-alloca; pointer " *
         "phi/select/parameter sources fan out to multiple origins which " *
         "Bennett-37mt does not yet handle. Tracked in Bennett-8bys. " *
         "(Bennett-37mt Phase 1)")
-    src_root === nothing && _ir_error(inst,
+    (src_root === nothing && arena_src === nothing) && _ir_error(inst,
         "$(cname): memcpy src operand is not alloca-backed (or " *
         "alloca-backed via a const-offset GEP). Same restriction as " *
         "the dst case; tracked in Bennett-8bys. (Bennett-37mt Phase 1)")
 
-    # Predicate 7: src and dst must be distinct allocas (memmove semantics).
-    dst_root === src_root && _ir_error(inst,
-        "$(cname): memcpy with src and dst rooted at the same alloca is " *
-        "semantically memmove (overlapping or in-place copy). " *
-        "Reversibility forbids destructive in-place overwrite. Tracked " *
-        "in Bennett-8bys. (Bennett-37mt Phase 1 — distinct allocas only)")
+    # The EFFECTIVE root of each side — an alloca ref or an arena-call ref. Used
+    # by Predicate 7 (distinctness) and by the Bennett-land carry-through.
+    eff_dst_root = dst_root === nothing ? arena_dst : dst_root
+    eff_src_root = src_root === nothing ? arena_src : src_root
 
-    # Predicate 8: both allocas must have a known integer element type.
+    # Predicate 6c (Bennett-sy29): an ARENA operand's byte offset from its root
+    # must be a compile-time constant AND a whole multiple of 8. See
+    # `_gc_alloc_root_offset`'s docstring for why (SC) cannot supply this guard.
+    # KNOWN RESIDUAL, filed rather than inherited silently: the vbv9 arena-DST
+    # branch on the global-src path (`_handle_memcpy_global_src` G3/G7) checks
+    # the GLOBAL's offset but not the arena dst's own — the same corner, one arm
+    # over. Tracked on Bennett-8bys.
+    for (side, side_v, side_root) in (("dst", dst_v, arena_dst),
+                                      ("src", src_v, arena_src))
+        side_root === nothing && continue
+        aoff = _gc_alloc_root_offset(side_v)
+        aoff === nothing && _ir_error(inst,
+            "$(cname): memcpy $(side) operand is rooted at a " *
+            "`julia.gc_alloc_obj` ARENA allocation, but its byte offset from " *
+            "that root could not be resolved to a compile-time constant. One " *
+            "of: a RUNTIME GEP index; a STRUCT-typed GEP source element type " *
+            "(constant, but this walker flattens only integer and array " *
+            "sources); a non-zero first index into an `ArrayType` source; or " *
+            "a GEP chain deeper than $(_BVMD_ROOT_DEPTH). Cell alignment is " *
+            "therefore unprovable, and an unaligned arena chunk has no " *
+            "faithful single-cell gather. Tracked in Bennett-8bys. " *
+            "(Bennett-sy29, predicate `_gc_alloc_root_offset`)")
+        aoff >= 0 || _ir_error(inst,
+            "$(cname): memcpy $(side) operand sits at NEGATIVE byte offset " *
+            "$(aoff) of its `julia.gc_alloc_obj` ARENA root — the GEP chain " *
+            "points BEFORE the start of the allocation, which addresses no " *
+            "cell of this object at all (BennettVM reserves cells " *
+            "`[root, root+nbytes)`). Note this is a SEPARATE clause from " *
+            "cell-alignment, and the distinction is not academic: $(aoff) " *
+            (rem(aoff, 8) == 0 ?
+             "IS a multiple of 8, so the alignment clause would have passed " *
+             "it — the sign is what refuses it" :
+             "is not a multiple of 8 either, but the SIGN is reported here " *
+             "because it is the stronger objection") *
+            ". Tracked in Bennett-8bys. " *
+            "(Bennett-sy29, predicate `_gc_alloc_root_offset`)")
+        rem(aoff, 8) == 0 || _ir_error(inst,
+            "$(cname): memcpy $(side) operand sits at byte offset $(aoff) of " *
+            "its `julia.gc_alloc_obj` ARENA root, which is not cell-aligned " *
+            "(a multiple of 8). BennettVM's BYTE tier names a 64-bit value by " *
+            "its BASE byte address and never names bytes +1…+7, so a sub-cell " *
+            "chunk straddles two named cells and no `IRLoad`/`IRStore` pair " *
+            "can express it. NOTE this is NOT a scale-coherence violation — a " *
+            "byte GEP off a byte-tier root is coherent by construction, which " *
+            "is precisely why this predicate exists separately from " *
+            "`_check_scale_coherence!`. Tracked in Bennett-8bys. " *
+            "(Bennett-sy29, predicate `_gc_alloc_root_offset`)")
+    end
+
+    # ---- Predicate 6d (Bennett-sy29 hostile-review fix D2): IN-OBJECT RANGE ---
+    #
+    # *** THIS PREDICATE IS WHAT MAKES THE DISJOINTNESS ARGUMENT TRUE. ***
+    #
+    # The overlap argument above ("two distinct static allocation sites yield
+    # disjoint ranges, because both allocators are monotone bumps") is a FALSE
+    # THEOREM without this check, and the counterexample is EXECUTED, not
+    # hypothetical. BennettVM's arena is a monotone bump, so a 16-byte
+    # `gc_alloc_obj` %a is immediately followed by %b — hence `%a + 24` IS
+    # `%b + 8`. A memcpy with dst rooted at %a (address %a+24) and src rooted at
+    # %b has DISTINCT ROOTS and GENUINELY OVERLAPPING RANGES, and route R1's
+    # ascending load-then-store then miscopies it: measured `s = 222` against an
+    # oracle of `333` on the reviewer's `p2_overlap_vm` probe. A second symptom
+    # from the same hole: an arena src range running past its own reservation
+    # silently READS THE NEXT OBJECT (`leak = 999`).
+    #
+    # Distinct roots imply disjoint ranges ONLY FOR RANGES THAT STAY INSIDE
+    # THEIR OWN OBJECT. So require exactly that, on BOTH operands:
+    #
+    #     0 <= root_offset  and  root_offset + N <= capacity_bytes
+    #
+    # The predicate ships one arm over already — `_handle_memcpy_global_src`'s
+    # G8 bounds-checks the global side against `length(gdata) * ew_bytes` — and
+    # both halves it needs are in hand: `_root_scale` ALREADY returns capacity
+    # (`gc_alloc` → `(1, nbytes)`, `alloca` → `(ew÷8, n)`, `malloc` → `(8, nb÷8)`)
+    # and `_root_byte_offset` supplies the offset from that same root.
+    #
+    # THIS ALSO CLOSES A PRE-EXISTING alloca↔alloca HOLE. Before sy29 the
+    # alloca↔alloca path had no bounds check either — `memcpy(%slot, gep i8
+    # %other, 24, 16)` off an `alloca i64, i32 2` walked off the end just as
+    # happily. The generalised predicate now owns both paths, so both are fixed;
+    # that is a strict improvement, not scope creep.
+    #
+    # THE BOUND IS `<=`, NOT `<`, AND THE CORPUS IS EXACTLY FLUSH ON BOTH SIDES:
+    # src `gep i8 %"new::Array", 16` off `gc_alloc_obj(_, 24, _)` gives
+    # `16 + 8 == 24`; dst `alloca i64` gives `0 + 8 == 8`. So this comparison is
+    # also the predicate's own MUTATION TEST — flipping `<=` to `<` rejects the
+    # push! corpus at 6d, which is the evidence that 6d actually EVALUATES here
+    # rather than being silently skipped by the guards just below. Worth knowing
+    # before "tightening" it.
+    #
+    # SKIPPED, deliberately and narrowly, when the capacity is not provable
+    # (`_root_scale === nothing`, i.e. a pointer parameter / global / phi / load
+    # with no reservation IN THIS FUNCTION; or a RUNTIME-count alloca, `cap < 0`).
+    # There is nothing to compare against in those cases and inventing a bound
+    # would be worse than admitting the gap. An UNRESOLVABLE OFFSET off a
+    # PROVABLE capacity is a different matter and fails loud — we know there is a
+    # bound and cannot show the access respects it.
+    for (side, side_v) in (("dst", dst_v), ("src", src_v))
+        rs = _root_scale(side_v, names, ptr_cells)
+        rs === nothing && continue                  # capacity unprovable
+        rs[2] < 0 && continue                       # runtime-count reservation
+        cap_bytes = rs[1] * rs[2]
+        roff = _root_byte_offset(side_v)
+        roff === nothing && _ir_error(inst,
+            "$(cname): memcpy $(side) operand is derived from $(rs[3]) " *
+            "(capacity $(cap_bytes) bytes), but its byte offset from that root " *
+            "could not be resolved to a compile-time constant, so the copy " *
+            "cannot be shown to stay INSIDE the object. Distinct allocation " *
+            "roots imply disjoint ranges only for in-object ranges — BennettVM " *
+            "bump-allocates, so a GEP that leaves its own object can land " *
+            "inside the NEXT one and make a two-distinct-root memcpy genuinely " *
+            "overlapping. Tracked in Bennett-8bys. " *
+            "(Bennett-sy29 Predicate 6d, predicate `_root_byte_offset` / " *
+            "`_root_scale`)")
+        (roff >= 0 && roff + N <= cap_bytes) || _ir_error(inst,
+            "$(cname): memcpy $(side) operand addresses bytes " *
+            "[$(roff), $(roff + N)) of $(rs[3]), which reserves only " *
+            "$(cap_bytes) byte(s) — the range leaves its own object. This is " *
+            "REFUSED rather than clamped because BennettVM bump-allocates both " *
+            "the arena and the stack: bytes past a reservation belong to the " *
+            "NEXT allocation, so (a) the copy reads or writes another object, " *
+            "and (b) the distinctness guard below stops implying disjointness " *
+            "— two DISTINCT roots can name OVERLAPPING ranges once a GEP " *
+            "leaves its object, and this arm's ascending per-cell " *
+            "load-then-store miscopies an overlapping range. Tracked in " *
+            "Bennett-8bys. (Bennett-sy29 Predicate 6d, predicate " *
+            "`_root_byte_offset` / `_root_scale`)")
+    end
+
+    # Predicate 7: src and dst must be distinct ROOTS (memmove semantics).
+    # GENERALISED by Bennett-sy29 from "same alloca" to "same root, whichever
+    # kind" — see the overlap argument above. The alloca↔alloca message is kept
+    # CHARACTER-IDENTICAL (`test_37mt:101` pins "same alloca"); an arena root on
+    # either side gets its own text naming the enforcing predicate.
+    if eff_dst_root === eff_src_root
+        if arena_dst === nothing && arena_src === nothing
+            _ir_error(inst,
+                "$(cname): memcpy with src and dst rooted at the same alloca is " *
+                "semantically memmove (overlapping or in-place copy). " *
+                "Reversibility forbids destructive in-place overwrite. Tracked " *
+                "in Bennett-8bys. (Bennett-37mt Phase 1 — distinct allocas only)")
+        else
+            _ir_error(inst,
+                "$(cname): memcpy with src and dst rooted at the SAME " *
+                "`julia.gc_alloc_obj` ARENA allocation is semantically " *
+                "memmove (overlapping or in-place copy). The per-cell " *
+                "decomposition this arm emits never reaches BennettVM's " *
+                "runtime overlap check (that check lives in " *
+                "`forward(::IntrinsicMemcpy)`, and no `IntrinsicMemcpy` is " *
+                "emitted here), so proving disjointness at extraction is the " *
+                "ONLY guard — and a shared root cannot be proven disjoint " *
+                "without an alias analysis Bennett does not have. Contrast " *
+                "Bennett-vau9: `memmove` MAY overlap and routes to " *
+                "`IRCall(:memmove)` because BVM's `_copy_range!` snapshots the " *
+                "src range first. Tracked in Bennett-8bys. " *
+                "(Bennett-sy29 — generalised Predicate 7, distinct roots only)")
+        end
+    end
+
+    # Predicate 8: both operands must have a known integer element width.
     # Bennett-ixiz (2026-05-16) lifted the prior `dst_ew == 8 && src_ew == 8`
     # gate; arbitrary equal integer element widths (8/16/32/64) are now
     # accepted. The new predicates 8b (same-width) and 8c (N is multiple of
     # ew_bytes) follow.
-    dst_ew = _alloca_elem_width_bits(dst_root)
-    src_ew = _alloca_elem_width_bits(src_root)
+    #
+    # Bennett-sy29: an ARENA side has FIXED cell width 64 (BennettVM ADR 0018
+    # §A — a gc_alloc'd cell holds one Int64), and SKIPS the alloca-specific
+    # `_alloca_elem_width_bits` probe: there is no `LLVMGetAllocatedType` for a
+    # call result. Verbatim the vbv9 G4 structure.
+    dst_ew = arena_dst !== nothing ? 64 : _alloca_elem_width_bits(dst_root)
+    src_ew = arena_src !== nothing ? 64 : _alloca_elem_width_bits(src_root)
     if dst_ew == 0 || src_ew == 0
         _ir_error(inst,
             "$(cname): memcpy operand alloca has non-integer element type " *
@@ -2238,23 +2628,78 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
     #   memcpy %_0 ← %_2         (this arm: propagates tag to %_0)
     # Without this propagation, a later load through %_2 / %_0 would
     # silently miscompile on the synth-address bytes.
-    if src_root in synth_ptr_allocas
-        push!(synth_ptr_allocas, dst_root)
+    #
+    # Bennett-sy29 §7.6: the set is keyed on `_LLVMRef`, which admits an ARENA
+    # call ref just as well as an alloca ref, so the propagation is stated over
+    # the EFFECTIVE roots rather than over alloca refs alone.
+    #
+    # *** THIS IS FUTURE-PROOFING, NOT A LIVE FIX — corrected under hostile
+    # review (D3). Do not cite it as "the laundering hole is closed." ***
+    #
+    # The hazard it is shaped against is real in principle: vbv9's arena-dst
+    # branch used to record NOTHING, so synth-address bytes could sit untracked
+    # in an arena cell and an arena-src memcpy would LAUNDER them into an alloca,
+    # defeating the `Bennett-land-ptrload` escape guard (which walks to ALLOCA
+    # roots only, `_handle_load`). But that chain is UNREACHABLE TODAY, and the
+    # reason is measured (reviewer probe `p8_launder`), not assumed:
+    #
+    #   `synth_ptr_provenance` is only ever populated for a ConstantStruct
+    #   global, and such a global materialises as a BYTE stream — so `gw == 8`
+    #   ALWAYS. An arena dst is fixed at `dst_ew == 64` (ADR 0018 §A). G6
+    #   (`dst_ew == gw`) therefore fires FIRST, with the cross-width message,
+    #   on every global→arena memcpy that could carry synth provenance. The
+    #   land block below is never reached with `is_arena` true.
+    #
+    # So the branch cannot be exercised until either arena cells gain a byte
+    # tier on the global-src path or synth provenance gains a 64-bit-element
+    # source. It is kept because the arm should DECIDE rather than drift, and
+    # because it is strictly stronger than the alternative (a u2kk-style
+    # refusal) — but its value is that it will already be right when the
+    # blocking predicate moves, not that it fixes something today.
+    if eff_src_root in synth_ptr_allocas
+        push!(synth_ptr_allocas, eff_dst_root)
     end
 
-    # Expansion (Bennett-ixiz): K element-granular
-    # IRPtrOffset+IRPtrOffset+IRLoad+IRStore quads, where
-    # K = N / ew_bytes and each load/store is at width = dst_ew.
+    # ---- Expansion: K element-granular quads ---------------------------------
+    # (Bennett-ixiz) K = N / ew_bytes IRPtrOffset+IRPtrOffset+IRLoad+IRStore
+    # quads. Each load/store carries the VALUE width (`dst_ew`, == `src_ew` by
+    # Predicate 8b).
+    #
+    # Bennett-4y0d / Bennett-sy29 — THE ADDRESS/VALUE SPLIT, APPLIED PER SIDE.
+    # The width a value is moved at and the scale an address is stamped at are
+    # DIFFERENT NUMBERS, and HEAD conflated them by using `dst_ew` for all four
+    # nodes. They coincide for the alloca↔alloca clientele by construction, and
+    # they stop coinciding the moment either side is an arena root — which is
+    # exactly the latent shape that kept the pre-4y0d vbv9 defect green behind
+    # K=1 pins (at K=1 the only offset is 0, which is cell 0 under EVERY stamp,
+    # so (SC)'s vacuity exemption hides the error).
+    #
+    # BYTE-IDENTITY FOR EVERY PRE-SY29 CLIENT, argued from the two functions'
+    # definitions rather than from testing: `_root_scale` bottoms out at
+    # `_alloca_reservation`, the SAME source of truth the alloca arm reserves
+    # from. For an integer-typed alloca it returns that integer width, so
+    # `8 * rs[1] == _alloca_elem_width_bits(root) == dst_ew`. Where the two could
+    # disagree they are unreachable: a pointer-typed alloca gives
+    # `_alloca_elem_width_bits == 0` and dies at Predicate 8; a nested-array or
+    # non-integer alloca makes `_root_scale` return `nothing` and we fall back to
+    # `dst_ew`, HEAD's value; a sub-byte width (`alloca i1`) fails
+    # `_root_scale`'s `ew % 8 == 0` guard and also falls back.
     ew_bytes = div(dst_ew, 8)
     K = div(N, ew_bytes)
+    ptr_ew_src = let rs = _root_scale(src_v, names, ptr_cells)
+        rs === nothing ? src_ew : 8 * rs[1]
+    end
+    ptr_ew_dst = let rs = _root_scale(dst_v, names, ptr_cells)
+        rs === nothing ? dst_ew : 8 * rs[1]
+    end
     out = IRInst[]
     sizehint!(out, 4 * K)
     for k in 0:(K - 1)
         src_off = _auto_name(counter)
         dst_off = _auto_name(counter)
         tmp     = _auto_name(counter)
-        push!(out, IRPtrOffset(src_off, src_op, k * ew_bytes, dst_ew))
-        push!(out, IRPtrOffset(dst_off, dst_op, k * ew_bytes, dst_ew))
+        push!(out, IRPtrOffset(src_off, src_op, k * ew_bytes, ptr_ew_src))
+        push!(out, IRPtrOffset(dst_off, dst_op, k * ew_bytes, ptr_ew_dst))
         push!(out, IRLoad(tmp, ssa(src_off), dst_ew))
         push!(out, IRStore(ssa(dst_off), ssa(tmp), dst_ew))
     end
@@ -2750,8 +3195,29 @@ function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction
             "param-cell field cannot be tracked by the alloca-keyed land " *
             "guard (synth_ptr_allocas keys on alloca refs, not param cells). " *
             "Tracked in Bennett-land-param / 8bys follow-up. (Bennett-u2kk)")
-    elseif !is_arena && any(p -> p[1] === gname, synth_ptr_provenance)
-        push!(synth_ptr_allocas, dst_root)
+    elseif any(p -> p[1] === gname, synth_ptr_provenance)
+        # Bennett-sy29 §7.6 option (a): the ARENA root is recorded too. Pre-sy29
+        # this branch was `!is_arena && …`, i.e. an arena dst recorded NOTHING.
+        # `synth_ptr_allocas` is a `Set{_LLVMRef}` and admits a
+        # `julia.gc_alloc_obj` call ref unchanged; the load guard walks to ALLOCA
+        # roots only, so recording the arena root is inert on its own and becomes
+        # load-bearing exactly when the sy29 arm propagates it onto an alloca.
+        #
+        # *** FUTURE-PROOFING, NOT A LIVE FIX — corrected under hostile review
+        # (D3). The `is_arena` case here is UNREACHABLE TODAY, and measurably so
+        # (reviewer probe `p8_launder`): `synth_ptr_provenance` is populated only
+        # for a ConstantStruct global, which materialises as a BYTE stream, so
+        # `gw == 8` always; an arena dst is fixed at `dst_ew == 64`; and G6
+        # (`dst_ew == gw`, above) therefore rejects every such memcpy with the
+        # cross-width message BEFORE control reaches this block. Kept so the arm
+        # is already right when that blocking predicate moves — not because it
+        # closes a live hole.
+        #
+        # The `is_param` branch immediately above is a PRE-EXISTING instance of
+        # the same unreachability (its `_ir_error` cannot fire for the same G6
+        # reason). Noted, deliberately NOT changed here — it is u2kk's territory
+        # and its refusal is the conservative direction anyway.
+        push!(synth_ptr_allocas, is_arena ? arena_root : dst_root)
     end
 
     # ---- Emission: K element-granular IRPtrOffset + IRStore(iconst) ----

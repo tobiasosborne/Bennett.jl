@@ -689,6 +689,15 @@ runfile("test_p06b_aggregate_store.jl")
 # aggregate stores), closes the CW-D4 class-D split, `Bennett-z2ia` (static
 # case, by use-directed byte-normalisation) and `Bennett-4y0d`.
 runfile("test_bvmd_root_scale.jl")
+# Bennett-sy29 (xkl frontier wall 9): a `julia.gc_alloc_obj` ARENA root on
+# EITHER SIDE of a const-size, cell-aligned `llvm.memcpy` under `ptr_cells`.
+# The mirror of the vbv9 arena-dst arm, carrying the Bennett-4y0d address/value
+# stamp split PER SIDE (byte-tier src stamped 8, word-tier dst stamped 64, value
+# width 64 on both). Generalises Predicate 7 from "same alloca" to "same root"
+# — route R1 never emits an `IntrinsicMemcpy`, so that guard REPLACES BVM's
+# runtime overlap check. Clears wall 9; the set walls at wall 10 (the
+# `%memory_data3` ptrtoint whose difference escapes via `udiv exact`).
+runfile("test_sy29_arena_src_memcpy.jl")
 # Bennett-jfw6: mem=:vm Case A Vector/GenericMemory extraction recognizer (shape + fail-loud matrix).
 runfile("test_jfw6_vec_vm_extract.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message

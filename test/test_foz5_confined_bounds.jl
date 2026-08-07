@@ -851,23 +851,31 @@ end
             e isa InterruptException && rethrow()
             sprint(showerror, e)
         end
-        @test msg != ""            # still walled — at wall 9, not wall 7 or 8
-        # LOAD-BEARING NEGATIVES: wall 7 is CLEARED. Bennett-bvmd MEASURED that
-        # these stay true at wall 9 (the scout's instruction to drop them was
-        # one bead early — wall 10 is where the escaping base-cancelling
-        # difference lives, and it sits BEHIND four memcpys).
-        @test !occursin("base-cancelling", msg)
-        @test !occursin("Bennett-583s", msg)
+        @test msg != ""            # still walled — at wall 10 now, not 7/8/9
+        # NARROWED to BODY SCOPE by Bennett-sy29 (xkl wall 9). Wall 10 IS a 583s
+        # reject in the ROOT body, so the blanket negatives cannot survive — but
+        # their intent (wall 7, the CLOSURE's `%idxend41` cluster, is CLEARED by
+        # this very bead's contract) is preserved by scoping them to the closure.
+        # NOTE what wall 10 shows about §4a's reach: (C0) and (C1) both PASS on
+        # that cluster — it is ONE OPCODE from the contract — and the opcode is
+        # the whole difficulty, because `udiv exact` turns the difference into a
+        # live ELEMENT INDEX that escapes into two closure-env stores rather than
+        # merely steering a halting branch. Clause (iii) is right to decline it.
+        @test !(occursin("Bennett-583s", msg) && occursin("_growend!", msg))
         # (O3) the jbko witness was not poached.
         @test !occursin("Bennett-jbko", msg)
         @test !occursin("ConcurrencyViolation", msg)
         # LOAD-BEARING NEGATIVE, ADDED by Bennett-bvmd: wall 8 is CLEARED, so a
         # p06b reject naming `gc_alloc_obj` is now a REGRESSION.
         @test !(occursin("Bennett-p06b", msg) && occursin("gc_alloc_obj", msg))
-        # POSITIVE: wall 9 (Bennett-37mt / Bennett-8bys arena-src memcpy).
-        # Non-numeral anchors only (Bennett-0ncn: bare numerals can false-match
-        # a future bead tag); disjoined because WHICH of the four memcpys fails
-        # first is iteration order, not contract.
-        @test (occursin("memcpy", msg) || occursin("Bennett-37mt", msg))
+        # POSITIVE, ADVANCED by Bennett-sy29: wall 9 (the arena-src memcpy) is
+        # CLEARED, and the successor is WALL 10 — the `%memory_data3` ptrtoint
+        # whose difference escapes via `udiv exact`. Non-numeral anchors only
+        # (Bennett-0ncn: bare numerals can false-match a future bead tag);
+        # disjoined because WHICH predicate is named first is not a contract.
+        @test occursin("Bennett-583s", msg) || occursin("Bennett-foz5", msg)
+        # NEW LOAD-BEARING NEGATIVE: wall 9 is CLEARED, so a 37mt reject is a
+        # REGRESSION.
+        @test !occursin("Bennett-37mt", msg)
     end
 end

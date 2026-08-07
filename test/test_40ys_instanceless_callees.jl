@@ -540,21 +540,25 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
         @test !occursin("BYTE-granular getelementptr", e.msg)
         # LOAD-BEARING NEGATIVE: wall 7 — the `%idxend41` memdata bounds cluster
         # — is CLEARED by Bennett-foz5 (ADR 0017 §4a, the CONFINED-VALUE
-        # contract). Without these the positive below would not notice a re-open.
-        @test !occursin("Bennett-583s", e.msg)
-        @test !occursin("base-cancelling", e.msg)
+        # contract). NARROWED to BODY SCOPE by Bennett-sy29 (xkl wall 9): wall 10
+        # IS a 583s reject, in the ROOT body, so the blanket form cannot survive
+        # — but scoping it to the CLOSURE keeps exactly the intent it had.
+        @test !(occursin("Bennett-583s", e.msg) && occursin("_growend!", e.msg))
         # ... and we land on the NAMED successor wall.
-        # MEASURED (2026-08-06, --check-bounds=yes), ADVANCED by Bennett-bvmd:
-        # wall 8 is CLEARED (the `julia.gc_alloc_obj` tier is admitted at
-        # `elem_width = 8`) and the successor is wall 9 — the ROOT body's
-        # arena-src memcpy, whose SRC operand `gep i8 %"new::Array", 16` is not
-        # alloca-backed (Bennett-37mt Phase 1 / Bennett-8bys). Kept as a
-        # DISJUNCTION rather than a literal pin because WHICH body of the set
-        # fails first is registration/iteration order, which is not a contract
-        # (the test_lf14 convention this gate has always followed). Non-numeral
-        # anchors only — the Bennett-0ncn lesson: a bare numeral can
-        # false-match a future bead tag.
-        @test occursin("memcpy", e.msg) || occursin("Bennett-37mt", e.msg)
+        # MEASURED (2026-08-07, --check-bounds=yes), ADVANCED by Bennett-sy29:
+        # wall 9 is CLEARED (an arena root is now admitted on EITHER side of a
+        # const-size cell-aligned memcpy under ptr_cells) and the successor is
+        # WALL 10 — the ROOT body's `%12 = ptrtoint ptr %memory_data3 to i64`,
+        # whose base-cancelling difference escapes through `udiv exact` into two
+        # closure-env stores, which foz5 §4a clause (iii) does not admit. Kept as
+        # a DISJUNCTION rather than a literal pin because WHICH predicate is
+        # named first is not a contract (the test_lf14 convention this gate has
+        # always followed). Non-numeral anchors only — the Bennett-0ncn lesson:
+        # a bare numeral can false-match a future bead tag.
+        @test occursin("Bennett-583s", e.msg) || occursin("Bennett-foz5", e.msg)
+        # NEW LOAD-BEARING NEGATIVE: wall 9 is CLEARED, so a 37mt reject is now
+        # a REGRESSION rather than the expected wall.
+        @test !occursin("Bennett-37mt", e.msg)
     end
 
     # ==================================================================
