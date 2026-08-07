@@ -698,6 +698,13 @@ runfile("test_bvmd_root_scale.jl")
 # runtime overlap check. Clears wall 9; the set walls at wall 10 (the
 # `%memory_data3` ptrtoint whose difference escapes via `udiv exact`).
 runfile("test_sy29_arena_src_memcpy.jl")
+# Bennett-57hd (ADR 0017 §4b) — the VALUE-IDENTITY contract, the THIRD
+# admission contract and the STRONGEST of the three: the two coerced pointers
+# are PROVED to be copies of one value, so the difference is identically 0
+# under ANY address representation and may escape freely (into a live branch,
+# an allocation size, a memmove length). Clears wall 10; the set walls at wall
+# 11 (the `.mem` memcpy SRC, Bennett-37mt / Bennett-8bys).
+runfile("test_57hd_value_identity.jl")
 # Bennett-jfw6: mem=:vm Case A Vector/GenericMemory extraction recognizer (shape + fail-loud matrix).
 runfile("test_jfw6_vec_vm_extract.jl")
 # Bennett-g27k / U18 — cc0.3 catch narrowed: exception type + message

@@ -555,10 +555,41 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
         # named first is not a contract (the test_lf14 convention this gate has
         # always followed). Non-numeral anchors only — the Bennett-0ncn lesson:
         # a bare numeral can false-match a future bead tag.
-        @test occursin("Bennett-583s", e.msg) || occursin("Bennett-foz5", e.msg)
-        # NEW LOAD-BEARING NEGATIVE: wall 9 is CLEARED, so a 37mt reject is now
-        # a REGRESSION rather than the expected wall.
-        @test !occursin("Bennett-37mt", e.msg)
+        # ===================== WALL 10 CLEARED — Bennett-57hd =====================
+        # ADVANCED by Bennett-57hd (ADR 0017 §4b, the VALUE-IDENTITY contract): wall
+        # 10 — the ROOT body's `%12 = ptrtoint ptr %memory_data3 to i64`, whose
+        # base-cancelling difference escaped through `udiv exact` — is CLEARED, so a
+        # 583s / foz5 / 57hd reject in the ROOT body is now a REGRESSION rather than
+        # the expected wall. (Replaces the sy29-era positive, which asserted exactly
+        # that reject.) Non-numeral anchors only (Bennett-0ncn).
+        @test !occursin("base-cancelling", e.msg)
+        @test !occursin("_foz5_confined_dead_bounds", e.msg)
+        @test !occursin("_57hd_value_identity_cluster", e.msg)
+        # POSITIVE, WALL 11 — the loaded-`ptr` (`.mem`) memcpy SRC class, corpus
+        # site #4 of the sy29 census, tracked in Bennett-8bys.
+        @test occursin("Bennett-37mt", e.msg) && occursin("src operand", e.msg)
+        # ================= THE IDENTICAL-TEXT DISCRIMINATOR — READ BEFORE EDITING ==
+        # WALL 11'S REJECT TEXT IS THE SAME REJECT AS WALL 9'S: same bead tags
+        # (`Bennett-37mt` / `Bennett-8bys`), same "src operand", same "memcpy". The
+        # ONLY thing that distinguishes them is WHICH OPERAND the `_ir_error` prefix
+        # quotes — wall 9 quoted `%"new::Array.size_ptr1"`, wall 11 quotes
+        # `%"new::Array.ref.mem"`. Neither `Bennett-37mt` nor `src operand` nor
+        # `Bennett-8bys` can tell them apart, and the `udiv` discriminator is NOT
+        # constructible (the prefix quotes the ptrtoint, not the cluster). WITHOUT
+        # BOTH LINES BELOW THIS MARKER CANNOT TELL A WALL-9 REGRESSION FROM WALL-11
+        # PROGRESS. Check discriminators against the MESSAGE TEXT, never against the
+        # IR (the Bennett-sy29 lesson). Do not "simplify" these two lines away.
+        @test occursin("new::Array.ref.mem", e.msg)
+        @test !occursin("new::Array.size_ptr", e.msg)
+        # NOTE FOR WHOEVER CLEARS WALL 11: wall 12 is the p06b `alloca { ptr, ptr }`
+        # silent-skip reject at `%L16` — measured LOUD; its message names
+        # `Bennett-p06b`, `_p06b_cell_ptr_target_kind` and `SILENTLY SKIPS`, and it
+        # does NOT contain the string `Bennett-1zow`, so a marker written against
+        # that bead tag would never fire. Wall 13 is a SECOND 37mt/8bys memcpy
+        # (`memcpy operand alloca has non-integer element type`); wall 14 is a bvmd
+        # `SCALE-COHERENCE` violation on the 9xi64 closure alloca. The `%L21` /
+        # `%L43` clusters are NOT future walls — they are already admitted under
+        # ADR 0017 §4a (measured; see gate (S) of test_57hd_value_identity.jl).
     end
 
     # ==================================================================

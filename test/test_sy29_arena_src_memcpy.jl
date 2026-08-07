@@ -575,15 +575,32 @@ top:
             e isa InterruptException && rethrow()
             sprint(showerror, e)
         end
-        @test msg != ""                        # walls 10/11 remain
-        # NEW LOAD-BEARING NEGATIVE — wall 9 is CLEARED, so a 37mt reject is
-        # now a REGRESSION rather than the expected wall.
-        @test !occursin("Bennett-37mt", msg)
+        @test msg != ""                        # walls 11+ remain
+        # ADVANCED by Bennett-57hd (ADR 0017 §4b, the VALUE-IDENTITY contract):
+        # wall 10 is CLEARED, so a 583s / foz5 / 57hd reject in the ROOT body
+        # is now a REGRESSION rather than the expected wall.
+        @test !occursin("base-cancelling", msg)
+        @test !occursin("_foz5_confined_dead_bounds", msg)
+        @test !occursin("_57hd_value_identity_cluster", msg)
+        # sy29's OWN arm is still cleared — this negative is unchanged.
         @test !occursin("Bennett-sy29", msg)
-        # POSITIVE, wall 10 — non-numeral anchors only (Bennett-0ncn),
-        # disjoined because WHICH predicate is named first is not a contract.
-        @test occursin("Bennett-583s", msg) || occursin("Bennett-foz5", msg)
-        @test occursin("ptrtoint", msg)
+        # ================= THE IDENTICAL-TEXT DISCRIMINATOR — READ THIS =======
+        # THE `!occursin("Bennett-37mt")` NEGATIVE THIS GATE USED TO CARRY
+        # CANNOT SURVIVE, and deleting it silently would be the exact defect
+        # this comment exists to prevent. WALL 11 IS ALSO A 37mt REJECT — the
+        # `Bennett-8bys` "src operand is not alloca-backed" text, WORD FOR WORD
+        # the same reject sy29 cleared at wall 9. The ONLY thing that
+        # distinguishes wall-11 PROGRESS from a wall-9 REGRESSION is WHICH
+        # OPERAND the `_ir_error` prefix quotes: wall 9 quoted
+        # `%"new::Array.size_ptr1"` (sy29's arena-SRC memcpy, corpus site #3),
+        # wall 11 quotes `%"new::Array.ref.mem"` (the loaded-`ptr` `.mem` src,
+        # corpus site #4). The `udiv` discriminator is NOT constructible — the
+        # prefix quotes the ptrtoint, not the cluster. Check discriminators
+        # against the MESSAGE TEXT, never against the IR: that is sy29's own
+        # lesson, applied to sy29's own gate. Do not "simplify" these away.
+        @test occursin("Bennett-37mt", msg) && occursin("src operand", msg)
+        @test occursin("new::Array.ref.mem", msg)
+        @test !occursin("new::Array.size_ptr", msg)
         # Walls 3/5/6/7/8 stay cleared.
         @test !(occursin("Bennett-p06b", msg) && occursin("gc_alloc_obj", msg))
         for neg in ("Bennett-jbko", "Bennett-iwo9", "Bennett-lgzx", "memmove",

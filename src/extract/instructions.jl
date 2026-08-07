@@ -236,6 +236,14 @@ from a BennettVM authority, never invented here; the `alloca` row goes through
 `_alloca_reservation`, the SINGLE SOURCE OF TRUTH the alloca arm itself uses, so
 this walker cannot drift from what is actually reserved.
 """
+# COUPLING — SECOND CONSUMER (Bennett-57hd / ADR 0017 §4b). `_57hd_clobbered`
+# takes a SAME-ROOT byte-range non-overlap decision ONLY when this returns the
+# BYTE TIER (`scale == 1`), because a byte-range disjointness is a claim about
+# VM CELLS and only the byte tier makes byte offsets BE cell offsets. That is
+# `bennettvm-jb6w` pre-empted rather than amplified. A scale that stops being 1
+# turns the judgement into a clobber ⇒ REJECT ⇒ the existing loud wall, i.e.
+# drift here degrades §4b conservatively. Pinned by gates (G)/(G2) of
+# `test_57hd_value_identity.jl`.
 function _root_scale(val::LLVM.Value, names::Dict{_LLVMRef, Symbol},
                      ptr_cells::Bool, depth::Int=0)
     depth > _BVMD_ROOT_DEPTH && return nothing
@@ -886,6 +894,13 @@ end
 # Returns `(kind, cells)`. `cells >= 0` is a CERTIFIED capacity in 64-bit cells;
 # `cells == -1` means statically unknown (only ever returned for `:load`, whose
 # extent is not knowable at the store site — see the arm's disclosure).
+# COUPLING — SECOND CONSUMER (Bennett-57hd / ADR 0017 §4b), clause (iv).
+# `_57hd_canon` forwards a load to an aggregate store's field ONLY when the
+# store's target root certifies here. Without that gate the walk could "prove" a
+# copy step through a store the extraction never materialises as cells — §4a
+# clause (i)'s own disclosure ("does not provide sentinel-freedom for
+# load-sourced values") is that hole one hop up. Pinned by gate (N) of
+# `test_57hd_value_identity.jl`.
 function _p06b_cell_ptr_target_kind(v, names::Dict{_LLVMRef, Symbol},
                                     ptr_cells::Bool,
                                     suppressed::Set{_LLVMRef})
@@ -1032,6 +1047,15 @@ end
 # address collapses to one key. A non-constant index stops the walk (that GEP
 # result becomes its own root) — sound, because two runtime-indexed addresses
 # cannot be proven equal here. Depth-bounded like the other walkers in this file.
+#
+# COUPLING — SECOND CONSUMER (Bennett-57hd / ADR 0017 §4b). `_57hd_canon` uses
+# this key as its notion of "the same slot" for BOTH its store-forward and its
+# same-slot-reload rules, and `_57hd_write_footprint` uses it to name the
+# `(root, lo, hi)` a store or a mem intrinsic writes. The variable-index
+# stop-the-walk rule is LOAD-BEARING there too, in the same direction: two
+# runtime-indexed addresses get DIFFERENT roots, are therefore never provably
+# disjoint, and clobber. Any change here lands in `test_p06b_aggregate_store.jl`
+# AND in `test_57hd_value_identity.jl` gates (B)/(C)/(N).
 function _p06b_slot_key(v::LLVM.Value, depth::Int=0)::Tuple{_LLVMRef,Int}
     depth > 8 && return (v.ref, 0)
     (v isa LLVM.Instruction && LLVM.opcode(v) == LLVM.API.LLVMGetElementPtr) ||
@@ -1813,6 +1837,738 @@ function _foz5_confined_dead_bounds(pt::LLVM.Instruction,
             _foz5_i1_confined(susr, dead_blocks, Set{_LLVMRef}()) || return false
         end
         sub_saw || return false
+    end
+    return saw
+end
+
+# ---- Bennett-57hd / CW-D: VALUE-IDENTITY ptrtoint (ADR 0017 §4b) ------------
+#
+#   %f0   <- load (gep {ptr,ptr} %obj, 0, 0)   ; array.ref.ptr_or_offset
+#   %f1   <- load (gep {ptr,ptr} %obj, 0, 1)   ; array.ref.mem
+#   %md2  <- load (gep {i64,ptr} %f1,  0, 1)   ; array.ref.mem.data
+#   %d    =  sub(ptrtoint %f0, ptrtoint %md2)  ; Julia's `memoryrefoffset`
+#   %idx  =  udiv exact %d, 8                  ; ...as an ELEMENT INDEX
+#
+# ============================================================================
+# THE THIRD PROOF — AND IT IS THE STRONGEST OF THE THREE, NOT THE WEAKEST
+# ============================================================================
+#
+# WHY A THIRD CONTRACT AT ALL. Bennett-583s declines because `_memdata_root`
+# establishes base cancellation by SYNTACTIC SSA EQUALITY of the two `.data`
+# loads; here the two operands are the two halves of ONE `MemoryRef`, both read
+# out of one freshly `julia.gc_alloc_obj`-ed `Array` header, related through an
+# aggregate store and a same-slot reload rather than through one SSA name.
+# Bennett-foz5 / §4a declines CORRECTLY: its clause (iii) requires every use of
+# the `sub` to be an `icmp`, and this difference's sole use is the `udiv`. The
+# value then ESCAPES — into a live grow-or-not branch and into two closure-env
+# slots that `_growend!` reads as `jl_alloc_genericmemory_unchecked`'s
+# ALLOCATION SIZE and `llvm.memmove`'s LENGTH. Under the arena model
+# (`bennettvm-pdqx`: no region table, three monotone cursors; ADR 0018 §E: an
+# unstored load reads 0) a wrong allocation size is an UNDETECTABLE
+# adjacent-allocation clobber. THERE IS NO CONFINEMENT AVAILABLE FOR THIS SHAPE
+# AND §4a MUST NOT BE WIDENED TO REACH IT.
+#
+# THE PREDICATE. `_57hd_value_identity_cluster` establishes:
+#
+#   (V0) the SOURCE pointer is a CERTIFIED CELL PRODUCER — `_foz5_cert_src_kind`
+#        (verbatim reuse of §4a clause (i)) — and is a named, non-suppressed
+#        instruction;
+#   (V1) `pt` has >= 1 use and EVERY use is a 2-operand i64 `sub` whose sibling
+#        operand is itself a `ptrtoint` of a source also satisfying (V0);
+#   (V2) for every such sibling, the two sources lie in ONE BASIC BLOCK and
+#        `_57hd_canon` reduces them to the SAME canonical value;
+#   (V3) every store `_57hd_canon` forwards through targets a P06B-CERTIFIED
+#        CELL POINTER (`_p06b_cell_ptr_target_kind`), so the copy step the walk
+#        reasons about is one the EXTRACTION MATERIALISES.
+#
+# THEOREM. Let `φ` be ANY map from native addresses to BennettVM pointer-cell
+# values — injective or not, affine or not, byte-scaled or not. By (V2) the two
+# sources denote ONE pointer value `p` on every execution that reaches the
+# `sub`: `_57hd_canon`'s only inference steps are (i) "the value loaded from
+# slot `k` equals the value the uniquely-reaching store wrote into slot `k`" and
+# (ii) "two loads of slot `k` with no intervening writer to `k` return the same
+# value", both of which are statements about VALUES, valid in straight-line
+# code. Natively the `sub` evaluates `p − p = 0`. In BennettVM the two coercions
+# read two cells that (V3) guarantees were materialised and that (V2)
+# guarantees hold one and the same value `φ(p)`, so the `sub` evaluates
+# `φ(p) − φ(p) = 0`. THE TWO AGREE FOR EVERY `φ`. ∎
+#
+#   >>> GUARANTEE: the admitted cluster computes, on every input, the SAME
+#   >>> INTEGER the native program computes. Decision item 4's "faithful
+#   >>> reversible throw" is RETAINED UNCHANGED for every guard downstream of
+#   >>> this admission; ADR 0017 §4a's conditionality clause is NOT invoked.
+#
+# WHERE THIS SITS AMONG THE THREE POINTER CONTRACTS — the one-line answer to
+# "which oracle argument?", and the reason this one composes rather than
+# negotiates:
+#
+#   | contract      | the invariance it needs of `φ`                     |
+#   |---------------|----------------------------------------------------|
+#   | Bennett-583s  | affine with slope 1 WITHIN ONE ALLOCATION           |
+#   | Bennett-jbko  | INJECTIVE (`eq`/`ne` survives relabelling)          |
+#   | Bennett-57hd  | ** NONE — `0 = 0` for any `φ` whatsoever **         |
+#   | Bennett-foz5  | n/a — declines oracle match; confines instead       |
+#
+# BOTH COLUMNS OF THE FAILURE MATRIX ARE BOUNDED, and that is the whole point:
+#
+#   | | native RETURNS            | native THROWS                            |
+#   |-|---------------------------|------------------------------------------|
+#   |admit| same value            | same branch at every downstream guard —  |
+#   |     |                       | operands are oracle-exact, so item 4's   |
+#   |     |                       | PROVED-faithful throw, not §4a's         |
+#   |decline| the existing loud wall | the existing loud wall                |
+#
+# §4a's banner has to say "the throw may be MISSED, and the halt may be
+# SPURIOUS; neither direction is authorised; both are UNBOUNDED by the theorem."
+# THIS ARM HAS NO SUCH PARAGRAPH. The residual risk is NOT in the theorem — it
+# is in the ANALYSIS: if `_57hd_canon` ever returns "same value" for two
+# different values the hypothesis is false. Everything below is therefore
+# written FAIL-CLOSED, and every premise is READ FROM LLVM'S OWN ATTRIBUTES
+# rather than from a table of callee names.
+#
+# COMPOSITION (why §4a's conditionality is SATISFIED, not voided). §4a's
+# theorem is stated relative to "everything outside `τ` is computed by the
+# pre-existing, already-sound model" (see the foz5 block above). A §4b
+# admission is an ORACLE-MATCH admission, so the admitted producer BELONGS TO
+# that model and no clause of §4a is invoked. Bennett-jbko's
+# trajectory-correspondence argument is preserved BY CONSTRUCTION: the
+# grow-or-not branch is decided by an oracle-exact index, so the allocation
+# sizes derived from it — and hence `arena_top`, and hence every subsequent
+# pointer cell value — are provably the native ones. Had this value been
+# admitted under a DECLARED premise instead, §4a's and jbko's guarantees would
+# both have become conditional on that declaration.
+#
+# FIRST REFUSAL: 583s, then §4a, then this. `_memdata_root` is NOT touched
+# (`p07_steal.jl` measured that widening it makes the 583s arm claim jbko's
+# `%L84` witness and then ERROR). The non-steal is STRUCTURAL and measured over
+# both corpus bodies: this predicate is false on both 583s clusters and on all
+# three §4a clusters, and it CANNOT fire on jbko's witness because (V1) demands
+# every use be a `sub` while `_jbko_identity_use_violation` demands every use be
+# an `icmp eq`/`ne`, and a non-empty use set cannot satisfy both.
+#
+# NON-GOAL, MEASURED AND REJECTED — READ BEFORE "IMPROVING" THIS. The natural
+# generalisation (`α_k`) strips `getelementptr i8` chains, canonicalises the
+# BASES and concludes `sub ≡ Σ displacements`. Measured over both corpus
+# bodies, it CLAIMS `%L46` and `%L58` — both clusters Bennett-583s owns — and
+# gains ZERO new clusters, because what blocks the other two is the CALL, not
+# the displacement. It also re-acquires 583s's residual byte-tier dependence,
+# deleting the "no representation premise" property that is this contract's
+# entire case. DISPLACEMENT ZERO IS THE DESIGN, not a limitation accepted
+# grudgingly. Pinned by gate (S) of `test/test_57hd_value_identity.jl`.
+#
+# ALSO REJECTED: route δ′, a same-`MemoryRef` provenance-pair predicate resting
+# on the DECLARED Julia language invariant "field 0 points into field 1's data
+# region". It covers nothing this does not (the `%L21`/`%L43` clusters it was
+# scoped around are ALREADY ADMITTED by the shipped §4a predicate — measured,
+# gate (S)), its failure mode is a silently wrong heap rather than a halt, and
+# it amplifies `bennettvm-jb6w` by recognising an unnamed literal `{ptr,ptr}` as
+# "a MemoryRef". THIS ARM HAS NO TYPE-SHAPE RECOGNISER AT ALL — it asks only
+# "are these the same value?", a question with the same correct answer on every
+# language tier. Gates (H)/(H2) pin both directions.
+#
+# DECLARED PREMISES (the A-ledger; the ADR carries the same three):
+#   (P1) LLVM attributes in the input module are TRUTHFUL. An IR-WELL-FORMEDNESS
+#        premise, the same class as "the `Sub` opcode means subtraction" — NOT
+#        the ABI/codegen-layout class Rule 5 forbids. A false `noalias` or
+#        `memory(…)` would miscompile under LLVM's own optimiser. A MISSING
+#        attribute always REJECTS. Measured load-bearing: reclassify the
+#        allocator as unknown-effect and the corpus lemma collapses.
+#   (P2) `llvm.memcpy`/`memmove`/`memset` mean what LLVM says they mean,
+#        identified BY NAME. The same premise the shipped Bennett-37mt /
+#        Bennett-vau9 / Bennett-sy29 arms already make.
+#   (P3) ADR 0018 §A cell-copy fidelity — a load/store/insertvalue copies a cell
+#        value verbatim. PRE-EXISTING: the substrate Bennett-jbko already stands
+#        on, and EXECUTABLE (`BennettVM/test/test_57hd_value_identity_vm.jl`).
+#   (P4) LLVM.jl's instruction iteration over a basic block yields PROGRAM
+#        ORDER. `seq` / `order` / `_57hd_predates` are all built from it, so a
+#        reordering iterator would silently invert "before" and "after". An
+#        LLVM.jl API premise, not a Julia one, and shared with every positional
+#        walker in this file.
+#   (P5) The VM transport of rule (b) — "two loads of one slot with no writer
+#        between return the same cell value" — follows INDUCTIVELY, not by
+#        assumption: the base case is SSA ref equality (the same node, hence the
+#        same cell), and each store-forward hop is (V3)-certified, i.e. the
+#        store it forwards through is one the extraction materialises as cells,
+#        so the copy the native world performs is a copy the VM performs too.
+#
+# O-1 (drift risk, mitigated rather than disclosed-and-left). The `memory`
+# attribute's value is a RAW PACKED INTEGER whose encoding is LLVM-internal and
+# NOT a stable API (Rule 5). `_57hd_writes_no_ir_memory` therefore FAILS CLOSED
+# on any bit outside the three locations this LLVM version defines, and gates
+# (D2)/(D3) of the owning test are decode CANARIES that must move in OPPOSITE
+# directions — a decoder that fails closed on everything fails (D3); a decoder
+# that reads "writes nothing" for everything fails (D2). The same two-step
+# call-site-then-declaration fallback covers `nocapture`'s eventual respelling
+# as `captures(none)`; absence is always `false`, which is the safe direction.
+#
+# COUPLING: this arm CONSUMES `_p06b_slot_key` (the canonical `(root, byte
+# offset)` address key — the p06b N2 hostile-review fix), `_root_scale` (bvmd's
+# byte-tier predicate) and `_p06b_cell_ptr_target_kind` (p06b's (P4) target
+# certification). All three are shipped single-sources-of-truth with large
+# owning suites; a change to any of them lands here.
+
+const _57HD_DEPTH        = 8    # the `_memdata_root` / `_FOZ5_DEPTH` idiom
+const _57HD_SCAN_CAP     = 512  # instructions inspected per cluster (Rule 1)
+const _57HD_ESCAPE_DEPTH = 4    # `alloca` non-escape GEP recursion
+# LLVM 18 MemoryEffects: 3 locations (ArgMem=0, InaccessibleMem=1, Other=2) x
+# 2 bits (NoModRef=0, Ref=1, Mod=2, ModRef=3). ANY bit outside this mask means
+# the encoding has drifted ⇒ fail closed (O-1).
+const _57HD_ME_KNOWN_MASK = 0b111111
+const _57HD_ME_MOD        = 2
+
+# LLVM's attribute-kind ids are looked up BY NAME on every call rather than
+# cached in a `const`: a `const` would be evaluated at PRECOMPILE time and
+# serialised into the `.ji`, baking one LLVM build's numbering into the package
+# (Rule 5). The lookup is a static-table probe.
+_57hd_attr_kind(nm::String)::UInt32 =
+    LLVM.API.LLVMGetEnumAttributeKindForName(nm, Csize_t(length(nm)))
+
+const _57HD_FN_ATTR_IDX = reinterpret(UInt32, Int32(-1))   # LLVMAttributeFunctionIndex
+const _57HD_RET_ATTR_IDX = UInt32(0)                       # LLVMAttributeReturnIndex
+
+# Read an enum attribute at `idx` from the CALL SITE, falling back to the CALLEE
+# DECLARATION.
+#
+# > PROSE-VS-PREDICATE TRAP, MEASURED TWICE (independently, by both proposers).
+# > A CALL-SITE-ONLY CHECK REJECTS THE CORPUS. `llvm.memcpy` / `llvm.memset`
+# > carry `nocapture` on the DECLARATION's parameter
+# > (`declare void @llvm.memcpy.p0.p0.i64(ptr noalias nocapture writeonly, …)`)
+# > and NOT at the call site, and the corpus scan window contains
+# > `memcpy(%"new::Array.size", %"new::Array.size_ptr1", 8)` whose destination
+# > root is exactly such an `alloca`. The same is true of `memory` on all three
+# > mem intrinsics. Say "call site OR callee declaration" — never "the call
+# > site". Pinned by gate (F2).
+function _57hd_call_attr(call::LLVM.Instruction, idx::UInt32, nm::String)
+    k = _57hd_attr_kind(nm)
+    k == 0 && return C_NULL                     # unknown to this LLVM ⇒ absent
+    a = LLVM.API.LLVMGetCallSiteEnumAttribute(call, idx, k)
+    a != C_NULL && return a
+    co = LLVM.called_operand(call)
+    co isa LLVM.Function || return C_NULL
+    return LLVM.API.LLVMGetEnumAttributeAtIndex(co, idx, k)
+end
+
+# The callee's MemoryEffects, or `nothing` when no `memory` attribute is
+# retrievable at all (⇒ `:unknown` ⇒ the walk stops). `julia.get_pgcstack`
+# carries NO attribute group whatever and lands here, deliberately: this arm
+# refuses to ASSERT that it writes nothing.
+#
+# OPERAND BUNDLES ARE INVISIBLE TO THE RAW ATTRIBUTE, so a call carrying ANY
+# bundle is `:unknown` regardless of what `memory` says. LLVM's own
+# `CallBase::getMemoryEffects()` ORs in `writeOnly()` for a clobbering bundle;
+# reading the attribute alone therefore believes a truthful `memory(none)`
+# declaration about a call that LLVM itself treats as a writer. Measured
+# (hostile-review probe `probe5.jl` R1): `@vi_pure` declared `memory(none)`,
+# called with a `[ "jl_roots"(ptr %junk) ]` bundle, was ADMITTED — contradicting
+# ADR 0017 §4b's "every unmodelled effect terminates the analysis
+# unsuccessfully" verbatim. Corpus-neutral: zero bundle sites in either body.
+# Pinned by gate (D4).
+function _57hd_mem_effects(call::LLVM.Instruction)::Union{Nothing, Int}
+    LLVM.API.LLVMGetNumOperandBundles(call) == 0 || return nothing
+    a = _57hd_call_attr(call, _57HD_FN_ATTR_IDX, "memory")
+    a == C_NULL && return nothing
+    return Int(LLVM.API.LLVMGetEnumAttributeValue(a))
+end
+
+# Does the callee provably write NO IR-VISIBLE memory? `inaccessiblemem` is by
+# definition not visible to this analysis, so only ArgMem and Other matter.
+# FAIL-CLOSED on an unrecognised encoding (O-1).
+function _57hd_writes_no_ir_memory(me::Int)::Bool
+    (me & ~_57HD_ME_KNOWN_MASK) == 0 || return false          # O-1
+    ((me >> 0) & _57HD_ME_MOD) == 0 && ((me >> 4) & _57HD_ME_MOD) == 0
+end
+
+_57hd_writes_other(me::Int)::Bool =
+    (me & ~_57HD_ME_KNOWN_MASK) != 0 || ((me >> 4) & _57HD_ME_MOD) != 0
+
+_57hd_has_noalias_ret(call::LLVM.Instruction)::Bool =
+    _57hd_call_attr(call, _57HD_RET_ATTR_IDX, "noalias") != C_NULL
+
+# (A4) NON-ESCAPING `alloca`: one whose pointer is only ever DEREFERENCED (a
+# load/store ADDRESS operand), const-GEP'd, or passed at a `nocapture`
+# parameter position. Such an object cannot be aliased by any pointer not
+# syntactically derived from it. Attribute-checked, never name-matched.
+#
+# ┌──────────────────────── THE STORE ARM HAS TWO HALVES ────────────────────┐
+# │ CHECKING ONLY THE ADDRESS OPERAND IS A P0 FAIL-OPEN, AND IT WAS EXECUTED.│
+# │ `store ptr %a, ptr %a` writes the alloca's OWN ADDRESS into itself. The  │
+# │ address half passes, so `%a` was reported NON-ESCAPING; the reloaded     │
+# │ copy `%p = load ptr, ptr %a` classifies `:other`, so                     │
+# │ `_57hd_roots_disjoint(%a, %p)` returned TRUE and a later                 │
+# │ `store ptr %junk, ptr %a` — a write straight through the alias — was     │
+# │ SKIPPED by the clobber scan. Hostile-review probe `probe3_vm.jl` ran the │
+# │ admitted cluster on BennettVM: **the `sub` evaluated to 64**, against an │
+# │ ADR 0017 §4b guarantee of 0 in both worlds, and it escaped into a        │
+# │ `gc_alloc_obj` size. The VALUE half below is what closes it. The GEP     │
+# │ recursion covers the `store ptr %a, ptr (gep %a, k)` spelling, because   │
+# │ the recursive call sees the same store with `%a` as its VALUE operand.   │
+# │ Corpus-neutral: zero self-stores measured in either corpus body.         │
+# │ Pinned by gate (C3).                                                     │
+# └──────────────────────────────────────────────────────────────────────────┘
+function _57hd_alloca_noescape(a::LLVM.Value, depth::Int=0)::Bool
+    depth > _57HD_ESCAPE_DEPTH && return false
+    for u in LLVM.uses(a)
+        usr = LLVM.user(u)
+        usr isa LLVM.Instruction || return false
+        o = LLVM.opcode(usr)
+        if o == LLVM.API.LLVMLoad
+            LLVM.operands(usr)[1].ref == a.ref || return false
+        elseif o == LLVM.API.LLVMStore
+            sops = LLVM.operands(usr)
+            sops[2].ref == a.ref || return false   # must be the ADDRESS ...
+            sops[1].ref == a.ref && return false   # ... and NEVER the VALUE
+        elseif o == LLVM.API.LLVMGetElementPtr
+            LLVM.operands(usr)[1].ref == a.ref || return false
+            _57hd_alloca_noescape(usr, depth + 1) || return false
+        elseif o == LLVM.API.LLVMCall
+            # OPERAND BUNDLES SHIFT THE OPERAND→PARAMETER INDEX MAPPING, so the
+            # `nocapture` lookup below would consult the wrong parameter. A
+            # bundle is also a capture channel in its own right. Fail closed.
+            LLVM.API.LLVMGetNumOperandBundles(usr) == 0 || return false
+            ops = LLVM.operands(usr)
+            for i in 1:(length(ops) - 1)          # last operand is the callee
+                ops[i].ref == a.ref || continue
+                _57hd_call_attr(usr, UInt32(i), "nocapture") != C_NULL || return false
+            end
+        else
+            return false
+        end
+    end
+    return true
+end
+
+# Object classification for the disjointness test. `:other` covers everything
+# the analysis cannot name — a pointer loaded from a global, an `Argument`, a
+# `phi`. TWO `:other` ROOTS ARE NEVER TREATED AS DISJOINT.
+function _57hd_obj_kind(r::_LLVMRef)::Symbol
+    v = LLVM.Value(r)
+    v isa LLVM.Instruction || return :other
+    o = LLVM.opcode(v)
+    o == LLVM.API.LLVMAlloca && return :alloca
+    (o == LLVM.API.LLVMCall && _57hd_has_noalias_ret(v)) && return :noalias_call
+    return :other
+end
+
+# FRESHNESS ORDER — load-bearing, and the reason a bare "`noalias` ⇒ disjoint
+# from everything" rule is UNSOUND. A `noalias`-returning call names an object
+# no PRE-EXISTING pointer can alias; it says nothing about a pointer derived
+# from that object LATER. So `R` is disjoint from a fresh object `F` only when
+# `R`'s definition PRECEDES `F`'s.
+function _57hd_predates(r::_LLVMRef, f::LLVM.Value)::Bool
+    v = LLVM.Value(r)
+    v isa LLVM.Instruction || return true                # Argument / global / const
+    LLVM.opcode(v) == LLVM.API.LLVMAlloca && return true  # entry-block storage
+    f isa LLVM.Instruction || return false
+    pv, pf = LLVM.parent(v), LLVM.parent(f)
+    pv.ref == pf.ref || return false                      # cross-block: conservative
+    for i in LLVM.instructions(pv)
+        i.ref == v.ref && return true
+        i.ref == f.ref && return false
+    end
+    return false
+end
+
+# The UNDERLYING object of an address, through address-forming casts and GEPs
+# with ANY index (constant or not).
+#
+# LOAD-BEARING AGAINST A LATENT UNSOUNDNESS, found in review rather than in the
+# corpus, so it is written down here rather than discovered later.
+# `_p06b_slot_key` deliberately stops at a VARIABLE index and makes that GEP its
+# own root — sound for the KEY (two runtime-indexed addresses cannot be proven
+# equal), but a disaster for DISJOINTNESS if taken literally: a
+# `getelementptr i8, ptr %a, i64 %i` store into a non-escaping `alloca %a` gets
+# the GEP as its "root", and the `:alloca` + non-escape rule below would then
+# declare that write DISJOINT FROM `%a` — i.e. skip a write straight into the
+# tracked object. Two roots with the same underlying object are therefore never
+# disjoint, whatever their spellings.
+function _57hd_underlying(r::_LLVMRef, depth::Int=0)::_LLVMRef
+    depth > _57HD_DEPTH && return r
+    v = LLVM.Value(r)
+    v isa LLVM.Instruction || return r
+    o = LLVM.opcode(v)
+    (o == LLVM.API.LLVMGetElementPtr || o == LLVM.API.LLVMBitCast ||
+     o == LLVM.API.LLVMAddrSpaceCast) || return r
+    ops = LLVM.operands(v)
+    isempty(ops) && return r
+    return _57hd_underlying(ops[1].ref, depth + 1)
+end
+
+function _57hd_roots_disjoint(a::_LLVMRef, b::_LLVMRef)::Bool
+    a == b && return false
+    ua, ub = _57hd_underlying(a), _57hd_underlying(b)
+    ua == ub && return false          # same object, two spellings — NEVER disjoint
+    ka, kb = _57hd_obj_kind(ua), _57hd_obj_kind(ub)
+    (ka in (:alloca, :noalias_call) && kb in (:alloca, :noalias_call)) && return true
+    ka === :alloca && _57hd_alloca_noescape(LLVM.Value(ua)) && return true
+    kb === :alloca && _57hd_alloca_noescape(LLVM.Value(ub)) && return true
+    ka === :noalias_call && return _57hd_predates(ub, LLVM.Value(ua))
+    kb === :noalias_call && return _57hd_predates(ua, LLVM.Value(ub))
+    return false
+end
+
+# The written byte ranges of one instruction, as `(root, lo, hi)` triples, or
+# `:unknown`. FAIL-CLOSED: `:unknown` terminates the walk. Every opcode outside
+# the no-write list — `invoke`, `atomicrmw`, `cmpxchg`, `fence`, `va_arg`, an
+# unattributed `call` — lands in `:unknown`.
+const _57HD_NOWRITE_OPS = Set([
+    LLVM.API.LLVMLoad, LLVM.API.LLVMGetElementPtr, LLVM.API.LLVMAlloca,
+    LLVM.API.LLVMAdd, LLVM.API.LLVMSub, LLVM.API.LLVMMul, LLVM.API.LLVMUDiv,
+    LLVM.API.LLVMSDiv, LLVM.API.LLVMURem, LLVM.API.LLVMSRem, LLVM.API.LLVMShl,
+    LLVM.API.LLVMLShr, LLVM.API.LLVMAShr, LLVM.API.LLVMAnd, LLVM.API.LLVMOr,
+    LLVM.API.LLVMXor, LLVM.API.LLVMICmp, LLVM.API.LLVMPHI, LLVM.API.LLVMSelect,
+    LLVM.API.LLVMTrunc, LLVM.API.LLVMZExt, LLVM.API.LLVMSExt,
+    LLVM.API.LLVMPtrToInt, LLVM.API.LLVMIntToPtr, LLVM.API.LLVMBitCast,
+    LLVM.API.LLVMAddrSpaceCast, LLVM.API.LLVMExtractValue,
+    LLVM.API.LLVMInsertValue, LLVM.API.LLVMBr, LLVM.API.LLVMRet,
+    LLVM.API.LLVMSwitch, LLVM.API.LLVMUnreachable, LLVM.API.LLVMFreeze,
+])
+
+function _57hd_write_footprint(i::LLVM.Instruction, dl)
+    o = LLVM.opcode(i)
+    if o == LLVM.API.LLVMStore
+        ops = LLVM.operands(i)
+        (r, off) = _p06b_slot_key(ops[2])
+        w = Int(LLVM.storage_size(dl, LLVM.value_type(ops[1])))
+        return Tuple{_LLVMRef, Int, Int}[(r, off, off + w)]
+    elseif o == LLVM.API.LLVMCall
+        me = _57hd_mem_effects(i)
+        me === nothing && return :unknown            # no attribute ⇒ unknown
+        _57hd_writes_no_ir_memory(me) && return Tuple{_LLVMRef, Int, Int}[]
+        _57hd_writes_other(me) && return :unknown    # may write anything visible
+        # An argmem-only writer with a KNOWN extent: exactly the three mem
+        # intrinsics (P2). A VARIABLE length is `:unknown` — which is where the
+        # Bennett-vau9 shape correctly lands.
+        co = LLVM.called_operand(i)
+        nm = co isa LLVM.Function ? LLVM.name(co) : ""
+        if startswith(nm, "llvm.memcpy") || startswith(nm, "llvm.memmove") ||
+           startswith(nm, "llvm.memset")
+            ops = LLVM.operands(i)
+            length(ops) >= 3 || return :unknown
+            ops[3] isa LLVM.ConstantInt || return :unknown
+            n = Int(_const_int_as_int(ops[3]))
+            # A NEGATIVE length INVERTS the range: `[off, off+n)` with `n < 0`
+            # is empty under the `h <= lo || l >= hi` non-overlap test, so every
+            # real write it covers would be skipped. Today the Bennett-37mt arm
+            # rejects such a memcpy before this runs — but THIS ARM MUST NOT
+            # REST ITS OWN SOUNDNESS ON ANOTHER ARM'S GUARD. Gate (D6).
+            n >= 0 || return :unknown
+            (r, off) = _p06b_slot_key(ops[1])
+            return Tuple{_LLVMRef, Int, Int}[(r, off, off + n)]
+        end
+        return :unknown
+    end
+    return o in _57HD_NOWRITE_OPS ? Tuple{_LLVMRef, Int, Int}[] : :unknown
+end
+
+# Is `[lo, hi)` of `root` written by any instruction STRICTLY BETWEEN positions
+# `p1` and `p2` of the straight-line block `seq`? Conservative in every
+# direction: an `:unknown` footprint clobbers; a root that is neither equal nor
+# PROVABLY DISJOINT clobbers; and a SAME-ROOT non-overlap judgement is taken
+# only at the BYTE TIER (`_root_scale == 1`), because a byte-range disjointness
+# is a claim about VM CELLS and only the byte tier makes byte offsets BE cell
+# offsets. That last gate is `bennettvm-jb6w` pre-empted rather than amplified.
+#
+# ┌──────── RAW vs CANONICAL ROOTS — THE INVARIANT, AND WHY IT IS SAFE ───────┐
+# │ `root` arrives CANONICALISED (`_57hd_canon` resolved it through           │
+# │ store-forwards and same-slot reloads), while every `r` in a footprint is  │
+# │ a RAW `_p06b_slot_key` root. The two notions are deliberately NOT unified │
+# │ — doing so would make `_57hd_canon` and `_57hd_clobbered` mutually        │
+# │ recursive, materially enlarging the recursion graph of the arm's most     │
+# │ delicate walker for no measured gain. The mismatch is safe because it can │
+# │ only ever fail CLOSED, and that is a case analysis, not a hope:           │
+# │                                                                          │
+# │   * `_57hd_canon` returns its argument UNCHANGED for everything that is   │
+# │     not a pointer-result `load`. So an `alloca` root, a `noalias`-call    │
+# │     root, an `Argument` and a global are canonical == raw already, and    │
+# │     the two `:alloca` / `:noalias_call` disjointness rules below see      │
+# │     exactly the refs they would have seen anyway.                         │
+# │   * The ONLY class where canonical ≠ raw is LOAD vs LOAD (two SSA names   │
+# │     for one slot). `_57hd_underlying` does not strip loads, so both       │
+# │     classify `:other`, `_57hd_roots_disjoint` returns FALSE for two       │
+# │     `:other` roots by construction, the `r == root` equality then fails,  │
+# │     and this function RETURNS TRUE — i.e. it reports a clobber and the    │
+# │     admission is REFUSED. Losing a true admission is the safe direction.  │
+# │                                                                          │
+# │ Consequently no raw/canonical divergence can produce a FALSE `disjoint`   │
+# │ or a FALSE `same-root non-overlap`. If a future change makes `_57hd_canon`│
+# │ return an `alloca` or a call for a load-rooted address, THIS ARGUMENT     │
+# │ BREAKS and the roots must be unified — say so here before doing it.       │
+# └──────────────────────────────────────────────────────────────────────────┘
+function _57hd_clobbered(root::_LLVMRef, lo::Int, hi::Int,
+                         seq::Vector{LLVM.Instruction}, p1::Int, p2::Int,
+                         names::Dict{_LLVMRef, Symbol}, ptr_cells::Bool, dl,
+                         budget::Ref{Int})::Bool
+    for k in (p1 + 1):(p2 - 1)
+        budget[] -= 1
+        budget[] <= 0 && return true                     # scan cap ⇒ fail closed
+        f = _57hd_write_footprint(seq[k], dl)
+        f === :unknown && return true
+        for (r, l, h) in f
+            _57hd_roots_disjoint(r, root) && continue
+            r == root || return true                     # unproven-disjoint
+            let s = _root_scale(LLVM.Value(root), names, ptr_cells)
+                (s !== nothing && s[1] == 1) || return true   # byte tier only
+            end
+            (h <= lo || l >= hi) && continue
+            return true                                  # genuine overlap
+        end
+    end
+    return false
+end
+
+# Walk an `insertvalue` chain OUTERMOST-INWARD for the single-level index `j`.
+# The outermost `insertvalue` is the LAST writer, so the first match is the
+# correct one. Returns `nothing` when the chain does not yield an operand for
+# `j` — because the aggregate came from a `load`, a `call` or a `phi`, or
+# because some link is multi-index. Fails CLOSED. Pinned by gate (O).
+function _57hd_insertvalue_field(agg::LLVM.Value, j::Int, depth::Int=0)
+    depth > _57HD_DEPTH && return nothing
+    agg isa LLVM.Instruction || return nothing
+    LLVM.opcode(agg) == LLVM.API.LLVMInsertValue || return nothing
+    LLVM.API.LLVMGetNumIndices(agg.ref) == 1 || return nothing
+    idx = Int(unsafe_load(LLVM.API.LLVMGetIndices(agg.ref), 1))
+    ops = LLVM.operands(agg)
+    idx == j && return ops[2]
+    return _57hd_insertvalue_field(ops[1], j, depth + 1)
+end
+
+# The canonical value ref that `v` PROVABLY equals, computed by a straight-line
+# copy analysis confined to `blk`.
+#
+# INTRA-BLOCK ONLY, AND THIS IS THE POINT. A straight-line range within ONE
+# basic block is the only range whose "no write happened in between" is a
+# statement about EXECUTION rather than about LAYOUT: a "reaching store" in
+# block A need not execute before a load in block B, and under a loop the store
+# re-executes each iteration. A prototype that linearised all blocks and scanned
+# by position in that list is UNSOUND IN GENERAL; it happened to be harmless on
+# the corpus only because the admitted cluster lives entirely in `%top`.
+#
+# Generalising to a dominance-based version needs a dominator tree the extractor
+# does not build, and buys NOTHING on the corpus — the `%L21`/`%L43` clusters it
+# would be aimed at are already admitted by §4a. Tracked as Bennett-v7gv.
+#
+# ┌──────────── LOOP SAFETY — WHY NO BACK-EDGE VETO IS NEEDED ────────────────┐
+# │ A reader who knows the block may sit inside a loop will reach for a       │
+# │ back-edge check. DO NOT ADD ONE; it is unnecessary, and the reason is     │
+# │ worth carrying because its absence otherwise looks like an oversight.     │
+# │                                                                          │
+# │ A basic block executes AS A STRAIGHT LINE ON EVERY ENTRY: control enters  │
+# │ only at the top and leaves only at the terminator. So every fact this     │
+# │ walker establishes — "the store at k wrote slot S", "nothing between k    │
+# │ and pv wrote S" — is a statement about ONE ITERATION, and the load at pv  │
+# │ reads what the store at k wrote IN THAT SAME ITERATION. A previous        │
+# │ iteration's write is irrelevant precisely because the current iteration   │
+# │ overwrote it at k before reaching pv.                                     │
+# │                                                                          │
+# │ (V2) additionally requires `%S` and `%T` to be in THIS block, so neither  │
+# │ can be a value carried across a back edge: LLVM SSA admits a use of a     │
+# │ definition from an earlier iteration only through a `phi`, and a `phi` is │
+# │ not a pointer-result `load`, so `_57hd_canon` returns it unchanged and    │
+# │ (V0) refuses it as a source outright. `%S` and `%T` therefore always      │
+# │ denote values of the SAME iteration, and the identity proved between them │
+# │ holds on every entry. Verified by hostile-review probes P1 / P1b and      │
+# │ pinned as gates (T) / (T2) of `test/test_57hd_value_identity.jl`.         │
+# └──────────────────────────────────────────────────────────────────────────┘
+#
+# MEMOISATION NOTE: a cached entry can only ever be CONSERVATIVE. The depth cap
+# returns `v.ref` (the value itself), which is the fail-closed answer, so
+# reusing a truncated result at a shallower depth can only cause a REJECT.
+function _57hd_canon(v::LLVM.Value, blk::LLVM.BasicBlock,
+                     seq::Vector{LLVM.Instruction},
+                     order::Dict{_LLVMRef, Int},
+                     names::Dict{_LLVMRef, Symbol},
+                     suppressed::Set{_LLVMRef}, ptr_cells::Bool, dl,
+                     memo::Dict{_LLVMRef, _LLVMRef},
+                     budget::Ref{Int}, depth::Int=0)::_LLVMRef
+    depth > _57HD_DEPTH && return v.ref
+    budget[] -= 1
+    budget[] <= 0 && return v.ref
+    haskey(memo, v.ref) && return memo[v.ref]
+    v isa LLVM.Instruction || return v.ref
+    LLVM.parent(v).ref == blk.ref || return v.ref            # INTRA-BLOCK ONLY
+    LLVM.opcode(v) == LLVM.API.LLVMLoad || return v.ref
+    LLVM.value_type(v) isa LLVM.PointerType || return v.ref
+    pv = get(order, v.ref, 0)
+    pv == 0 && return v.ref
+
+    (root0, off) = _p06b_slot_key(LLVM.operands(v)[1])
+    root = _57hd_canon(LLVM.Value(root0), blk, seq, order, names, suppressed,
+                       ptr_cells, dl, memo, budget, depth + 1)
+    w = 8                                                    # a pointer is one cell
+    res = v.ref
+
+    # (a) STORE-FORWARD — the LAST store before `v` whose canonical slot COVERS
+    # `[off, off+w)`. A partially-overlapping store nearer `v` is caught by the
+    # clobber scan, so taking the last COVERING one is safe.
+    for k in (pv - 1):-1:1
+        s = seq[k]
+        LLVM.opcode(s) == LLVM.API.LLVMStore || continue
+        sops = LLVM.operands(s)
+        (sroot0, soff) = _p06b_slot_key(sops[2])
+        sroot = _57hd_canon(LLVM.Value(sroot0), blk, seq, order, names,
+                            suppressed, ptr_cells, dl, memo, budget, depth + 1)
+        sroot == root || continue
+        sty = LLVM.value_type(sops[1])
+        ssz = Int(LLVM.storage_size(dl, sty))
+        (soff <= off && off + w <= soff + ssz) || continue
+        # (V3) CLAUSE (iv) — the store must target a P06B-CERTIFIED CELL
+        # POINTER. Without it the walk could "prove" a copy step through a
+        # store the extraction never materialises as cells: §4a clause (i)'s
+        # own disclosure ("does not provide sentinel-freedom for load-sourced
+        # values") is that hole one hop up. Pinned by gate (N).
+        (_p06b_cell_ptr_target_kind(LLVM.Value(sroot), names, ptr_cells,
+                                    suppressed)[1] === :none) && break
+        _57hd_clobbered(root, off, off + w, seq, k, pv, names, ptr_cells, dl,
+                        budget) && break
+        if sty isa LLVM.StructType
+            nf = LLVM.API.LLVMCountStructElementTypes(sty.ref)
+            for j in 0:(Int(nf) - 1)
+                Int(LLVM.offsetof(dl, sty, j)) == off - soff || continue
+                ft = LLVM.LLVMType(LLVM.API.LLVMStructGetTypeAtIndex(sty.ref, UInt32(j)))
+                ft isa LLVM.PointerType || break
+                fv = _57hd_insertvalue_field(sops[1], j)
+                fv === nothing && break
+                res = _57hd_canon(fv, blk, seq, order, names, suppressed,
+                                  ptr_cells, dl, memo, budget, depth + 1)
+                break
+            end
+        elseif off == soff && sty isa LLVM.PointerType
+            res = _57hd_canon(sops[1], blk, seq, order, names, suppressed,
+                              ptr_cells, dl, memo, budget, depth + 1)
+        end
+        break
+    end
+
+    # (b) SAME-SLOT RELOAD — the last earlier pointer `load` of the SAME
+    # canonical slot with a clobber-free window. THIS IS THE STEP THE SCOUT
+    # IDENTIFIED AS MISSING: `_p06b_slot_key` gives `(%"jl_global#93", 8)` and
+    # `(%9, 8)` for the corpus's two `.data` loads — identical offsets, and the
+    # roots differ ONLY because `%9` had not been canonicalised.
+    if res == v.ref
+        for k in (pv - 1):-1:1
+            l = seq[k]
+            LLVM.opcode(l) == LLVM.API.LLVMLoad || continue
+            LLVM.value_type(l) isa LLVM.PointerType || continue
+            (lroot0, loff) = _p06b_slot_key(LLVM.operands(l)[1])
+            loff == off || continue
+            lroot = _57hd_canon(LLVM.Value(lroot0), blk, seq, order, names,
+                                suppressed, ptr_cells, dl, memo, budget, depth + 1)
+            lroot == root || continue
+            _57hd_clobbered(root, off, off + w, seq, k, pv, names, ptr_cells,
+                            dl, budget) && break
+            res = _57hd_canon(l, blk, seq, order, names, suppressed, ptr_cells,
+                              dl, memo, budget, depth + 1)
+            break
+        end
+    end
+
+    # UNDEF / POISON ARE UNIQUED BY LLVM, so two INDEPENDENT chains that both
+    # bottom out in `ptr undef` (or `ptr poison`) canonicalise to the SAME ref
+    # and the equality test in (V2) passes for two values that are not equal —
+    # they are not even values. Measured (hostile-review probe `probe4.jl` Q2):
+    # two separate boxes, each with `insertvalue … ptr poison, 0`, gave
+    # `pred = x=>true, y=>true`. Today the Bennett-bjdg arm rejects the fixture
+    # downstream for an unrelated reason, i.e. THIS ARM'S SOUNDNESS SURFACE WAS
+    # BEING COVERED BY ANOTHER ARM'S GUARD. Refuse here instead. Gate (D5).
+    # NOTE the `!= 0`: `LLVMIsUndef` / `LLVMIsPoison` return an `LLVMBool`
+    # (`Cint`), NOT a value ref. Comparing either against `C_NULL` is TRUE for
+    # every input — measured, it reset every canonical result and rejected the
+    # corpus. The `LLVMIsA*` family returns refs; the `LLVMIs*` predicates
+    # return Cint. Do not "make them consistent".
+    if res != v.ref &&
+       (LLVM.API.LLVMIsUndef(res) != 0 || LLVM.API.LLVMIsPoison(res) != 0)
+        res = v.ref
+    end
+
+    memo[v.ref] = res
+    return res
+end
+
+# (V0) A certified, named, unsuppressed cell producer — §4a clause (i) verbatim.
+#
+# LOAD-BEARING FOR SOUNDNESS, NOT HYGIENE — do not "simplify it away" on the
+# grounds that `x − x = 0` holds for any two cells. The REACHABLE hazard is the
+# ASYMMETRIC pair: a PointerType `phi`/`select` carries the Bennett-cc0 M2b
+# WIDTH-0 SENTINEL (its routing lives in `ptr_provenance` at LOWERING time
+# rather than as a value), so coercing one emits an `:or` identity over a cell
+# that was NEVER MATERIALISED, which ADR 0018 §E reads as 0. If the walk can
+# forward the OTHER side's load to that same `phi`, `_57hd_canon` agrees while
+# one cell holds `φ(p)` and the other holds 0: native computes `p − p = 0`, the
+# VM computes `0 − φ(p) ≠ 0`. A SILENT MISCOMPILE, and this clause is the only
+# thing that closes it. Pinned by gate (M).
+function _57hd_certified(v, names::Dict{_LLVMRef, Symbol},
+                         suppressed::Set{_LLVMRef})::Bool
+    v isa LLVM.Instruction || return false
+    _foz5_cert_src_kind(v) === :none && return false
+    haskey(names, v.ref) || return false
+    v.ref in suppressed && return false
+    return true
+end
+
+"""
+    _57hd_value_identity_cluster(pt, names, suppressed_refs, ptr_cells) -> Bool
+
+ADR 0017 §4b. `true` iff every use of the `ptrtoint` `pt` is an i64 `sub` of two
+`ptrtoint`s whose sources are certified cell producers in ONE basic block that
+`_57hd_canon` reduces to the SAME canonical value — so the difference is
+IDENTICALLY ZERO in the native program and in BennettVM, under ANY map from
+addresses to cell values.
+
+**The `sub`'s own uses are UNCONSTRAINED, deliberately.** That is the entire
+content of the contract: an ORACLE-EXACT value needs no confinement, and may
+escape into a live branch, an allocation size or a memmove length. A reader
+arriving from `_foz5_confined_dead_bounds` will expect a (C2)/(C3) clause; its
+absence here is a design decision, not an oversight.
+
+PURE in `names` / `suppressed_refs` (read-only) and independent of
+`dead_blocks`, so it may be called in BOTH the arm's entry and its admission
+condition — entry-via-§4b therefore IMPLIES admission-via-§4b and the arm still
+always returns or errors.
+"""
+function _57hd_value_identity_cluster(pt::LLVM.Instruction,
+                                      names::Dict{_LLVMRef, Symbol},
+                                      suppressed_refs::Set{_LLVMRef},
+                                      ptr_cells::Bool)::Bool
+    ptr_cells || return false
+    src = LLVM.operands(pt)[1]
+    _57hd_certified(src, names, suppressed_refs) || return false     # (V0)
+
+    blk = LLVM.parent(src)
+    seq = collect(LLVM.instructions(blk))
+    order = Dict{_LLVMRef, Int}()
+    for (k, i) in enumerate(seq)
+        order[i.ref] = k
+    end
+    fn = LLVM.parent(blk)
+    dl = LLVM.datalayout(LLVM.parent(fn))
+    memo = Dict{_LLVMRef, _LLVMRef}()
+    budget = Ref(_57HD_SCAN_CAP)
+
+    cs = _57hd_canon(src, blk, seq, order, names, suppressed_refs, ptr_cells,
+                     dl, memo, budget)
+
+    saw = false
+    for u in LLVM.uses(pt)
+        saw = true
+        usr = LLVM.user(u)
+        # (V1) every use is a 2-operand i64 `sub` of two ptrtoints. The WIDTH
+        # check is load-bearing for the same reason foz5's is (hostile review
+        # D3): `sub` operands and result share a type, so an i32 cluster would
+        # difference TRUNCATED cell values while satisfying the prose.
+        (usr isa LLVM.Instruction && LLVM.opcode(usr) == LLVM.API.LLVMSub) || return false
+        let st = LLVM.value_type(usr)
+            (st isa LLVM.IntegerType && LLVM.width(st) == 64) || return false
+        end
+        ops = LLVM.operands(usr)
+        length(ops) == 2 || return false
+        sib = ops[1].ref == pt.ref ? ops[2] : ops[1]
+        (sib isa LLVM.Instruction &&
+         LLVM.opcode(sib) == LLVM.API.LLVMPtrToInt) || return false
+        ssrc = LLVM.operands(sib)[1]
+        _57hd_certified(ssrc, names, suppressed_refs) || return false   # (V0)
+        LLVM.parent(ssrc).ref == blk.ref || return false                # (V2) one block
+        _57hd_canon(ssrc, blk, seq, order, names, suppressed_refs, ptr_cells,
+                    dl, memo, budget) == cs || return false             # (V2)
     end
     return saw
 end
@@ -5184,9 +5940,22 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         # `_memdata_root(src) === nothing` pin below therefore keeps its exact
         # current meaning and its exact current status (redundant today,
         # load-bearing the moment 583s grows a fall-through).
+        # Bennett-57hd / CW-D (ADR 0017 §4b): the arm's ENTRY and its ADMISSION
+        # each gain a THIRD DISJUNCT — the VALUE-IDENTITY contract. Order of
+        # refusal is 583s -> §4a -> §4b, so no cluster an existing contract
+        # owns can change hands.
+        #
+        # THE ENTRY DISJUNCT IS LOAD-BEARING, NOT SYMMETRY, AND IT WAS
+        # MEASURED. `.ll` surgery admitting only the corpus's `%12` and leaving
+        # `%13` walls IMMEDIATELY on `%13` in the JBKO arm ("found a use that
+        # is a `sub`, not an icmp"), because `%13`'s source has
+        # `_memdata_root === nothing` and fails §4a clause (iii). A cluster is
+        # a PAIR: both coercions must enter here or the bead clears nothing.
+        # Pinned by gate (P) of `test/test_57hd_value_identity.jl`.
         if opc == LLVM.API.LLVMPtrToInt && src isa LLVM.Instruction &&
            (_memdata_root(src) !== nothing ||
-            _foz5_confined_dead_bounds(inst, names, suppressed_refs, dead_blocks))
+            _foz5_confined_dead_bounds(inst, names, suppressed_refs, dead_blocks) ||
+            _57hd_value_identity_cluster(inst, names, suppressed_refs, ptr_cells))
             srt = LLVM.value_type(src)
             drt = LLVM.value_type(inst)
             src_w = srt isa LLVM.PointerType ? 64 : _iwidth(src)
@@ -5204,10 +5973,13 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 "ONE Int64 VM cell (ADR 0018 §A); only the 64-bit round-trip — " *
                 "confined either to a base-cancelling bounds check " *
                 "(`_verify_memdata_bounds_cluster`) or to a dead-throw bounds " *
-                "check (`_foz5_confined_dead_bounds`) — is modelled, because a " *
+                "check (`_foz5_confined_dead_bounds`), or PROVED to difference " *
+                "two copies of ONE POINTER VALUE " *
+                "(`_57hd_value_identity_cluster`) — is modelled, because a " *
                 "narrower cast truncates the cell value (CLAUDE.md §1).")
             (_verify_memdata_bounds_cluster(inst, src) ||
-             _foz5_confined_dead_bounds(inst, names, suppressed_refs, dead_blocks)) ||
+             _foz5_confined_dead_bounds(inst, names, suppressed_refs, dead_blocks) ||
+             _57hd_value_identity_cluster(inst, names, suppressed_refs, ptr_cells)) ||
                 _ir_error(inst,
                 "ptrtoint of a GenericMemory .data base under ptr_cells whose " *
                 "result is NOT confined to a same-Memory base-cancelling bounds " *
@@ -5222,7 +5994,21 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 "must run sub(ptrtoint,ptrtoint) → icmp → i1-and/or/xor → a " *
                 "conditional br with a utzc-pruned `:__unreachable__` successor, " *
                 "so that a value we cannot prove equals the native oracle can " *
-                "only ever choose a branch that halts loudly (CLAUDE.md §1).")
+                "only ever choose a branch that halts loudly. AND its two " *
+                "coerced pointers are not PROVED to be COPIES OF ONE VALUE " *
+                "either — predicate `_57hd_value_identity_cluster` " *
+                "(Bennett-57hd / ADR 0017 §4b): every use must be an i64 " *
+                "sub(ptrtoint, ptrtoint) whose two sources are certified cell " *
+                "producers in ONE basic block that reduce to the SAME " *
+                "canonical value under the straight-line copy analysis " *
+                "(aggregate-store field forwarding, same-slot reload, and a " *
+                "no-clobber scan whose call effects come from the LLVM " *
+                "`memory` attribute and whose object disjointness comes from " *
+                "`noalias` / `nocapture`), so that the difference is " *
+                "IDENTICALLY ZERO in both worlds and may therefore escape " *
+                "freely. A call with an unmodelled effect, a variable-length " *
+                "copy, an uncertified store target, or a cross-block window " *
+                "terminates the walk and lands here (CLAUDE.md §1).")
             return IRBinOp(dest, :or, _operand(src, names), iconst(0), 64)
         end
         # Bennett-jbko / CW-D: IDENTITY-USE ptrtoint. Julia's `MemoryRef`
