@@ -1,6 +1,42 @@
 # Worklog chunk 106 — 2026-08-07 — Bennett-57hd hostile review FAILED + fix cycle
 
-## Session log — 2026-08-07 — Bennett-hk5i P0 docs epic: all five children shipped + epic CLOSED
+## Session log — 2026-08-14 — Bennett-l5v8: Base.sin Float64 sugar fixed (missing SoftFloat overloads, NOT an extraction bug)
+
+**Root cause was trivial once seen:** the dq8l/U81 "VoidType reached
+_type_width" wall on `reversible_compile(sin, Float64)` was NOT an
+extraction limitation. `softfloat_dispatch.jl` simply never defined
+`Base.sin(::SoftFloat)` (nor cos/tan/asin/acos/atan/sinh/cosh/tanh/
+asinh/acosh/atanh/log/log2/log10/log1p/expm1 — only +,-,*,/,sqrt,exp,
+exp2,min,max,^,floor/ceil/trunc/round,abs,copysign,<,== existed). With
+no method, Julia infers the sugar wrapper's return type as `Union{}` and
+emits a `jl_f_throw_methoderror` + `unreachable` body with LLVM return
+type `void` — which extraction correctly refuses at the return-width
+derivation (module_walk.jl:227). The soft primitives all existed AND
+were registered in `_CALLEES_FP_TRANS`; only the dispatch layer was
+missing. test_3mo's header comment even *assumed* the overloads existed
+("Base.sin normally routes through SoftFloat dispatch").
+
+**Fix (red-green):** 18 one-line `@inline Base.<f>(::SoftFloat)`
+forwarders in softfloat_dispatch.jl (17 unary + `atan(y,x)` →
+soft_atan2). New `test/test_l5v8_softfloat_sugar_transcendentals.jl`
+(wired into runtests.jl inside the BENNETT_HEAVY_TESTS block, next to
+test_3mo): (1) dispatch plumbing bit-exact vs primitive for all 18 over
+specials+200 random, (2) VoidType-wall extraction regression on the sin
+wrapper, (3) full `reversible_compile(sin, Float64)` E2E —
+verify_reversibility + ≤2 ulp vs Base.sin. 3922/3922 green in 2m39s
+under --check-bounds=yes.
+
+**Debugging lesson:** a "VoidType wall" error from extraction can mean
+*your function doesn't compile at all* (MethodError → Union{} → void +
+noreturn). Check `Base.return_types(w, ...)` / `hasmethod` BEFORE
+suspecting the extractor. A `noreturn`/`unreachable`-only entry might
+deserve a friendlier error message in module_walk — not filed, low value.
+
+**Left open (bead part b):** the .ll-route gate-count drift
+(11,028,238 vs the JuliaCon deck's 11,027,852) is NOT explained by this
+fix — that route never touches SoftFloat dispatch. Sugar-path gate-count
+capture for sin skipped this session: a concurrent Sturm-session
+`Pkg.test()` held the no-concurrent-julia lock.
 
 Five children created on claim, worked serially, one commit each
 (hk5i.1–.5). Everything ground-truthed per doc-work mode: every plotted

@@ -50,6 +50,30 @@ end
 # dispatch which keeps using `soft_pow` (musl-tracking) for raw .ll/.bc
 # ingest from non-Julia frontends.
 @inline Base.:^(a::SoftFloat, b::SoftFloat) = SoftFloat(soft_pow_julia(a.bits, b.bits))
+# Bennett-l5v8: transcendental overloads. These were missing entirely, so
+# `reversible_compile(sin, Float64)` compiled its wrapper to a
+# jl_f_throw_methoderror body with a void return and died at the dq8l/U81
+# VoidType extraction wall. Every primitive below already existed in
+# SoftFloatLib and was registered as a callee (src/callees.jl
+# _CALLEES_FP_TRANS) — only the dispatch layer was absent.
+@inline Base.sin(x::SoftFloat)   = SoftFloat(soft_sin(x.bits))
+@inline Base.cos(x::SoftFloat)   = SoftFloat(soft_cos(x.bits))
+@inline Base.tan(x::SoftFloat)   = SoftFloat(soft_tan(x.bits))
+@inline Base.asin(x::SoftFloat)  = SoftFloat(soft_asin(x.bits))
+@inline Base.acos(x::SoftFloat)  = SoftFloat(soft_acos(x.bits))
+@inline Base.atan(x::SoftFloat)  = SoftFloat(soft_atan(x.bits))
+@inline Base.atan(y::SoftFloat, x::SoftFloat) = SoftFloat(soft_atan2(y.bits, x.bits))
+@inline Base.sinh(x::SoftFloat)  = SoftFloat(soft_sinh(x.bits))
+@inline Base.cosh(x::SoftFloat)  = SoftFloat(soft_cosh(x.bits))
+@inline Base.tanh(x::SoftFloat)  = SoftFloat(soft_tanh(x.bits))
+@inline Base.asinh(x::SoftFloat) = SoftFloat(soft_asinh(x.bits))
+@inline Base.acosh(x::SoftFloat) = SoftFloat(soft_acosh(x.bits))
+@inline Base.atanh(x::SoftFloat) = SoftFloat(soft_atanh(x.bits))
+@inline Base.log(x::SoftFloat)   = SoftFloat(soft_log(x.bits))
+@inline Base.log2(x::SoftFloat)  = SoftFloat(soft_log2(x.bits))
+@inline Base.log10(x::SoftFloat) = SoftFloat(soft_log10(x.bits))
+@inline Base.log1p(x::SoftFloat) = SoftFloat(soft_log1p(x.bits))
+@inline Base.expm1(x::SoftFloat) = SoftFloat(soft_expm1(x.bits))
 
 """
     reversible_compile(f, ::Type{Float64}; ...) -> ReversibleCircuit
