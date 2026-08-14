@@ -5,9 +5,9 @@
   <rect x="168.0" y="80.0" width="300.0" height="420.0" fill="#e9effb" rx="6"/>
   <rect x="468.0" y="80.0" width="90.0" height="420.0" fill="#fff3e0" rx="6"/>
   <rect x="558.0" y="80.0" width="300.0" height="420.0" fill="#e7f6ec" rx="6"/>
-  <text x="318.0" y="70.0" text-anchor="middle" font-size="13" font-weight="600" fill="#2a78d6">1 · forward — compute</text>
+  <text x="318.0" y="70.0" text-anchor="middle" font-size="13" font-weight="600" fill="#2a78d6">1 · forward: compute</text>
   <text x="513.0" y="70.0" text-anchor="middle" font-size="13" font-weight="600" fill="#b26a00">2 · copy the answer</text>
-  <text x="708.0" y="70.0" text-anchor="middle" font-size="13" font-weight="600" fill="#1a7f4b">3 · reverse — uncompute</text>
+  <text x="708.0" y="70.0" text-anchor="middle" font-size="13" font-weight="600" fill="#1a7f4b">3 · reverse: uncompute</text>
   <line x1="158.0" y1="96.0" x2="866.0" y2="96.0" stroke="#b6bcc4" stroke-width="1"/>
   <text x="152.0" y="100.0" text-anchor="end" font-size="12" fill="#1f2328">x<tspan font-size="9" dy="3">0</tspan><tspan dy="-3">&#8203;</tspan></text>
   <line x1="158.0" y1="122.0" x2="866.0" y2="122.0" stroke="#b6bcc4" stroke-width="1"/>
