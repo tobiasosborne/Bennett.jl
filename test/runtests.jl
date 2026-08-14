@@ -11,7 +11,26 @@ using Bennett
 # yellow so regressions stand out. Drop-in for `include` — call order is
 # unchanged, so the zy4u nesting and gate-count baselines are untouched.
 const _SUITE_T0 = time()
+
+# Bennett-uxyy: substring file filters from ARGS. `Pkg.test(test_args=["softfexp"])`
+# — or `julia --project --check-bounds=yes test/runtests.jl softfexp` — runs only
+# the files whose name contains ANY of the patterns, in the canonical suite mode
+# (--check-bounds=yes), so a subset run has full-suite semantics (Bennett-2mj3).
+# No ARGS → full suite, behaviour unchanged. A filtered run is bracketed by loud
+# banners and errors if nothing matched, so it can never pass silently as a
+# full-suite green.
+const _FILE_FILTERS = String[a for a in ARGS if !startswith(a, "-")]
+const _RAN_FILES = Ref(0)
+const _SKIPPED_FILES = Ref(0)
+_selected(path) = isempty(_FILE_FILTERS) ||
+                  any(f -> occursin(f, path), _FILE_FILTERS)
+
 function runfile(path::AbstractString)
+    if !_selected(path)
+        _SKIPPED_FILES[] += 1
+        return
+    end
+    _RAN_FILES[] += 1
     printstyled(stderr, "▶  $path\n"; color = :light_black)
     flush(stderr)
     dt = @elapsed Base.include(@__MODULE__, path)
@@ -28,6 +47,12 @@ end
 # `include`d test file's own @testsets nest under one named root.
 # (Body is unindented to keep blame / merge churn minimal — Julia
 # parses `begin ... end` blocks regardless of interior indentation.)
+if !isempty(_FILE_FILTERS)
+    printstyled(stderr,
+                "⚠  FILTERED RUN — only files matching $(_FILE_FILTERS) " *
+                "will execute. This is NOT a full-suite run.\n";
+                color = :yellow, bold = true)
+end
 @testset "Bennett" begin
 
 runfile("test_parse.jl")
@@ -1052,3 +1077,16 @@ runfile("test_reversible_vm_dispatch.jl")
 runfile("test_hygiene_aqua_jet.jl")
 
 end  # @testset "Bennett"  (Bennett-zy4u / U104)
+
+# Bennett-uxyy: filtered-run epilogue. Fail fast on a pattern that matched
+# nothing (a typo'd filter must not report an empty green), and repeat the
+# banner so the last line of a filtered run says what it was.
+if !isempty(_FILE_FILTERS)
+    _RAN_FILES[] == 0 && error("test_args filters $(_FILE_FILTERS) matched " *
+                               "no test files ($(_SKIPPED_FILES[]) skipped)")
+    printstyled(stderr,
+                "⚠  FILTERED RUN — ran $(_RAN_FILES[]) file(s), skipped " *
+                "$(_SKIPPED_FILES[]) (patterns $(_FILE_FILTERS)). " *
+                "NOT a full-suite green.\n";
+                color = :yellow, bold = true)
+end
