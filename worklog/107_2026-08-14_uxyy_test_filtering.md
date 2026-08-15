@@ -1,5 +1,51 @@
 # Worklog chunk 107 — 2026-08-14 — test-suite speed: measurements + test_args filtering
 
+## Session log — 2026-08-15 — Bennett-0orf: v2 rearch sweep (14 agents) + reimplementation plan (Bennett-V2-PRD.md)
+
+**Trigger:** maintainer (at JuliaCon) called for a sober from-scratch
+reconsideration of Bennett.jl on Julia 1.13, assuming code generation is
+free. Ran one workflow: 5 sonnet research agents (1.13 changelog,
+odd-bit ints, parser/introspection, LLVM shift, ecosystem precedents) +
+8 opus reviewers (extraction, lowering, circuit core, softfloat, memory,
+API/tests, whole-architecture, worklog lessons-ledger) + 1 completeness
+critic. ~3.0M subagent tokens, 748 tool calls, all 14 landed. Reports
+archived: `docs/design/rearch-2026-08/` (13 reports + critique).
+Synthesis by orchestrator: **Bennett-V2-PRD.md** at root.
+
+**Load-bearing findings (see reports for cites):** (1) 1.13 has NO
+native Int2 — PR #61359 merged to master AFTER the 1.13 branch,
+arithmetic intrinsics untested upstream (r2). (2) 1.13's real payload:
+LLVM 18→20 (undocumented in NEWS.md) + Julia codegen PRs #61535
+(cascaded bounds-check CFGs — lands on the phi resolver) and #61394
+(memory-attr propagation — lands on the packed-int decoder) (r1, r4).
+(3) IRCode substrate empirically WORSE than LLVM (Mooncake ~91-commit
+1-minor-version port; Compiler.jl v0.1 a placeholder) (r3, r5).
+(4) extract/ = 46% of src/, is a Julia-codegen decompiler; wall
+treadmill locally converging, globally diverging (c7 §5c). (5) Verified
+v1 bugs found by the sweep: add=:cuccaro aliasing unsound (c2),
+strategy layer dead in production + PebbledStrategy provably identity
+(c3), compose drops loop_check_wires (c3), MUX-EXCH 15-40x worse than
+the arm it preempts (c5), test_doh6 green-asserting the opposite of
+truth (c6). (6) c8's meta-lesson: verify_reversibility was tautological
+for months — v2's FIRST code must be ancilla-zero-after-FORWARD.
+
+**Plan decisions (committed):** D0 narrow input contract (scope before
+substrate — the critique's central move); D2 keep LLVM, kill the
+sprint(code_llvm) text round-trip; D3 predicated BIR + hierarchical
+Circ (Prim/Seq/Adj/Compute/Ctl/Scope + Call/uncall frames); D4
+RegFile{N,W}; D5 one space-budgeted scheduler replacing six strategies;
+D6 softfloat port-then-shrink; D7 one CompileSpec; D8 sound oracle
+first + bit-sliced simulator + parallel tiers. Open (PRD §8): BennettVM
+disposition, gate alphabet/Sturm, repo location, language-neutrality.
+
+**Filed:** epic Bennett-0orf + spikes S1–S6 (Bennett-ctz0, -5vgb,
+-vysm, -eis4, -o540, -ctsc). S5 doubles as v1's Bennett-gm83 unblock.
+
+**Gotcha for future agents:** the sweep's three sharpest
+recommendations (StructurizeCFG if-conversion, RegFile 10-200x, "1.13
+is safe") are UNVERIFIED inferences — the spikes exist to falsify them
+BEFORE any v2 commitment. Do not start P1 until S1/S2 land.
+
 ## Session log — 2026-08-14 — Bennett-uxyy: test_args file filtering in runtests.jl (JuliaCon-prompted test-speed session)
 
 **Trigger:** user at JuliaCon heard about a "hidden Pkg.test flag that stops
