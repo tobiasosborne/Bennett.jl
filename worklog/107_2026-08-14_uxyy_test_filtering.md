@@ -46,6 +46,20 @@ recommendations (StructurizeCFG if-conversion, RegFile 10-200x, "1.13
 is safe") are UNVERIFIED inferences — the spikes exist to falsify them
 BEFORE any v2 commitment. Do not start P1 until S1/S2 land.
 
+**Post-sweep correction (same day):** maintainer reports the
+State-of-Julia keynote (Bezanson) said odd-width primitives WILL be in
+1.13 — contradicting r2's "1.14-earliest". Re-verified by CONTENT, not
+ancestry (r2's git-ancestry test was methodologically weak: backports
+are cherry-picks, so "diverged" proves nothing): release-1.13@rc3
+builtins.c STILL enforces `(nb & 7) != 0` and no backport PR for
+#61359 exists as of 2026-08-15. Unresolved — pre-GA backport vs
+keynote speaking ahead of the branch. PRD §0/D0 reworded to a
+capability-based trigger (odd-width ARITHMETIC intrinsic tests
+upstream, any version); S1 bead amended to re-check the GA build and
+to test i2/i3/i63 arithmetic directly if present. Lesson banked: for
+"is feature X in release Y", check the release branch's SOURCE, never
+merge-commit ancestry.
+
 ## Session log — 2026-08-14 — Bennett-uxyy: test_args file filtering in runtests.jl (JuliaCon-prompted test-speed session)
 
 **Trigger:** user at JuliaCon heard about a "hidden Pkg.test flag that stops

@@ -35,10 +35,15 @@ is downstream of its quietest omission (scope)*. Decide the input contract first
 half the substrate argument evaporates — the recogniser tier that dominates the cost
 table is deleted on independent grounds by c1, c5, and X6 regardless of substrate.
 
-One number to retire immediately: the "modern Julia fixes this" hope is mostly false
-for 1.13. Native sub-byte ints (`Int2`) merged to master **after** 1.13 branched, are
-self-described "preliminary, not quite safe", and odd-width *arithmetic* intrinsics are
-untested upstream (r2). 1.13's real payload for Bennett is the silent LLVM 18→20 bump
+One number to hold loosely: native sub-byte ints (`Int2`, PR #61359) merged to master
+**after** 1.13 branched, are self-described "preliminary, not quite safe", and
+odd-width *arithmetic* intrinsics are untested upstream (r2). **Open discrepancy
+(2026-08-15):** the JuliaCon State-of-Julia keynote stated odd-width will ship in
+1.13, but release-1.13 at rc3 still carries the `(nb & 7) != 0` restriction in
+`builtins.c` and no backport PR exists (both verified against the branch on
+2026-08-15). Either a pre-GA backport is coming or the keynote spoke ahead of the
+branch — spike S1 re-checks the GA build either way, and D0's design does not depend
+on the answer. 1.13's real payload for Bennett is the silent LLVM 18→20 bump
 plus two Julia codegen changes (#61535 cascaded bounds-check CFGs, #61394 systematic
 memory-attribute propagation) that land precisely on the two areas CLAUDE.md flags as
 highest-risk (r1, r4). IRCode-as-substrate is empirically *less* stable than LLVM IR
@@ -54,8 +59,12 @@ Compiler.jl v0.1 is an explicit placeholder — r3).
 and diamond CFGs; loops with a static trip bound; calls (inlined or reversible-call,
 D3); memory **only** via an explicit `RegFile{N,W}` API (D4). `bit_width=W` is a real
 lowering parameter (not a post-hoc IR rewrite), covering the Int2/Int4 use case until
-native odd-bit ints are trustworthy upstream (r2's revisit trigger: odd-width
-*arithmetic* intrinsic tests landing in Julia, not merely "1.14 ships").
+native odd-bit ints are trustworthy upstream. The revisit trigger is
+capability-based, not version-based (r2): odd-width *arithmetic* intrinsic test
+coverage landing in Julia — whether via a 1.13 backport (per the JuliaCon keynote;
+see §0's open discrepancy) or in 1.14. When it lands, native `iN` from extraction
+takes over user-declared narrow widths; `bit_width` remains for narrowing
+standard-width source.
 
 **v2.0 refuses, loudly and permanently (the RED ladder):** `Vector`/`Dict`/`push!` and
 all heap recognition, dynamic allocation, exceptions (NaN/flag policies instead),
