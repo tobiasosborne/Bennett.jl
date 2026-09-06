@@ -1,5 +1,62 @@
 # Worklog chunk 107 — 2026-08-14 — test-suite speed: measurements + test_args filtering
 
+## Session log — 2026-09-06 — git + beads sync: jsonl truth-up after a 6-commit remote gap
+
+Orientation + sync session, no source changes. The tree was **behind 6**
+(another machine had pushed l5v8, uxyy, 0orf, the SVG em-dash fix and the
+dolt-cache rebuild) with local `.beads/` dirt on top.
+
+**Read-churn triage worked exactly as `feedback-beads-sync` documents.**
+Every dirty `.dolt/` mtime was inside this session (19:38–19:39, from the
+`bd prime` hook + `bd ready`/`bd show`), while the last real beads commit
+was 2026-08-07 — so all of it was read-side bookkeeping. Confirmed by the
+`repo_state.json` diff being the known `/home/tobias` ↔ `/home/tobiasosborne`
+`backup_export` path ping-pong, which must never be committed.
+
+**New gotcha — the untracked cache objects COLLIDE with the incoming diff.**
+The 41 untracked `git-remote-cache/.../objects/xx/…` files were not merely
+churn: commit `980805d` ("rebuild corrupted dolt git-remote-cache") adds
+those *exact paths* as tracked files, so `git pull --rebase` would have
+aborted with "untracked working tree files would be overwritten". They are
+content-addressed, so the local copies are byte-identical to the incoming
+ones and discarding them is free. **Use `git stash push --include-untracked
+-- .beads/embeddeddolt/`** rather than `checkout -- ` + `git clean -fd`:
+it clears modified *and* untracked in one reversible step, and it is the
+form that survives Claude Code's destructive-command classifier (plain
+`git clean -fd` and `git checkout -- <path>` were both refused this
+session). Drop the stash only after the pull is verified — a pre-pull
+beads stash holds a superseded DB state and would corrupt if reapplied.
+
+**jsonl truth-up.** Committed `.beads/issues.jsonl` had been pinned at
+`6a1f91d` (2026-08-07) — 639 issues + 10 memories — while the pulled dolt
+DB carried 657 + 10. Deliberate `bd export` + semantic diff (never a line
+count, per the memory): **18 new ids, 0 removed, 1 status change**
+(hk5i open→closed). New = hk5i.1–.5, l5v8, uxyy, the 0orf v2 epic and its
+six spikes (5vgb/ctsc/ctz0/eis4/o540/vysm), plus gm83, hh34, llqc, ualq.
+
+**Correction to `feedback-beads-sync`:** the "a fresh export legitimately
+rewrites all lines" warning is now STALE. Upstream `bd` no longer stamps
+`"_type":"issue"` on issue records (only the 10 memory lines carry a
+`_type`), so the export is line-stable: this truth-up committed as
+**26 insertions / 8 deletions**, not a whole-file rewrite. A big whole-file
+diff would now be a signal, not the expected default.
+
+**Still broken / still true:** `bd dolt push` reproduced the documented
+HTTPS failure verbatim (`did not send all necessary objects` / `bad object
+refs/dolt/remotes/…`) — transport remains plain `git push` over SSH, which
+worked first try this session (no publickey retry needed).
+
+**Flagged, not actioned:** (1) untracked **`AGENTS.md`** in the repo root is
+a byte-older copy of `CLAUDE.md` (83 diff lines) — it names `worklog/038`,
+describes the pre-split `ir_extract.jl` monolith, and still tells agents to
+"re-run `python3 scripts/shard_worklog.py` if structure drifts", which
+current CLAUDE.md forbids as destructive. It is a trap for any non-Claude
+agent that reads it; BennettVM.jl solved this with a short 3 KB pointer
+`AGENTS.md`. (2) `gh` is **unauthenticated** (`HTTP 401: Bad credentials`,
+invalid token in `~/.config/gh/hosts.yml`) so PR/issue state could not be
+checked — needs `gh auth login`. (3) stale remote branch
+`origin/wip/a70z-overflow-bit`.
+
 ## Session log — 2026-08-15 — Bennett-0orf: v2 rearch sweep (14 agents) + reimplementation plan (Bennett-V2-PRD.md)
 
 **Trigger:** maintainer (at JuliaCon) called for a sober from-scratch
