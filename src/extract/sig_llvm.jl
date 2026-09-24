@@ -102,6 +102,42 @@ function _assert_sig_llvm_supported()
     return nothing
 end
 
+# Bennett-t9rh: the extra internals the PINNED `optimize=true` path
+# (`target_pin.jl`) reaches for — LLVM.jl's Julia-pipeline interop and the C
+# API calls that emulate `jl_dump_function_ir`'s strip. Checked in addition to
+# `_SIG_LLVM_CAPABILITIES` by `_assert_pinned_ir_supported`.
+const _PINNED_IR_CAPABILITIES = (
+    (LLVM.Interop, :JuliaPipeline),
+    (LLVM.Interop, :RemoveJuliaAddrspacesPass),
+    (LLVM, :NewPMPassBuilder),
+    (LLVM, :TargetMachine),
+    (LLVM, :strip_debuginfo!),
+    (LLVM.API, :LLVMInstructionGetAllMetadataOtherThanDebugLoc),
+    (LLVM.API, :LLVMValueMetadataEntriesGetKind),
+    (LLVM.API, :LLVMDisposeValueMetadataEntries),
+    (LLVM.API, :LLVMGlobalClearMetadata),
+)
+
+"""
+    _assert_pinned_ir_supported() -> Nothing
+
+Fail loud if this Julia / LLVM.jl does not expose what the pinned,
+host-independent `optimize=true` IR path (`target_pin.jl`, Bennett-t9rh)
+needs: every `_SIG_LLVM_CAPABILITIES` internal plus `_PINNED_IR_CAPABILITIES`.
+"""
+function _assert_pinned_ir_supported()
+    _assert_sig_llvm_supported()
+    for (m, s) in _PINNED_IR_CAPABILITIES
+        isdefined(m, s) || error(
+            "sig_llvm.jl: Julia $(VERSION) / LLVM.jl does not define `$(m).$(s)` — " *
+            "the pinned optimize=true IR path (target_pin.jl) re-runs Julia's " *
+            "`julia<level=2>` pipeline under a pinned TargetMachine and emulates " *
+            "jl_dump_function_ir's strip (Julia src/disasm.cpp), and must be " *
+            "re-derived for this Julia (CLAUDE.md Rule 5/9; Bennett-t9rh).")
+    end
+    return nothing
+end
+
 """
     _spectypes_of(callee_key, argtypes::Type{<:Tuple}) -> Type{<:Tuple}
 
@@ -144,12 +180,19 @@ end
 
 """
     _code_llvm_by_sig(sig::Type{<:Tuple}; optimize=false, raw=false,
-                      dump_module=true, debuginfo=:none) -> String
+                      dump_module=true, debuginfo=:none, cpu=nothing) -> String
 
 LLVM IR text for the method matching the FULL specTypes signature `sig`
 (`Tuple{callee_key, argtypes...}`) — i.e. what
 `code_llvm(io, f, t; debuginfo, optimize, dump_module)` would print, for a
 callee whose instance cannot be obtained (a closure or a functor).
+
+`optimize=true` (Bennett-t9rh) does NOT use the host JIT pipeline: it is the
+pinned, host-independent IR of `target_pin.jl` (`_pinned_optimized_ir`) — what
+`code_llvm(...; optimize=true)` prints in a `julia -O2 -C <pinned cpu>`
+process. It requires `raw=false` and `debuginfo=:none` (ArgumentError
+otherwise). `cpu` overrides the pinned CPU — TEST HOOK ONLY, and only with
+`optimize=true`. `optimize=false` is unchanged.
 
 Mirrors `InteractiveUtils._dump_function` except that the `MethodInstance` is
 resolved from `sig` directly rather than from `signature_type(f, t)`.
@@ -162,7 +205,22 @@ LLVM comment, so `parse(LLVM.Module, …)` accepts the line unchanged.
 """
 function _code_llvm_by_sig(@nospecialize(sig::Type); optimize::Bool=false,
                            raw::Bool=false, dump_module::Bool=true,
-                           debuginfo::Symbol=:none)::String
+                           debuginfo::Symbol=:none,
+                           cpu::Union{Nothing, AbstractString}=nothing)::String
+    if optimize
+        raw && throw(ArgumentError(
+            "sig_llvm.jl: _code_llvm_by_sig: raw=true is not supported with " *
+            "optimize=true — the pinned optimize=true path always strips like " *
+            "code_llvm's default (Bennett-t9rh)."))
+        debuginfo === :none || throw(ArgumentError(
+            "sig_llvm.jl: _code_llvm_by_sig: debuginfo=$(repr(debuginfo)) is not " *
+            "supported with optimize=true — the pinned path prints no source " *
+            "line comments (Bennett-t9rh)."))
+    else
+        cpu === nothing || throw(ArgumentError(
+            "sig_llvm.jl: _code_llvm_by_sig: `cpu` only applies to optimize=true " *
+            "(Bennett-t9rh test hook)."))
+    end
     mi = _method_instance_of_sig(sig)
     world = Base.get_world_counter()
     src = Base.Compiler.typeinf_code(Base.Compiler.NativeInterpreter(world), mi, true)
@@ -172,10 +230,13 @@ function _code_llvm_by_sig(@nospecialize(sig::Type); optimize::Bool=false,
         "(Rule 1; Bennett-40ys).")
     warning = Base.isdispatchtuple(mi.specTypes) ? "" :
         "; WARNING: This code may not match what actually runs.\n"
+    # Bennett-t9rh: optimize=true never runs the host JIT pipeline.
+    optimize && return warning * _pinned_optimized_ir(mi, src;
+                                                      dump_module=dump_module, cpu=cpu)
     # `raw=false` is `code_llvm`'s default: strip IR metadata, no entry
     # safepoint, no explicit gcstack argument.
     params = Base.CodegenParams(debug_info_kind=Cint(0), debug_info_level=Cint(2),
                                 safepoint_on_entry=raw, gcstack_arg=raw)
     return warning * InteractiveUtils._dump_function_llvm(
-        mi, src, false, !raw, dump_module, optimize, debuginfo, params)
+        mi, src, false, !raw, dump_module, #=optimize=# false, debuginfo, params)
 end

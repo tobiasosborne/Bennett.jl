@@ -6,6 +6,7 @@
 
 include("extract/entry.jl")         # extract_ir / extract_parsed_ir / from_ll / from_bc / _run_passes!
 include("extract/sig_llvm.jl")      # Bennett-40ys: by-signature LLVM IR emission (instance-less callees)
+include("extract/target_pin.jl")    # Bennett-t9rh: host-independent optimize=true IR (pinned TargetMachine + opt level)
 include("extract/callees.jl")       # known callee registry + cache + _LLVMRef + _auto_name
 include("extract/callgraph.jl")     # CW-D1a: transitive_callees typed call-graph walker (SC9 Case B path)
 include("extract/julia_set.jl")     # CW-D1b: extract_parsed_ir_set_from_julia closed-world Julia multi-IR producer

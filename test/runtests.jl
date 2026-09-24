@@ -327,6 +327,16 @@ runfile("test_ao66_vector_intrinsic_rescalarise.jl")
 # crashed soft_fmul on AVX-512 hosts, the AVX2 loop-splat idiom, exhaustive
 # UInt8² icmp/zext/select, and the undef-vs-poison soundness case.
 runfile("test_t9rh_poison_lane_propagation.jl")
+# Bennett-t9rh (commit 2) — host-independent optimize=true IR
+# (src/extract/target_pin.jl): Julia's own `julia<level=2>` pipeline re-run
+# in-process under a pinned TargetMachine (x86-64-v3 on x86_64, maintainer
+# decision; generic elsewhere). Pins the bead repro (fneg∘fmul 149,588,
+# bit-exact) + soft_fmul / soft_fma / soft_fcmp_olt totals, the single
+# routing of every optimize=true entry, real AVX-512 SLP IR via the `cpu=`
+# test hook; on x86_64 also spawns `julia -C x86-64 -O1` and `-C znver3`
+# subprocesses (host independence; first run precompiles Bennett for each,
+# ~2 min apiece) and a `-C x86-64-v3` code_llvm fidelity canary.
+runfile("test_t9rh_pinned_target.jl")
 # Bennett-pg5 — llvm.vector.reduce.{add,mul,and,or,xor,smax,smin,umax,umin}
 # integer reductions (vector → scalar via linear left-to-right fold chain).
 runfile("test_pg5_vector_reductions.jl")

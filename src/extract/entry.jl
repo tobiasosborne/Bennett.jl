@@ -4,10 +4,17 @@ using LLVM
 """
     extract_ir(f, arg_types; optimize=true) -> String
 
-Get the LLVM IR string for a Julia function (kept for debugging/printing).
+Get the LLVM IR string for a Julia function (kept for debugging/printing):
+the entry function only, as `code_llvm(...; debuginfo=:none)` prints it.
+
+`optimize=true` shows the IR Bennett actually compiles — the pinned,
+host-independent pipeline (`_PINNED_OPT_LEVEL`, `_PINNED_CPU_X86_64`;
+`src/extract/target_pin.jl`, Bennett-t9rh), NOT the host's
+`code_llvm(optimize=true)`, which varies with the host CPU and `julia -O`.
+`optimize=false` is exactly `code_llvm(...; optimize=false)`.
 """
 function extract_ir(f, arg_types::Type{<:Tuple}; optimize::Bool=true)
-    return sprint(io -> code_llvm(io, f, arg_types; debuginfo=:none, optimize))
+    return _julia_ir_string(f, arg_types; optimize=optimize, dump_module=false)
 end
 
 """
@@ -27,6 +34,13 @@ const DEFAULT_PREPROCESSING_PASSES = ["sroa", "mem2reg", "simplifycfg", "instcom
 
 Extract LLVM IR via LLVM.jl's typed API and convert to ParsedIR.
 Uses dump_module=true to include function declarations needed for call inlining.
+
+`optimize=true` means Julia's own O2 pipeline (`julia<level=2>`) run
+in-process under a PINNED TargetMachine (`x86-64-v3` on x86_64, `generic`
+elsewhere) — host-independent and independent of `julia -O`
+(`src/extract/target_pin.jl`, Bennett-t9rh). It is NOT the host's
+`code_llvm(optimize=true)`. `optimize=false` is Julia's unoptimised IR,
+exactly as `code_llvm(...; optimize=false)` prints it.
 
 Pass-pipeline control:
 - `preprocess=true` runs `DEFAULT_PREPROCESSING_PASSES` (sroa, mem2reg,
@@ -57,7 +71,8 @@ function extract_parsed_ir(f, arg_types::Type{<:Tuple};
                            use_memory_ssa::Bool=false,
                            mem::Symbol=:auto,
                            ptr_cells::Bool=false)
-    ir_string = sprint(io -> code_llvm(io, f, arg_types; debuginfo=:none, optimize, dump_module=true))
+    # Bennett-t9rh: one IR source for every Julia-function entry (Rule 12).
+    ir_string = _julia_ir_string(f, arg_types; optimize=optimize, dump_module=true)
     return _parsed_ir_from_ir_string(ir_string; preprocess=preprocess, passes=passes,
                                      use_memory_ssa=use_memory_ssa, mem=mem,
                                      ptr_cells=ptr_cells)
@@ -134,7 +149,9 @@ slow path into a closure, so every `push!`-bearing function has one
 for the Rule 5/9 caveat on the internals involved.
 
 Every kwarg, pass-pipeline step and fail-loud is SHARED with `extract_parsed_ir`
-via `_parsed_ir_from_ir_string`; only the IR source differs.
+via `_parsed_ir_from_ir_string`; only the IR source differs. `optimize=true` is
+the same pinned, host-independent IR as `extract_parsed_ir` (Bennett-t9rh;
+`_code_llvm_by_sig` → `_pinned_optimized_ir`).
 
 `entry_function` selection is deliberately left at `nothing`
 (`_find_entry_function`'s "first `julia_*` with a body" rule) — identical to
