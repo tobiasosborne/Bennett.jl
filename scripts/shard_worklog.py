@@ -1,6 +1,23 @@
 #!/usr/bin/env python3
 """Shard WORKLOG.md into worklog/<N>_<date>_<slug>.md chunks of ~200-300 lines.
 
+*****************************************************************************
+* DANGER — THIS SCRIPT IS DESTRUCTIVE.                                     *
+*                                                                           *
+* `main()` unconditionally WIPES every file already in `worklog/` (see     *
+* `OUT_DIR.iterdir(): f.unlink()`) before writing its own re-sharded       *
+* chunks. Per CLAUDE.md rule 0 ("MAINTAIN THE WORKLOG"), DO NOT RUN THIS   *
+* SCRIPT as a routine worklog-maintenance step — edit chunk files under    *
+* `worklog/` by hand instead. This has bitten real sessions before         *
+* (Bennett-chz7 / user memory `feedback_shard_worklog_pitfall`): running   *
+* it wiped all existing chunk files.                                      *
+*                                                                           *
+* If you are CERTAIN you need to re-shard (e.g. WORKLOG.md structure has   *
+* drifted and every existing worklog/*.md chunk is backed up or           *
+* reconstructible from git history), this script now refuses to run       *
+* unless invoked with `--i-know-this-is-destructive`.                     *
+*****************************************************************************
+
 Rules:
   * Greedy pack ## sections into chunks until adding the next would push past
     MAX_LINES; close the current chunk and start a new one.
@@ -12,12 +29,18 @@ Rules:
     reproduces the input exactly).
 """
 
+import argparse
 import re
 import sys
 from pathlib import Path
 
-WORKLOG = Path("/home/tobiasosborne/Projects/Bennett.jl/WORKLOG.md")
-OUT_DIR = Path("/home/tobiasosborne/Projects/Bennett.jl/worklog")
+# Bennett-chz7: derive the repo root from the script's own location instead
+# of a hardcoded developer home directory (this used to be
+# /home/tobiasosborne/Projects/Bennett.jl, unrunnable on any other checkout).
+# scripts/shard_worklog.py -> scripts/ -> repo root is one level up.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+WORKLOG = REPO_ROOT / "WORKLOG.md"
+OUT_DIR = REPO_ROOT / "worklog"
 
 MIN_LINES = 200
 MAX_LINES = 320  # small overhead allowed; lets some natural sections fit whole
@@ -139,6 +162,31 @@ def chunk_sections(sections):
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Re-shard WORKLOG.md into worklog/*.md chunks. "
+                     "DESTRUCTIVE: wipes every existing file in worklog/ first.",
+    )
+    parser.add_argument(
+        "--i-know-this-is-destructive",
+        action="store_true",
+        help="Required. Confirms you understand this WIPES worklog/ before "
+             "regenerating it, and that per CLAUDE.md rule 0 this should "
+             "not be run as routine worklog maintenance.",
+    )
+    args = parser.parse_args()
+    if not args.i_know_this_is_destructive:
+        print(
+            "REFUSING TO RUN: this script wipes every existing file in "
+            f"{OUT_DIR} before writing its re-sharded output. CLAUDE.md "
+            "rule 0 says NOT to run this for routine worklog maintenance — "
+            "edit chunk files under worklog/ by hand instead. If you are "
+            "certain you need to re-shard (e.g. after backing up or "
+            "confirming worklog/ is fully reconstructible from git "
+            "history), re-run with --i-know-this-is-destructive.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     raw = WORKLOG.read_text()
     lines = raw.splitlines(keepends=True)
     print(f"Read {len(lines)} lines from {WORKLOG}", file=sys.stderr)
