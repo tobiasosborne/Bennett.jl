@@ -1,5 +1,79 @@
 # Worklog chunk 107 — 2026-08-14 — test-suite speed: measurements + test_args filtering
 
+## Session log — 2026-09-24 — cloud-container setup + small-items wave (q9pi, 6 hygiene beads, stwr 3+1 designs, t9rh)
+
+Fresh cloud container (4 cores / 15 GB, AVX-512 Xeon). Orchestrated one
+wave of 4 agents (worktree-isolated; agents never ran `bd` or touched the
+worklog — worktree copies of the embedded dolt DB would fork it).
+
+**Environment gotchas (read before the next cloud session):**
+- `bd` version MUST match the DB schema. The DB is schema **v32**; bd
+  1.3.0 wants v66, 1.1.x–1.2.x want v53 and refuse writes ("refusing to
+  auto-apply … migrating clones independently forks the schema"). **bd
+  1.0.2** (`npm install -g @beads/bd@1.0.2`) matches v32 exactly. Do NOT
+  migrate from a secondary clone. Bisecting versions triggered an
+  auto-export that STAGED a reordered issues.jsonl — revert with
+  `git restore --staged --worktree .beads/issues.jsonl` and diff
+  semantically (by id) before committing any export. bd 1.0.2's export
+  also restores `started_at`/`comments` fields the 2026-09-06 export
+  dropped (15 issues) — legitimate, not churn.
+- The dolt noms blob is now **64.8 MB** (GitHub warns >50 MB; hard
+  limit 100 MB) — Bennett-amah is getting urgent.
+- `Manifest.toml` is gitignored, so a fresh machine resolves LLVM.jl
+  9.13.1 (worklog history: 9.4.6). Julia 1.12.7 installed; history used
+  1.12.5.
+- BennettVM clones to `/home/user/bennettvm.jl` (lower-case); symlink
+  `/home/user/BennettVM.jl` so its `../Bennett.jl` dev-path resolves.
+
+**Bennett-t9rh (NEW, P2) — extraction is host-CPU dependent.**
+`test_controlled.jl` "memory-backed (registered soft_* callee)" errors
+here: `soft_fneg(soft_fmul(a,b))` → `PoisonLaneSentinel reached
+lowering`. Bisected OUT every software variable: fails at HEAD, at
+6a1f91d~1 and at 13ce767 (BVM-validated green), on Julia 1.12.5 and
+1.12.7, LLVM.jl 9.13.1 and 9.4.6. **Passes with `julia -C x86-64` and
+`-C haswell`** (149,588 gates both). AVX-512 vectorisation emits
+poison-lane vector ops the cc0.7 scalariser does not consume. Rule 5
+corollary: gate counts / extractability are a function of the host CPU.
+Any test run on an AVX-512 box will show this error; it is not a
+regression from this session.
+
+**Bennett-q9pi (filed + CLOSED) — from the v2 sweep c3 §(d), never
+filed until now.** Confirmed worse than reported: compose also broke when
+c2 carries a loop guard (c2's guard wire classified as an ancilla ⇒
+EVERY input threw "Ancilla wire N not zero"). Fix (non-core,
+compose.jl/controlled.jl): compose renumbers c2 guards and CNOT-copies
+each c1 guard to a fresh wire between c2 and reverse-c1 (reverse-c1 would
+otherwise uncompute the convergence bit to 0 — the general lesson: ANY
+combinator that re-runs gates in reverse must copy guards out first);
+controlled makes guards conditional via `CNOT(ctrl,g); NOT(g)` ⇒ `¬ctrl ∨
+converged` (unentangled with ctrl when converged); controlled also
+re-routes pass-through outputs (output wire ∈ inputs) through
+`Toffoli(ctrl,w,fresh)` — previously ctrl=0 returned x, not 0. c3's
+"controlled violates its contract on self-reversing circuits" is REFUTED
+for real self-reversing (tabulate) circuits; the true violator was
+pass-through. compose's "self-reversing" rejection only tests input∩output
+overlap — misnamed (follow-up bead filed). test_q9pi 6669/6669.
+
+**Hygiene batch (6 closed):** llqc (5 orphan test files wired; one,
+test_kh6n, was RED: 6 dotless `startswith(x, "llvm.foo")` literals in
+instructions.jl — tightened to dotted prefixes; orchestrator verified
+extensional equality: `_fuse_overflow_extractvalue`'s only caller admits
+just `{s,u}{add,mul}.with.overflow.`, so dropping `"llvm.s"` changes no
+reachable behaviour), fd1r (already fixed by 6bu3; regression pin added),
+gsjx, 6gfu (tracked AGENTS.md pointer), chz7 (repo-root path +
+`--i-know-this-is-destructive` guard; NOT run), 0ncn. Two beads (fd1r,
+0ncn's test_40ys site) had gone stale via later unrelated fixes — check
+current code before implementing an old bead.
+
+**Bennett-stwr (filed, OPEN) — add=:cuccaro soundness, 3+1 designs only
+(implementation deferred by maintainer).** Both proposers independently
+refute c2 A1's "fails loud": mostly SILENT (soft_fadd under add=:cuccaro
+29/30 wrong, zero simulator errors). The naive "honour op2_dead" fix is
+itself unsound (inst_counter inflated K-fold after loops). ValueEager's
+non-LIFO uncompute breaks "value read earlier in the same block" — so
+"last use" is the wrong notion; the criterion must be "exclusive reader".
+Proposals + review: docs/design/stwr/.
+
 ## Session log — 2026-09-06 — git + beads sync: jsonl truth-up after a 6-commit remote gap
 
 Orientation + sync session, no source changes. The tree was **behind 6**
