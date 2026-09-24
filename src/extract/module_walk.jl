@@ -45,9 +45,11 @@ end
 function _module_to_parsed_ir(mod::LLVM.Module;
                               entry_function::Union{Nothing, AbstractString}=nothing,
                               mem::Symbol=:auto,
-                              ptr_cells::Bool=false)
+                              ptr_cells::Bool=false,
+                              jl_global_certs::Union{Nothing, _JLGlobalCerts}=nothing)
     func = _find_entry_function(mod, entry_function)
-    return _module_to_parsed_ir_on_func(mod, func; mem=mem, ptr_cells=ptr_cells)
+    return _module_to_parsed_ir_on_func(mod, func; mem=mem, ptr_cells=ptr_cells,
+                                        jl_global_certs=jl_global_certs)
 end
 
 # BVM ADR 0020 D6 (CW-C2 chunk C): the multi-function producer. Walk EVERY
@@ -63,12 +65,14 @@ end
 # `LLVM.functions` walk), which BVM merges into one flat stream.
 function _module_to_parsed_ir_set(mod::LLVM.Module;
                                   mem::Symbol=:auto,
-                                  ptr_cells::Bool=false)
+                                  ptr_cells::Bool=false,
+                                  jl_global_certs::Union{Nothing, _JLGlobalCerts}=nothing)
     out = Pair{Symbol,ParsedIR}[]
     for f in LLVM.functions(mod)
         isempty(LLVM.blocks(f)) && continue   # declaration-only (libc) — skip
         name = Symbol(LLVM.name(f))
-        pir = _module_to_parsed_ir_on_func(mod, f; mem=mem, ptr_cells=ptr_cells)
+        pir = _module_to_parsed_ir_on_func(mod, f; mem=mem, ptr_cells=ptr_cells,
+                                           jl_global_certs=jl_global_certs)
         push!(out, name => pir)
     end
     isempty(out) && throw(ArgumentError(
@@ -136,9 +140,33 @@ end
 # keeps every Julia-path fail-loud firing byte-identically (it protects the
 # circuit / `mem=:heap` models — see the per-site notes below and in
 # `instructions.jl`).
+#
+# Bennett-hsm3 (decision 2): this is a WRAPPER. Every ParsedIR the walk returns —
+# the dict_vm / vec_vm / heap-skeleton early returns AND the normal one — passes
+# through `_assert_no_refused_jl_global_use`, the use-directed backstop that
+# fails loud on any surviving use of a refused `jl_global#N` literal, of a raw
+# slot name, or of an un-aliased slot-load result. `jl_global_certs === nothing`
+# means "no live producing session": under `ptr_cells` every literal is refused
+# (fail-closed default for every producer but the two live Julia entries).
 function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
                                       mem::Symbol=:auto,
-                                      ptr_cells::Bool=false)
+                                      ptr_cells::Bool=false,
+                                      jl_global_certs::Union{Nothing, _JLGlobalCerts}=nothing)
+    certs = _walk_jl_global_certs(mod, ptr_cells, jl_global_certs)
+    slot_load_dests = Set{Symbol}()
+    pir = _module_to_parsed_ir_on_func_walk(mod, func; mem=mem, ptr_cells=ptr_cells,
+                                            jl_global_certs=certs,
+                                            jl_slot_load_dests=slot_load_dests)
+    ptr_cells && _assert_no_refused_jl_global_use(pir, certs, slot_load_dests,
+                                                  LLVM.name(func))
+    return pir
+end
+
+function _module_to_parsed_ir_on_func_walk(mod::LLVM.Module, func::LLVM.Function;
+                                           mem::Symbol=:auto,
+                                           ptr_cells::Bool=false,
+                                           jl_global_certs::_JLGlobalCerts=_JLGlobalCerts(),
+                                           jl_slot_load_dests::Set{Symbol}=Set{Symbol}())
     counter = Ref(0)
 
     # T1c.2: extract compile-time-constant global arrays so lower_var_gep! can
@@ -148,6 +176,11 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
     # materialised with synthetic 64-bit addresses; consumed by the
     # downstream load-escape guard).
     globals, synth_ptr_provenance = _extract_const_globals(mod, ptr_cells)
+    # Bennett-hsm3: seed ONLY the literals CERTIFIED as the empty GenericMemory
+    # singleton, under their OBJECT key `jl_global#N.obj` (never the slot name).
+    # Admission is semantic (jlglobal_cert.jl); `_extract_const_globals` no
+    # longer seeds anything by name. Empty at ptr_cells=false.
+    ptr_cells && _seed_certified_jl_globals!(globals, jl_global_certs)
 
     # Bennett-land: per-function tracking of alloca refs that received
     # synthetic-address bytes via memcpy. Populated by
@@ -606,7 +639,12 @@ function _module_to_parsed_ir_on_func(mod::LLVM.Module, func::LLVM.Function;
                                      # complete here — a live block preceding
                                      # its dead consumer still sees the full set.
                                      # Empty at ptr_cells=false.
-                                     dead_blocks=dead_blocks)
+                                     dead_blocks=dead_blocks,
+                                     # Bennett-hsm3: the per-module jl_global
+                                     # certificate + the set of slot-load
+                                     # result names the alias arm retired.
+                                     jl_global_certs=jl_global_certs,
+                                     jl_slot_load_dests=jl_slot_load_dests)
             catch e
                 e isa InterruptException && rethrow()
                 msg = sprint(showerror, e)
@@ -991,33 +1029,17 @@ function _extract_const_globals(mod::LLVM.Module, ptr_cells::Bool=false)
             benign ? nothing : rethrow()
         end
         if init === nothing
-            # bennettvm-416r.13 / CW-D3 Lever 2: a `jl_global#NNN` empty-
-            # GenericMemory singleton-data pointer. Its initializer is the OPAQUE
-            # `constant ptr @X.jit` whose aliasee is `inttoptr (i64 <JIT-addr>)`
-            # — a GlobalAlias LLVM.jl cannot represent, so `LLVM.initializer`
-            # THREW above and the benign catch set `init = nothing`. This throw IS
-            # the opaque-initializer signature (settled empirically 2026-07-12:
-            # every `jl_global#N` singleton throws `Unknown value kind
-            # LLVMGlobalAliasValueKind` here; a global with genuinely-readable
-            # const data NEVER throws — its initializer is a ConstantDataArray /
-            # ConstantStruct / … handled below). So the empty-vs-non-empty guard
-            # is structural: only a global whose initializer is unrepresentable
-            # reaches this arm. We model the singleton as a zeroed 16-cell Memory
-            # header (census Q3 + settled: the construction GEP is `getelementptr
-            # i8, …, 8` → cell 8; header spans cells [0..15]; length@cell0 = 0
-            # bounds `rehash!`'s copy loop; data-ptr@cell8 = 0 feeds only a
-            # compile-time len-0 memset — inert). Ship ONLY zeros + the name; the
-            # VM assigns the deterministic `GLOBAL_BASE` address (the JIT address
-            # is NEVER read — ADR 0021 D3). ptr_cells-gated (the C-cell-model /
-            # BennettVM track); inert for the circuit backend. Type-tag globals
-            # (`+Type#N`) ALSO throw here, but they are NOT DATA — their load is
-            # handled by the `_is_type_tag_global_name` arm in `instructions.jl`
-            # and they are never referenced as a `.globals` key, so a stray
-            # `.globals` entry for one would simply go unused (harmless); the
-            # name gate keeps them out regardless.
-            if ptr_cells && _is_singleton_data_global_name(LLVM.name(g))
-                out[Symbol(LLVM.name(g))] = (zeros(UInt64, 16), 8)
-            end
+            # An initializer LLVM.jl cannot represent (a GlobalAlias — Julia's
+            # interned heap literals `@"jl_global#N" = constant ptr @X.jit`, and
+            # the `+Type#N` type tags). NOTHING is seeded here any more
+            # (Bennett-hsm3): the pre-hsm3 arm seeded a zeroed header for every
+            # `jl_global#N` BY NAME on the claim that "the empty-vs-non-empty
+            # guard is structural" — FALSE (gcf7 D1/D2: a `const Ref(42)`, a
+            # struct box, a String, a non-empty Memory all have this exact shape;
+            # executed silent miscompiles on BennettVM). The empty-GenericMemory
+            # singleton is now certified SEMANTICALLY in the producing session
+            # (`src/extract/jlglobal_cert.jl`) and seeded under its OBJECT key by
+            # `_seed_certified_jl_globals!` in the walk.
             continue
         end
 
@@ -1097,19 +1119,9 @@ function _extract_const_globals(mod::LLVM.Module, ptr_cells::Bool=false)
                 (UInt64[UInt64(LLVM.API.LLVMConstIntGetZExtValue(init.ref))], ew)
 
         else
-            # bennettvm-416r.13 belt-and-suspenders: the REAL `jl_global#NNN`
-            # singleton path is the `init === nothing` (GlobalAlias-throw) arm
-            # above — every current-Julia singleton throws there. This fallback
-            # catches a hypothetical future representation where the aliasee is a
-            # REPRESENTABLE pointer constant (so `LLVM.initializer` did NOT throw
-            # and we reach the `else` with a pointer-typed init that matched none
-            # of the readable-data arms). Same zeroed-16-cell header, same name +
-            # ptr-typed-init gate. Readable data always takes a real-data arm, so
-            # it can never be mis-seeded here.
-            if ptr_cells && _is_singleton_data_global_name(LLVM.name(g)) &&
-               LLVM.value_type(init) isa LLVM.PointerType
-                out[Symbol(LLVM.name(g))] = (zeros(UInt64, 16), 8)
-            end
+            # Bennett-hsm3: the former name-based `jl_global#N` belt-and-
+            # suspenders seeding lived here; admission is semantic now
+            # (jlglobal_cert.jl), never by name.
             continue
         end
     end

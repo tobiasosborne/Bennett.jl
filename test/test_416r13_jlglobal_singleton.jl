@@ -16,17 +16,22 @@
 #       `+Type#N` type-tag NOR a `jl_global#N` singleton FAILS LOUD at the load
 #       site (Design A D2 adopted) — never a silently-dropped dangling operand.
 #
-# The recogniser is name-based (`+` vs `jl_global#` vs neither) because the two
-# recognised subsets are BYTE-IDENTICAL in LLVM shape (a `constant ptr @X.jit`
-# whose aliasee is an unrepresentable `inttoptr` — `LLVM.initializer` THROWS
-# `Unknown value kind LLVMGlobalAliasValueKind`, the opaque-initializer signature
-# that gates the zeroed-header arm; settled empirically 2026-07-12).
+# Bennett-hsm3 (2026-09-24) — the name-based recogniser this file originally
+# pinned (`_is_singleton_data_global_name`) is DELETED: Julia names EVERY
+# interned heap literal `jl_global#N` (a const `Ref`, a struct box, a String, a
+# non-empty Memory), and the "empty-vs-non-empty guard is structural" claim was
+# false (gcf7 D1/D2, executed miscompiles). The singleton is now CERTIFIED
+# SEMANTICALLY in the producing session (membership in the live empty-
+# GenericMemory singleton set, never a dereference — src/extract/jlglobal_cert.jl)
+# and seeded under its OBJECT key `jl_global#N.obj`; its data-pointer cell holds
+# the non-null `_EMPTY_MEMORY_DATA_SENTINEL` (gcf7 D3). (1)'s blob assertion
+# follows that layout; (2) and (3) are unchanged. The certification itself is
+# pinned in test_hsm3_jlglobal_certification.jl.
 #
 # Ref: scratchpad/design-jlglobal-B.md (D2/D3), scratchpad/scout-jlglobal-
-#      census.md (Q2/Q4), src/extract/constexpr.jl
-#      (`_is_singleton_data_global_name`), src/extract/module_walk.jl
-#      (`_extract_const_globals` init===nothing arm), src/extract/instructions.jl
-#      (the load-handler singleton alias + the unrecognized-global fail-loud).
+#      census.md (Q2/Q4), src/extract/jlglobal_cert.jl (Bennett-hsm3
+#      certification + seeding), src/extract/instructions.jl
+#      (the load-handler slot alias + the unrecognized-global fail-loud).
 
 using Test
 import Bennett
@@ -69,10 +74,14 @@ end
         singletons = [(k, v) for (k, v) in root.globals
                       if occursin("jl_global", String(k))]
         @test !isempty(singletons)
-        for (_k, (data, ew)) in singletons
+        for (k, (data, ew)) in singletons
+            @test endswith(String(k), ".obj")       # Bennett-hsm3: OBJECT key
             @test length(data) == 16
             @test ew == 8
-            @test all(==(0), data)                  # ships ONLY zeros (no VM addr)
+            # Bennett-hsm3 / gcf7 D3: length@0 = 0; data-ptr@8 = the non-null
+            # sentinel (a constant — no JIT address ships); all else 0.
+            @test data[9] == Bennett._EMPTY_MEMORY_DATA_SENTINEL
+            @test all(==(0), data[[1:8; 10:16]])
         end
 
         # No dangling operand across the WHOLE set: every `jl_global…` SSAOperand

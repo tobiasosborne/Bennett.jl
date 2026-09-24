@@ -277,6 +277,18 @@ const _FOZ5_HR2 = replace(_FOZ5_HR1,
     "@\"jl_global#77\" = external constant ptr" =>
     "@\"jl_global#77\" = constant ptr null")
 
+# (HR2L) Bennett-hsm3 migration: HR1/HR2's slots carry NO address (`external` /
+# `null`), so since hsm3 they are refused by the jl_global certificate too — the
+# foz5 refusal is no longer the ONLY thing standing between them and admission.
+# HR2L keeps the foz5 predicate load-bearing: the slot holds the LIVE address of
+# `Memory{Int64}()`, ingested with `jl_globals = :live_session`, so the literal
+# IS certified and aliased — and foz5 must STILL refuse it (a certified alias
+# load emits no IRInst; it is not a materialised cell).
+const _FOZ5_HR2L = replace(_FOZ5_HR1,
+    "@\"jl_global#77\" = external constant ptr" =>
+    "@\"jl_global#77\" = private unnamed_addr constant ptr inttoptr (i64 " *
+    string(UInt(pointer_from_objref(Memory{Int64}()))) * " to ptr)")
+
 # (HR3) RED [reviewer fixture B1] — a GEP interposed between a PointerType `phi` and the `ptrtoint`.
 # ONE instruction bypassed the depth-0 sentinel refusal of gate (N) pre-fix.
 # The GEP-base recursion in `_foz5_cert_src_kind` is what closes it.
@@ -477,12 +489,13 @@ top:
 # namespace — an unprefixed `_extract_ll` would silently OVERWRITE
 # `test_583s_memdata_bounds.jl`'s method of the same signature.
 # ---------------------------------------------------------------------------
-function _foz5_extract(name, ir, entry; cells=true)
+function _foz5_extract(name, ir, entry; cells=true, jl_globals=:refuse)
     mktempdir() do dir
         path = joinpath(dir, "$(name).ll")
         write(path, ir)
         try
-            pir = extract_parsed_ir_from_ll(path; entry_function=entry, ptr_cells=cells)
+            pir = extract_parsed_ir_from_ll(path; entry_function=entry, ptr_cells=cells,
+                                            jl_globals=jl_globals)
             return (:ok, pir)
         catch e
             e isa InterruptException && rethrow()
@@ -720,6 +733,19 @@ end
         # The defined and `external` spellings take different paths through
         # `_extract_const_globals`; both must refuse.
         @test _foz5_predicate_probe(_FOZ5_HR2, "s")[:b] === false
+    end
+
+    @testset "(HR2L) RED — CERTIFIED singleton alias load (live address)" begin
+        # Bennett-hsm3: the literal is certified (not an hsm3 refusal) — so the
+        # rejection below is foz5's own, and the predicate stays load-bearing.
+        (st, msg) = _foz5_extract("foz5_c2l", _FOZ5_HR2L, "s";
+                                  jl_globals = :live_session)
+        @test st === :err
+        @test !occursin("Bennett-hsm3", msg)
+        @test _foz5_predicate_probe(_FOZ5_HR2L, "s")[:b] === false
+        # …and without a live session the same slot is refused by hsm3 too.
+        (st0, msg0) = _foz5_extract("foz5_c2l0", _FOZ5_HR2L, "s")
+        @test st0 === :err
     end
 
     # =======================================================================

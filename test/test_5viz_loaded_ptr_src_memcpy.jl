@@ -24,11 +24,13 @@
 # # TWO CORRECTIONS TO THE BEAD TEXT, both measured (docs/design/5viz_scout.md)
 #
 #  1. **There is no gc_alloc'd `Memory` in this program.** `Int64[]` yields the
-#     SHARED EMPTY `Memory{Int64}` SINGLETON, which `_extract_const_globals`
-#     already models — under the shipped `bennettvm-416r.13 / CW-D3 Lever 2`
-#     arm, `ptr_cells`-gated — as a 16-BYTE ZERO BLOB in `ParsedIR.globals`
-#     (`jl_global#N => (zeros(UInt64,16), 8)`). The certification target is a
-#     GLOBAL root, not an arena root.
+#     SHARED EMPTY `Memory{Int64}` SINGLETON, which the extractor models as a
+#     16-BYTE header blob in `ParsedIR.globals` — since Bennett-hsm3 ONLY when
+#     the producing session CERTIFIES the literal as that singleton (membership
+#     in the live empty-GenericMemory singleton set; the NAME proves nothing),
+#     under the OBJECT key `jl_global#N.obj => (blob, 8)` with `length@0 = 0`
+#     and the non-null `_EMPTY_MEMORY_DATA_SENTINEL` at byte-cell 8 (gcf7 D3).
+#     The certification target is a GLOBAL root, not an arena root.
 #  2. **The copied VALUE is an `Int64`, not a pointer.** The memcpy's src
 #     OPERAND is a pointer; the copied VALUE is the 8 bytes AT that address —
 #     the `Memory` header's `{i64 length, ptr data}` field 0, i.e. `length`.
@@ -106,6 +108,10 @@
 #        instead. 5viz keeps the sy29 dst-stamp rule unchanged; the tier decision
 #        is deferred to the bvmd-family arc (scout §3).
 #   (k)  THE CORPUS GATE — the push! set advances from wall 11 to wall 12.
+#   (l)  Bennett-hsm3 / gcf7 D1+D4 — the SAME corpus-shaped fixture whose slot
+#        holds a live NON-singleton literal (`Ref`) is refused with an hsm3
+#        message, never the misleading 37mt text; and the singleton fixture
+#        ingested WITHOUT `jl_globals = :live_session` certifies nothing.
 #
 # Rule 5: no LLVM formatting, instruction ordering or `%NNN` naming is pinned —
 # every assertion is programmatic over extracted `IRInst` nodes, or over a
@@ -126,18 +132,27 @@ using Bennett: extract_parsed_ir_from_ll
 _5viz_insts(pir) = reduce(vcat, [b.instructions for b in pir.blocks];
                           init = Bennett.IRInst[])
 
-function _5viz_extract(ir::AbstractString, fn::AbstractString; cells::Bool=true)
+# Bennett-hsm3: every fixture's `jl_global#93` slot holds the LIVE address of
+# `Memory{Int64}()` (see `_5VIZ_GLOB`), and ingest opts in with
+# `jl_globals = :live_session` — the membership test then CERTIFIES it. Before
+# hsm3 the fixtures used a fake address and were admitted by NAME, which is
+# exactly the gcf7 D1 hole (every assertion here would have stayed green on a
+# `const Ref(…)` literal).
+function _5viz_extract(ir::AbstractString, fn::AbstractString; cells::Bool=true,
+                       jl_globals::Symbol=:live_session)
     mktempdir() do dir
         path = joinpath(dir, "$(fn).ll")
         write(path, ir)
         return extract_parsed_ir_from_ll(path; entry_function = fn,
-                                         ptr_cells = cells)
+                                         ptr_cells = cells,
+                                         jl_globals = jl_globals)
     end
 end
 
-function _5viz_msg(ir::AbstractString, fn::AbstractString; cells::Bool=true)
+function _5viz_msg(ir::AbstractString, fn::AbstractString; cells::Bool=true,
+                   jl_globals::Symbol=:live_session)
     try
-        _5viz_extract(ir, fn; cells = cells)
+        _5viz_extract(ir, fn; cells = cells, jl_globals = jl_globals)
         return ""
     catch e
         e isa InterruptException && rethrow()
@@ -177,31 +192,37 @@ _is_37mt_src_wall(msg) =
     occursin("src operand is not alloca-backed", msg) &&
     occursin("Bennett-37mt", msg)
 
-const _5VIZ_G = Symbol("jl_global#93")
+# Bennett-hsm3: the certified OBJECT key (never the slot name).
+const _5VIZ_G = Symbol("jl_global#93.obj")
 
 # ---------------------------------------------------------------------------
 # Fixtures. Every one carries the distilled-corpus datalayout so the byte/word
 # tiers are unambiguous.
 #
 # THE SINGLETON GLOBAL. Julia emits `@"jl_global#N" = private constant ptr
-# @"jl_global#N.jit"` where the `.jit` alias is `inttoptr (i64 <JIT-addr>)` — a
-# GlobalAlias LLVM.jl cannot represent, so `LLVM.initializer` THROWS and
-# `_extract_const_globals` takes its `init === nothing` arm. The distilled form
-# below spells the pointer constant DIRECTLY (`constant ptr inttoptr (…)`),
-# which lands in the same function's belt-and-suspenders `else` arm — the
-# `ptr_cells && _is_singleton_data_global_name && PointerType` clause — and
-# seeds the IDENTICAL `(zeros(UInt64,16), 8)` entry. Both forms verified to
-# produce the same `.globals` entry, so the fixture is faithful without
-# depending on LLVM.jl's alias-parse behaviour (Rule 5). The JIT address itself
-# is NEVER read (ADR 0021 D3).
+# @"jl_global#N.jit"` where the `.jit` alias is `inttoptr (i64 <JIT-addr>)`. The
+# distilled form below spells the pointer constant DIRECTLY (`constant ptr
+# inttoptr (…)`); both spellings resolve to the same address K through
+# `_ptr_identity` (pinned in test_hsm3_jlglobal_certification.jl (T4)).
+# Bennett-hsm3: K is the LIVE address of `Memory{Int64}()` in THIS process, so
+# the `:live_session` membership test certifies it; the address is used only as
+# a lookup key, never dereferenced, never emitted (ADR 0021 D3 Amendment B).
 # ---------------------------------------------------------------------------
 const _5VIZ_DL = """
 target datalayout = "e-p:64:64:64-i64:64-n8:16:32:64-S128"
 """
 
+const _5VIZ_SINGLETON_ADDR = UInt64(UInt(pointer_from_objref(Memory{Int64}())))
 const _5VIZ_GLOB = """
-@"jl_global#93" = private unnamed_addr constant ptr inttoptr (i64 140234000 to ptr)
+@"jl_global#93" = private unnamed_addr constant ptr inttoptr (i64 $(_5VIZ_SINGLETON_ADDR) to ptr)
 """
+# (l) the SAME slot holding a live NON-singleton literal (a module-level const,
+# so the object outlives every extraction below).
+const _5VIZ_NONSINGLETON_LIT = Ref((3, 4))
+_5viz_with_ref_literal(ll::AbstractString) =
+    replace(ll, "inttoptr (i64 $(_5VIZ_SINGLETON_ADDR) to ptr)" =>
+                "inttoptr (i64 $(UInt(pointer_from_objref(_5VIZ_NONSINGLETON_LIT)))" *
+                " to ptr)")
 
 const _5VIZ_DECLS = """
 declare ptr @julia.gc_alloc_obj(ptr, i64, ptr)
@@ -304,7 +325,14 @@ const _5VIZ_BYTEDST_LL = _5viz_fx("v5_bytedst", "%g", _5VIZ_CP;
     @testset "(a0) direct loaded-singleton src is admitted" begin
         pir = _5viz_extract(_5VIZ_DIRECT_LL, "v5_direct")
         @test haskey(pir.globals, _5VIZ_G)
-        @test pir.globals[_5VIZ_G] == (zeros(UInt64, 16), 8)
+        # Bennett-hsm3 / gcf7 D3: length@0 = 0, data-ptr@8 = the non-null
+        # sentinel, everything else 0.
+        let (data, ew) = pir.globals[_5VIZ_G]
+            @test ew == 8 && length(data) == 16
+            @test data[9] == Bennett._EMPTY_MEMORY_DATA_SENTINEL
+            @test all(==(0), data[[1:8; 10:16]])
+        end
+        @test !haskey(pir.globals, Symbol("jl_global#93"))   # never the slot
         # SRC addresses are stamped from the GLOBAL's own scale (ew ÷ 8 == 1),
         # i.e. the BYTE tier: `8 * 1 == 8`.
         @test _5viz_offsets(pir, _5VIZ_G) == Set([(0, 8)])
@@ -458,9 +486,10 @@ const _5VIZ_BYTEDST_LL = _5viz_fx("v5_bytedst", "%g", _5VIZ_CP;
         # It must NOT degrade into the generic "not alloca-backed" wall: the src
         # WAS certified, and reporting otherwise would be actively misleading.
         @test !_is_37mt_src_wall(msg)
-        # The corpus is FLUSH on this bound (`0 + 8 <= 16`), so gate (a) is this
-        # predicate's own mutation test: flipping `<=` to `<` reddens (a).
-        @test occursin("16", msg)
+        # gcf7 D5: the refused range is pinned exactly. (Gate (a) is NOT this
+        # predicate's flush case — `0 + 8 <= 16` has slack. The FLUSH case is
+        # gate (c), `8 + 8 == 16`: flipping `<=` to `<` reddens (c), not (a).)
+        @test occursin("[8, 24)", msg)
     end
 
     # ======================================================================
@@ -590,5 +619,30 @@ const _5VIZ_BYTEDST_LL = _5viz_fx("v5_bytedst", "%g", _5VIZ_CP;
         # …and the p06b reject here is the AGGREGATE-STORE one, not the
         # gc_alloc_obj one (wall 8's inverted discriminator, unchanged).
         @test !(occursin("Bennett-p06b", msg) && occursin("gc_alloc_obj", msg))
+    end
+    # ======================================================================
+    # (l) Bennett-hsm3 / gcf7 D1+D4 — the name proves nothing.
+    #
+    # The corpus-shaped K = 1 fixture, byte-identical except that the slot now
+    # holds the live address of a NON-singleton literal (`Ref((3,4))` — the
+    # gcf7 h1/h4 family, whose loaded "length" would silently read the phantom
+    # zero blob). Refused, with an hsm3 message naming the memcpy src, never
+    # the misleading 37mt "not alloca-backed" text. And the genuine singleton
+    # fixture ingested with the DEFAULT `jl_globals = :refuse` certifies
+    # nothing: a `.ll` carries no live session.
+    # ======================================================================
+    @testset "(l) non-singleton literal src / no live session: hsm3, not 37mt" begin
+        msg = _5viz_msg(_5viz_with_ref_literal(_5VIZ_K1_LL), "v5_k1")
+        @test occursin("Bennett-hsm3", msg)
+        @test occursin("NOT the empty GenericMemory singleton", msg)
+        @test occursin("memcpy", msg)
+        @test !_is_37mt_src_wall(msg)
+        msg = _5viz_msg(_5viz_with_ref_literal(_5VIZ_DIRECT_LL), "v5_direct")
+        @test occursin("Bennett-hsm3", msg)
+        @test !_is_37mt_src_wall(msg)
+        msg = _5viz_msg(_5VIZ_K1_LL, "v5_k1"; jl_globals = :refuse)
+        @test occursin("Bennett-hsm3", msg)
+        @test occursin("no live producing Julia session", msg)
+        @test !_is_37mt_src_wall(msg)
     end
 end

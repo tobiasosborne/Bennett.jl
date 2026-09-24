@@ -73,12 +73,14 @@ using Bennett: extract_parsed_ir_from_ll
 _bvmd_insts(pir) = reduce(vcat, [b.instructions for b in pir.blocks];
                           init = Bennett.IRInst[])
 
-function _bvmd_extract(ir::AbstractString, fn::AbstractString; cells::Bool=true)
+function _bvmd_extract(ir::AbstractString, fn::AbstractString; cells::Bool=true,
+                       jl_globals::Symbol=:refuse)
     mktempdir() do dir
         path = joinpath(dir, "$(fn).ll")
         write(path, ir)
         return extract_parsed_ir_from_ll(path; entry_function = fn,
-                                         ptr_cells = cells)
+                                         ptr_cells = cells,
+                                         jl_globals = jl_globals)
     end
 end
 
@@ -154,8 +156,17 @@ entry:
 # (C) UNION CONTROL — the bennettvm-416r.13 singleton. `load ptr, ptr @g` emits
 # NO IRLoad (it aliases the dest to the global), so the header GEP's base has NO
 # allocation root: scale UNKNOWN. The shipped TYPE predicate must still stamp 8.
+#
+# Bennett-hsm3 migration: the slot was `external global ptr` — no address, not
+# even `constant`, admitted pre-hsm3 purely BY NAME (the gcf7 D1 hole). It now
+# holds the LIVE address of `Memory{Int64}()` and is ingested with
+# `jl_globals = :live_session`, so the membership test CERTIFIES it and the
+# header GEP is based at the object key `jl_global#93.obj`. (The `%e0` element
+# read is UB on a length-0 Memory; extraction-only here — on BennettVM the
+# sentinel data pointer makes such a read trap, BVM test_hsm3.)
+const _BVMD_SINGLETON_ADDR = UInt64(UInt(pointer_from_objref(Memory{Int64}())))
 const _BVMD_UNION_LL = """
-@"jl_global#93" = external global ptr
+@"jl_global#93" = private unnamed_addr constant ptr inttoptr (i64 $(_BVMD_SINGLETON_ADDR) to ptr)
 define i64 @bvmd_union_singleton() {
 entry:
   %m = load ptr, ptr @"jl_global#93", align 8
@@ -453,9 +464,15 @@ entry:
     # (C) UNION CONTROL — provenance NEVER replaces the type predicate.
     # ======================================================================
     @testset "(C) 416r.13 singleton header GEP still stamps 8" begin
-        pir = _bvmd_extract(_BVMD_UNION_LL, "bvmd_union_singleton")
+        pir = _bvmd_extract(_BVMD_UNION_LL, "bvmd_union_singleton";
+                            jl_globals = :live_session)
         pos = [o for o in _bvmd_insts(pir) if o isa Bennett.IRPtrOffset]
         @test !isempty(pos)
+        # Bennett-hsm3: the header GEPs are based at the certified OBJECT key.
+        @test all(o -> o.base == Bennett.SSAOperand(Symbol("jl_global#93.obj")), pos)
+        # …and WITHOUT a live session the same slot is refused, loud.
+        @test occursin("Bennett-hsm3",
+                       _bvmd_msg(_BVMD_UNION_LL, "bvmd_union_singleton"))
         # the data-ptr field is at byte 8 and MUST be byte-cell +8, the layout
         # the shipped 416r.13 singletons already ship.
         @test any(o -> o.offset_bytes == 8 && o.elem_width == 8, pos)

@@ -2880,31 +2880,31 @@ end
 
 # ---- Bennett-5viz (2026-08-07, xkl frontier wall 11) ------------------------
 #
-# Is `v` a `load ptr, ptr @"jl_global#N"` on a SINGLETON-DATA global that
-# `_extract_const_globals` actually SEEDED into `parsed.globals`? Returns the
-# `.globals` key, or `nothing`.
+# Is `v` a `load ptr, ptr @"jl_global#N"` of a Julia literal SLOT whose OBJECT
+# the producing session CERTIFIED as the empty GenericMemory singleton
+# (Bennett-hsm3)? Returns `(objkey, slot_ref)` — the `.globals` OBJECT key and the
+# slot GlobalVariable's ref — or `nothing` when `v` is not a slot load at all.
 #
-# THREE CLAUSES, ALL LOAD-BEARING:
+# Pre-hsm3 this gated on `_is_singleton_data_global_name`, a NAME regex, and so
+# admitted ANY interned heap literal (`const Ref(S2(3,4))`, a tuple box, …) as a
+# 16-byte zero blob — gcf7 D1, an executed silent miscompile. Now:
 #
-#   * `_is_singleton_data_global_name` — the recogniser that PUT the entry in
-#     `.globals` (the `bennettvm-416r.13 / CW-D3 Lever 2` arm of
-#     `_extract_const_globals`, `ptr_cells`-gated). Gating on it here keeps this
-#     arm's clientele IDENTICAL to that arm's, rather than admitting any global
-#     that happens to be dict-resident.
-#   * `haskey(globals, G)` — the CAPACITY authority. The name alone proves
-#     nothing about how many cells the VM seeds; `.globals` does, and it is the
-#     same authority doih's G8 bounds-check already uses.
-#   * `names[v] === G` — the OPERAND-RESOLUTION proof. The singleton-data arm of
-#     `_handle_load` (`~:6986`) emits NO IRInst and ALIASES the load-result SSA
-#     name to the GLOBAL's own stable name, precisely so that several loads of
-#     one singleton collapse to the single `.globals` key the VM binds at
-#     `GLOBAL_BASE`. Checking the alias landed is what makes `ssa(G)` a
-#     GUARANTEED-RESOLVABLE base for the addresses this arm emits, instead of a
-#     hopeful one. If a future refactor stops aliasing, this returns `nothing`
-#     and the arm goes conservatively dead rather than emitting a dangling
-#     operand.
+#   * the CERTIFICATE (`jl_global_certs`, jlglobal_cert.jl) is the authority. A
+#     REFUSED literal fails loud HERE with an hsm3 message naming what it is —
+#     never the misleading "src operand is not alloca-backed … Bennett-37mt"
+#     text (gcf7 D4 for this class);
+#   * `haskey(globals, objkey)` — the CAPACITY authority (the seeded blob; doih
+#     G8's formula);
+#   * `names[v] === objkey` — the OPERAND-RESOLUTION proof that the alias arm of
+#     `_handle_load` already retired this load onto the object key. (Pre-hsm3
+#     this clause could not prove it: the FIRST load's own SSA spelling equals
+#     the slot's name, so `names[v] === slot` held with or without the alias. The
+#     `.obj` key makes the clause mean what it says.) A certified slot whose load
+#     has NOT yet been aliased (block order ≠ dominance) fails loud, 5viz-named
+#     (gcf7 D4), rather than falling through to the 37mt text.
 function _5viz_singleton_load(v, names::Dict{_LLVMRef, Symbol},
-                              globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}}
+                              globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}},
+                              jl_global_certs::_JLGlobalCerts
                               )::Union{Nothing, Tuple{Symbol, _LLVMRef}}
     (v isa LLVM.Instruction && LLVM.opcode(v) == LLVM.API.LLVMLoad) ||
         return nothing
@@ -2912,13 +2912,34 @@ function _5viz_singleton_load(v, names::Dict{_LLVMRef, Symbol},
     gp = LLVM.operands(v)[1]
     gp isa LLVM.GlobalVariable || return nothing
     gname_s = LLVM.name(gp)
-    _is_singleton_data_global_name(gname_s) || return nothing
-    gname = Symbol(gname_s)
-    haskey(globals, gname) || return nothing
-    get(names, v.ref, nothing) === gname || return nothing
+    _is_jl_global_slot_name(gname_s) || return nothing
+    c = get(jl_global_certs, String(gname_s), nothing)
+    c === nothing && _ir_error(v,
+        "Bennett-5viz / Bennett-hsm3 internal: memcpy src canonicalises to a load of " *
+        "the Julia literal slot `@\"" * gname_s * "\"`, which the module's jl_global " *
+        "certificate does not cover (Rule 1).")
+    c.certified || _ir_error(v,
+        "Bennett-hsm3 (Bennett-5viz memcpy src, gcf7 D1/D4): the memcpy src " *
+        "canonicalises to the interned Julia heap-object literal `@\"" * gname_s *
+        "\"`, which is NOT certified as the empty GenericMemory singleton: " *
+        c.desc * ". Copying out of it would copy a phantom zero blob — a silent " *
+        "miscompile. The closed world models only the empty-GenericMemory " *
+        "singleton; refusing (CLAUDE.md §1; BennettVM ADR 0021 Decision 3 " *
+        "Amendment B).")
+    haskey(globals, c.objkey) || _ir_error(v,
+        "Bennett-5viz / Bennett-hsm3 internal: the certified literal `@\"" *
+        gname_s * "\"` has no `.globals` entry `" * String(c.objkey) *
+        "` (Rule 1).")
+    get(names, v.ref, nothing) === c.objkey || _ir_error(v,
+        "Bennett-5viz: the memcpy src canonicalises to the CERTIFIED empty-" *
+        "GenericMemory singleton `@\"" * gname_s * "\"`, but that slot load has " *
+        "not been retired onto its object key `" * String(c.objkey) * "` yet " *
+        "(the memcpy was converted before the load — block layout order is not " *
+        "dominance order). Its address would not resolve; refusing rather than " *
+        "emit a dangling base (gcf7 D4; CLAUDE.md §1).")
     # The GlobalVariable's OWN ref is returned so Predicate 7 can compare src
     # and dst roots by ref, uniformly with the alloca / arena cases.
-    return (gname, gp.ref)
+    return (c.objkey, gp.ref)
 end
 
 """
@@ -3006,10 +3027,13 @@ function _5viz_global_src_root(src_v::LLVM.Value,
                                names::Dict{_LLVMRef, Symbol},
                                suppressed::Set{_LLVMRef},
                                ptr_cells::Bool,
-                               globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}}
+                               globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}},
+                               jl_global_certs::_JLGlobalCerts=_JLGlobalCerts()
                                )::Union{Nothing, Tuple{Symbol, _LLVMRef}}
     ptr_cells || return nothing
-    isempty(globals) && return nothing
+    # Bennett-hsm3: no early `isempty(globals)` exit — a REFUSED literal has no
+    # `.globals` entry, and it must still reach `_5viz_singleton_load` so it is
+    # refused LOUD with an hsm3 message instead of the misleading 37mt text.
 
     # (1) the const-GEP chain's base — `_root_byte_offset`'s own walk.
     base_ref = _bvmd_root_ref(src_v)
@@ -3037,7 +3061,7 @@ function _5viz_global_src_root(src_v::LLVM.Value,
     # hostile-review D1 patch — such a load materialises no cell). That refusal
     # is right for foz5's contract and irrelevant to ours: we are not coercing
     # the load's value into a cell, we are naming the `.globals` root it reads.
-    let g = _5viz_singleton_load(stripped, names, globals)
+    let g = _5viz_singleton_load(stripped, names, globals, jl_global_certs)
         g === nothing || return g
     end
 
@@ -3058,7 +3082,7 @@ function _5viz_global_src_root(src_v::LLVM.Value,
     budget = Ref(_57HD_SCAN_CAP)
     cref = _57hd_canon(stripped, blk, seq, order, names, suppressed, ptr_cells,
                        dl, memo, budget)
-    return _5viz_singleton_load(LLVM.Value(cref), names, globals)
+    return _5viz_singleton_load(LLVM.Value(cref), names, globals, jl_global_certs)
 end
 
 """
@@ -3138,7 +3162,10 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
                             # entry can only make clause (iv) admit a store the
                             # walk would otherwise refuse. Passing the real set
                             # is strictly better than passing an empty one.
-                            suppressed_refs::Set{_LLVMRef}=Set{_LLVMRef}())
+                            suppressed_refs::Set{_LLVMRef}=Set{_LLVMRef}(),
+                            # Bennett-hsm3: the jl_global certificate — the
+                            # 5viz global-src arm's admission authority.
+                            jl_global_certs::_JLGlobalCerts=_JLGlobalCerts())
     # Predicate 1: addrspace 0 on both pointers (encoded in the intrinsic name).
     startswith(cname, "llvm.memcpy.p0.p0.") || _ir_error(inst,
         "$(cname): memcpy with non-default pointer address space is not " *
@@ -3416,7 +3443,8 @@ function _handle_memcpy_arm(cname::AbstractString, inst::LLVM.Instruction,
     # is unchanged character-for-character, and `test_37mt` / `test_lqif` keep
     # their pins. The vbv9 / u2kk / qmv7 / sy29 gating pattern, unchanged.
     gsrc = (ptr_cells && src_root === nothing && arena_src === nothing) ?
-        _5viz_global_src_root(src_v, names, suppressed_refs, ptr_cells, globals) :
+        _5viz_global_src_root(src_v, names, suppressed_refs, ptr_cells, globals,
+                              jl_global_certs) :
         nothing
     global_src     = gsrc === nothing ? nothing : gsrc[1]   # the `.globals` key
     global_src_ref = gsrc === nothing ? nothing : gsrc[2]   # the GlobalVariable
@@ -4273,6 +4301,15 @@ function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction
         "$(cname): memcpy src const-GEP yields a negative byte offset " *
         "($src_byte_off) — out-of-bounds read on the global. (Bennett-doih)")
     gname = Symbol(LLVM.name(LLVM.Value(src_gref)))
+    # Bennett-hsm3 slot guard (decision 3): a memcpy FROM a Julia literal SLOT
+    # copies the literal's JIT ADDRESS (the slot's content), never the object.
+    # Pre-hsm3 the slot NAME was itself a `.globals` key (the zero blob), so this
+    # read the object blob as if it were the slot — slot/object confusion.
+    ptr_cells && _is_jl_global_slot_name(String(gname)) && _ir_error(inst,
+        "Bennett-hsm3: $(cname) reads the Julia literal SLOT `@\"$(gname)\"` — the " *
+        "slot holds the literal's JIT ADDRESS, which is never data (BennettVM ADR " *
+        "0021 Decision 3); only a `load ptr` of the slot yields the object. " *
+        "Slot/object confusion, refused (CLAUDE.md §1).")
     haskey(globals, gname) || _ir_error(inst,
         "$(cname): memcpy src global @$gname is not extractable as a " *
         "constant integer byte stream. Likely causes: (a) the " *
@@ -4778,7 +4815,9 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
                            # `_p06b_suppressed_refs` — see `_handle_memcpy_arm`'s
                            # own kwarg for why an empty default is unsound there.
                            # Every OTHER intrinsic in this dispatcher ignores it.
-                           suppressed_refs::Set{_LLVMRef}=Set{_LLVMRef}())
+                           suppressed_refs::Set{_LLVMRef}=Set{_LLVMRef}(),
+                           # Bennett-hsm3: forwarded to the memcpy arm only.
+                           jl_global_certs::_JLGlobalCerts=_JLGlobalCerts())
     if startswith(cname, "llvm.umax.")
         cmp_dest = _auto_name(counter)
         w = _iwidth(ops[1])
@@ -5440,7 +5479,8 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
                                   synth_ptr_provenance=synth_ptr_provenance,
                                   synth_ptr_allocas=synth_ptr_allocas,
                                   ptr_cells=ptr_cells,
-                                  suppressed_refs=suppressed_refs)
+                                  suppressed_refs=suppressed_refs,
+                                  jl_global_certs=jl_global_certs)
     end
     # Bennett-hao Phase 2 (Bennett-9nwt): const-c const-N memset on
     # alloca-i8-backed dst lowers to byte-granular IRPtrOffset+IRStore
@@ -6176,9 +6216,42 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                               # empty default keeps the two non-module_walk
                               # callers (`heap.jl`, `vector_vm_cfg.jl`, neither of
                               # which forwards `ptr_cells` either) byte-identical.
-                              dead_blocks::Set{_LLVMRef}=Set{_LLVMRef}())
+                              dead_blocks::Set{_LLVMRef}=Set{_LLVMRef}(),
+                              # Bennett-hsm3: the per-module `jl_global#N`
+                              # certificate (jlglobal_cert.jl), threaded from
+                              # `module_walk.jl` (sole owner). Only consulted
+                              # under `ptr_cells`; the empty default keeps the
+                              # two non-module_walk callers byte-identical.
+                              jl_global_certs::_JLGlobalCerts=_JLGlobalCerts(),
+                              # Bennett-hsm3: the pre-alias result names of the
+                              # slot loads the alias arm retired — any surviving
+                              # use of one is a consumer that ran ahead of its
+                              # aliasing load (checked after the walk).
+                              jl_slot_load_dests::Set{Symbol}=Set{Symbol}())
     opc = LLVM.opcode(inst)
     dest = names[inst.ref]
+
+    # Bennett-hsm3 / O1 (Bennett-fnxh): an operand straight through a Julia
+    # literal's `.jit` ALIAS. `optimize=true` folds `load ptr, ptr @"jl_global#N"`
+    # (a constant slot) into a direct use of `@"jl_global#N.jit"`; `LLVM.Value`
+    # cannot wrap a GlobalAlias, so the operand walk throws "Unknown value kind"
+    # and `module_walk.jl`'s benign-error swallow SILENTLY DROPPED the
+    # instruction — a dangling operand downstream (h2/u1 at optimize=true
+    # extracted to an `IRBinOp` over an undefined `.x.0.copyload`). Not
+    # modelled: refuse loud, raw C API only. ptr_cells-gated (circuit path
+    # byte-identical).
+    if ptr_cells
+        _jit_alias = _jl_global_jit_alias_operand(inst)
+        _jit_alias === nothing || _ir_error(inst,
+            "Bennett-hsm3 / Bennett-fnxh (O1): operand straight through the Julia " *
+            "literal's JIT alias `@\"" * _jit_alias * "\"` — optimize=true folded " *
+            "the constant `jl_global` SLOT load into a direct use of the object " *
+            "address. The closed-world model certifies literals only at their slot " *
+            "load, so this use cannot be lowered; the operand walk would otherwise " *
+            "throw an LLVM.jl \"Unknown value kind\" that the walk's benign-error " *
+            "swallow eats, silently dropping this instruction and leaving a " *
+            "dangling operand. Extract at optimize=false (CLAUDE.md §1).")
+    end
 
     # Bennett-cc0.7: SLP-vectorised IR. `<N x iM>` SSA is modelled as N scalar
     # per-lane IROperands in `lanes`; vector ops desugar into N scalar IRInsts.
@@ -6767,7 +6840,8 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                                         # arm's `_57hd_canon` call needs the REAL
                                         # set (see its kwarg comment; Bennett-x90d
                                         # records the set's known inexactness).
-                                        suppressed_refs=suppressed_refs)
+                                        suppressed_refs=suppressed_refs,
+                                        jl_global_certs=jl_global_certs)
             handled === nothing || return handled
         end
         # Known Julia function calls → IRCall for gate-level inlining
@@ -7099,6 +7173,22 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 return IRVarGEP(dest, ssa(names[base.ref]), idx_op, ew)
             end
         end
+        # Bennett-hsm3 slot guard (decision 3): a GEP whose base is a Julia
+        # literal SLOT `@"jl_global#N"` indexes the slot (which holds the
+        # literal's JIT ADDRESS), not the object — Case B below would emit
+        # `IRVarGEP(ssa(slot))` with NO `.globals` check (slot/object
+        # confusion). Refused loud under ptr_cells, before Cases B and C; the
+        # circuit path (ptr_cells=false) is byte-identical.
+        if ptr_cells && base isa LLVM.GlobalVariable &&
+           _is_jl_global_slot_name(LLVM.name(base))
+            _ir_error(inst,
+                "Bennett-hsm3: getelementptr on the Julia literal SLOT `@\"" *
+                LLVM.name(base) * "\"` — the slot holds the literal's JIT " *
+                "ADDRESS, which is never data (BennettVM ADR 0021 Decision 3); " *
+                "only a `load ptr` of the slot yields the object, and only a GEP " *
+                "off THAT is modelled. Slot/object confusion, refused " *
+                "(CLAUDE.md §1).")
+        end
         # Case B: base is a global constant (T1c.2). Emit IRVarGEP carrying the
         # global's LLVM name as the base symbol; lower_var_gep! looks this up
         # in parsed.globals and dispatches to QROM.
@@ -7400,25 +7490,42 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 push!(tag_ssa, inst.ref)
                 return IRBinOp(dest, :or, iconst(Int(id)), iconst(0), 64)
             end
-            # bennettvm-416r.13 / CW-D3 Lever 2: a `load ptr, ptr @"jl_global#N"`
-            # reading an empty-GenericMemory singleton-data pointer. Same LLVM
-            # shape as the type-tag arm above, but the global is a DATA pointer
-            # (a zeroed 16-cell header materialised into `.globals` by
-            # `_extract_const_globals`), not a type identity. We emit NO IRInst
-            # (drop the load) and ALIAS the load-result SSA name to the STABLE
-            # GLOBAL-VARIABLE name (`pname`): a singleton is loaded MORE THAN ONCE
-            # (each `load` result gets its own drifting SSA name — e.g. the vals
-            # singleton yields `jl_global#23383` and `jl_global#233831`), and all
-            # of them must collapse to the SINGLE canonical `.globals` key so (a)
-            # pointer identity is preserved and (b) the VM binds it once via its
-            # prepended `GLOBAL_BASE` `Define`. SSA guarantees defs precede uses,
-            # so every downstream `IRPtrOffset`/`IRStore` operand then resolves
-            # (via `_operand`) to `ssa(:jl_global#N)` = the seeded header — no
-            # dangling operand. Must run BEFORE the `haskey(names, ptr.ref)` block
-            # (a GlobalVariable operand is never an SSA name) and the fail-loud
-            # below. (Design B D3; the "loaded twice" wrinkle is load-bearing.)
-            if _is_singleton_data_global_name(pname)
-                names[inst.ref] = Symbol(pname)
+            # bennettvm-416r.13 / CW-D3 Lever 2, made SEMANTIC by Bennett-hsm3:
+            # a load of a Julia interned-literal SLOT `@"jl_global#N"`. The slot
+            # holds the literal's address; `load ptr` of it yields the OBJECT.
+            # We emit NO IRInst and ALIAS the load-result name to the OBJECT KEY
+            # `jl_global#N.obj` (never the slot name). A literal is loaded MORE
+            # THAN ONCE (each load gets its own drifting SSA name), and every
+            # load must collapse onto ONE key so pointer identity is preserved
+            # and the VM binds it once at its `GLOBAL_BASE` segment.
+            #
+            # The alias is installed for CERTIFIED and REFUSED literals alike —
+            # the certificate (jlglobal_cert.jl; membership in the producing
+            # session's live empty-GenericMemory singleton set, never the name)
+            # decides whether the key is SEEDED in `.globals`. A refused
+            # literal's key has no `.globals` entry, and the post-walk
+            # `_assert_no_refused_jl_global_use` fails loud on any SURVIVING use
+            # of it (orchestrator decision 2: a String that only feeds a dead
+            # throw path never walls; a `const Ref(42)` read always does).
+            # Must run BEFORE the `haskey(names, ptr.ref)` block (a
+            # GlobalVariable operand is never an SSA name).
+            if _is_jl_global_slot_name(pname)
+                c = get(jl_global_certs, String(pname), nothing)
+                c === nothing && _ir_error(inst,
+                    "Bennett-hsm3 internal: load of the Julia literal SLOT " *
+                    "`@\"" * pname * "\"`, which the module's jl_global " *
+                    "certificate does not cover (Rule 1).")
+                # Slot/object guard (decision 3): only a `load ptr` of the slot
+                # yields the object; a SCALAR read of the SLOT reads the literal's
+                # JIT ADDRESS itself (ADR 0021 D3 — never data).
+                LLVM.value_type(inst) isa LLVM.PointerType || _ir_error(inst,
+                    "Bennett-hsm3: scalar read of the Julia literal SLOT " *
+                    "`@\"" * pname * "\"` — the slot holds the literal's JIT " *
+                    "ADDRESS, which is never data (BennettVM ADR 0021 Decision 3); " *
+                    "only a `load ptr` of the slot yields the object. " *
+                    "Slot/object confusion, refused (CLAUDE.md §1).")
+                push!(jl_slot_load_dests, dest)
+                names[inst.ref] = c.objkey
                 return nothing
             end
         end
@@ -7596,8 +7703,10 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 "returns a pointer) under ptr_cells. The recognized runtime-" *
                 "global kinds are: (1) `+<dotted.Type>#<N>` type-tag globals " *
                 "(lowered to a constant identity), and (2) `jl_global#<N>` " *
-                "empty-GenericMemory singleton-data globals (modelled as a " *
-                "zeroed header in `.globals`). This global matches neither, so " *
+                "interned heap-literal SLOTS (aliased onto an object key, seeded " *
+                "in `.globals` only when CERTIFIED in the producing session as " *
+                "the empty GenericMemory singleton — Bennett-hsm3). This global " *
+                "is neither, so " *
                 "its load cannot be lowered; silently dropping it would leave a " *
                 "dangling SSA operand that KeyErrors at VM run time. Fail loud " *
                 "at the load site (bennettvm-416r.13 / CLAUDE.md §1)." *

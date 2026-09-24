@@ -271,6 +271,19 @@ runfile("test_xrd6_sret_consumed_call.jl")
 runfile("test_416r17_sret_forward_cell_args.jl")
 runfile("test_416r16_consumed_sret_reconcile.jl")
 runfile("test_416r13_jlglobal_singleton.jl")
+# Bennett-hsm3 (P1; + gcf7 D1-D4, Bennett-fnxh O1) — SEMANTIC certification of
+# Julia's interned heap literals `@"jl_global#N"` under ptr_cells. Julia names
+# EVERY heap literal (const Ref / struct box / String / non-empty Memory) that
+# way; only a LIVE empty-GenericMemory singleton (membership test in the
+# producing session, never a dereference) is seeded (as `jl_global#N.obj`).
+# Every other literal fails loud at its first surviving use; `.ll`/`.bc` ingest
+# certifies nothing unless `jl_globals = :live_session`. Pins the executed gcf7
+# miscompiles (h1-h4/k1/m3) as loud refusals.
+runfile("test_hsm3_jlglobal_certification.jl")
+# Bennett-5viz (xkl wall 11) + gcf7 D5 — loaded-ptr memcpy src canonicalising
+# to a CERTIFIED `.globals` singleton root (fixtures on live addresses +
+# `jl_globals = :live_session` since Bennett-hsm3). Was unregistered (gcf7 D7).
+runfile("test_5viz_loaded_ptr_src_memcpy.jl")
 runfile("test_klgz_determinism_guard.jl")
 runfile("test_sha256_full.jl")
 runfile("test_constant_wire_count.jl")

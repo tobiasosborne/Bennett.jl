@@ -4,6 +4,7 @@
 # parse-time references (struct definitions, const dispatch tables)
 # resolve in the same order they did pre-split.
 
+include("extract/jlglobal_cert.jl") # Bennett-hsm3: semantic certification of jl_global#N literals (types used in entry/module_walk signatures)
 include("extract/entry.jl")         # extract_ir / extract_parsed_ir / from_ll / from_bc / _run_passes!
 include("extract/sig_llvm.jl")      # Bennett-40ys: by-signature LLVM IR emission (instance-less callees)
 include("extract/target_pin.jl")    # Bennett-t9rh: host-independent optimize=true IR (pinned TargetMachine + opt level)

@@ -135,28 +135,20 @@ _constexpr_opcode_name(opc) =
 _is_type_tag_global_name(s::AbstractString)::Bool =
     startswith(s, "+") && occursin(r"#\d+$", s)
 
-# ---- bennettvm-416r.13 / CW-D3 Lever 2: jl_global#NNN singleton-data globals --
+# ---- bennettvm-416r.13 / CW-D3 Lever 2 → Bennett-hsm3: jl_global#NNN literals --
 #
-# Julia's JIT also interns EMPTY-`GenericMemory` singleton pointers (the shared
-# `Memory{K}()`/`Memory{V}()` empty instances a `Dict{K,V}()` stores into its
-# keys/slots/vals fields). Their LLVM shape is BYTE-IDENTICAL to a type-tag —
-# `@"jl_global#NNN" = private constant ptr @"jl_global#NNN.jit"`, the `.jit`
-# alias being `inttoptr (i64 <non-deterministic-JIT-addr> to ptr)` — but the
-# NAME lacks the `+` type-path prefix (census Q2b, `scratchpad/scout-jlglobal-
-# census.md`). Unlike a type-tag (an identity fed to an ignored `gc_alloc_obj`
-# tag arg), a singleton is a DATA pointer: it is stored into Dict fields and
-# read as data (a length@0 field the empty singleton reports as 0; a data-ptr@8
-# field consumed only by a compile-time len-0 memset). We recognise it BY NAME
-# (never the JIT address) and model it as a zeroed 16-cell Memory header shipped
-# in `ParsedIR.globals` — the VM mints the deterministic `GLOBAL_BASE` address.
-#
-# `^…$`-anchored so it matches ONLY a bare `jl_global#<digits>` module global,
-# NOT the `@"jl_global#NNN.jit"` alias (has a `.jit` suffix) nor the drifting
-# load-result SSA names (which are also `jl_global#<digits>` but are never
-# GlobalVariables — this recogniser is only ever applied to a `GlobalVariable`
-# name / a `LLVM.globals(mod)` entry, never to an SSA load-result ref).
-_is_singleton_data_global_name(s::AbstractString)::Bool =
-    occursin(r"^jl_global#\d+$", s)
+# Julia's JIT interns EVERY heap-object literal as `@"jl_global#NNN" = private
+# constant ptr @"jl_global#NNN.jit"` (the `.jit` alias being `inttoptr (i64
+# <JIT-addr> to ptr)`) — BYTE-IDENTICAL in shape to a type-tag, minus the `+`
+# prefix. The former `_is_singleton_data_global_name` (a `^jl_global#\d+$` regex)
+# CERTIFIED "empty-GenericMemory singleton" from that NAME; it admitted every
+# `const Ref`, struct box, String and non-empty Memory too (gcf7 D1/D2: executed
+# silent miscompiles). It is DELETED (tripwire in
+# `test/test_hsm3_jlglobal_certification.jl`); the slot-name CANDIDATE finder
+# `_is_jl_global_slot_name` and the semantic certificate live in
+# `src/extract/jlglobal_cert.jl`. The JIT address is used ONLY at extraction
+# time, in the producing session, as a lookup key into the live singleton set —
+# never dereferenced, never emitted (BennettVM ADR 0021 D3 Amendment B).
 
 # `_canonical_type_path` — strip the leading `+` and the trailing `#<digits>`,
 # yielding the run-invariant canonical type path (e.g. "Main.Base.Dict").

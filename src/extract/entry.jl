@@ -72,10 +72,17 @@ function extract_parsed_ir(f, arg_types::Type{<:Tuple};
                            mem::Symbol=:auto,
                            ptr_cells::Bool=false)
     # Bennett-t9rh: one IR source for every Julia-function entry (Rule 12).
-    ir_string = _julia_ir_string(f, arg_types; optimize=optimize, dump_module=true)
+    # Bennett-hsm3: under `ptr_cells` the emission runs inside the GC-disabled
+    # certification window and the `jl_global#N` literals are classified there
+    # (membership in the live empty-GenericMemory singleton set — never a
+    # dereference). `ptr_cells=false` is byte-identical (no window, no certs).
+    ir_string, certs = _live_ir_and_certs(
+        () -> _julia_ir_string(f, arg_types; optimize=optimize, dump_module=true),
+        ptr_cells;
+        diag_src = () -> _diag_src_for_sig(Base.signature_type(f, arg_types)))
     return _parsed_ir_from_ir_string(ir_string; preprocess=preprocess, passes=passes,
                                      use_memory_ssa=use_memory_ssa, mem=mem,
-                                     ptr_cells=ptr_cells)
+                                     ptr_cells=ptr_cells, jl_global_certs=certs)
 end
 
 # Bennett-40ys: the TAIL of `extract_parsed_ir`, factored out VERBATIM so the
@@ -90,7 +97,11 @@ function _parsed_ir_from_ir_string(ir_string::AbstractString;
                                    passes::Vector{String}=String[],
                                    use_memory_ssa::Bool=false,
                                    mem::Symbol=:auto,
-                                   ptr_cells::Bool=false)
+                                   ptr_cells::Bool=false,
+                                   # Bennett-hsm3: the producing session's
+                                   # certificate; `nothing` = no live session
+                                   # (every `jl_global` literal refused).
+                                   jl_global_certs::Union{Nothing, _JLGlobalCerts}=nothing)
     effective_passes = String[]
     if preprocess
         append!(effective_passes, DEFAULT_PREPROCESSING_PASSES)
@@ -122,7 +133,8 @@ function _parsed_ir_from_ir_string(ir_string::AbstractString;
         if !isempty(effective_passes)
             _run_passes!(mod, effective_passes)
         end
-        result = _module_to_parsed_ir(mod; mem=mem, ptr_cells=ptr_cells)
+        result = _module_to_parsed_ir(mod; mem=mem, ptr_cells=ptr_cells,
+                                      jl_global_certs=jl_global_certs)
         dispose(mod)
     end
     # Stamp memssa into the result if requested
@@ -166,11 +178,15 @@ function extract_parsed_ir_by_sig(@nospecialize(sig::Type);
                                   use_memory_ssa::Bool=false,
                                   mem::Symbol=:auto,
                                   ptr_cells::Bool=false)
-    ir_string = _code_llvm_by_sig(sig; optimize=optimize, dump_module=true,
-                                  debuginfo=:none)
+    # Bennett-hsm3: same GC-disabled certification window as extract_parsed_ir.
+    ir_string, certs = _live_ir_and_certs(
+        () -> _code_llvm_by_sig(sig; optimize=optimize, dump_module=true,
+                                debuginfo=:none),
+        ptr_cells;
+        diag_src = () -> _diag_src_for_sig(sig))
     return _parsed_ir_from_ir_string(ir_string; preprocess=preprocess, passes=passes,
                                      use_memory_ssa=use_memory_ssa, mem=mem,
-                                     ptr_cells=ptr_cells)
+                                     ptr_cells=ptr_cells, jl_global_certs=certs)
 end
 
 # Shared plumbing for the external-IR entry points. Takes an already-parsed
@@ -189,7 +205,12 @@ function _extract_from_module(mod::LLVM.Module,
                               entry_function::Union{Nothing, AbstractString},
                               effective_passes::Vector{String};
                               mem::Symbol=:auto,
-                              ptr_cells::Bool=false)
+                              ptr_cells::Bool=false,
+                              jl_globals::Symbol=:refuse)
+    # Bennett-hsm3: classify the `jl_global#N` literals BEFORE any pass runs.
+    # Text/bitcode carries no live session: `:refuse` (default) certifies
+    # nothing; `:live_session` runs the membership test (safe on any address).
+    certs = _ingest_jl_global_certs(mod, ptr_cells, jl_globals)
     # Bennett-uyf9: auto-canonicalise memcpy-form sret (see extract_parsed_ir
     # for rationale). Shared across extract_parsed_ir_from_ll / _from_bc.
     if !("sroa" in effective_passes) && _module_has_sret(mod)
@@ -199,7 +220,8 @@ function _extract_from_module(mod::LLVM.Module,
         _run_passes!(mod, effective_passes)
     end
     return _module_to_parsed_ir(mod; entry_function=entry_function,
-                                mem=mem, ptr_cells=ptr_cells)
+                                mem=mem, ptr_cells=ptr_cells,
+                                jl_global_certs=certs)
 end
 
 """
@@ -237,6 +259,15 @@ the existing Julia-path fail-louds (U114 store, U16 GEP, U81 void/ptr
 return) keep firing unchanged — they protect the circuit / `mem=:heap`
 models, which the C cell model must NOT silently alias. The gate is the
 single switch the C track flips; nothing else in the walk changes shape.
+
+`jl_globals` (Bennett-hsm3; BennettVM ADR 0021 D3 Amendment B) governs Julia's
+interned heap literals `@"jl_global#N"` under `ptr_cells`. Text/bitcode carries
+no live producing session, so the default `:refuse` certifies NOTHING — any
+surviving use of such a literal fails loud. `:live_session` runs the in-process
+membership test (is the slot's address a live empty-GenericMemory singleton?)
+for IR the caller asserts `code_llvm` produced in THIS process; the address is
+never dereferenced, so this is safe even if the assertion is false. Also
+accepted by `extract_parsed_ir_from_bc` and `extract_parsed_ir_set_from_ll`.
 """
 function extract_parsed_ir_from_ll(path::AbstractString;
                                     entry_function::AbstractString,
@@ -244,7 +275,9 @@ function extract_parsed_ir_from_ll(path::AbstractString;
                                     passes::Vector{String}=String[],
                                     use_memory_ssa::Bool=false,
                                     mem::Symbol=:auto,
-                                    ptr_cells::Bool=false)
+                                    ptr_cells::Bool=false,
+                                    jl_globals::Symbol=:refuse)
+    _check_jl_globals_kwarg(jl_globals)
     isfile(path) || throw(ArgumentError(
         "ir_extract.jl: extract_parsed_ir_from_ll: file not found: $path"))
 
@@ -268,7 +301,8 @@ function extract_parsed_ir_from_ll(path::AbstractString;
         mod = parse(LLVM.Module, ir_string)
         try
             result = _extract_from_module(mod, entry_function, effective_passes;
-                                          mem=mem, ptr_cells=ptr_cells)
+                                          mem=mem, ptr_cells=ptr_cells,
+                                          jl_globals=jl_globals)
         finally
             dispose(mod)
         end
@@ -309,7 +343,9 @@ function extract_parsed_ir_set_from_ll(path::AbstractString;
                                        preprocess::Bool=false,
                                        passes::Vector{String}=String[],
                                        mem::Symbol=:auto,
-                                       ptr_cells::Bool=false)
+                                       ptr_cells::Bool=false,
+                                       jl_globals::Symbol=:refuse)
+    _check_jl_globals_kwarg(jl_globals)
     isfile(path) || throw(ArgumentError(
         "ir_extract.jl: extract_parsed_ir_set_from_ll: file not found: $path"))
 
@@ -325,6 +361,8 @@ function extract_parsed_ir_set_from_ll(path::AbstractString;
     LLVM.Context() do _ctx
         mod = parse(LLVM.Module, ir_string)
         try
+            # Bennett-hsm3: classify before passes (see _extract_from_module).
+            certs = _ingest_jl_global_certs(mod, ptr_cells, jl_globals)
             # Mirror _extract_from_module's sret auto-canonicalisation so the
             # set walker matches the single-function path's pass handling.
             if !("sroa" in effective_passes) && _module_has_sret(mod)
@@ -333,7 +371,8 @@ function extract_parsed_ir_set_from_ll(path::AbstractString;
             if !isempty(effective_passes)
                 _run_passes!(mod, effective_passes)
             end
-            result = _module_to_parsed_ir_set(mod; mem=mem, ptr_cells=ptr_cells)
+            result = _module_to_parsed_ir_set(mod; mem=mem, ptr_cells=ptr_cells,
+                                              jl_global_certs=certs)
         finally
             dispose(mod)
         end
@@ -361,7 +400,9 @@ function extract_parsed_ir_from_bc(path::AbstractString;
                                     preprocess::Bool=false,
                                     passes::Vector{String}=String[],
                                     mem::Symbol=:auto,
-                                    ptr_cells::Bool=false)
+                                    ptr_cells::Bool=false,
+                                    jl_globals::Symbol=:refuse)
+    _check_jl_globals_kwarg(jl_globals)
     isfile(path) || throw(ArgumentError(
         "ir_extract.jl: extract_parsed_ir_from_bc: file not found: $path"))
 
@@ -377,7 +418,8 @@ function extract_parsed_ir_from_bc(path::AbstractString;
             mod = parse(LLVM.Module, membuf)
             try
                 result = _extract_from_module(mod, entry_function, effective_passes;
-                                              mem=mem, ptr_cells=ptr_cells)
+                                              mem=mem, ptr_cells=ptr_cells,
+                                              jl_globals=jl_globals)
             finally
                 dispose(mod)
             end
