@@ -894,6 +894,11 @@ runfile("test_4bcp_ntuple_input_error.jl")
 # Hot-loop callers preallocate a Vector{Bool} once and reuse it across
 # many simulate calls.
 runfile("test_fehu_simulate_inplace.jl")
+# Bennett-zc50 / U100 — simulate infers output signedness from the input
+# argument types (all-unsigned inputs → unsigned outputs; mixed/all-signed
+# → signed, backward-compat) instead of always reinterpreting as signed.
+# Bennett-llqc: was on disk but never wired into runtests.jl — registered here.
+runfile("test_zc50_simulate_signedness.jl")
 # Bennett-2hhx / U136 — soft_round (IEEE 754 roundToIntegralTiesToEven).
 # Bit-exact vs Base.round(::Float64): ties-to-even, subnormals, ±Inf, NaN
 # (with quiet-bit), boundary at 2^52, plus 5,000-sample raw-bits sweep.
@@ -966,6 +971,30 @@ runfile("test_b2fs_tabulate_tuple_unpack.jl")
 # NaN propagation against Base.floor/ceil/trunc; soft_fdiv's dead
 # `_overflow_result` binding replaced with `_`.
 runfile("test_ardf_floor_ceil_nan.jl")
+# Bennett-kh6n — trailing-`.` prefix discipline for scalar LLVM intrinsic
+# name matching in src/extract/instructions.jl: a bare `startswith(cname,
+# "llvm.minimum")` silently swallows sibling intrinsics like
+# `llvm.minimumnum.f64`, dispatching them to the WRONG gate instead of
+# failing loud. Fixture-driven reject tests + a source-property scan that
+# every `llvm.*` prefix literal ends in `.` (or is on the explicit
+# no-dot allowlist). Bennett-llqc: was on disk but never wired into
+# runtests.jl — registered here.
+runfile("test_kh6n_prefix_discipline.jl")
+# Bennett-k2w6 — native soft_fmin / soft_fmax (≡ llvm.minnum/maxnum,
+# NaN-absorbing) and soft_fminimum / soft_fmaximum (≡ llvm.minimum/maximum,
+# NaN-propagating, matches Base.min/Base.max bit-exactly) closing the
+# kh6n future-work stub. Bennett-llqc: registered here (was unwired).
+runfile("test_k2w6_soft_fminmax.jl")
+# Bennett-mq6f — native soft_round_away (round-half-AWAY-from-zero, ≡
+# llvm.round.f64) closing the kh6n round-family gap; llvm.roundeven.f64
+# now dispatches to (banker's) soft_round. Bennett-llqc: registered here
+# (was unwired).
+runfile("test_mq6f_round_away.jl")
+# Bennett-p19b — native soft_minimumnum / soft_maximumnum thin aliases
+# over soft_fmin / soft_fmax, plus LLVM dispatch for llvm.minimumnum.f64
+# / llvm.maximumnum.f64 (LLVM 19+, IEEE 754-2019). Closes the third and
+# final kh6n future-work stub. Bennett-llqc: registered here (was unwired).
+runfile("test_p19b_minimumnum_maximumnum.jl")
 # Bennett-jepw / U05-followup — diamond-in-body phi resolution
 # (per-iteration LOCAL block_pred / branch_info / preds dicts inside
 # lower_loop! + top-level loop_body_labels skip).

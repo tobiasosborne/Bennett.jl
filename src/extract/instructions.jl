@@ -2240,8 +2240,8 @@ function _57hd_write_footprint(i::LLVM.Instruction, dl)
         # Bennett-vau9 shape correctly lands.
         co = LLVM.called_operand(i)
         nm = co isa LLVM.Function ? LLVM.name(co) : ""
-        if startswith(nm, "llvm.memcpy") || startswith(nm, "llvm.memmove") ||
-           startswith(nm, "llvm.memset")
+        if startswith(nm, "llvm.memcpy.") || startswith(nm, "llvm.memmove.") ||
+           startswith(nm, "llvm.memset.")
             ops = LLVM.operands(i)
             length(ops) >= 3 || return :unknown
             ops[3] isa LLVM.ConstantInt || return :unknown
@@ -5911,7 +5911,8 @@ function _fuse_overflow_extractvalue(call, cn, idx, dest, inst, names, counter)
     cops = LLVM.operands(call)            # [a, b, callee]
     a, b = cops[1], cops[2]
     N  = _iwidth(a)
-    op = (startswith(cn, "llvm.smul") || startswith(cn, "llvm.umul")) ? :mul : :add
+    op = (startswith(cn, "llvm.smul.with.overflow.") ||
+          startswith(cn, "llvm.umul.with.overflow.")) ? :mul : :add
     if idx == 0
         # Wrapped product/sum: the scalar iN arithmetic (N-bit two's-complement
         # wrap matches the intrinsic's low-N-bits result field).
@@ -5921,7 +5922,8 @@ function _fuse_overflow_extractvalue(call, cn, idx, dest, inst, names, counter)
     # mul/add are commutative: whichever operand is ConstantInt is `c` (`b`
     # checked first — Julia's memorynew shape puts the elsize there — but no
     # reliance on operand order, Rule 5).
-    signed = startswith(cn, "llvm.s")
+    signed = startswith(cn, "llvm.sadd.with.overflow.") ||
+             startswith(cn, "llvm.smul.with.overflow.")
     ca = a isa LLVM.ConstantInt ? _const_int_as_int(a) : nothing
     cb = b isa LLVM.ConstantInt ? _const_int_as_int(b) : nothing
     if ca !== nothing && cb !== nothing
