@@ -333,24 +333,28 @@ leaf59zi(k::Int8) = (Int64(k) + 1000, k ⊻ Int8(0x55))
             # Five store-arm IRRets + one call-arm IRRet = six value-bearing returns.
             @test _n_ret_blocks(pir) == 6
         else
-            # check-bounds=yes mode: both 59zi memcpy walls are CLEARED, AND the
-            # once-deeper iwo9/583s `ptrtoint %memory_data` wall is now ADMITTED
-            # (Bennett-583s). The extract advances to the next deeper wall: the
-            # `store { ptr, ptr } … %"box::GenericMemoryRef"` non-integer-struct
-            # store rejected by Bennett-lgzx / U114. Assert the failure IS that
-            # U114 struct-store reject (583s's successor), and is NOT a
-            # 59zi/sret-memcpy wall (would mean 59zi incomplete) and NOT the now-
-            # cleared iwo9/583s ptrtoint reject (would mean 583s didn't land).
-            msg = sprint(showerror, threw)
-            @test occursin("U114", msg) ||
-                  (occursin("store", lowercase(msg)) &&
-                   occursin("structtype", lowercase(msg)))
-            # The 583s ptrtoint wall is CLEARED — the deeper wall is NOT a
-            # ptrtoint reject anymore (proving 583s admitted the .data ptrtoint).
-            @test !occursin("583s / CW-D", msg)
-            @test !occursin("iwo9", msg)
-            @test !occursin("sret with llvm.memcpy", msg)   # Wall A gone
-            @test !occursin("dst operand is not alloca-backed", msg)  # Wall B gone
+            # Bennett-gsjx: as of the ht_keyindex2_shorthash! extraction probe
+            # (jbko implementer, 2026-08-04), this branch is UNREACHABLE in
+            # BOTH bounds modes — extraction succeeds cleanly (pir !== nothing)
+            # under both default bounds and --check-bounds=yes, so the U114
+            # struct-store-reject assertions below were dead code asserting a
+            # wall that had already vanished (the "kvdv" shape). A silently
+            # unreachable `else` that still says `@test ...` is false comfort:
+            # the suite reports 547/547 green whether or not this branch's
+            # assertions would actually hold. Per Bennett-gsjx, if this branch
+            # is ever reached again — i.e. extraction starts throwing on
+            # ht_keyindex2_shorthash! once more, whether the U114 struct-store
+            # wall or the deeper iwo9/583s ptrtoint wall reappearing — that IS
+            # a real regression worth failing loud on (CLAUDE.md §1), not
+            # something to silently re-validate against stale wall text.
+            @error "Bennett-gsjx: ht_keyindex2_shorthash! extraction threw " *
+                   "under this bounds mode — the U114 struct-store wall (or " *
+                   "an even deeper one) has reappeared. This branch was " *
+                   "UNREACHABLE as of 2026-08-04 in both bounds modes; its " *
+                   "return means a REGRESSION, not the expected historical " *
+                   "shape. Investigate before reinstating wall-specific " *
+                   "assertions here." exception=(threw, catch_backtrace())
+            @test false
         end
         # NOTE (Rule 1 honesty): this is EXTRACTION-SHAPE-ONLY regardless of mode.
         # ht_keyindex2 is self-recursive; reversible_compile(...) would recurse
