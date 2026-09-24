@@ -177,7 +177,13 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
         push!(input_widths, width)
     end
 
-    blocks = parsed.blocks
+    # Bennett-c6ex: predication preconditions (CLAUDE.md "Phi Resolution").
+    # Same-target conditional branches become unconditional (identity when
+    # absent ⇒ byte-identical lowering otherwise); then the CFG is validated
+    # up front, and the blocks unreachable from the entry are collected. Their
+    # predicate is identically 0, so they get no predicate and record no edges.
+    blocks = _canonicalize_same_target_branches(parsed.blocks)
+    entry_unreachable = _check_predication_cfg(blocks)
     block_map = Dict(b.label => b for b in blocks)
 
     # Detect loops (back-edges) and compute acyclic topo order
@@ -248,6 +254,10 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
                 push!(gate_groups, GateGroup(Symbol("__pred_", label),
                       _gs, length(gates), pw, Symbol[], _ws, wa.next_wire - 1))
             end
+        elseif label in entry_unreachable
+            # Bennett-c6ex: dead block — no predicate (it is identically 0) and,
+            # below, no recorded edges. Its instructions are still lowered, so
+            # gate counts are unchanged for IR carrying dead blocks.
         elseif !isempty(get(preds, label, Symbol[]))
             # Merge block: OR of incoming predicates
             _ws = wa.next_wire
@@ -258,6 +268,10 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
                 push!(gate_groups, GateGroup(Symbol("__pred_", label),
                       _gs, length(gates), block_pred[label], Symbol[], _ws, wa.next_wire - 1))
             end
+        else
+            throw(AssertionError("lower: block $label is reachable from the entry but no " *
+                  "predecessor registered an edge into it before it was lowered; its path " *
+                  "predicate would be undefined (Bennett-c6ex)"))
         end
 
         # Bennett-x2iw / U88: pre-build the per-block opts bundle. Reused
@@ -325,14 +339,23 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
                           _gs, length(gates), cw, _ssa_operands(term),
                           _ws, wa.next_wire - 1))
                 end
-                branch_info[label] = (cw, term.true_label, term.false_label)
-                push!(get!(preds, term.true_label, Symbol[]), label)
-                push!(get!(preds, term.false_label, Symbol[]), label)
+                # Bennett-c6ex: a dead block's edges carry predicate 0, so
+                # omitting them is exact (the cond is still resolved above,
+                # keeping gates byte-identical).
+                if !(label in entry_unreachable)
+                    branch_info[label] = (cw, term.true_label, term.false_label)
+                    push!(get!(preds, term.true_label, Symbol[]), label)
+                    push!(get!(preds, term.false_label, Symbol[]), label)
+                end
             end
         elseif term isa IRBranch
-            if !(label in loop_headers)
+            if !(label in loop_headers) && !(label in entry_unreachable)
                 push!(get!(preds, term.true_label, Symbol[]), label)
             end
+        else
+            # Bennett-c6ex: `_check_predication_cfg` admits only IRBranch/IRRet.
+            throw(AssertionError(
+                "lower: block $label has unsupported terminator $(typeof(term)) (Bennett-c6ex)"))
         end
     end
 

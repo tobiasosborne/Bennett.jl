@@ -34,7 +34,9 @@ using Bennett: WireAllocator, ReversibleGate, IRPhi, IROperand,
         block_pred[:BlockA] = allocate!(wa, 1)
         block_pred[:BlockB] = allocate!(wa, 1)
         branch_info = Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}()
-        preds = Dict{Symbol,Vector{Symbol}}()
+        # Bennett-c6ex: a CFG-consistent fixture — both incoming blocks are
+        # registered predecessors of :PhiBlock (lower_phi! asserts this).
+        preds = Dict{Symbol,Vector{Symbol}}(:PhiBlock => [:BlockA, :BlockB])
         block_order = Dict{Symbol,Int}(:BlockA => 1, :BlockB => 2,
                                        :PhiBlock => 3)
         @test_throws DimensionMismatch lower_phi!(gates, wa, vw, phi, :PhiBlock,
@@ -57,7 +59,7 @@ using Bennett: WireAllocator, ReversibleGate, IRPhi, IROperand,
         block_pred[:BlockA] = allocate!(wa, 1)
         block_pred[:BlockB] = allocate!(wa, 1)
         @test_throws DimensionMismatch lower_phi!(gates, wa, vw, phi, :PhiBlock,
-                                               Dict{Symbol,Vector{Symbol}}(),
+                                               Dict{Symbol,Vector{Symbol}}(:PhiBlock => [:BlockA, :BlockB]),
                                                Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}(),
                                                Dict{Symbol,Int}();
                                                block_pred=block_pred)
@@ -79,9 +81,11 @@ using Bennett: WireAllocator, ReversibleGate, IRPhi, IROperand,
         block_pred = Dict{Symbol,Vector{Int}}()
         block_pred[:BlockA] = allocate!(wa, 1)
         block_pred[:BlockB] = allocate!(wa, 1)
-        # Should NOT throw.
+        # Should NOT throw. Bennett-c6ex: the fixture used to pass an EMPTY
+        # `preds`, i.e. an inconsistent CFG in which neither incoming block is
+        # a predecessor of :PhiBlock; lower_phi! now asserts membership.
         lower_phi!(gates, wa, vw, phi, :PhiBlock,
-                   Dict{Symbol,Vector{Symbol}}(),
+                   Dict{Symbol,Vector{Symbol}}(:PhiBlock => [:BlockA, :BlockB]),
                    Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}(),
                    Dict{Symbol,Int}();
                    block_pred=block_pred)

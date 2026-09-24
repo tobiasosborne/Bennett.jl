@@ -1043,6 +1043,15 @@ runfile("test_p94b_predicate_asserts.jl")
 # Bennett-fq8n / U84 — lower_phi! validates that every incoming SSA
 # wire-vector has length == phi.width. resolve! doesn't enforce this.
 runfile("test_fq8n_phi_mixed_widths.jl")
+# Bennett-c6ex — predication soundness (3+1: docs/design/c6ex/). lower_loop!
+# merges multi-pre-header header phis by edge predicate (was: last pre-header
+# wins, silent miscompile from plain Julia at optimize=false); multi-latch loops
+# with distinct latch values and second loop exits (break) fail loud; an
+# up-front CFG validator at lower() entry (IRSwitch unexpanded, phi incoming ⊆
+# preds + coverage, entry has no preds); same-target `br c, X, X` canonicalised;
+# dead blocks record no edges; the silent arms of `_compute_block_pred!` /
+# `_edge_predicate!` are asserts; debug-mode `PRED_AUDIT` exclusion oracle.
+runfile("test_c6ex_predication_soundness.jl")
 # Bennett-lgzx / U114 — `_convert_instruction` no longer silently drops
 # stores of non-integer types or stores whose target pointer isn't a
 # registered SSA name. Errors loudly per CLAUDE.md §1.

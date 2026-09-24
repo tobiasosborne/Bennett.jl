@@ -4,6 +4,114 @@ function branch_targets(br::IRBranch)
     br.false_label !== nothing ? [br.true_label, br.false_label] : [br.true_label]
 end
 
+"""
+    _canonicalize_same_target_branches(blocks) -> Vector{IRBasicBlock}
+
+Bennett-c6ex: `br i1 %c, label %X, label %X` means the same as `br label %X`.
+Both polarities enter X, so the edge predicate is `block_pred[src]`. The
+polarity-based predicate code (`_compute_block_pred!` / `_edge_predicate!`)
+cannot express that: it would record the predecessor twice (Bennett-p94b
+rejection) or AND in `c` and drop the false edge. So such branches are
+rewritten to unconditional ones before lowering. They arise from valid IR, e.g.
+`_expand_switches` on a switch whose last case targets the default.
+
+Returns `blocks` ITSELF (`===`) when nothing changes, so every other program
+is lowered byte-identically.
+"""
+function _canonicalize_same_target_branches(blocks::Vector{IRBasicBlock})
+    _same(t) = t isa IRBranch && t.cond !== nothing && t.true_label === t.false_label
+    any(b -> _same(b.terminator), blocks) || return blocks
+    return IRBasicBlock[_same(b.terminator) ?
+        IRBasicBlock(b.label, b.instructions, IRBranch(nothing, b.terminator.true_label, nothing)) :
+        b for b in blocks]
+end
+
+"""
+    _check_predication_cfg(blocks) -> Set{Symbol}
+
+Bennett-c6ex: establish the structural preconditions of predicated lowering
+(CLAUDE.md "Phi Resolution and Control Flow — CORRECTNESS RISK") up front, and
+return the set of blocks unreachable from the entry. Checks:
+
+  - (V1) every terminator is `IRBranch` or `IRRet`. `IRSwitch` must already be
+    expanded: an unhandled terminator contributes no CFG edges, so its
+    successors' predicates would silently omit it.
+  - (V2) every branch target is a block of this function, or `:__unreachable__`.
+  - (V3) the entry block has no predecessors (its predicate is the constant 1).
+  - (V4) for every phi at block b:
+      - its incoming blocks are CFG predecessors of b; otherwise the edge
+        predicate is undefined and used to fall through to an
+        over-approximation;
+      - every CFG predecessor of b has an incoming; otherwise that path fires
+        no edge predicate and the MUX chain silently yields the last value;
+      - duplicate incomings from one block carry the same value (LLVM's rule).
+
+The CFG must already be canonicalised (`_canonicalize_same_target_branches`).
+"""
+function _check_predication_cfg(blocks::Vector{IRBasicBlock})
+    isempty(blocks) && error("lower: ParsedIR has no basic blocks")
+    labels = Set{Symbol}(b.label for b in blocks)
+    length(labels) == length(blocks) ||
+        error("lower: duplicate basic-block labels in ParsedIR (Bennett-c6ex)")
+    preds = Dict{Symbol,Set{Symbol}}()
+    succs = Dict{Symbol,Vector{Symbol}}()
+    for b in blocks
+        t = b.terminator
+        succs[b.label] = Symbol[]
+        if t isa IRBranch
+            for s in branch_targets(t)
+                s === :__unreachable__ && continue
+                s in labels || error("lower: block $(b.label) branches to $s, which is not a " *
+                    "block of this function — the edge would be silently dropped from " *
+                    "path-predicate computation (Bennett-c6ex)")
+                push!(get!(preds, s, Set{Symbol}()), b.label)
+                push!(succs[b.label], s)
+            end
+        elseif !(t isa IRRet)
+            error("lower: block $(b.label) has terminator $(typeof(t)); only IRBranch/IRRet " *
+                  "are lowerable (IRSwitch must be expanded by `_expand_switches` first). An " *
+                  "unhandled terminator contributes no CFG edges, so its successors' path " *
+                  "predicates would silently omit it (Bennett-c6ex)")
+        end
+    end
+    entry = blocks[1].label
+    haskey(preds, entry) && error("lower: entry block $entry has predecessors " *
+        "$(sort!(collect(preds[entry]))); the entry path predicate is the constant 1, " *
+        "so a loop cannot be headed by the entry block (Bennett-c6ex)")
+    for b in blocks, inst in b.instructions
+        inst isa IRPhi || continue
+        ps = get(preds, b.label, Set{Symbol}())
+        seen = Dict{Symbol,IROperand}()
+        for (val, blk) in inst.incoming
+            blk in ps || error("lower: phi %$(inst.dest) in block $(b.label) has an incoming " *
+                "from $blk, which is not a CFG predecessor of $(b.label) (predecessors: " *
+                "$(sort!(collect(ps)))) — its edge predicate is undefined (false-path " *
+                "sensitisation; Bennett-c6ex)")
+            if haskey(seen, blk)
+                seen[blk] == val || error("lower: phi %$(inst.dest) in block $(b.label) lists " *
+                    "predecessor $blk twice with different values ($(seen[blk]) vs $val) " *
+                    "(Bennett-c6ex)")
+            else
+                seen[blk] = val
+            end
+        end
+        for p in ps
+            haskey(seen, p) || error("lower: phi %$(inst.dest) in block $(b.label) has no " *
+                "incoming for CFG predecessor $p — control arriving via $p would fire no edge " *
+                "predicate and the MUX chain would silently yield the last incoming value " *
+                "(Bennett-c6ex)")
+        end
+    end
+    reach = Set{Symbol}([entry]); stack = Symbol[entry]
+    while !isempty(stack)
+        u = pop!(stack)
+        for v in succs[u]
+            v in reach || (push!(reach, v); push!(stack, v))
+        end
+    end
+    return setdiff(labels, reach)
+end
+
 """Find back-edges via DFS. Returns Vector of (src, dst) pairs."""
 function find_back_edges(blocks::Vector{IRBasicBlock})
     block_set = Set(b.label for b in blocks)
@@ -82,9 +190,17 @@ non-exit successors via forward edges, stopping at the exit block and at
 latch blocks. Returns a topologically-sorted list (back-edges ignored)
 excluding the header itself and excluding the exit block.
 
-Fails loud on nested loops (a body block that is itself a loop header),
-multi-latch configurations, and early returns inside the body. See
-Bennett-httg / U05.
+Fails loud on:
+  - nested loops (a body block that is itself a loop header);
+  - early returns inside the body (Bennett-httg / U05);
+  - a second loop exit, i.e. a body block branching to the exit (e.g.
+    `break` at optimize=false) (Bennett-c6ex). The unroller freezes
+    loop-carried state on the HEADER's exit condition only, so iterations
+    would silently continue past the break (l5: 96/256 wrong pre-fix).
+
+Multi-latch loops are NOT rejected here. `lower_loop!` rejects a header phi
+whose latch incomings carry distinct values (Bennett-c6ex; this docstring
+used to claim, wrongly, that multi-latch failed loud here).
 """
 function _collect_loop_body_blocks(header::IRBasicBlock, block_map::Dict{Symbol,IRBasicBlock},
                                    exit_label::Symbol, latch_labels::Set{Symbol},
@@ -117,7 +233,11 @@ function _collect_loop_body_blocks(header::IRBasicBlock, block_map::Dict{Symbol,
         bterm isa IRBranch || continue
         for t in branch_targets(bterm)
             (b, t) in back_set && continue       # latch / back-edge
-            t == exit_label && continue          # don't descend into exit block
+            t == exit_label && error("lower_loop!: body block $b of loop $hlabel branches " *
+                "to the loop exit $t — a second loop exit (e.g. `break` at optimize=false) " *
+                "is not supported: the unroller freezes loop-carried state on the HEADER's " *
+                "exit condition only, so iterations would silently continue past the break " *
+                "(Bennett-c6ex)")
             t in seen && continue
             push!(frontier, t)
         end
@@ -133,11 +253,36 @@ function _collect_loop_body_blocks(header::IRBasicBlock, block_map::Dict{Symbol,
 end
 
 """
+    _seed_loop_phi!(gates, wa, vw, dest, pre_ops, width, hlabel, preds, block_pred, branch_info)
+
+Bennett-c6ex: the iteration-1 value of loop-header phi `dest`. If every
+pre-header incoming carries the same operand, it is a single `resolve!`, which
+is byte-identical to the pre-c6ex path. Otherwise the header has several
+pre-header predecessors with distinct values (optimize=false: an if/else
+falling straight into a `while` header), and they are merged by edge predicate
+into `hlabel`. The merge uses the FUNCTION-LEVEL `block_pred` / `branch_info`:
+pre-headers are lowered before the header, which is topologically after them.
+"""
+function _seed_loop_phi!(gates, wa, vw, dest::Symbol, pre_ops::Vector{Tuple{IROperand,Symbol}},
+                         width::Int, hlabel::Symbol, preds, block_pred, branch_info)
+    vals = unique(first.(pre_ops))
+    length(vals) == 1 && return resolve!(gates, wa, vw, vals[1], width)
+    _assert_phi_incoming_preds(dest, pre_ops, hlabel, preds)
+    # A block listed twice (switch expansion) carries one value (validated by
+    # `_check_predication_cfg`), so dedupe to one edge per block.
+    edges = unique(pre_ops)
+    wired = [(resolve!(gates, wa, vw, v, width), b) for (v, b) in edges]
+    return resolve_phi_predicated!(gates, wa, wired, block_pred, width;
+                                   phi_block=hlabel, branch_info, audit_site=:loop_seed)
+end
+
+"""
     lower_loop!(gates, wa, vw, header_block, block_map, back_edges, K, preds, branch_info; <ctx kwargs>)
 
 Unroll a loop K times. The header block has phi nodes for loop-carried
 variables. Each iteration:
-  1. (iter 1 only) seed header phis from pre-header values.
+  1. (iter 1 only) seed header phis from pre-header values (merged by edge
+     predicate when several pre-headers carry distinct values — Bennett-c6ex).
   2. Lower the loop body: header's non-phi instructions, then every body
      block in topological order, each instruction dispatched through the
      canonical `_lower_inst!` (Bennett-httg / U05).
@@ -156,29 +301,50 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
 
     # Find which phi inputs are from the pre-header vs the back-edge (latch)
     latch_labels = Set(src for (src, dst) in back_edges if dst == hlabel)
-    pre_header_preds = Symbol[]
 
-    # Separate phi incoming into pre-header (initial) and latch (loop-carried)
-    phi_info = Tuple{Symbol, Int, IROperand, IROperand}[]
+    # Separate phi incoming into pre-header (initial) and latch (loop-carried).
+    # Bennett-c6ex: keep EVERY incoming. The pre-fix loop overwrote a single
+    # `pre_op` / `latch_op`, so only the LAST pre-header and the LAST latch
+    # value survived. That was a silent miscompile for an if/else falling
+    # straight into a `while` header at optimize=false (pre2: 1143/2304 wrong)
+    # and for multi-latch loops (H6: 256/256 wrong).
+    phi_info = Tuple{Symbol, Int, Vector{Tuple{IROperand,Symbol}}, IROperand}[]
     for inst in header.instructions
         inst isa IRPhi || continue
-        pre_op = nothing; latch_op = nothing
+        pre_ops = Tuple{IROperand,Symbol}[]
+        latch_ops = Tuple{IROperand,Symbol}[]
         for (val, blk) in inst.incoming
             if blk in latch_labels || blk == hlabel
-                latch_op = (val, blk)
+                push!(latch_ops, (val, blk))
             else
-                pre_op = (val, blk)
-                blk in pre_header_preds || push!(pre_header_preds, blk)
+                push!(pre_ops, (val, blk))
             end
         end
-        pre_op === nothing && throw(AssertionError("lower_loop!: phi $(inst.dest) has no pre-header incoming"))
-        latch_op === nothing && throw(AssertionError("lower_loop!: phi $(inst.dest) has no latch incoming"))
-        push!(phi_info, (inst.dest, inst.width, pre_op[1], latch_op[1]))
+        isempty(pre_ops) && throw(AssertionError("lower_loop!: phi $(inst.dest) has no pre-header incoming"))
+        isempty(latch_ops) && throw(AssertionError("lower_loop!: phi $(inst.dest) has no latch incoming"))
+        # The MUX-freeze at (e) carries ONE latch value per phi. Several latch
+        # incomings are sound only if they all carry the same operand (e.g. a
+        # latch ending in `br c, H, H`, or two latches forwarding one value).
+        # Distinct values would need a per-iteration latch-edge merge. optimize=true
+        # loop-simplify guarantees one latch and Julia `continue` lowers through a
+        # merge block, so this arises only from hand-written IR: fail loud.
+        latch_vals = unique(first.(latch_ops))
+        length(latch_vals) == 1 || throw(AssertionError(
+            "lower_loop!: phi %$(inst.dest) in loop header $hlabel has distinct values " *
+            "on $(length(latch_ops)) latch incomings $(last.(latch_ops)); multi-latch " *
+            "loops with distinct latch values are not supported — the MUX-freeze " *
+            "carries ONE latch value per iteration (Bennett-c6ex)"))
+        (inst.width == 0 && length(unique(first.(pre_ops))) > 1) && throw(AssertionError(
+            "lower_loop!: pointer-typed header phi %$(inst.dest) in $hlabel has distinct " *
+            "values on several pre-header incomings $(last.(pre_ops)); a predicated " *
+            "pointer seed is not supported (Bennett-c6ex)"))
+        push!(phi_info, (inst.dest, inst.width, pre_ops, latch_vals[1]))
     end
-
-    for p in pre_header_preds
-        push!(get!(preds, hlabel, Symbol[]), p)
-    end
+    # Bennett-c6ex: the pre-fix code re-pushed every pre-header into
+    # preds[hlabel] here. block_pred[hlabel] has already been computed from
+    # preds[hlabel] by the function-level pass, and nothing reads preds[hlabel]
+    # afterwards, so the push was dead. It also produced duplicate entries that
+    # Bennett-p94b would reject if they were ever read. Removed.
 
     # Non-phi instructions in the header (may be empty for multi-block bodies).
     header_body_insts = [inst for inst in header.instructions if !(inst isa IRPhi)]
@@ -205,8 +371,9 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
               "(Bennett-jepw contract)"))
 
     # Seed header phis from pre-header values (iter 1).
-    for (dest, width, pre_val, _) in phi_info
-        vw[dest] = resolve!(gates, wa, vw, pre_val, width)
+    for (dest, width, pre_ops, _) in phi_info
+        vw[dest] = _seed_loop_phi!(gates, wa, vw, dest, pre_ops, width, hlabel,
+                                   preds, opts.block_pred, branch_info)
     end
 
     # Track SSA dests added during each iteration (excluding header phi
@@ -304,16 +471,17 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
                 bblock = block_map[blabel]
 
                 # Compute this body block's path predicate from already-
-                # walked in-region predecessors. _compute_block_pred!
-                # silently skips predecessors absent from iter_block_pred,
-                # which doesn't apply here because iter_preds[blabel] only
+                # walked in-region predecessors. iter_preds[blabel] only
                 # contains predecessors we have already lowered (header or
-                # earlier body blocks in topological order).
-                if !isempty(get(iter_preds, blabel, Symbol[]))
-                    iter_block_pred[blabel] =
-                        _compute_block_pred!(gates, wa, blabel, iter_preds,
-                                             iter_branch_info, iter_block_pred)
-                end
+                # earlier body blocks in topological order); every body block
+                # is reached from one of them (Bennett-c6ex: was a silent
+                # `if`, leaving the block without a predicate).
+                isempty(get(iter_preds, blabel, Symbol[])) && throw(AssertionError(
+                    "lower_loop!: body block $blabel of loop $hlabel has no in-region " *
+                    "predecessor recorded before it (Bennett-c6ex)"))
+                iter_block_pred[blabel] =
+                    _compute_block_pred!(gates, wa, blabel, iter_preds,
+                                         iter_branch_info, iter_block_pred)
 
                 for inst in bblock.instructions
                     _lower_inst!(iter_ctx, inst, blabel)
