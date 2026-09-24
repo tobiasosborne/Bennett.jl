@@ -317,6 +317,16 @@ runfile("test_cc07_repro.jl")
 runfile("test_vector_ir.jl")
 # Bennett-ao66 — vector-form LLVM intrinsic calls scalarised lane-wise.
 runfile("test_ao66_vector_intrinsic_rescalarise.jl")
+# Bennett-t9rh (commit 1) — sound poison-lane propagation in the cc0.7
+# scalariser: lane-wise binop/icmp/cast/select/intrinsic ops propagate poison
+# lanes (LangRef "Poison Values"; select-arm refinement per InstSimplify) and
+# emit no IR for them; observation points (extractelement / reductions /
+# <N x i1>→iN bitcast) still fail loud; undef lanes are NOT poison and fail
+# loud at any computing use. Host-independent hand-written .ll fixtures
+# (test/fixtures/ll/t9rh_poison_lanes.ll) — the SLP horizontal-add idiom that
+# crashed soft_fmul on AVX-512 hosts, the AVX2 loop-splat idiom, exhaustive
+# UInt8² icmp/zext/select, and the undef-vs-poison soundness case.
+runfile("test_t9rh_poison_lane_propagation.jl")
 # Bennett-pg5 — llvm.vector.reduce.{add,mul,and,or,xor,smax,smin,umax,umin}
 # integer reductions (vector → scalar via linear left-to-right fold chain).
 runfile("test_pg5_vector_reductions.jl")

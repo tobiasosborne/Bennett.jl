@@ -125,9 +125,78 @@ function _validate_vector_intrinsic_lane(cname::AbstractString,
     end
 end
 
+# ---- Bennett-t9rh: poison / undef lanes ----
+#
+# The SLP and loop vectorisers routinely build vectors some of whose lanes are
+# `poison` and never observed — e.g. SLP's horizontal-add idiom
+#
+#     %shift = shufflevector <2 x i64> %v, <2 x i64> poison, <2 x i32> <i32 1, i32 poison>
+#     %sum   = add <2 x i64> %v, %shift          ; lane 1 = %v[1] + poison
+#     %r     = extractelement <2 x i64> %sum, i64 0
+#
+# Bennett has no DCE, so emitting a scalar op for the dead lane (with a
+# `POISON_LANE` operand) used to crash in `resolve!`. Semantics we rely on
+# (LLVM 18 LangRef, "Poison Values" + the per-instruction sections):
+#
+#   * "Most instructions return 'poison' when one of their arguments is
+#     'poison'. A notable exception is the select instruction."  Vector
+#     binops / icmp / casts / select act element by element, so a lane-wise
+#     op with a poison operand lane yields a poison result lane. We emit NO
+#     IR for it — an unobserved poison lane costs zero gates, and every
+#     pipeline step before us only refined the deterministic Julia source.
+#   * "It is correct to replace a poison value with an undef value or any
+#     value of the type." Hence `select c, poison, X -> X` per lane (the same
+#     fold InstSimplify::simplifySelectInst does, release/18.x) — a pure
+#     alias, no gates. A poison CONDITION lane makes the result lane poison.
+#   * Lane-wise LLVM intrinsics propagate only when on
+#     `_POISON_PROPAGATING_INTRINSICS` (the ones LLVM's own ValueTracking
+#     `propagatesPoison` lists); any other intrinsic reading a poison lane
+#     still fails loud — marking a lane poison too eagerly would be UNSOUND
+#     in combination with the select refinement.
+#   * `undef` is NOT poison ("or i8 undef, 255 ; always 255"), and
+#     InstSimplify folds `select ?, undef, X` only when X is provably not
+#     poison. Undef lanes therefore get their own sentinel (`UNDEF_LANE`) that
+#     flows through pure lane plumbing (insertelement base, shufflevector,
+#     same-shape bitcast) but fails loud at ANY computing use (U80 policy).
+#
+# Observation points still fail loud, at extraction, with context: an
+# extractelement of a poison lane (it yields a scalar `poison`, which Bennett
+# cannot represent as circuit bits), a reduction over one, a `<N x i1>` -> iN
+# bitcast over one. `resolve!`'s catch-all stays as the backstop (e.g. a poison
+# lane stored into an sret slot via `PendingVecLane`).
+
+# LLVM intrinsic families (trailing `.` discipline) whose result lane is
+# poison when any operand lane is poison — LLVM ValueTracking
+# `propagatesPoison` (release/18.x). Conservative on purpose: omission only
+# costs a loud error, inclusion of a non-propagating intrinsic would be a
+# miscompile under the select refinement.
+const _POISON_PROPAGATING_INTRINSICS = (
+    "llvm.ctpop.", "llvm.ctlz.", "llvm.cttz.", "llvm.abs.",
+    "llvm.smax.", "llvm.smin.", "llvm.umax.", "llvm.umin.",
+    "llvm.bitreverse.", "llvm.bswap.",
+)
+
+@inline _is_poison_lane(op) = op === POISON_LANE
+@inline _is_undef_lane(op) = op === UNDEF_LANE
+
+# Fail loud if a computing lane-wise op reads an `undef` lane (see header).
+function _reject_undef_lanes(inst::LLVM.Instruction, what::AbstractString,
+                             i::Int, ops...)
+    for (j, op) in enumerate(ops)
+        _is_undef_lane(op) && _ir_error(inst,
+            "$what reads an `undef` vector lane (lane $(i - 1), operand $j); " *
+            "undef is not poison (LLVM LangRef: `or i8 undef, 255` is always 255), " *
+            "so Bennett cannot propagate it and rejects it to fail fast " *
+            "(CLAUDE.md §1; Bennett-bjdg / U80, Bennett-t9rh)")
+    end
+    return nothing
+end
+
 # Decode a value's N lanes into IROperands. Handles already-populated SSA
 # vectors (via `lanes`), ConstantDataVector, ConstantAggregateZero, and
-# UndefValue/PoisonValue (poison-sentinel lanes that crash if ever read).
+# PoisonValue / UndefValue (`POISON_LANE` / `UNDEF_LANE` sentinel lanes:
+# poison lanes propagate through lane-wise ops and fail loud when OBSERVED;
+# undef lanes fail loud at any computing use — Bennett-t9rh header above).
 function _resolve_vec_lanes(val::LLVM.Value,
                             lanes::Dict{_LLVMRef, Vector{IROperand}},
                             names::Dict{_LLVMRef, Symbol},
@@ -165,9 +234,13 @@ function _resolve_vec_lanes(val::LLVM.Value,
     if val isa LLVM.ConstantAggregateZero
         return [iconst(0) for _ in 1:got_n]
     end
-    # Path D: poison / undef — sentinel lanes. Reading crashes fail-loud.
-    if val isa LLVM.UndefValue || val isa LLVM.PoisonValue
+    # Path D: poison / undef — sentinel lanes (LLVM.jl: PoisonValue is a
+    # sibling of UndefValue, not a subtype). See the Bennett-t9rh header.
+    if val isa LLVM.PoisonValue
         return [POISON_LANE for _ in 1:got_n]
+    end
+    if val isa LLVM.UndefValue
+        return [UNDEF_LANE for _ in 1:got_n]
     end
     error("ir_extract.jl: cannot resolve vector lanes for $(string(val)) :: " *
           "$vt — not an SSA vector, ConstantDataVector, ConstantAggregateZero, " *
@@ -341,9 +414,13 @@ function _handle_vector_reduction(cname::AbstractString,
 
     vec_lanes = _resolve_vec_lanes(vec, lanes, names, n)
     for (i, op) in enumerate(vec_lanes)
-        op === POISON_LANE &&
+        # Observation point (Bennett-t9rh): a reduction reads every lane.
+        _is_poison_lane(op) &&
             _ir_error(inst,
-                "vector reduction $cname reads poison lane at index $(i - 1)")
+                "vector reduction $cname reads poison lane at index $(i - 1); " *
+                "its scalar result would be poison, which Bennett cannot " *
+                "represent (Bennett-t9rh)")
+        _reject_undef_lanes(inst, "vector reduction $cname", i, op)
     end
 
     insts = IRInst[]
@@ -469,8 +546,15 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
         (0 <= idx < n) ||
             _ir_error(inst, "extractelement lane index $idx outside [0,$n)")
         lane_op = vec_lanes[idx + 1]
-        lane_op === POISON_LANE &&
-            _ir_error(inst, "extractelement reads poison lane — undefined behaviour")
+        # Observation point (Bennett-t9rh). Not UB per LangRef: it yields a
+        # scalar `poison`, which Bennett cannot represent as circuit bits.
+        _is_poison_lane(lane_op) &&
+            _ir_error(inst, "extractelement reads poison lane $idx — per LLVM " *
+                            "LangRef this yields a scalar `poison` value, which " *
+                            "Bennett cannot represent as circuit bits; the lane " *
+                            "was poison in the source IR or became poison through " *
+                            "lane-wise propagation (Bennett-t9rh)")
+        _reject_undef_lanes(inst, "extractelement", idx + 1, lane_op)
         w = Int(_type_width(LLVM.value_type(inst)))
         return IRBinOp(dest, :add, lane_op, iconst(0), w)
     end
@@ -487,6 +571,12 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
         insts = IRInst[]
         out = Vector{IROperand}(undef, n)
         for i in 1:n
+            # Bennett-t9rh: poison in -> poison out, no IR (LangRef).
+            if _is_poison_lane(a_lanes[i]) || _is_poison_lane(b_lanes[i])
+                out[i] = POISON_LANE
+                continue
+            end
+            _reject_undef_lanes(inst, "vector $sym", i, a_lanes[i], b_lanes[i])
             lane_dest = _auto_name(counter)
             push!(insts, IRBinOp(lane_dest, sym, a_lanes[i], b_lanes[i], w))
             out[i] = ssa(lane_dest)
@@ -506,6 +596,12 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
         insts = IRInst[]
         out = Vector{IROperand}(undef, n)
         for i in 1:n
+            # Bennett-t9rh: poison in -> poison out, no IR (LangRef).
+            if _is_poison_lane(a_lanes[i]) || _is_poison_lane(b_lanes[i])
+                out[i] = POISON_LANE
+                continue
+            end
+            _reject_undef_lanes(inst, "vector icmp", i, a_lanes[i], b_lanes[i])
             lane_dest = _auto_name(counter)
             push!(insts, IRICmp(lane_dest, pred, a_lanes[i], b_lanes[i], op_w))
             out[i] = ssa(lane_dest)
@@ -528,6 +624,24 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
         out = Vector{IROperand}(undef, n)
         for i in 1:n
             c_op = cond_is_vec ? cond_lanes[i] : _operand(cond, names)
+            # Bennett-t9rh (LangRef "Poison Values" / InstSimplify):
+            #   select poison, ?, ?    -> poison
+            #   select ?, poison, X    -> X      (pure alias, no gates)
+            #   select ?, X, poison    -> X
+            # Only for POISON lanes — for undef the fold needs X provably
+            # not poison, so undef lanes fail loud below.
+            t_op = t_lanes[i]; f_op = f_lanes[i]
+            if _is_poison_lane(c_op) || (_is_poison_lane(t_op) && _is_poison_lane(f_op))
+                out[i] = POISON_LANE
+                continue
+            elseif _is_poison_lane(t_op)
+                out[i] = f_op
+                continue
+            elseif _is_poison_lane(f_op)
+                out[i] = t_op
+                continue
+            end
+            _reject_undef_lanes(inst, "vector select", i, c_op, t_op, f_op)
             lane_dest = _auto_name(counter)
             push!(insts, IRSelect(lane_dest, c_op, t_lanes[i], f_lanes[i], w))
             out[i] = ssa(lane_dest)
@@ -548,6 +662,12 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
         insts = IRInst[]
         out = Vector{IROperand}(undef, n)
         for i in 1:n
+            # Bennett-t9rh: poison in -> poison out, no IR (LangRef).
+            if _is_poison_lane(src_lanes[i])
+                out[i] = POISON_LANE
+                continue
+            end
+            _reject_undef_lanes(inst, "vector $opname", i, src_lanes[i])
             lane_dest = _auto_name(counter)
             push!(insts, IRCast(lane_dest, opname, src_lanes[i], w_from, w_to))
             out[i] = ssa(lane_dest)
@@ -603,15 +723,26 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
 
         insts = IRInst[]
         out = Vector{IROperand}(undef, n)
+        propagates = any(p -> startswith(cname, p), _POISON_PROPAGATING_INTRINSICS)
         for i in 1:n
-            lane_dest = _auto_name(counter)
             lane_ops = [arg[i] for arg in arg_lanes]
-            for (j, lane_val) in enumerate(lane_ops)
-                lane_val.op === POISON_LANE &&
-                    _ir_error(inst,
-                        "vector intrinsic $cname reads poison lane $i from operand $j")
-            end
+            # Shape / immarg validation first: it rejects unsupported forms
+            # regardless of lane contents.
             _validate_vector_intrinsic_lane(cname, inst, lane_ops)
+            # Bennett-t9rh: poison in -> poison out, no IR, for intrinsics
+            # known to propagate poison; any other intrinsic stays loud.
+            if any(lv -> _is_poison_lane(lv.op), lane_ops)
+                propagates || _ir_error(inst,
+                    "vector intrinsic $cname reads poison lane $(i - 1); it is not " *
+                    "on Bennett's list of poison-propagating intrinsics " *
+                    "(`_POISON_PROPAGATING_INTRINSICS`), so the result lane " *
+                    "cannot be proven poison (Bennett-t9rh)")
+                out[i] = POISON_LANE
+                continue
+            end
+            _reject_undef_lanes(inst, "vector intrinsic $cname", i,
+                                (lv.op for lv in lane_ops)...)
+            lane_dest = _auto_name(counter)
             handled = _handle_intrinsic(cname, inst, names, counter, lane_dest, lane_ops)
             handled === nothing &&
                 _ir_error(inst,
@@ -664,8 +795,12 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
             shifted = IROperand[]
             for k in 0:(n_src - 1)
                 lane = src_lanes[k + 1]
-                lane === POISON_LANE &&
-                    _ir_error(inst, "vector→scalar bitcast reads poison lane at index $k")
+                # Observation point (Bennett-t9rh): every lane lands in the iN.
+                _is_poison_lane(lane) &&
+                    _ir_error(inst, "vector→scalar bitcast reads poison lane at " *
+                                    "index $k; the packed scalar would be poison, " *
+                                    "which Bennett cannot represent (Bennett-t9rh)")
+                _reject_undef_lanes(inst, "vector→scalar bitcast", k + 1, lane)
                 zext_dest = _auto_name(counter)
                 push!(insts, IRCast(zext_dest, :zext, lane, 1, n_src))
                 if k == 0

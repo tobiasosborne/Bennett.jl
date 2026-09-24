@@ -34,6 +34,13 @@ end
 struct OpaquePtrSentinel    <: IROperand end
 struct PoisonLaneSentinel   <: IROperand end
 struct ZeroAggSentinel      <: IROperand end
+# Bennett-t9rh: an `undef` vector lane. Kept DISTINCT from `PoisonLaneSentinel`
+# because the cc0.7 scalariser propagates poison lanes through lane-wise ops
+# and refines `select ?, poison, X -> X`; neither is sound for undef (LangRef:
+# `or i8 undef, 255` is always 255, and InstSimplify folds `select ?, undef, X`
+# only when X is provably not poison). An undef lane may only flow through
+# pure lane plumbing; any computing use fails loud (Bennett-bjdg / U80 policy).
+struct UndefLaneSentinel    <: IROperand end
 
 # `PendingVecLane` is the only sentinel with a payload — sret aggregation
 # stashes the lane index until `_apply_pending_vec_writes!` distributes the
@@ -46,6 +53,7 @@ end
 # checkable in hot paths (`op === OPAQUE_PTR_SENTINEL`).
 const OPAQUE_PTR_SENTINEL = OpaquePtrSentinel()
 const POISON_LANE         = PoisonLaneSentinel()
+const UNDEF_LANE          = UndefLaneSentinel()
 const ZERO_AGG            = ZeroAggSentinel()
 
 ssa(name::Symbol)  = SSAOperand(name)
