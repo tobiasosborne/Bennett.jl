@@ -637,7 +637,14 @@ top:
         msg = e isa ErrorException ? e.msg : sprint(showerror, e)
         @test !occursin("Bennett-dv1z", msg)
         @test !occursin("sret struct field", msg)
-        @test occursin("Bennett-5oyt", msg) || occursin("U15", msg) ||
-              occursin("Bennett-lgzx", msg) || occursin("U114", msg)
+        # Bennett-0ncn: delimiter-anchored, not bare "U15"/"U114" — a bare
+        # numeral would false-match a future tag like "U150" or "U1140".
+        # Every live message spells these as "... / U15)" / "... / U114)"
+        # (see src/extract/instructions.jl, _ir_error reason strings), so
+        # anchoring on the trailing ")" is exact for today's messages and
+        # immune to future 3-digit U-tags that merely start with the same
+        # digits.
+        @test occursin("Bennett-5oyt", msg) || occursin("U15)", msg) ||
+              occursin("Bennett-lgzx", msg) || occursin("U114)", msg)
     end
 end
