@@ -124,7 +124,7 @@ Bennett.jl/                         # Project root. PRDs and CLAUDE.md live alon
     lower.jl                        # thin include-manifest (~18 LOC) pulling in the lowering/ subdir; the ~2.9k-LOC monolith was split per Bennett-vdlg / U40
     lowering/                       # per-opcode ParsedIR → gates lowering, split out of the old lower.jl monolith (Bennett-vdlg / U40)
       types.jl                      # GateGroup / LoweringResult / LoweringCtx + _lower_inst! dispatch
-      operand.jl                    # resolve! / _ssa_operands / compute_ssa_liveness
+      operand.jl                    # resolve! / _ssa_operands / compute_inplace_targets (Bennett-stwr exclusive-reader analysis)
       driver.jl                     # lower() / _fold_constants / lower_block_insts! (+ strategy / target dispatch)
       cfg.jl                        # topo sort / back edges / loop unrolling
       phi.jl                        # path-predicate computation + PHI-MUX resolution
