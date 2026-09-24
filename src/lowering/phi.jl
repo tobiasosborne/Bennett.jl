@@ -143,6 +143,10 @@ exactly one fires. Correct for arbitrary CFGs.
 function resolve_phi_predicated!(gates, wa, incoming, block_pred, W;
                                  phi_block::Symbol=Symbol(""),
                                  branch_info::Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}=Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}())
+    # Single incoming: the phi dest ALIASES the incoming value's wires (no
+    # copy). This is why `IRPhi` is excluded from `_INPLACE_FRESH_DEFS`
+    # (Bennett-stwr): an in-place adder overwriting a phi dest would also
+    # overwrite the incoming name, which may still be read elsewhere.
     length(incoming) == 1 && return incoming[1][1]
 
     # Compute edge predicates for each incoming value

@@ -46,7 +46,7 @@ verify_reversibility(c)  # true
 | `add=` | Primitive (file) | Toffoli count | Toffoli-depth | Ancilla | Source |
 | --- | --- | --- | --- | --- | --- |
 | `:ripple` | `lower_add!` (`src/adder.jl`) | `2(W−1)` | `O(W)` — serial carry chain | `W` | Textbook ripple-carry full adder |
-| `:cuccaro` | `lower_add_cuccaro!` (`src/adder.jl`) | `2W−3` | `O(W)` | `1` | Cuccaro et al. 2004, in-place mod-2^W variant (§3.5 high-bit opt) |
+| `:cuccaro` | `lower_add_cuccaro!` (`src/adder.jl`) | `2W−3` | `O(W)` | `1` (`+W` when neither operand may be overwritten — copy-in) | Cuccaro et al. 2004, in-place mod-2^W variant (§3.5 high-bit opt) |
 | `:qcla` | `lower_add_qcla!` (`src/qcla.jl`) | `> 2(W−1)` | `O(log W)` | `≈ W` | Draper–Kutin–Rains–Svore 2004, [arXiv:quant-ph/0406142](https://arxiv.org/abs/quant-ph/0406142) |
 | `:auto` | → `:ripple`, always | — | — | — | Bennett-spa8 / U27 |
 
@@ -57,6 +57,17 @@ Notes:
   removed in Bennett-spa8 / U27). Cuccaro's one-wire in-place saving is erased
   by Bennett's copy-out pass, and its MAJ/UMA chain serialises every Toffoli,
   so it ships strictly worse depth for no net wire win.
+- **What `add=:cuccaro` overwrites (Bennett-stwr).** Cuccaro writes `a + b`
+  over one operand's register. It does so only when that operand is an
+  *exclusive reader*: a constant, or an SSA value with exactly one operand
+  occurrence in the whole function (all blocks, phis and terminators) that is
+  a function argument or a fresh-wire definition (not a `phi`, not a pointer),
+  and whose wires no other live value shares. `op2` is preferred, then `op1`
+  (addition commutes); otherwise `op2` is CNOT-copied first ("copy-in": `+W`
+  CNOT and `+W` wires per add, same `2W−3` Toffolis). Every add stays
+  MAJ/UMA — the strategy never silently falls back to ripple — and every
+  circuit is correct under all six Bennett strategies. Adds inside unrolled
+  loops are lowered with ripple (a pre-existing loop-context override).
 - **QCLA has *more* Toffolis than ripple at every width.** Its only advantage
   is `O(log W)` Toffoli-depth versus ripple's `O(W)`. Reach for it only when
   depth is the objective.

@@ -150,9 +150,13 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
     input_widths = Int[]
     gate_groups = GateGroup[]      # SSA instruction → gate range mapping
 
-    # Compute SSA liveness for in-place optimization
-    ssa_liveness = use_inplace ? compute_ssa_liveness(parsed) : Dict{Symbol,Int}()
-    inst_counter = Ref(0)
+    # Bennett-stwr: exclusive-reader operands an explicit `add=:cuccaro` may
+    # overwrite in place (see `compute_inplace_targets`). Only computed when
+    # it can matter: `:auto`/`:ripple`/`:qcla` never write in place, and
+    # `use_inplace=false` means "copy-in every SSA operand" (constants are
+    # always consumed in place — their wires are fresh from `resolve!`).
+    inplace_targets = (use_inplace && add === :cuccaro) ?
+        compute_inplace_targets(parsed) : Set{Symbol}()
 
     # T3b.3 / Bennett-cc0 M2a: ptr_provenance + alloca_info are per-function state,
     # threaded into lower_block_insts! so allocas defined in one block are visible
@@ -261,8 +265,7 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
         # blocks of this function (alloca/provenance dicts must persist).
         block_opts = BlockLoweringOpts(
             block_pred     = block_pred,
-            ssa_liveness   = ssa_liveness,
-            inst_counter   = inst_counter,
+            inplace_targets = inplace_targets,
             gate_groups    = gate_groups,
             compact_calls  = compact_calls,
             globals        = parsed.globals,
@@ -511,7 +514,7 @@ end
 
 # Bennett-x2iw / U88: optional state bundled in `opts::BlockLoweringOpts`.
 # Per-function caller-owned memory (alloca_info, ptr_provenance,
-# block_pred, gate_groups, inst_counter) lives in opts; every block call
+# block_pred, gate_groups, inplace_targets) lives in opts; every block call
 # in the same function shares one opts so allocas/provenance accumulate
 # across blocks. mux_counter stays block-local on the LoweringCtx —
 # synthetic SSA names embed inst.dest / inst.ptr.name as a globally-
@@ -519,7 +522,7 @@ end
 function lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_order;
                            opts::BlockLoweringOpts = BlockLoweringOpts())
     ctx = LoweringCtx(gates, wa, vw, preds, branch_info, block_order,
-                      opts.block_pred, opts.ssa_liveness, opts.inst_counter,
+                      opts.block_pred, opts.inplace_targets,
                       opts.compact_calls, opts.alloca_info, opts.ptr_provenance,
                       Ref(0), opts.globals, opts.add, opts.mul, opts.entry_label,
                       Ref(false),   # Bennett-h0ai producer-tag side-channel
@@ -528,7 +531,6 @@ function lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_orde
                       opts.persistent_info,
                       opts.loop_guards)   # Bennett-s0tn loop-guard accumulator
     for inst in block.instructions
-        opts.inst_counter[] += 1
         _ws = wa.next_wire
         _gs = length(gates) + 1
         ctx.last_inst_self_reversing[] = false   # reset before each dispatch

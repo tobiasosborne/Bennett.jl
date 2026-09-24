@@ -129,6 +129,16 @@ Per-overload applicability (Bennett-u71l / U161):
   every field except `bit_width` (Float64 is fixed-width 64); non-default
   `bit_width` raises `ArgumentError`.
 
+Adder strategy `add` (`:auto` | `:ripple` | `:cuccaro` | `:qcla`): `:auto`
+always resolves to `:ripple` (Bennett-spa8 / U27). `:cuccaro` lowers EVERY
+non-loop add with the Cuccaro MAJ/UMA adder (`2W−3` Toffolis, 1 ancilla),
+overwriting an operand register only when it is an exclusive reader — a
+constant, or an SSA value whose single operand occurrence in the whole
+function is that add and that is an argument or a fresh-wire def (never a
+`phi` or pointer); `op2` is preferred, then `op1`. Otherwise `op2` is
+CNOT-copied first ("copy-in": `+W` CNOT, `+W` wires). Sound under every
+Bennett strategy (Bennett-stwr). Adds inside unrolled loops use ripple.
+
 # Examples
 ```julia
 opts = CompileOptions(add=:cuccaro, fold_constants=false)

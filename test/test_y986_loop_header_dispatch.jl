@@ -9,7 +9,8 @@
     # gate-count baselines for header-only loops (Collatz, soft_fdiv).
     #
     # Post-y986: route through `_lower_inst!` with iteration-LOCAL guards
-    # (empty ssa_liveness, fresh inst_counter, forced add=:ripple) — the
+    # (empty inplace_targets [Bennett-stwr; was ssa_liveness/inst_counter],
+    # forced add=:ripple) — the
     # same ctx pattern body blocks already use, hoisted to the iteration
     # top. The catch-all at lower.jl:190 gives the fail-loud guarantee per
     # CLAUDE.md §1.
@@ -144,8 +145,8 @@
         # Pre-y986 baseline; post-y986 the dispatch routes through
         # `_lower_inst!` with `add=:ripple` forced. Byte-identical because
         # `_pick_add_strategy(:auto)` returns `:ripple` post-U27 and
-        # `ssa_liveness` is empty (so Cuccaro's op2_dead heuristic doesn't
-        # fire either way). Pinned values measured on main pre-patch.
+        # the loop ctx's in-place target set is empty (Bennett-stwr; was the
+        # `ssa_liveness` op2_dead heuristic). Pinned values measured on main pre-patch.
         # Bennett-s0tn (2026-05-22): baselines bumped 14074/2320/8868 →
         # 14673/2412/9276. The loop-overflow guard adds a one-time (K+1)-th
         # check-only re-lowering of the header's exit-condition

@@ -53,17 +53,39 @@ ancilla `X[1]` is freshly allocated (zero by `WireAllocator` invariant).
   the ancilla-zero invariant. No outer Bennett-reverse uncomputation
   is needed for X — the function self-cleans.
 
-**Caller responsibility:** if the caller's liveness analysis decides
-to free `b` mid-circuit, it MUST first uncompute the gates emitted
-here (or wrap the whole call in Bennett's reverse pass). The function
-does NOT track `b`'s dirty-bit lifetime — `b` is overwritten and
-holds the result; the original `b` value is gone.
+**Preconditions (checked, Bennett-stwr):** `length(a) == length(b) == W`
+(`DimensionMismatch`), `a` and `b` each free of duplicate wires and
+disjoint from each other (`ArgumentError`) — an aliased register would
+emit `CNOT(w, w)` / `Toffoli(c, w, w)` and silently compute garbage.
+Checked before any gate is emitted. `W <= 1` skips the checks and falls
+back to the non-destructive ripple adder.
+
+**Caller responsibility (Bennett-stwr):** `b`'s original value is GONE
+after this call — `b` holds the sum. The caller must guarantee no other
+reader of `b`'s wires as the old value exists anywhere in the forward gate
+sequence (any block — the lowering is predicated — and any Bennett
+strategy's uncompute order). In the compiler this is
+`_lower_add_cuccaro_inplace!` (src/lowering/arith.jl): `b` is a constant,
+an exclusive-reader SSA register (`compute_inplace_targets`), or a private
+CNOT copy. The reverse pass restores `b` exactly (the gates are
+self-inverse), so an overwritten function-argument register is restored.
 
 Input: a[1:W], b[1:W] (a unchanged, b overwritten with a+b mod 2^W).
 """
 function lower_add_cuccaro!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                             a::Vector{Int}, b::Vector{Int}, W::Int)
     W <= 1 && return lower_add!(gates, wa, a, b, W)  # fallback for 1-bit
+    (length(a) == W && length(b) == W) || throw(DimensionMismatch(
+        "lower_add_cuccaro!: |a|=$(length(a)), |b|=$(length(b)), W=$W — both " *
+        "operand registers must have exactly W wires (Bennett-stwr)"))
+    isdisjoint(a, b) || throw(ArgumentError(
+        "lower_add_cuccaro!: operand registers alias (a ∩ b = " *
+        "$(sort!(collect(intersect(a, b))))) — the in-place MAJ/UMA chain would " *
+        "emit CNOT(w,w)/Toffoli(c,w,w) and compute garbage; the caller must pass " *
+        "a private copy of one operand (Bennett-stwr)"))
+    (allunique(a) && allunique(b)) || throw(ArgumentError(
+        "lower_add_cuccaro!: an operand register repeats a wire (a=$a, b=$b) " *
+        "(Bennett-stwr)"))
 
     # Allocate single ancilla X (initial carry c_0 = 0)
     X = allocate!(wa, 1)

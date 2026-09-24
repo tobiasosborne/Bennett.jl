@@ -8,7 +8,7 @@
 # split since Julia resolves them at call time.
 
 include("lowering/types.jl")      # GateGroup / LoweringResult / LoweringCtx + _lower_inst! dispatch
-include("lowering/operand.jl")    # resolve! / _ssa_operands / compute_ssa_liveness
+include("lowering/operand.jl")    # resolve! / _ssa_operands / compute_ssa_use_counts / compute_inplace_targets
 include("lowering/driver.jl")     # lower() / _fold_constants / lower_block_insts!
 include("lowering/cfg.jl")        # topo sort / back edges / loop unrolling
 include("lowering/phi.jl")        # path-predicate computation + phi resolution

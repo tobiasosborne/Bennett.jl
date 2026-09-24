@@ -234,16 +234,17 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
         # `_lower_inst!`'s catch-all method (lower.jl:190) per CLAUDE.md §1.
         #
         # Iteration-LOCAL guards (preserved from the pre-y986 body-block ctx):
-        # * `Dict{Symbol,Int}()` ssa_liveness — caller's populated liveness
-        #   would mark phi-destination operands as "dead" (no cross-iter
-        #   re-read modelled), letting Cuccaro's in-place adder corrupt
-        #   loop-carried accumulators. Empty dict ⇒ no operand looks dead.
-        # * `Ref(0)` inst_counter — the function-level counter is meaningless
-        #   across an unroll iteration.
+        # * `Set{Symbol}()` inplace_targets (Bennett-stwr) — every IR
+        #   instruction in a loop region is lowered K+1 times, so an operand
+        #   with ONE static occurrence here is read K+1 times dynamically;
+        #   the function-level exclusive-reader set is unsound inside the
+        #   unroll. Empty set ⇒ no loop operand is ever overwritten in place.
         # * `add=:ripple` — belt-and-braces. Post-U27 `_pick_add_strategy(:auto)`
         #   returns `:ripple` regardless, so this is byte-identical to the
         #   pre-y986 cascade for fast-path types. Override also defends
-        #   against an explicit caller-passed `add=:cuccaro`.
+        #   against an explicit caller-passed `add=:cuccaro` (NOTE: this
+        #   silently swaps the adder family for loop-region adds under an
+        #   explicit `add=:cuccaro`/`:qcla` — tracked as a follow-up).
         # * Iteration-LOCAL `iter_block_pred` / `iter_branch_info` /
         #   `iter_preds` (Bennett-jepw): function-level dicts would only
         #   see the last iteration's view of body-block wires — useless
@@ -255,7 +256,7 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
 
         iter_ctx = LoweringCtx(gates, wa, vw, iter_preds, iter_branch_info,
                                block_order, iter_block_pred,
-                               Dict{Symbol,Int}(), Ref(0),
+                               Set{Symbol}(),   # Bennett-stwr: no in-place in loops
                                opts.compact_calls,
                                opts.alloca_info, opts.ptr_provenance, Ref(0),
                                opts.globals, :ripple, opts.mul, opts.entry_label,
@@ -278,7 +279,6 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
         # line 901); phis are filtered out and the terminator lives in
         # `header.terminator`, never in `header.instructions`.
         for inst in header_body_insts
-            opts.inst_counter[] += 1
             _lower_inst!(iter_ctx, inst, hlabel)
         end
 
@@ -316,7 +316,6 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
                 end
 
                 for inst in bblock.instructions
-                    opts.inst_counter[] += 1
                     _lower_inst!(iter_ctx, inst, blabel)
                 end
 
@@ -384,7 +383,7 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
     conv_ctx = LoweringCtx(gates, wa, vw, Dict{Symbol,Vector{Symbol}}(),
                            Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}(),
                            block_order, conv_block_pred,
-                           Dict{Symbol,Int}(), Ref(0),
+                           Set{Symbol}(),   # Bennett-stwr: no in-place in loops
                            opts.compact_calls,
                            opts.alloca_info, opts.ptr_provenance, Ref(0),
                            opts.globals, :ripple, opts.mul, opts.entry_label,
@@ -392,7 +391,6 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
                            opts.mem, opts.persistent_impl, opts.hashcons,
                            opts.persistent_info, opts.loop_guards)
     for inst in header_body_insts
-        opts.inst_counter[] += 1
         _lower_inst!(conv_ctx, inst, hlabel)
     end
     postk_cond = resolve!(gates, wa, vw, term.cond, 1)

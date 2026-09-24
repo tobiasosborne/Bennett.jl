@@ -125,8 +125,19 @@ struct LoweringCtx
     branch_info::Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}  # block label → (cond_wires, true_label, false_label)
     block_order::Dict{Symbol,Int}                                # block label → topological order index
     block_pred::Dict{Symbol,Vector{Int}}
-    ssa_liveness::Dict{Symbol,Int}
-    inst_counter::Ref{Int}
+    # Bennett-stwr: SSA names an in-place adder (`add=:cuccaro`) may
+    # overwrite — `compute_inplace_targets(parsed)` (exclusive readers). Empty
+    # ⇒ every non-constant Cuccaro operand is copied in first. Loop-unrolling
+    # contexts always pass an empty set. Replaces the deleted
+    # `ssa_liveness` + `inst_counter` pair (last-use liveness is unsound for
+    # the predicated, K-fold-unrolled, non-LIFO-uncomputed lowering).
+    #
+    # CONTRACT for every lowering: a lowering that keeps an operand's wires
+    # for a deferred read (e.g. `ptr_provenance` idx operands, `branch_info`,
+    # `ret_values`) is fine only because that read is initiated by an IR
+    # operand occurrence (counted); a lowering that makes `vw[dest]` alias
+    # another name's wires must keep its type out of `_INPLACE_FRESH_DEFS`.
+    inplace_targets::Set{Symbol}
     compact_calls::Bool
     # T1b.3: reversible memory (store/alloca) state
     alloca_info::Dict{Symbol, Tuple{Int,Int}}                 # alloca dest → (elem_width, n_elems)
@@ -207,8 +218,8 @@ visible behaviour are:
 """
 Base.@kwdef struct BlockLoweringOpts
     block_pred::Dict{Symbol,Vector{Int}}             = Dict{Symbol,Vector{Int}}()
-    ssa_liveness::Dict{Symbol,Int}                    = Dict{Symbol,Int}()
-    inst_counter::Ref{Int}                            = Ref(0)
+    # Bennett-stwr: see `LoweringCtx.inplace_targets`.
+    inplace_targets::Set{Symbol}                      = Set{Symbol}()
     gate_groups::Vector{GateGroup}                    = GateGroup[]
     compact_calls::Bool                               = false
     globals::Dict{Symbol,Tuple{Vector{UInt64},Int}}    = Dict{Symbol,Tuple{Vector{UInt64},Int}}()
@@ -240,7 +251,7 @@ _lower_inst!(ctx::LoweringCtx, inst::IRPhi, label::Symbol) =
 
 _lower_inst!(ctx::LoweringCtx, inst::IRBinOp, ::Symbol) =
     lower_binop!(ctx.gates, ctx.wa, ctx.vw, inst;
-                 ssa_liveness=ctx.ssa_liveness, inst_idx=ctx.inst_counter[],
+                 inplace_targets=ctx.inplace_targets,
                  add=ctx.add, mul=ctx.mul,
                  last_inst_self_reversing=ctx.last_inst_self_reversing)
 

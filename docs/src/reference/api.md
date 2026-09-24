@@ -74,7 +74,11 @@ validated in `src/lowering/driver.jl` and `src/lowering/arith.jl`.
 `_pick_add_strategy`). The earlier "Cuccaro in-place when the second operand is
 dead" heuristic was removed; `:auto` is kept pinned to `:ripple` so the
 explicit-strategy gate-count baselines stay stable. Pass `add=:cuccaro` or
-`add=:qcla` explicitly to opt into the other adders.
+`add=:qcla` explicitly to opt into the other adders. Under `add=:cuccaro` an
+operand register is overwritten in place only when that add is its sole reader
+in the whole function (a constant, or a single-use argument / fresh-wire
+value); otherwise the second operand is CNOT-copied first (`+W` CNOT, `+W`
+wires), so the circuit is correct under every Bennett strategy (Bennett-stwr).
 
 ### Per-overload kwarg applicability
 

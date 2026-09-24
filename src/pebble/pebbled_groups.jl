@@ -232,10 +232,17 @@ rather than attempt pebbling:
 
 2. **In-place ops detected** (Bennett-07r) — any group whose `result_wires`
    extend outside its allocated `[wire_start..wire_end]` range. Cuccaro's
-   in-place adder (`use_inplace=true` in `lower()`) writes results BACK into
-   the input/dependency wires — it reuses the same qubits for output that
-   held inputs. This is how Cuccaro achieves its 1-ancilla / 2n-1 Toffoli
-   efficiency.
+   in-place adder writes results BACK into an operand's wires — it reuses
+   the same qubits for output that held an input. This happens ONLY under an
+   explicit `add=:cuccaro` (`:auto` resolves to ripple since Bennett-spa8 /
+   U27), and only on an exclusive-reader operand — a constant, or an SSA
+   name with a single operand occurrence in the whole function that is an
+   argument or a fresh-wire def (Bennett-stwr, `compute_inplace_targets`);
+   other adds run Cuccaro on a CNOT copy and stay inside their range. This
+   is how Cuccaro achieves its 1-ancilla / 2n-3 Toffoli efficiency.
+   (`ValueEagerStrategy` and `EagerStrategy` have NO such fallback — they
+   are sound on in-place groups precisely because of the exclusive-reader
+   criterion; see `src/pebble/value_eager.jl`.)
 
    Pebbling's checkpoint replay is incompatible with this pattern: when
    un-pebbling, the original group's dependency wires must still hold their

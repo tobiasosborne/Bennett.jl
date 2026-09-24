@@ -116,7 +116,7 @@ As with extraction: `src/lower.jl` is an **18-line `include` shim**, not the ~3k
 | File | Responsibility |
 |------|----------------|
 | `src/lowering/types.jl` | structs (`LoweringResult`, `GateGroup`, `LoweringCtx`) + the `_lower_inst!` dispatch table |
-| `src/lowering/operand.jl` | `resolve!` (operand → wires), SSA liveness analysis |
+| `src/lowering/operand.jl` | `resolve!` (operand → wires), SSA operand-occurrence counts + in-place (Cuccaro) eligibility |
 | `src/lowering/driver.jl` | the `lower()` entry point, constant folding, the per-block walk |
 | `src/lowering/cfg.jl` | back-edge detection, topological sort, loop unrolling |
 | `src/lowering/phi.jl` | **path-predicate computation and PHI resolution** — the #1 correctness-risk file |
@@ -134,11 +134,11 @@ Reversible arithmetic is not one algorithm per operation — it is a cost surfac
 | `add=` | Primitive | Shape |
 |--------|-----------|-------|
 | `:ripple` | `lower_add!` (`src/adder.jl`) | O(n) depth, out-of-place |
-| `:cuccaro` | `lower_add_cuccaro!` (`src/adder.jl`) | O(n) depth, in-place, 1 ancilla |
+| `:cuccaro` | `lower_add_cuccaro!` (`src/adder.jl`) | O(n) depth, in-place on an exclusive-reader operand (else on a CNOT copy), 1 ancilla |
 | `:qcla` | `lower_add_qcla!` (`src/qcla.jl`) | O(log n) depth, out-of-place, O(n) ancilla |
 | `:auto` | **always `:ripple`** | preserves the gate-count baselines |
 
-`add=:auto` **always** resolves to ripple-carry. The older "Cuccaro when the second operand is dead, ripple otherwise" heuristic was removed: Cuccaro's one-wire saving is erased by Bennett's copy-out, and it has worse Toffoli-depth. Cuccaro is now reached only by an explicit `add=:cuccaro`.
+`add=:auto` **always** resolves to ripple-carry. The older "Cuccaro when the second operand is dead, ripple otherwise" heuristic was removed: Cuccaro's one-wire saving is erased by Bennett's copy-out, and it has worse Toffoli-depth. Cuccaro is now reached only by an explicit `add=:cuccaro`, and even then an operand is overwritten only when that add is its sole reader anywhere in the function (every block's gates execute in the predicated lowering, and some Bennett strategies uncompute out of order, so "last use" is not enough — Bennett-stwr); otherwise the operand is CNOT-copied first.
 
 | `mul=` | Primitive | Shape |
 |--------|-----------|-------|

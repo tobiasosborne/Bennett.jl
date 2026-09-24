@@ -225,7 +225,7 @@ end
     #     Previously: lower_block_insts! at src/lower.jl:558 constructed a FRESH
     #     LoweringCtx each block, so allocas in block N were invisible in block
     #     N+1. Fix: thread alloca_info + ptr_provenance through as kwargs from
-    #     lower() — matches the existing pattern for ssa_liveness, inst_counter,
+    #     lower() — matches the existing pattern for (then) ssa_liveness, inst_counter,
     #     gate_groups. L7a and L7b below exercise this fix.
     #
     #   C2 (M2b, RED): pointer-typed phi/select not supported by ir_extract.jl.

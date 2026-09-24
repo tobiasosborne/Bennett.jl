@@ -65,7 +65,7 @@ through unchanged. `W` is the operand bit-width.
 | `add=` | Lowering (`src/`) | Gate cost | Toffoli-depth | Ancilla | Paper |
 |---|---|---|---|---|---|
 | `:ripple` | `lower_add!` (`adder.jl`) | `5W-2` total, `2(W-1)` Toffoli | `2(W-1)` (serial carry) | `W` (carry) | ripple-carry full adder (classic) |
-| `:cuccaro` | `lower_add_cuccaro!` (`adder.jl`) | `6W-5` total: `2W-3` Toffoli, `4W-2` CNOT, `0` NOT | `≈ 2W` | `1` | Cuccaro, Draper, Kutin, Moulton 2004 (§3.5) |
+| `:cuccaro` | `lower_add_cuccaro!` (`adder.jl`) | `6W-5` total: `2W-3` Toffoli, `4W-2` CNOT, `0` NOT (`+W` CNOT on copy-in) | `≈ 2W` | `1` (`+W` on copy-in) | Cuccaro, Draper, Kutin, Moulton 2004 (§3.5) |
 | `:qcla` | `lower_add_qcla!` (`qcla.jl`) | `5W − 3·popcount(W) − 3·⌊log₂W⌋ − 1` Toffoli, `3W-1` CNOT | `⌊log₂W⌋ + ⌊log₂(W/3)⌋ + 4` | `W − popcount(W) − ⌊log₂W⌋` | Draper, Kutin, Rains, Svore 2004, arXiv:quant-ph/0406142 (§4.1 Thm 1, `W≥4`) |
 | `:auto` | resolves to **`:ripple`** | — | — | — | — |
 
@@ -76,6 +76,17 @@ Notes:
   serializes every Toffoli; QCLA has *more* Toffolis than ripple at every width and
   wins only on `O(log W)` Toffoli-depth. Any documentation claiming `:auto` "picks
   Cuccaro when the operand is dead" is stale.
+- **What `add=:cuccaro` overwrites (Bennett-stwr).** Cuccaro writes `a + b`
+  over one operand's register. It does so only when that operand is an
+  *exclusive reader*: a constant, or an SSA value with exactly one operand
+  occurrence in the whole function (all blocks, phis and terminators) that is
+  a function argument or a fresh-wire definition (not a `phi`, not a pointer),
+  and whose wires no other live value shares. `op2` is preferred, then `op1`
+  (addition commutes); otherwise `op2` is CNOT-copied first ("copy-in": `+W`
+  CNOT and `+W` wires per add, same `2W−3` Toffolis). Every add stays
+  MAJ/UMA — the strategy never silently falls back to ripple — and every
+  circuit is correct under all six Bennett strategies. Adds inside unrolled
+  loops are lowered with ripple (a pre-existing loop-context override).
 - Ripple is the regression baseline. End-to-end `x + 1` with
   `add=:ripple, fold_constants=true`: i8/i16/i32/i64 `total = 58/114/226/450`,
   `Toffoli = 12/28/60/124` (pinned in `test/test_gate_count_regression.jl`).
@@ -213,7 +224,11 @@ Zero-overhead forwarders retained for pre-1.0 call sites (no `@deprecate`):
 - `max_pebbles = 0` (the default, or any value `≥ n`) **degrades to full Bennett**,
   not an error.
 - Cuccaro in-place adders break pebbling/checkpoint replay (result wires extend
-  outside the group's wire range) and force a fallback to full `bennett(lr)`.
+  outside the group's wire range) and force `CheckpointStrategy` /
+  `PebbledGroupStrategy` to fall back to full `bennett(lr)`. `EagerStrategy`
+  and `ValueEagerStrategy` do **not** fall back; they are sound on in-place
+  groups because the lowering only overwrites an operand whose sole reader in
+  the whole function is that add (Bennett-stwr).
 - **Bennett 1989** (*Time/Space Trade-Offs for Reversible Computation*, SIAM
   J. Comput. 18(4), DOI [10.1137/0218053](https://doi.org/10.1137/0218053)) is cited
   in the references but **not implemented** — the space-time variants implement

@@ -785,6 +785,11 @@ runfile("test_4fri_mul_target.jl")
 # Bennett-spa8 / U27 — add dispatcher `:auto` → `:ripple` (Cuccaro
 # is strictly worse post-Bennett copy-out at every measured width).
 runfile("test_spa8_add_auto_ripple.jl")
+# Bennett-stwr — explicit `add=:cuccaro` soundness: an add operand is
+# overwritten in place only when it is an exclusive reader (constant, or
+# single-occurrence arg / fresh-wire def with no wire aliases); otherwise
+# op1 by commutativity, else copy-in. All six Bennett strategies swept.
+runfile("test_stwr_cuccaro_soundness.jl")
 # Bennett-6azb / U58 — simulator verifies input-preservation
 # invariant; ReversibleCircuit asserts input/output/ancilla partition.
 runfile("test_6azb_input_preservation.jl")

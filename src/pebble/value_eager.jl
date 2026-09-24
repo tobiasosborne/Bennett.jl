@@ -27,6 +27,16 @@ Phase 2: CNOT copy outputs to fresh wires.
 Phase 3: Uncompute remaining values in reverse topological order of the DAG.
 
 Falls back to full Bennett if gate_groups is empty.
+
+In-place groups (Bennett-stwr): unlike checkpoint / pebbled-group (Bennett-07r
+fallback), this strategy processes Cuccaro in-place groups directly. That is
+sound only because the lowering overwrites an operand register `B` exclusively
+when the add is `B`'s ONLY reader in the whole function
+(`compute_inplace_targets`): Phase 3 then always reverses the add's group
+(restoring `B`) before `B`'s defining group, and no other group replays against
+`B`. A value read by another group EARLIER in the forward pass (e.g.
+`u = y & x; t = x + y`) is NOT safe here — Phase 3 would replay `u` after `y`
+was overwritten — which is why "last use" was the wrong criterion.
 """
 function _value_eager_bennett_impl(lr::LoweringResult)
     # Bennett-rjk7: honor the self_reversing fast-path universally — mirrors

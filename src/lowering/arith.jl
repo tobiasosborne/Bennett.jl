@@ -1,7 +1,7 @@
 # ---- binary-op dispatch ----
 
 """
-    _pick_add_strategy(user_choice, W, op2_dead, liveness_enabled) -> Symbol
+    _pick_add_strategy(user_choice, W) -> Symbol
 
 Resolve an `add=:auto|:ripple|:cuccaro|:qcla` user choice into one of the
 three concrete strategies. Explicit choices bypass the heuristic.
@@ -14,10 +14,14 @@ chain serialises every Toffoli). On `(x,y)->x+y` at W=32 (post
 Bennett-gsxe §3.5 optimisation):
   cuccaro: 408 total / T-depth 122
   ripple : 346 total / T-depth 62
-`op2_dead` / `liveness_enabled` are retained in the signature for
-backward compatibility with callers that still thread them.
+
+Bennett-stwr: the dead `op2_dead` / `liveness_enabled` arguments were
+dropped. Whether an explicit `:cuccaro` add overwrites an operand in place
+or runs on a CNOT copy is decided per add by `_lower_add_cuccaro_inplace!`
+(exclusive-reader analysis), not here — the strategy symbol is always the
+adder family the user asked for.
 """
-function _pick_add_strategy(user_choice::Symbol, W::Int, op2_dead::Bool, liveness_enabled::Bool)
+function _pick_add_strategy(user_choice::Symbol, W::Int)
     user_choice === :ripple  && return :ripple
     user_choice === :cuccaro && return :cuccaro
     user_choice === :qcla    && return :qcla
@@ -164,9 +168,69 @@ function _try_identity_peephole!(gates::Vector{ReversibleGate}, wa::WireAllocato
     return _identity_emit_for_const(gates, wa, vw, op, ssa_op, k, W)
 end
 
+# ==== Bennett-stwr: Cuccaro in-place operand selection ====
+#
+# `lower_add_cuccaro!(a, b)` overwrites `b`'s wires with `a + b`. That is only
+# sound when NOTHING else will ever read `b`'s wires as `b` — see
+# `compute_inplace_targets` (src/lowering/operand.jl) for the static
+# exclusive-reader criterion. `_cuccaro_inplace_ok` adds the lowering-time
+# defence in depth: even a listed name is refused if any OTHER live `vw`
+# entry shares a wire with it (a whitelist-drift / aliasing lowering that
+# the static analysis missed). O(|vw|·W) per explicit-`:cuccaro` add only.
+
+_cuccaro_inplace_ok(::Dict{Symbol,Vector{Int}}, ::ConstOperand, ::Vector{Int},
+                    ::Set{Symbol}) = true   # resolve! just allocated these wires
+_cuccaro_inplace_ok(::Dict{Symbol,Vector{Int}}, ::IROperand, ::Vector{Int},
+                    ::Set{Symbol}) = false  # sentinels never reach here; be safe
+
+function _cuccaro_inplace_ok(vw::Dict{Symbol,Vector{Int}}, op::SSAOperand,
+                             wires::Vector{Int}, targets::Set{Symbol})
+    op.name in targets || return false
+    for (k, ws) in vw
+        k === op.name && continue
+        isdisjoint(ws, wires) || return false
+    end
+    return true
+end
+
+"""
+    _lower_add_cuccaro_inplace!(gates, wa, vw, inst, a, b, W, targets) -> Vector{Int}
+
+Bennett-stwr. Lower `inst.dest = a + b` with the Cuccaro MAJ/UMA adder,
+choosing which register it may overwrite:
+
+1. op2's register when op2 is a constant or an exclusive reader
+   (`_cuccaro_inplace_ok`) — the pre-stwr behaviour for sound cases, so every
+   pinned explicit-`:cuccaro` baseline is unchanged;
+2. else op1's register (addition commutes);
+3. else a private CNOT copy of op2 ("copy-in": +W CNOT, +W wires forward,
+   Toffoli count and depth unchanged).
+
+A consumed SSA operand's `vw` entry is deleted, so any later by-name read
+fails loud in `resolve!` instead of silently seeing the sum. `W <= 1` falls
+through to `lower_add_cuccaro!`'s non-destructive ripple fallback. Never
+falls back to another adder family and never errors on a valid program.
+"""
+function _lower_add_cuccaro_inplace!(gates::Vector{ReversibleGate}, wa::WireAllocator,
+                                     vw::Dict{Symbol,Vector{Int}}, inst::IRBinOp,
+                                     a::Vector{Int}, b::Vector{Int}, W::Int,
+                                     targets::Set{Symbol})
+    W <= 1 && return lower_add_cuccaro!(gates, wa, a, b, W)
+    # `a ∩ b ≠ ∅` (e.g. `add %x, %x`) can never be computed in place.
+    distinct = isdisjoint(a, b)
+    if distinct && _cuccaro_inplace_ok(vw, inst.op2, b, targets)
+        inst.op2 isa SSAOperand && delete!(vw, inst.op2.name)
+        return lower_add_cuccaro!(gates, wa, a, b, W)
+    elseif distinct && _cuccaro_inplace_ok(vw, inst.op1, a, targets)
+        inst.op1 isa SSAOperand && delete!(vw, inst.op1.name)
+        return lower_add_cuccaro!(gates, wa, b, a, W)
+    else
+        return lower_add_cuccaro!(gates, wa, a, _emit_copy_out!(gates, wa, b, W), W)
+    end
+end
+
 function lower_binop!(gates, wa, vw, inst::IRBinOp;
-                      ssa_liveness::Dict{Symbol,Int}=Dict{Symbol,Int}(),
-                      inst_idx::Int=0,
+                      inplace_targets::Set{Symbol}=Set{Symbol}(),
                       add::Symbol=:auto, mul::Symbol=:auto,
                       last_inst_self_reversing::Ref{Bool}=Ref(false))
     # Bennett-5qrn / U57: trivial-identity peephole. Short-circuits before
@@ -198,15 +262,12 @@ function lower_binop!(gates, wa, vw, inst::IRBinOp;
         end
     else
         b = resolve!(gates, wa, vw, inst.op2, inst.width)
-        # Use Cuccaro in-place adder when op2 is dead after this instruction.
-        # Constants are always safe (their wires are freshly allocated by resolve!).
-        # SSA vars are safe when this is their last use (liveness[name] <= inst_idx).
-        op2_dead = inst.op2 isa ConstOperand ||
-                   (inst.op2 isa SSAOperand && get(ssa_liveness, inst.op2.name, 0) <= inst_idx)
         if inst.op == :add
-            strat = _pick_add_strategy(add, W, op2_dead, !isempty(ssa_liveness))
+            strat = _pick_add_strategy(add, W)
             if strat == :cuccaro
-                lower_add_cuccaro!(gates, wa, a, b, W)
+                # Bennett-stwr: in place only on an exclusive-reader operand
+                # (op2 preferred, else op1 by commutativity), else copy-in.
+                _lower_add_cuccaro_inplace!(gates, wa, vw, inst, a, b, W, inplace_targets)
             elseif strat == :qcla
                 lower_add_qcla!(gates, wa, a, b, W)[1:W]   # drop carry-out
             else
@@ -557,6 +618,9 @@ function lower_cast!(gates, wa, vw, inst::IRCast)
         # If a future liveness pass wants to free src mid-circuit, it must
         # first uncompute src's full F-bit producer — NOT just bits 1..T.
         # Pinned by `test/test_gboa_dirty_bit_hygiene.jl`.
+        # Bennett-stwr: `r` MUST stay a fresh allocation — IRCast is in
+        # `_INPLACE_FRESH_DEFS`. A zero-gate `trunc` returning `src[1:T]`
+        # would alias src and must first drop IRCast from that list.
         for i in 1:T; push!(gates, CNOTGate(src[i], r[i])); end
     else
         throw(ArgumentError("lower_cast!: unknown cast op :$(inst.op) (supported: $_IR_CAST_OPS)"))
