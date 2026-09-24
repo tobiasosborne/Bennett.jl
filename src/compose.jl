@@ -41,6 +41,18 @@
 #   write outputs back onto input wires; aliasing onto those would race
 #   with the reverse-c1 pass). Future bead may add `allow_self_reversing=true`.
 # - Width and per-position element-count checks both fail loud.
+#
+# # Loop guards (Bennett-q9pi)
+#
+# Bennett-s0tn loop-convergence wires (`loop_check_wires`) are carried
+# through. c2's guards are renumbered like any other c2 wire. c1's guards
+# need care: a c1 guard wire is SET by a gate inside `c1.gates`, so the
+# trailing reverse-c1 pass would uncompute it back to 0 — silently turning
+# the convergence bit into a clean-looking ancilla (pre-q9pi behaviour:
+# an under-unrolled loop in c1 returned garbage through compose). Each c1
+# guard bit is therefore CNOT-copied onto a fresh wire between c2 and
+# reverse-c1; the copy is the composite's guard, the original wire is an
+# ancilla. Cost: +1 wire, +1 CNOT per c1 guard; zero for loop-free c1.
 
 @inline _renumber_gate(g::NOTGate, m::Vector{Int})     = NOTGate(m[g.target])
 @inline _renumber_gate(g::CNOTGate, m::Vector{Int})    = CNOTGate(m[g.control], m[g.target])
@@ -56,19 +68,29 @@ inputs are positionally aliased to c1's outputs, so
 
 # Wire layout
 
-The result's wire space is `1:(c1.n_wires + c2.n_wires - m)` where
-`m = length(c2.input_wires)`. c1's wires keep their indices; c2's
-non-input wires (its outputs and ancillae) get fresh indices starting
-at `c1.n_wires + 1`; c2's input wires alias onto c1's output wires.
+The result's wire space is `1:(c1.n_wires + c2.n_wires - m + g1)` where
+`m = length(c2.input_wires)` and `g1 = length(c1.loop_check_wires)`.
+c1's wires keep their indices; c2's non-input wires (its outputs,
+ancillae and loop-check wires) get fresh indices starting at
+`c1.n_wires + 1`; c2's input wires alias onto c1's output wires; the
+last `g1` wires hold copies of c1's loop-convergence bits.
 
 # Gate sequence
 
-`c1.gates ++ renumbered(c2.gates) ++ reverse(c1.gates)`. The trailing
+`c1.gates ++ renumbered(c2.gates) ++ guard_copies(c1) ++ reverse(c1.gates)`,
+where `guard_copies(c1)` is one CNOT per c1 loop guard (empty when c1 is
+loop-free). The trailing
 reverse-c1 uncomputes c1's intermediate output `y = f(x)` so that
 c1's output wires (which become ancillae of compose) end at zero. This
 relies on c2 preserving its inputs (Bennett invariant on c2); the
 existing `simulator.jl` input-preservation assertion catches a
 violation.
+
+# Loop guards (Bennett-q9pi)
+
+`loop_check_wires` of both circuits are preserved (c1's first), so an
+input on which either stage's unrolled loop fails to converge makes
+`simulate` on the composite throw, exactly as the stage would alone.
 
 # Preconditions
 
@@ -160,15 +182,43 @@ function compose(c1::ReversibleCircuit, c2::ReversibleCircuit)
         wire_renumber[w] = next_fresh
         next_fresh += 1
     end
+    @assert next_fresh - 1 == n1 + n2 - m  "compose: wire-budget compaction mismatch"
+
+    # ---- Step 1b (Bennett-q9pi): loop-guard wires ----
+    # c1's guards: the trailing reverse-c1 pass uncomputes c1's convergence
+    # copy-out back to 0 (it is set by a gate inside c1.gates), so each c1
+    # guard bit is CNOT-copied onto a fresh wire BEFORE the reverse pass.
+    # The original c1 guard wire then ends at 0 and is classified as an
+    # ancilla (checked clean); the fresh copy is the composite's guard.
+    # c2's guards: c2 wires are untouched by reverse-c1, so they are simply
+    # renumbered. c1's guards come first so an overflow in c1 (whose
+    # after-K garbage then feeds c2) is reported as the root cause.
+    c1_guard_copies = Int[]
+    loop_check_wires = LoopGuard[]
+    for lg in c1.loop_check_wires
+        push!(c1_guard_copies, next_fresh)
+        push!(loop_check_wires, LoopGuard(next_fresh, lg.header_label, lg.K))
+        next_fresh += 1
+    end
+    for lg in c2.loop_check_wires
+        # A loop-check wire is disjoint from c2's inputs (four-set partition
+        # in the ReversibleCircuit constructor), so it is never aliased.
+        @assert !aliased[lg.wire] "compose: c2 loop-check wire $(lg.wire) aliases a c2 input"
+        push!(loop_check_wires,
+              LoopGuard(wire_renumber[lg.wire], lg.header_label, lg.K))
+    end
     n_total = next_fresh - 1
-    @assert n_total == n1 + n2 - m  "compose: wire-budget compaction mismatch"
 
     # ---- Step 2: build the gate list ----
     new_gates = ReversibleGate[]
-    sizehint!(new_gates, 2 * length(c1.gates) + length(c2.gates))
+    sizehint!(new_gates, 2 * length(c1.gates) + length(c2.gates) +
+                         length(c1_guard_copies))
     append!(new_gates, c1.gates)
     for g in c2.gates
         push!(new_gates, _renumber_gate(g, wire_renumber))
+    end
+    for (lg, w_copy) in zip(c1.loop_check_wires, c1_guard_copies)
+        push!(new_gates, CNOTGate(lg.wire, w_copy))
     end
     for i in length(c1.gates):-1:1
         push!(new_gates, c1.gates[i])
@@ -179,8 +229,10 @@ function compose(c1::ReversibleCircuit, c2::ReversibleCircuit)
     input_widths       = copy(c1.input_widths)
     output_wires       = [wire_renumber[w] for w in c2.output_wires]
     output_elem_widths = copy(c2.output_elem_widths)
-    ancilla_wires      = _compute_ancillae(n_total, input_wires, output_wires)
+    ancilla_wires      = _compute_ancillae(n_total, input_wires, output_wires,
+                                           loop_check_wires)
 
     return ReversibleCircuit(n_total, new_gates, input_wires, output_wires,
-                             ancilla_wires, input_widths, output_elem_widths)
+                             ancilla_wires, input_widths, output_elem_widths,
+                             loop_check_wires)
 end

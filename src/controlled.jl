@@ -58,6 +58,18 @@ Toffoli→decomposed controlled-Toffoli (3 Toffolis + 1 reusable ancilla).
 
 Result: `(ctrl, x, 0) → (ctrl, x, ctrl ? f(x) : 0)`.
 
+The contract holds for every circuit shape (Bennett-q9pi):
+- Self-reversing circuits (QROM tabulate, …) already write `f(x)` onto
+  fresh zero-initialised output wires, so gate promotion suffices.
+- An output position whose wire is also an input wire (a pass-through,
+  permitted by the wire partition) is re-routed to a fresh wire set by
+  `Toffoli(ctrl, w, fresh)` — otherwise it would read `x` when ctrl=0.
+- Bennett-s0tn loop guards become conditional (`¬ctrl ∨ converged`, via
+  `CNOT(ctrl, g); NOT(g)`): ctrl=0 never trips them, ctrl=1 still fails
+  loud on an under-unrolled loop.
+Loop-free, pass-through-free circuits get exactly the promoted gate
+stream (no extra gates or wires).
+
 Assumes contiguous wire allocation: every gate in `circuit.gates`
 references wire indices in `1:circuit.n_wires`. Asserts this on
 entry — a malformed inner circuit collides with the new control /
@@ -78,15 +90,49 @@ function controlled(circuit::ReversibleCircuit)
     has_toff = any(g -> g isa ToffoliGate, circuit.gates)
     ctrl_wire = circuit.n_wires + 1
     anc_wire  = has_toff ? circuit.n_wires + 2 : 0
-    n_extra   = 1 + (has_toff ? 1 : 0)
+    total     = circuit.n_wires + 1 + (has_toff ? 1 : 0)
+
+    # Bennett-q9pi: output positions whose wire is ALSO an input wire
+    # (input ∩ output ≠ ∅ — permitted by the ReversibleCircuit partition;
+    # a pass-through output). Promoting gates alone leaves such a wire
+    # holding `x`, not 0, when ctrl=0 — violating the contract. Re-route
+    # each such position to a fresh wire filled by `Toffoli(ctrl, w, fresh)`
+    # after the body: fresh = ctrl ∧ w_final = ctrl ? f(x)_bit : 0. (The
+    # simulator's input-preservation check already pins w_final = x_bit.)
+    in_set = Set(circuit.input_wires)
+    new_out = copy(circuit.output_wires)
+    passthrough = Tuple{Int,Int}[]            # (input-aliased wire, fresh wire)
+    for (k, w) in pairs(circuit.output_wires)
+        w in in_set || continue
+        total += 1
+        new_out[k] = total
+        push!(passthrough, (w, total))
+    end
 
     new_gates = ReversibleGate[]
-    sizehint!(new_gates, 3 * length(circuit.gates))  # upper bound
+    sizehint!(new_gates, 3 * length(circuit.gates) + length(passthrough) +
+                         2 * length(circuit.loop_check_wires))  # upper bound
     for gate in circuit.gates
         promote_gate!(new_gates, gate, ctrl_wire, anc_wire)
     end
+    for (w, fresh) in passthrough
+        push!(new_gates, ToffoliGate(ctrl_wire, w, fresh))
+    end
 
-    total = circuit.n_wires + n_extra
+    # Bennett-q9pi: loop guards are a CONDITIONAL postcondition — "the loop
+    # converged, IF the body ran". With ctrl=0 no promoted gate fires, the
+    # guard stays 0, and a verbatim copy made `simulate` throw a spurious
+    # "did not converge". Rewrite each guard as g' = g ⊻ ctrl ⊻ 1 via
+    # `CNOT(ctrl, g); NOT(g)`: ctrl=0 ⇒ g=0 ⇒ g'=1 (vacuously satisfied);
+    # ctrl=1 ⇒ g'=g (the real convergence bit, still fails loud). In the
+    # quantum setting a converged guard ends |1⟩ on both ctrl branches, so
+    # it stays unentangled from ctrl. `controlled()` only appends wires, so
+    # the guard indices themselves are unchanged.
+    for lg in circuit.loop_check_wires
+        push!(new_gates, CNOTGate(ctrl_wire, lg.wire))
+        push!(new_gates, NOTGate(lg.wire))
+    end
+
     new_anc = copy(circuit.ancilla_wires)
     has_toff && push!(new_anc, anc_wire)
 
@@ -100,11 +146,12 @@ function controlled(circuit::ReversibleCircuit)
     inner_input_wires  = pushfirst!(copy(circuit.input_wires), ctrl_wire)
     inner_input_widths = pushfirst!(copy(circuit.input_widths), 1)
 
-    # Bennett-s0tn: propagate loop-check wires. `controlled()` only appends
-    # ctrl_wire / anc_wire at n_wires+1 / +2 — it never renumbers existing
-    # wires — so the inner loop-check wire indices stay valid as-is.
+    # Bennett-s0tn: propagate loop-check wires (made conditional on ctrl
+    # above, Bennett-q9pi). `controlled()` only appends wires after
+    # n_wires — it never renumbers existing ones — so the inner loop-check
+    # wire indices stay valid as-is.
     inner = ReversibleCircuit(total, new_gates,
-                              inner_input_wires, circuit.output_wires,
+                              inner_input_wires, new_out,
                               new_anc, inner_input_widths,
                               circuit.output_elem_widths,
                               copy(circuit.loop_check_wires))

@@ -926,6 +926,13 @@ runfile("test_cvnb_bennett_direct.jl")
 # inputs rejected (MVP). Unblocks Sturm `when(q) do f(x) end` (review
 # F49/F50 — composition was UNCOVERED).
 runfile("test_qcso_compose.jl")
+# Bennett-q9pi — compose/controlled vs Bennett-s0tn loop guards. compose
+# now carries both stages' loop_check_wires (c1's guard bits CNOT-copied
+# to fresh wires before the reverse-c1 uncompute would zero them);
+# controlled makes each guard conditional (¬ctrl ∨ converged) so ctrl=0
+# no longer trips it, and re-routes input-aliased (pass-through) outputs
+# through Toffoli(ctrl, w, fresh) so ctrl=0 yields 0. Exhaustive Int8.
+runfile("test_q9pi_compose_controlled_guards.jl")
 # Bennett-zmw3 / U111 — robustness bounds: resolve!() mask at W=64 no
 # longer relies on Julia shift saturation; constant-shift path now
 # rejects k < 0 and k > W with a clear error; variable-shift mod-W
