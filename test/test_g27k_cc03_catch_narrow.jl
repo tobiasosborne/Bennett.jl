@@ -43,8 +43,14 @@ using Bennett: extract_parsed_ir_from_ll
         cc03_start = findfirst("Bennett-cc0.3:", src)
         @test cc03_start !== nothing
         start = first(cc03_start)
-        # Look at the next ~4000 chars for the catch-block body.
-        block = src[start:min(start + 4000, lastindex(src))]
+        # The block runs from the anchor to the catch's own terminator line.
+        # (A fixed 4000-char window broke when Bennett-hsm3 threaded two more
+        # kwargs into the `_convert_instruction` call inside the `try`,
+        # pushing `e isa ErrorException` to offset 3989 — a false red with
+        # the narrowing itself unchanged.)
+        term = findnext("benign ? nothing : rethrow()", src, start)
+        @test term !== nothing
+        block = src[start:last(term)]
         # Post-fix must gate on `ErrorException` AND `MethodError` types.
         @test occursin("e isa ErrorException", block)
         @test occursin("e isa MethodError", block)
