@@ -1,5 +1,7 @@
 # Bennett.jl Work Log
 
+> **2026-09-24 SESSION CLOSE — hsm3 (jl_global semantic certification) CLOSED; chunked full-suite gate green (~1.53M assertions); main fast-forwarded. Handoff priority list at the top of worklog/108.** Detail: [`worklog/108`](worklog/108_2026-09-24_correctness_sweep.md).
+
 > **2026-09-24 (cont.) — correctness sweep: stwr (cuccaro soundness), t9rh (host-CPU-independent extraction, pinned x86-64-v3), c6ex (silent optimize=false loop miscompiles) CLOSED; 5viz hostile review FAILED → hsm3 (P1 jl_global name-trust miscompile) in 3+1.** Detail: [`worklog/108`](worklog/108_2026-09-24_correctness_sweep.md).
 
 > **2026-09-24 — cloud setup + small-items wave: q9pi (compose/controlled loop guards) + 6 hygiene beads closed; stwr (cuccaro unsoundness) 3+1 designs archived; t9rh: extraction is host-CPU dependent (AVX-512 poison lanes).** bd must be 1.0.2 for schema v32. Detail: [`worklog/107`](worklog/107_2026-08-14_uxyy_test_filtering.md).
