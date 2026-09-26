@@ -240,6 +240,30 @@ end
     return soft_fmul(_TWO_NEG_1022_BITS, y_final)
 end
 
+# ── Overflow specialcase (musl exp.c / exp2.c specialcase(), k > 0 arm) ──
+#
+# Bennett-uwv2. In the last reduction cell below overflow (upper half, where
+# `ki` rounds up to k = 1024 with j = 0) the integer trick
+# `sbits = T[2j+1] + (ki << 45)` carries the biased exponent to 0x7FF, i.e.
+# `scale = +Inf`, and `scale + scale·tmp` with tmp < 0 is Inf − Inf = NaN
+# even though the true result is finite (e.g. exp(log(floatmax))). musl's
+# fix, which the original port omitted, is the k > 0 arm of specialcase():
+#     sbits -= 1009 << 52;  y = 0x1p1009 * (scale + scale*tmp)
+# i.e. evaluate in a range 2^-1009 lower, then scale back up exactly
+# (genuine overflow still rounds to +Inf in the final multiply).
+#
+# musl takes this arm for every positive x with |x| ≥ 512 (its "abstop == 0"
+# case). For those inputs k ≥ 512, so `sbits - (1009 << 52)` stays a normal
+# double, and wherever the unbiased path does not overflow both paths are
+# bit-identical (power-of-two scalings in the normal range are exact). The
+# callers therefore select the biased `sbits` BEFORE the shared
+# `scale + scale·tmp` and apply one extra `×2^1009` — the same arithmetic as
+# musl's arm at the cost of one soft_fmul rather than a duplicated
+# fmul + fadd + fmul.
+const _EXP_OFLOW_BIAS_SHIFT = UInt64(1009) << 52
+const _EXP_2_P1009_BITS     = reinterpret(UInt64, 0x1p1009)
+const _EXP_OFLOW_ARM_BITS   = reinterpret(UInt64, 512.0)   # musl: |x| ≥ 512 → specialcase
+
 """
     soft_exp2(a::UInt64) -> UInt64
 
@@ -320,9 +344,13 @@ Special cases (last-write-wins ifelse chain):
     s2     = soft_fadd(s1, q1)
     tmp    = soft_fadd(s2, q2)
 
-    # Main path (correct for x ∈ [-1022, 1024)).
-    scale_tmp = soft_fmul(sbits, tmp)
-    normal    = soft_fadd(sbits, scale_tmp)
+    # Main path (correct for x ∈ [-1022, 1024)); positive x ≥ 512 takes
+    # musl's overflow specialcase arm (Bennett-uwv2, see above).
+    in_oflow_arm = (sa == UInt64(0)) & (a >= _EXP_OFLOW_ARM_BITS)
+    sbits_main   = ifelse(in_oflow_arm, sbits - _EXP_OFLOW_BIAS_SHIFT, sbits)
+    scale_tmp    = soft_fmul(sbits_main, tmp)
+    normal_b     = soft_fadd(sbits_main, scale_tmp)
+    normal       = ifelse(in_oflow_arm, soft_fmul(normal_b, _EXP_2_P1009_BITS), normal_b)
 
     # Underflow specialcase (always computed; selected below).
     under     = _exp_specialcase_underflow(sbits, tmp)
@@ -425,10 +453,14 @@ Special cases:
     s2     = soft_fadd(tail_r, q1)
     tmp    = soft_fadd(s2, q2)
 
-    # Main path + underflow specialcase (always both computed).
-    scale_tmp = soft_fmul(sbits, tmp)
-    normal    = soft_fadd(sbits, scale_tmp)
-    under     = _exp_specialcase_underflow(sbits, tmp)
+    # Main path + underflow specialcase (always both computed). Positive
+    # x ≥ 512 takes musl's overflow specialcase arm (Bennett-uwv2).
+    in_oflow_arm = (sa == UInt64(0)) & (a >= _EXP_OFLOW_ARM_BITS)
+    sbits_main   = ifelse(in_oflow_arm, sbits - _EXP_OFLOW_BIAS_SHIFT, sbits)
+    scale_tmp    = soft_fmul(sbits_main, tmp)
+    normal_b     = soft_fadd(sbits_main, scale_tmp)
+    normal       = ifelse(in_oflow_arm, soft_fmul(normal_b, _EXP_2_P1009_BITS), normal_b)
+    under        = _exp_specialcase_underflow(sbits, tmp)
 
     result = normal
     result = ifelse(in_subnormal, under,     result)
@@ -511,8 +543,12 @@ Fast variant of `soft_exp2` that **flushes subnormal output to zero**
     s2     = soft_fadd(s1, q1)
     tmp    = soft_fadd(s2, q2)
 
-    scale_tmp = soft_fmul(sbits, tmp)
-    normal    = soft_fadd(sbits, scale_tmp)
+    # Overflow specialcase arm for positive x ≥ 512 (Bennett-uwv2).
+    in_oflow_arm = (sa == UInt64(0)) & (a >= _EXP_OFLOW_ARM_BITS)
+    sbits_main   = ifelse(in_oflow_arm, sbits - _EXP_OFLOW_BIAS_SHIFT, sbits)
+    scale_tmp    = soft_fmul(sbits_main, tmp)
+    normal_b     = soft_fadd(sbits_main, scale_tmp)
+    normal       = ifelse(in_oflow_arm, soft_fmul(normal_b, _EXP_2_P1009_BITS), normal_b)
 
     result = normal
     result = ifelse(a_tiny,      _ONE_BITS, result)
@@ -591,8 +627,12 @@ Fast variant of `soft_exp` that **flushes subnormal output to zero**
     s2     = soft_fadd(tail_r, q1)
     tmp    = soft_fadd(s2, q2)
 
-    scale_tmp = soft_fmul(sbits, tmp)
-    normal    = soft_fadd(sbits, scale_tmp)
+    # Overflow specialcase arm for positive x ≥ 512 (Bennett-uwv2).
+    in_oflow_arm = (sa == UInt64(0)) & (a >= _EXP_OFLOW_ARM_BITS)
+    sbits_main   = ifelse(in_oflow_arm, sbits - _EXP_OFLOW_BIAS_SHIFT, sbits)
+    scale_tmp    = soft_fmul(sbits_main, tmp)
+    normal_b     = soft_fadd(sbits_main, scale_tmp)
+    normal       = ifelse(in_oflow_arm, soft_fmul(normal_b, _EXP_2_P1009_BITS), normal_b)
 
     result = normal
     result = ifelse(a_tiny,      _ONE_BITS, result)

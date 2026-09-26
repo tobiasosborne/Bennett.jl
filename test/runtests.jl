@@ -108,6 +108,8 @@ runfile("test_softfatanh.jl")
 runfile("test_softflog1p.jl")
 # Bennett-o7cy: soft_expm1 primitive (Tier C2.2 — symmetric to log1p; future cleanup target for tanh/sinh/cosh).
 runfile("test_softfexpm1.jl")
+# Bennett-uwv2: exp/exp2/expm1/sinh/cosh top-overflow-cell NaN — musl specialcase k>0 arm; ≤1e-6-step window sweeps.
+runfile("test_uwv2_exp_overflow_window.jl")
 runfile("test_softfconv.jl")
 runfile("test_float_circuit.jl")
 runfile("test_float_poly.jl")

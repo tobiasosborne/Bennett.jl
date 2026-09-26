@@ -43,10 +43,10 @@
 #
 # Other patterns inherited from ky5n:
 # - ONE `soft_exp_fast` call via regime-selected argument.
-# - Huge threshold conservatively at `709.0` (workaround for the
-#   soft_exp_fast NaN bug at inputs in `(~709.78, ~709.79)`).
+# - Huge threshold conservatively at `709.0` (originally a workaround for
+#   the soft_exp_fast top-cell NaN bug, fixed in Bennett-uwv2; retained).
 # - CRITICAL ordering `(0.5·E)·E` (not `(E·E)·0.5`) for the huge arm —
-#   delays overflow until `|x| ≈ 1419` exactly when true cosh
+#   delays overflow until `|x| ≈ 710.476` exactly where true cosh
 #   transitions to ±Inf.
 # - NaN classification via exponent + fraction split; final `is_nan`
 #   override last-write-wins (corrects the regime-predicate mis-fire
@@ -79,8 +79,9 @@ const _COSH_P7 = reinterpret(UInt64, 1.1663435515945578e-11)
 # Regime threshold + helper bit-patterns. Mirror of ky5n (sinh).
 const _COSH_ONE_BITS    = reinterpret(UInt64, 1.0)   # |x| ≤ 1.0 ↔ poly
 const _COSH_HALF_BITS   = reinterpret(UInt64, 0.5)
-# Conservative threshold matching Bennett-ky5n (soft_exp_fast NaN-bug
-# workaround). At |x| = 709, both arms produce ≤2 ULP results.
+# Conservative threshold matching Bennett-ky5n (originally a soft_exp_fast
+# NaN-bug workaround; that bug is fixed in Bennett-uwv2, threshold retained).
+# At |x| = 709, both arms produce ≤2 ULP results.
 const _COSH_HLARGE_BITS = reinterpret(UInt64, 709.0)
 
 """
@@ -161,8 +162,8 @@ coefficients). Branchless realisation per Bennett's static-CFG model.
     #     With E = exp(|x|/2) at |x| = 710, E ≈ 1.41e154 and
     #     E² ≈ 2e308 overflows to +Inf prematurely (true cosh(710)
     #     ≈ 1.1e308 is finite). Computing `(0.5·E)·E` halves before
-    #     the second multiply, delaying overflow until |x| ≈ 1419 —
-    #     exactly when true cosh transitions to ±Inf. A future
+    #     the second multiply, delaying overflow until |x| ≈ 710.476 —
+    #     exactly where true cosh transitions to ±Inf. A future
     #     code-clarity refactor that reorders these multiplications
     #     would silently break cosh on `|x| ∈ [710, 711]`.
     half_E      = soft_fmul(_COSH_HALF_BITS, E)

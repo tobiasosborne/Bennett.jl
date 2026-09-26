@@ -45,11 +45,12 @@
 # CRITICAL ORDERING. With E = exp(|x|/2) at |x| = 710, E ≈ 1.41e154
 # and E² ≈ 2e308 overflows to +Inf prematurely (true sinh(710) ≈ 1.1e308
 # is finite). Computing `(0.5·E)·E` keeps the intermediate at ~7e153
-# before the second multiply, delaying overflow until |x| ≈ 1419 —
-# exactly when true sinh transitions to ±Inf. A future code-clarity
-# refactor that reorders these multiplications would silently break
-# sinh on `|x| ∈ [710, 711]`. The fine-sweep test at this regime is
-# the regression guard.
+# before the second multiply, delaying overflow until |x| ≈ 710.476 —
+# exactly where true sinh transitions to ±Inf (Bennett-uwv2: an older
+# comment said ≈1419; that is where E = exp(|x|/2) itself overflows).
+# A future code-clarity refactor that reorders these multiplications
+# would silently break sinh on `|x| ∈ [710, 711]`. The fine-sweep test
+# at this regime is the regression guard.
 #
 # Polynomial regime narrowed from Julia's `|x| ≤ 2.1` (DD-Horner) to
 # `|x| ≤ 1.0` (single-precision Horner). Justification: Julia stdlib's
@@ -109,14 +110,14 @@ const _SINH_ONE_BITS    = reinterpret(UInt64, 1.0)   # |x| ≤ 1.0 ↔ poly
 const _SINH_HALF_BITS   = reinterpret(UInt64, 0.5)
 # Medium↔huge regime threshold. Set conservatively at 709.0 (well below
 # Julia stdlib's H_LARGE_X = nextfloat(709.7822265633562)) for two
-# reasons: (a) soft_exp_fast has a small NaN-producing bug for inputs
-# in (~709.78, ~709.79) that the bead's primary close target should
-# not trigger; setting the threshold at 709.0 ensures the medium arm's
-# soft_exp_fast(|x|) call always lands in the well-tested finite range.
+# reasons: (a) historically soft_exp_fast returned NaN for inputs in the
+# top reduction cell [709.78000862, log(floatmax)] (fixed in Bennett-uwv2
+# by porting musl's overflow specialcase arm); 709.0 kept the medium
+# arm's soft_exp_fast(|x|) call clear of it, and is retained unchanged.
 # (b) At the boundary |x| = 709, both formulas produce ≤ 2 ULP results
 # vs Base.sinh: medium gives (8.22e307 - 1.22e-308)/2 ≈ 4.11e307; huge
 # gives (0.5·exp(354.5))·exp(354.5) ≈ 4.11e307. The huge arm uses
-# `(0.5·E)·E` with E = exp(|x|/2), staying finite up to |x| ≈ 1419
+# `(0.5·E)·E` with E = exp(|x|/2), staying finite up to |x| ≈ 710.476
 # where true sinh transitions to ±Inf.
 const _SINH_HLARGE_BITS = reinterpret(UInt64, 709.0)
 
@@ -217,8 +218,8 @@ Branchless realisation per Bennett's static-CFG model.
     #     With E = exp(|x|/2) at |x| = 710, E ≈ 1.41e154 and
     #     E² ≈ 2e308 overflows to +Inf prematurely (true sinh(710)
     #     ≈ 1.1e308 is finite). Computing `(0.5·E)·E` halves before
-    #     the second multiply, delaying overflow until |x| ≈ 1419 —
-    #     exactly when true sinh transitions to ±Inf. A future
+    #     the second multiply, delaying overflow until |x| ≈ 710.476 —
+    #     exactly where true sinh transitions to ±Inf. A future
     #     code-clarity refactor that reorders these multiplications
     #     would silently break sinh on `|x| ∈ [710, 711]`.
     half_E      = soft_fmul(_SINH_HALF_BITS, E)
