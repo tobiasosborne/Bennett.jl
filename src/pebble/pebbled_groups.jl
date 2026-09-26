@@ -31,8 +31,14 @@ _remap_gate_wmap(g::ToffoliGate, wmap::Dict{Int,Int}, iws::Set{Int}) =
 # ---- pebble state tracking ----
 
 struct ActivePebble
-    result_wires::Vector{Int}    # current location of SSA result
-    internal_wires::Vector{Int}  # current location of scratch wires
+    # Current location of the SSA result, in the SAME logical bit order (and
+    # with the same multiplicity) as the group's original `result_wires`.
+    # May contain duplicates; never freed directly (Bennett-uhk3).
+    result_wires::Vector{Int}
+    # Every wire freshly allocated for this replay, each exactly once
+    # (results AND scratch). This — not `result_wires` — is what
+    # `_replay_reverse!` returns to the allocator.
+    owned_wires::Vector{Int}
     wmap::Dict{Int,Int}          # wire remap used during forward
 end
 
@@ -65,36 +71,25 @@ function _replay_forward!(result::Vector{ReversibleGate},
     #     wire_start:wire_end covers every wire allocated during lowering:
     #     result wires, carries, partial products, zero-padding, constants.
     n_group_wires = group.wire_end - group.wire_start + 1
+    owned = Int[]
     if n_group_wires > 0
-        new_wires = allocate!(wa, n_group_wires)
+        owned = allocate!(wa, n_group_wires)
         for (i, old_w) in enumerate(group.wire_start:group.wire_end)
-            wmap[old_w] = new_wires[i]
+            wmap[old_w] = owned[i]
         end
     end
 
-    # Classify new wires as result vs internal (for freeing on reverse)
-    result_set = Set(group.result_wires)
-    new_result = Int[]
-    new_internal = Int[]
-    for old_w in group.wire_start:group.wire_end
-        nw = wmap[old_w]
-        if old_w in result_set
-            push!(new_result, nw)
-        else
-            push!(new_internal, nw)
-        end
-    end
-
-    # Handle in-place results: result_wires outside wire_start:wire_end are
-    # dependency wires modified in-place (e.g., Cuccaro b += a). These are
-    # mapped via step (a) from the dependency's current location, or are
-    # function input wires (identity mapped).
-    for old_w in group.result_wires
-        if old_w < group.wire_start || old_w > group.wire_end
-            mapped = get(wmap, old_w, old_w)  # identity for input wires
-            push!(new_result, mapped)
-        end
-    end
+    # Bennett-uhk3: map `result_wires` entry-by-entry, preserving its logical
+    # bit order and any duplicated positions. Downstream consumers (checkpoint
+    # copy, dependency wmap in (a), `_emit_copy_gates!`) zip this vector with
+    # the ORIGINAL `group.result_wires`, so it must be position-aligned. The
+    # pre-fix code rebuilt it via `Set(result_wires)` + an ascending walk of
+    # `wire_start:wire_end`, silently permuting e.g. `[3,2]` into `[2,3]`.
+    # In-range entries map to their fresh wire; an out-of-range (in-place,
+    # e.g. Cuccaro) entry maps via the dependency wmap from (a) or is a
+    # function input (identity) — `_remap_wire` fails loud otherwise.
+    new_result = Int[_remap_wire(old_w, wmap, input_wire_set)
+                     for old_w in group.result_wires]
 
     # Emit remapped gates
     for gi in group.gate_start:group.gate_end
@@ -102,7 +97,7 @@ function _replay_forward!(result::Vector{ReversibleGate},
     end
 
     # Record pebble
-    live_map[group.ssa_name] = ActivePebble(new_result, new_internal, wmap)
+    live_map[group.ssa_name] = ActivePebble(new_result, owned, wmap)
 end
 
 function _replay_reverse!(result::Vector{ReversibleGate},
@@ -118,9 +113,10 @@ function _replay_reverse!(result::Vector{ReversibleGate},
         push!(result, _remap_gate_wmap(gates[gi], pebble.wmap, input_wire_set))
     end
 
-    # All target wires are now zero — free them
-    free!(wa, pebble.result_wires)
-    free!(wa, pebble.internal_wires)
+    # All wires this replay allocated are now zero — free each exactly once.
+    # Bennett-uhk3: free `owned_wires`, never `result_wires` (which may hold
+    # duplicate positions or non-owned in-place/input wires).
+    free!(wa, pebble.owned_wires)
 
     delete!(live_map, group.ssa_name)
 end
