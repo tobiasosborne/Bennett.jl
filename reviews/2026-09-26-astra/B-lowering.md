@@ -3,6 +3,8 @@ Status: IN PROGRESS
 Scope: `src/lower.jl`, `src/lowering/*.jl`, `src/narrow.jl`, `src/wire_allocator.jl`; contextual IR, gates, simulation and diagnostics code.
 Method: Read-only source audit and focused Julia probes with bounds checking. Only this report is intentionally written; no issue-tracker operations, full test suite, or repository mutations.
 
+Continuation audit: the previous report is preserved below while its S0/S1 claims are independently re-executed. Any refuted claim will be explicitly superseded; continuation measurements and coverage will be recorded here before completion.
+
 ## Executive summary
 
 Pending completion.
@@ -301,3 +303,8 @@ println((simulate(c,Int8(2)),verify_reversibility(c))) # (7, true), expected 11
 - Arithmetic probes: ten predicates × 65,536 pairs; three shifts × two folding modes × 2,048 pairs; 131 signed-division, 132 signed-remainder, and 110 cases each for unsigned division/remainder; 256/256/65,536 cast inputs. Every successful circuit also ran `verify_reversibility` (12 random probes for the large division circuits, default 100 elsewhere).
 - Metadata audit: **Bennett-g7d6** is correct that `_narrow_ir` discards all three fields. A direct probe with one global, non-nothing MemSSAInfo and one provenance tuple produced `globals=0, memssa=nothing, provenance=empty`. The stronger claim of a currently reachable silent constant-table result is not established: the normal table nodes `IRVarGEP`/`IRLoad` hit missing narrowing handlers first. No S0 table claim is inferred from field loss alone.
 - No full suite, `bd`, source changes, worklog edits, commits or remote automation were performed. Julia 1.12.5; subsequent probes used existing compiled modules to avoid repeated precompile work. Initial normal package load completed after a shared precompile-lock wait.
+
+### Continuation checkpoint 1 — independently repeated serious reproducers
+
+- Re-executed the saved Julia snippets under Julia with `--compiled-modules=existing --project --check-bounds=yes --startup-file=no`. F1: 64 mismatches and reversibility true. F2: 256 mismatches in both folding modes, output 0 and reversibility true. F3: exactly the recorded `[0,0,0,0,0]` / `[1,2,4,8,1]` outputs, both reversible. F5: all four recorded mismatch counts and outputs reproduced. F6: output 0 instead of 42, reversible. F7: output 65 for -128 and 192 mismatches, reversible. F8: the recorded false convergence exception reproduced. F15: output 7 instead of 11, reversible. These claims remain confirmed; real Julia extraction follow-ups and the two remaining S1 fixtures follow.
+- Independently read the complete CFG/loop and PHI implementations, call lowering, allocator, and driver control-flow walk. No repository source files were changed.

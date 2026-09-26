@@ -172,6 +172,14 @@ Pending completion.
 - Test: alias-backed store and side-effecting alias call, plus alias loads with live/dead uses; unsupported effects must fail at extraction, supported ones must match native state changes.
 - Already tracked? Bennett-n4di (open) is accurate. This probe strengthens it from a possible dangling SSA failure to an actual silently dropped side effect. Bennett-fnxh/hsm3 only protect the specifically named jl_global JIT-alias family.
 
+### F18 — [S1] Unnamed LLVM basic blocks all become the same empty label
+- Where: `src/extract/module_walk.jl:477–478`; `src/extract/instructions.jl:6658–6667,6326–6353`.
+- Evidence: VERIFIED-BY-EXECUTION. `_parsed_ir_from_ir_string` on `define i8 @julia_unnamed(i8 %x) { %1=icmp eq i8 %x,0 br i1 %1,label %2,label %3 2: ret i8 7 3: ret i8 9 }` produces three blocks all labelled `Symbol("")`; both branch targets are also `Symbol("")`. `reversible_compile(p)` rejects with `lower: duplicate basic-block labels in ParsedIR (Bennett-c6ex)`.
+- Failure scenario: numeric block slots are valid LLVM IR and common in external compiler output. `LLVM.name` returns an empty string for an unnamed block, not its printed slot number. The value naming pass handles unnamed instructions but omits block identities entirely.
+- Fix: build a collision-free `LLVMValueRef => Symbol` block table before conversion and consult it for block labels, branch/switch targets and phi predecessor labels. Never use an empty string as block identity.
+- Test: unnamed entry/diamond/loop blocks with named and unnamed values; extraction must retain distinct CFG nodes, and the diamond must return 7 for zero and 9 otherwise over all 256 UInt8 inputs with ancilla checks.
+- Already tracked? No matching open bead; Bennett-c6ex's downstream duplicate-label guard catches the extractor defect but does not fix it.
+
 ## Unconfirmed suspicions
 
 ## What is sound (brief)
