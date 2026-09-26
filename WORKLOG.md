@@ -1,5 +1,7 @@
 # Bennett.jl Work Log
 
+> **2026-09-26 — Astra review campaign (Bennett-yjd5) WIND-DOWN: codex weekly quota burned to 100 % in ~2 h with ≤4 gpt-6-astra xhigh reviewers; 9/9 scopes, 162 findings, ~110 S0/S1 re-executed by independent Claude verifiers (0 refuted), 83 + 24 beads labelled `astra-2026-09-26`, six fixes landed (ukup, uhk3, qa2g, 37w3 via 3+1, 6gxm, uwv2). Gotchas: provider content filter kills compiler-memory sessions (topic, not volume; resume re-fails — fresh session + saved partial report); never gate on `tail -1` of a task-output file; `bd export` writes to stdout.** Detail: [`worklog/108`](worklog/108_2026-09-24_correctness_sweep.md).
+
 > **2026-09-26 — both repos synced (main behind 32 / master behind 3; stale untracked AGENTS.md collision, stash left because `stash drop` is classifier-refused); Astra review campaign Bennett-yjd5 launched: nine gpt-6-astra xhigh scopes over both repos, ≤4 concurrent, crash-safe logs + incremental reports, until the weekly codex quota resets 2026-10-01 08:14 UTC.** Detail: [`worklog/108`](worklog/108_2026-09-24_correctness_sweep.md).
 
 > **2026-09-24 SESSION CLOSE — hsm3 (jl_global semantic certification) CLOSED; chunked full-suite gate green (~1.53M assertions); main fast-forwarded. Handoff priority list at the top of worklog/108.** Detail: [`worklog/108`](worklog/108_2026-09-24_correctness_sweep.md).
