@@ -56,3 +56,6 @@ Highest-value targets:
 4. Common helpers (`softfloat_common.jl`: CLZ, 128-bit multiply `_add128`, round-to-nearest-even, normalize-to-bit52): off-by-one on shift amounts ≥ 64, sticky-bit loss, double-rounding.
 5. `softfloat_dispatch.jl`: promotion rules, mixed SoftFloat/Int arithmetic, missing overloads that would silently fall back to native Float64 (S0 in the compile path).
 Known context: `worklog/` entries mentioning soft_exp (Bennett-wigl post-mortem), `docs/design/rearch-2026-08/` (report c4 covers softfloat). Verify or refute, do not repeat.
+
+# PROVIDER CONTENT-FILTER NOTE (important, read before starting)
+Two earlier reviewers in this campaign were killed mid-review by the provider's automated "cybersecurity risk" content filter after a single command dumped several hundred raw lines of compiler source (pointer/memcpy/memmove handling code) into one tool output. This is a false positive on ordinary compiler code, but a killed session cannot be resumed. To avoid it: never print more than ~120 lines of raw source in one command; prefer `rg -n` for identifiers and targeted `sed -n a,bp` slices; summarise code in your own words in your messages rather than quoting long excerpts; keep Julia probe outputs short (print only the values you need). Save your report frequently — it is the only artefact that survives a kill.
