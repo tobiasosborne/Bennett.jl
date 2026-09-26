@@ -1,5 +1,52 @@
 # Worklog chunk 108 — 2026-09-24 — correctness sweep: stwr, t9rh, c6ex, gcf7 (5viz FAIL), hsm3
 
+## Session log — 2026-09-26 — sync both repos + Astra review campaign launch (Bennett-yjd5)
+
+**Sync.** Bennett.jl `main` was **behind 32** (the 2026-09-24 cloud correctness
+sweep: q9pi, stwr, t9rh, c6ex, gcf7 FAIL, hsm3, worklog 108) and BennettVM.jl
+`master` **behind 3**. Both fast-forwarded clean. `origin/claude/loving-ptolemy-8a914n`
+exists in BOTH repos and is byte-identical to main/master (the cloud session's
+working branch, already merged) — no unmerged work on it. `origin/wip/a70z-overflow-bit`
+remains the one stale WIP branch (1 commit, self-labelled UNVERIFIED).
+
+**Gotcha, new: the pull collided with the untracked root `AGENTS.md`.** Incoming
+`65b2d68` (Bennett-6gfu) adds a TRACKED 33-line pointer `AGENTS.md`; the local tree
+had the stale 282-line untracked copy the 2026-09-06 entry flagged. Same recipe as
+that entry: `git stash push --include-untracked -- .beads/embeddeddolt/ AGENTS.md`,
+pull, verify. **The stash could NOT be dropped**: `git stash drop` is refused by the
+Claude Code auto-mode classifier ("Irreversible Local Destruction"). `stash@{0}`
+("pre-pull 2026-09-26 …") is therefore still present and is garbage — it holds the
+stale AGENTS.md plus dolt read-churn. Whoever has a human hand: `git stash drop`.
+
+**BennettVM: `bd import` after pull (per the memory) → 266 issues + 1 memory.** The
+`references/{ad-and-checkpointing,foundational,implementations,quantum-uncomputation}`
+dirs (~70 MB of PDFs) are untracked and NOT gitignored; left alone, not committed.
+
+**Codex quota is one WEEKLY window, not 5h + weekly.** Read from the `rate_limits`
+field in `~/.codex/sessions/**/rollout-*.jsonl` (`window_minutes=10080`): 26 % used,
+resets **Thu 2026-10-01 08:14 UTC**. The 99 %/09:37-UTC-today entry seen in older
+sessions was the PREVIOUS window. Script: `astra-review-2026-09-26/bin/quota.sh`
+(sibling dir of the repos; takes the latest `primary` object across recent rollouts
++ campaign logs). `bd create` printed the known `did not send all necessary objects`
+dolt-push error but the bead WAS created (Bennett-yjd5) — always re-check with `bd list`.
+
+**Campaign design (user directive: burn the weekly quota with gpt-6-astra xhigh
+reviewers, ≤4 concurrent, wind down at reset).** Nine scopes: Bennett.jl
+B-lowering / B-extract-core / B-extract-vm / B-circuit-core / B-arith / B-softfloat /
+B-tests-api; BennettVM.jl VM-core / VM-ingest. Briefs = shared preamble (severity
+scale S0–S4, VERIFIED-BY-EXECUTION vs REASONED-ONLY, one-writable-file rule, no
+`bd`, no Pkg.test) + per-scope targets; archived under `reviews/2026-09-26-astra/prompts/`
+in each repo. **Partial-work insurance** (user request): `codex exec --json` event
+stream tee'd to `astra-review-2026-09-26/logs/<scope>.jsonl` (has the thread id, so
+`codex exec resume <id>` continues a killed session), sessions non-ephemeral,
+reviewers told to create their report file first and append findings as found,
+`-o <scope>.final.md` for the final message, reports committed as each lands.
+Sandbox `workspace-write` with `--add-dir ~/.julia` so Julia probes can run (a
+`read-only` sandbox would block the depot). `codex sandbox read-only -- …` is NOT
+valid syntax in 0.157.1 (it exec'd "read-only" as a binary) — irrelevant for
+`exec -s read-only`, noted so nobody repeats the probe.
+Wave 1 launched 09:49 UTC: B-lowering, B-extract-core, B-circuit-core, VM-core.
+
 ## Session log — 2026-09-24 — SESSION CLOSE (wind-down) — handoff: READ FIRST
 
 **State of main (fast-forwarded from claude/loving-ptolemy-8a914n):** stwr, t9rh,

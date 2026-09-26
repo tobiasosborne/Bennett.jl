@@ -1,0 +1,128 @@
+○ Bennett-0orf ● P1 [epic] EPIC: Bennett v2 reimplementation per Bennett-V2-PRD.md (14-agent rearch sweep 2026-08-15)
+○ Bennett-5vgb ● P1 v2 spike S2: RegFile{N,W} read/write prototype on qrom.jl, measured vs BENCHMARKS memory corpus
+○ Bennett-ctsc ● P1 v2 spike S6: read Sturm.jl + elicit BennettVM ParsedIR requirements (inputs to D1/D9)
+○ Bennett-ctz0 ● P1 v2 spike S1: 1.13-rc3 empirical battery — gate-count drift, #61535 bounds-check CFG shapes, #61394 memory-attr population, non-textual module acquisition prototype
+○ Bennett-z2ia ● P1 [bug] z2ia REMAINING HALF: dynamic-n alloca byte-normalisation (static case closed by bvmd) — needs IRBinOp mul + DynAlloca arity in BVM
+○ Bennett-0a6f ● P2 [bug] lower_call! lowers callees with default compile options (add/mul/target/fold/mem) — caller's explicit strategy ignored for all soft-float/div/pmap callees
+○ Bennett-0si3 ● P2 pin the D1b suppressed_refs THREADING (module_walk → _convert_instruction), not just the predicate (p06b round-3 review recommendation)
+○ Bennett-0ucg ● P2 [bug] (SC) raw-index blind spot: legacy non-integer-source GEP branch stores a RAW INDEX in offset_bytes with elem_width=8, defeating the stream check and spuriously triggering byte-normalisation (bvmd review D3)
+○ Bennett-1p2v ● P2 cross-function scale coherence: _check_scale_coherence! is per-function — nothing constrains a pointer crossing a call boundary (bvmd measured failure class)
+○ Bennett-1zow ● P2 [bug] alloca with unmodelled allocated type silently registers a dangling SSA name (CLAUDE.md §1 violation, pre-existing; surfaced by p06b proposers A+B)
+○ Bennett-21rj ● P2 [bug] (SC) coverage gap: heap-skeleton, dict_vm and vector_vm producers bypass the stream check entirely (bvmd review D6)
+○ Bennett-23ml ● P2 5viz BVM E2E gate (gcf7 item 2): singleton-src memcpy through the real front end runs+reverses on BennettVM
+○ Bennett-25dm ● P2 [bug] U62: T5 corpus (Julia TJ1/TJ2/TJ4; C TC1-3; Rust TR1-3) still @test_throws
+○ Bennett-666n ● P2 [bug] vbv9's arena-DST byte offset is unchecked for cell alignment on the global-src memcpy path
+○ Bennett-8e1f ● P2 VM-COVERAGE BG3: U16 multi-index GEP FILL (LLVMOffsetOfElement type-walk) — C arrays & struct fields for the VM
+○ Bennett-8guh ● P2 bennett-irswap: IRSwap primitive (Hermes-style swap-mutate-swap)
+○ Bennett-9k7n ● P2 [bug] lower_call! assumes allocate! returns a contiguous block; free-list reuse (qrom.jl free!) can remap callee gates onto LIVE wires
+○ Bennett-ckkh ● P2 jfw6 follow-up: Case A Vector recogniser rejects two-loop write-then-read (fill-loop + reduce-loop)
+○ Bennett-eis4 ● P2 v2 spike S4: profile one soft_sin compile end-to-end (extract vs lower vs wire-alloc vs bennett)
+○ Bennett-exb3 ● P2 [bug] fold_constants=true (default) empties gate_groups, silently turning value_eager / pebbled_group / checkpoint strategies into plain Bennett
+○ Bennett-fg2 ● P2 SAT solver: replace PicoSAT with best-in-class (Kissat/CaDiCaL)
+○ Bennett-figa ● P2 Per-file test validation must use --check-bounds=yes to match Pkg.test() — workflow gap
+○ Bennett-g7d6 ● P2 [bug] narrow.jl entry drops globals/memssa/synth_ptr_provenance: bit_width=W on a function with a constant table silently loses the table
+○ Bennett-glh ● P2 T0.3 Integrate Julia EscapeAnalysis for allocation site classification
+○ Bennett-gm83 ● P2 Parallel test-file runner: farm the 314 standalone test files across N worker processes (28min -> minutes)
+○ Bennett-gygy ● P2 [bug] test_doh6 green-asserts doctest=true while docs/make.jl has doctest=false (matches prose on line 13); no jldoctest is ever executed
+○ Bennett-khb2 ● P2 p06b :load target capacity is a disclosed well-formedness assumption — certify it (interprocedural extent analysis or BVM pointer provenance)
+○ Bennett-kq1x ● P2 relax gate-backend shadow-tape width checks to span width÷elem_width consecutive slots — removes the bvmd byte-normalised-alloca refusal in lower() (route (i))
+○ Bennett-lqlc ● P2 Auto-infer loop bounds by classical evaluation — remove the max_loop_iterations guess
+○ Bennett-n4di ● P2 [bug] module_walk benign-error swallow can silently drop instructions with non-jl_global GlobalAlias operands
+○ Bennett-n9o8 ● P2 [bug] Loop convergence guard not gated by header predicate: a loop inside an untaken branch can trip LoopGuard spuriously (worse post-c6ex with predicated multi-preheader seeds)
+○ Bennett-o540 ● P2 v2 spike S5: parallel-test depot mechanism (precompile-once + read-only shared depot) — also unblocks Bennett-gm83 for v1
+○ Bennett-ponm ● P2 [bug] bd dep tracking broken: wisp_dependencies table missing
+○ Bennett-sku0 ● P2 [bug] jbko sibling cell-ness tightening: _jbko_identity_use_violation accepts any SSA sibling, not φ-images (a8nw review D1; proposal_A §7 R2's never-filed bead)
+○ Bennett-spqu ● P2 Reversible-VM backend — emit a reversible program for a reversible abstract machine (next-version north star)
+○ Bennett-sy9t ● P2 [bug] _lower_load_legacy! silently returns on unknown pointer (no vw[dest]; failure surfaces later or not at all)
+○ Bennett-tfx ● P2 VM-COVERAGE BG5: soft_frem (musl fmod port) + wire frem; + fdim + uitofp-edge — was deferred
+○ Bennett-ualq ● P2 sin f64 gate-count bookkeeping: attribute the .ll-route drift (11,028,238 vs deck pin 11,027,852) + capture sugar-path count post-l5v8
+○ Bennett-uiqq ● P2 [bug] alloca arm discards the count operand for ArrayType allocas — alloca [K x T], i32 N reserves K*width cells regardless of N (pre-existing under-reservation, surfaced by p06b re-review N1)
+○ Bennett-vysm ● P2 v2 spike S3: StructurizeCFG via LLVM.jl on Julia-emitted IR (incl. irreducible CFGs)
+○ Bennett-wh1p ● P2 [bug] case-folding bugs in callee symbol handling: _lookup_callee lowercases vs case-preserving registry; _demangle_callee_symbol lowercases its capture
+○ Bennett-wo5z ● P2 [bug] (SC) depth-8 root walk FAILS OPEN — violations behind >=9-deep GEP chains extract silently (bvmd review D4)
+○ Bennett-x90d ● P2 [bug] _p06b_suppressed_refs comment is FALSE: claims 'the EXACT set of refs this loop continues past' but omits every ir_inst===nothing skip (singleton-global alias, fence, gc_preserve, overflow intrinsics)
+○ Bennett-zdd6 ● P2 [bug] jb6w landmine: clang SysV register-coercion spill emits literal {i64,ptr} GEP — silent mis-stamp discriminator missing
+○ Bennett-2fue ● P3 Mixed-width store/load on wider-element allocas (shadow tape redesign)
+○ Bennett-2o4r ● P3 ConstantVector operands with mixed poison elements (<i64 1, i64 poison>) still hit 'cannot resolve vector lanes'
+○ Bennett-2xws ● P3 [bug] HAMT impl silently mis-stores keys colliding mod 32 (single-level node)
+○ Bennett-3jvg ● P3 Register malloc/realloc as Bennett callees (T5 C-corpus blocker)
+○ Bennett-3wk7 ● P3 [bug] extract: f32 fptosi/fptoui/sitofp fall through to SILENT IRCast (Rule 1 must fail loud)
+○ Bennett-4iuj ● P3 target=:depth only steers mul; adds still use O(W)-depth ripple although lower_add_qcla! exists
+○ Bennett-5006 ● P3 Heap arrays: runtime-index element stores (gf3n M2 follow-up)
+○ Bennett-6c6f ● P3 bennett-qroam: QROAM SELECT-SWAP for runtime-indexed mutable memory at N·W > 64
+○ Bennett-6rqq ● P3 Registry-isolation hygiene: register_callee! leaks across suite files cause order-dependent extraction walls
+○ Bennett-6siy ● P3 P.2 Paper outline (PLDI/ICFP target)
+○ Bennett-7sb7 ● P3 [bug] HAMT does not compile under optimize=false (assert-throw call unlowered)
+○ Bennett-82jc ● P3 compose's 'self-reversing' rejection message/header comment is misleading: check only detects input∩output overlap (tabulate/qcla self-reversing circuits compose fine)
+○ Bennett-890r ● P3 [bug] TJ4 corpus test is a store-to-load mirage — redesign with distinct store/load indices
+○ Bennett-8nfb ● P3 Loop lowering limitations surfaced by c6ex: natural-loop exit identification, multi-exit (break) and multi-latch support, :__unreachable__ KeyError in _collect_loop_body_blocks
+○ Bennett-8o70 ● P3 Wide-W persistent-map callees: *_pmap_set/get are Int8-only
+○ Bennett-9tg3 ● P3 [bug] on_extract_error=:skip can silently return an EMPTY ParsedIR set — Rule-1 gap
+○ Bennett-9wmk ● P3 Ancilla recycling via mid-algorithm fast_copy swap (Sun-Borissov paper 2n^2 bound)
+○ Bennett-amah ● P3 Beads dolt cache bloat: git-tracked noms blob >50MB GitHub soft limit — plan compaction
+○ Bennett-c4gh ● P3 VISION-PRD + Memory-PRD drift sweep (PRD docs)
+○ Bennett-ce9t ● P3 [bug] ParsedIR.args width wrong for by-pointer instance-less callees wider than 8 bytes (inert today — BVM drops widths)
+○ Bennett-e5ke ● P3 T2b.2 Mechanical reversal of linear functions
+○ Bennett-eqjl ● P3 [bug] Empty-Memory singleton identity on BennettVM: shared data-ptr sentinel + per-function globals windows make === between singletons diverge from Julia
+○ Bennett-gb39 ● P3 [bug] test_uinn catch-narrowing scanner false-positives on prose 'catch' in docstring bodies and message strings — two hits in two arcs (bvmd, sy29)
+○ Bennett-h7r2 ● P3 Harden global-src memcpy arm: byval-param discrimination + K>1 chunk-stacking + dst-cell bounds (u2kk verifier nits)
+○ Bennett-hao ● P3 Intrinsic: llvm.memcpy / llvm.memmove / llvm.memset (bulk memory)
+○ Bennett-hh34 ● P3 explanation essay: the xkl frontier story (closed-world extraction + the three admission contracts)
+○ Bennett-htu2 ● P3 [bug] Possible ValueEager leak: a group cleaned early as dead never releases its dependencies' consumer counts
+○ Bennett-i30x ● P3 Heap recogniser: --check-bounds=yes IR rejects with a misleading message (M5 candidate)
+○ Bennett-i3nj ● P3 Rust cross-context LLVM parser for .ll ingest
+○ Bennett-je4n ● P3 c6ex follow-ups: _expand_switches same-target cmp -> unconditional br + dedupe (val,pred) incomings; A11 fail-loud at source; LLVM.verify on .ll ingest
+○ Bennett-jgyx ● P3 [bug] lower_call! hardcodes max_loop_iterations=64 for inlined callees — caller bound ignored
+○ Bennett-k4q3 ● P3 T2b.1 Design and implement @linear macro for Julia
+○ Bennett-lcye ● P3 gates.jl hardening: reject CNOTGate(c,c) and Toffoli with target ∈ controls at construction
+○ Bennett-lk9s ● P3 CW-D: fold sub(ptrtoint(gep i8 P,off), ptrtoint(P')) -> off for in-model base cancellation (583s follow-up)
+○ Bennett-mjtl ● P3 PebbledStrategy is provably a no-op (emits the Bennett stream) and throws for almost every k
+○ Bennett-ms0o ● P3 [bug] Rust T5 .ll fixtures in build/ use LLVM syntax (getelementptr inbounds nuw, trunc nuw) newer than pinned LLVM.jl parses — unparseable fixtures
+○ Bennett-n5n ● P3 Package registration: publish Bennett.jl to Julia General registry
+○ Bennett-n88f ● P3 [bug] t5-rust-llvm-skew: rustc>=1.95 emits LLVM 19+ syntax that local LLVM 18 cannot parse
+○ Bennett-nw1 ● P3 v0.7: Hash-consing for reversible memory (Mogensen 2018)
+○ Bennett-nyln ● P3 _run_passes! runs with no TargetMachine (base TTI) — make it use the pinned t9rh target too
+○ Bennett-olyw ● P3 replace the dangling 'bennettvm-9n3y' ID across prose and pins (9x instructions.jl, test_p06b :275/:374) — the real bead family is Bennett-zdd6/jb6w (P3 doc sweep)
+○ Bennett-p4ch ● P3 QROAM SelectSwap for read-only QROM tables (clean-ancilla, Low-Kliuchnikov-Schaeffer 2024)
+○ Bennett-pljv ● P3 Restore JET hygiene to test target once it precompiles cleanly under test-config on Julia 1.12.x
+○ Bennett-po93 ● P3 strengthen _p06b_slot_key to merge IDENTICAL runtime-indexed GEPs: key (root_ref, const_offset, index_refs) (p06b round-3 m9 escape)
+○ Bennett-q22p ● P3 Schedule B uncompute for parallel_adder_tree (paper Toffoli-depth formula)
+○ Bennett-q2ny ● P3 Recognise structurally-reversible loops (variant/invariant) — unroll without a history log
+○ Bennett-qjet ● P3 zy4u-followup: empirical timing-based reorder of test/runtests.jl
+○ Bennett-qq5u ● P3 qmv7-multi: multi-element gc_loaded heap-Memory memcpy (N != single element) under ptr_cells
+○ Bennett-qt6o ● P3 [bug] insertvalue-into-undef aggregate return (Tuple{T,Bool}) blocks from-source extraction of Base.Checked.*_with_overflow — tl1l residual
+○ Bennett-que ● P3 LLVM pass pipeline: custom optimization for reversible compilation
+○ Bennett-sxse ● P3 Arena-cell memcpy freshness guard (G9 analogue for gc_alloc'd dsts) — deferred from vbv9
+○ Bennett-t7zu ● P3 Lower self-recursive sret callee (ht_keyindex2) to a circuit — bounded-unroll / fixpoint inlining
+○ Bennett-v0rc ● P3 BENCHMARKS.md / run_benchmarks.jl header should record the pinned extraction target (x86-64-v3, O2) and refresh host-dependent rows
+○ Bennett-v7gv ● P3 ε: interprocedural value-identity extension of ADR 0017 §4b (per-callee write summaries over CW-D1a transitive_callees) — successor to Bennett-57hd, unscheduled
+○ Bennett-vb2 ● P3 Opcode: vector operations (extractelement, insertelement, shufflevector)
+○ Bennett-vckk ● P3 admit ptr function arguments as certified jbko ptrtoint sources (a8nw review D2 — dead diagnostic branches; shape-inconsistent conservatism)
+○ Bennett-vpgj ● P3 [bug] Loop-region adds silently use ripple under explicit add=:cuccaro/:qcla (cfg.jl loop contexts) — rule-1 tension
+○ Bennett-vscb ● P3 MUX-EXCH alloca dispatcher priority is backwards: preferred for N*W<=64 yet ~10-100x more gates than shadow_checkpoint on the same shape
+○ Bennett-vt0a ● P3 Bennett-aware wire allocator (free! that doesn't conflict with outer reverse)
+○ Bennett-xkv ● P3 Multi-language support: C/C++/Rust via LLVM bitcode
+○ Bennett-xroi ● P3 Reconcile IRPtrOffset.offset_bytes field contract: mem=:heap M2 re-rooter stores element index, not bytes
+○ Bennett-xtu9 ● P3 Variable-size memcpy/memset: bound annotation or runtime loop unroll
+○ Bennett-yn08 ● P3 [bug] Base.fma(::Float64) resolves via Core.Intrinsics.have_fma at codegen — host dependence the t9rh pin cannot remove
+○ Bennett-yqzb ● P3 3vf2 GOT-stub/dead-use interaction untested: unclassified jlplt_*_got load with all-dead uses falls through klgz into the 3vf2 drop with no fixture
+○ Bennett-yxr8 ● P3 Memmove proper lowering: alias analysis + direction-aware copy
+○ Bennett-zmry ● P3 Non-fresh dst uncompute: destructive store via IRLoad+CNOT-uncompute pattern
+○ Bennett-zuk5 ● P3 _closed_world_check! bare_to_key map lacks >1-candidate guard on the Symbol path (defense-in-depth)
+○ Bennett-4rl0 ● P4 Bennett-land-precise-escape: byte-precise overlap analysis for the load-escape guard
+○ Bennett-6qsn ● P4 Bennett-land-inttoptr: materialize inttoptr-of-const ptr fields
+○ Bennett-a5ag ● P4 _pick_alloca_strategy (N=1, W>=64) dynamic-index gap
+○ Bennett-e283 ● P4 Native Float32 soft-float arithmetic (24-bit mantissa)
+○ Bennett-epfe ● P4 Bennett-doih follow-up: cross-width global-src memcpy (byte-packing)
+○ Bennett-fnuf ● P4 Bennett-land-transitive-escape: escape guard for indirect alloca→alloca→load chains
+○ Bennett-lj10 ● P4 Bennett-land-addrspace: non-zero addrspace ptr fields
+○ Bennett-lxk7 ● P4 U03: extend probe battery from 4 deterministic to 4 + 8 randomised inputs
+○ Bennett-pzft ● P4 Auto self_reversing: uncompute high-W qcla_tree wires for truncating case
+○ Bennett-rpqc ● P4 Bennett-land-ptrsize32: wasm32/arm32 4-byte ptr support
+○ Bennett-t3ou ● P4 benchmark/bc1_cuccaro_32bit.jl + BENCHMARKS.md Cuccaro rows stale (x+1 listed 100 gates; actual 98)
+○ Bennett-ui4f ● P4 Bennett-doih follow-up: variable-GEP src memcpy (true QROM fan-out)
+
+--------------------------------------------------------------------------------
+Total: 123 issues (123 open, 0 in progress)
+
+Status: ○ open  ◐ in_progress  ● blocked  ✓ closed  ❄ deferred

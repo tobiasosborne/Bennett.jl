@@ -1,5 +1,7 @@
 # Bennett.jl Work Log
 
+> **2026-09-26 — both repos synced (main behind 32 / master behind 3; stale untracked AGENTS.md collision, stash left because `stash drop` is classifier-refused); Astra review campaign Bennett-yjd5 launched: nine gpt-6-astra xhigh scopes over both repos, ≤4 concurrent, crash-safe logs + incremental reports, until the weekly codex quota resets 2026-10-01 08:14 UTC.** Detail: [`worklog/108`](worklog/108_2026-09-24_correctness_sweep.md).
+
 > **2026-09-24 SESSION CLOSE — hsm3 (jl_global semantic certification) CLOSED; chunked full-suite gate green (~1.53M assertions); main fast-forwarded. Handoff priority list at the top of worklog/108.** Detail: [`worklog/108`](worklog/108_2026-09-24_correctness_sweep.md).
 
 > **2026-09-24 (cont.) — correctness sweep: stwr (cuccaro soundness), t9rh (host-CPU-independent extraction, pinned x86-64-v3), c6ex (silent optimize=false loop miscompiles) CLOSED; 5viz hostile review FAILED → hsm3 (P1 jl_global name-trust miscompile) in 3+1.** Detail: [`worklog/108`](worklog/108_2026-09-24_correctness_sweep.md).
