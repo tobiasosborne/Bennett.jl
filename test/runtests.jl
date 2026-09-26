@@ -260,6 +260,9 @@ runfile("test_4eu_indirectbr_reject.jl")
 runfile("test_nj6c_extended_mux_shapes.jl")
 # Bennett-cb9y (Bennett-dnh phase 1b): multi-origin ptr × runtime idx.
 runfile("test_cb9y_multi_origin_runtime_idx.jl")
+# Bennett-37w3 — multi-origin (selected-pointer) stores guarded by block ∧ origin
+# predicate (Astra B-lowering F1; 3+1: docs/design/2026-09-26-astra-fixes/37w3-*).
+runfile("test_37w3_selected_pointer_store_predicate.jl")
 runfile("test_gate_count_regression.jl")
 runfile("test_negative.jl")
 runfile("test_soft_sitofp.jl")
