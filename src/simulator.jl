@@ -7,21 +7,45 @@
 
 Bennett-6fg9 / U19: per-input bit-width bounds check. An `Integer` value
 `v` intended for a `w`-bit input at position `k` must be representable
-in `w` bits under either signed or unsigned semantics. Silent truncation
-via `(v >> i) & 1` would otherwise mis-ingest over-wide inputs.
+in `w` bits under either signed or unsigned semantics, i.e. lie in
+`[-2^(w-1), 2^w)`. Silent truncation via `(v >> i) & 1` would otherwise
+mis-ingest over-wide inputs.
+
+Bennett-qa2g: the check applies at EVERY width, including `w >= 64`
+(pre-fix it returned early there, so `UInt128(1) << 64` fed to a 64-bit
+input silently became 0). Native ≤64-bit values against a ≤64-bit width
+use exact `Int128` arithmetic; anything else (`Int128`, `UInt128`,
+`BigInt`, widths > 64) is compared exactly in `BigInt`.
 """
 @inline function _assert_input_fits(v::Integer, w::Int, k::Int)
     w > 0 || throw(ArgumentError("simulate: input $k has width $w (must be > 0)"))
-    w >= 64 && return nothing   # UInt64 upper-bound subsumes Int64
-    # Allow signed-representable [-2^(w-1), 2^(w-1)) OR unsigned
-    # [0, 2^w). Anything outside both ranges would silently wrap.
-    signed_lo  = -(Int128(1) << (w - 1))
-    signed_hi  =  (Int128(1) << (w - 1)) - 1
-    unsigned_hi = (Int128(1) <<  w     ) - 1
-    vi = Int128(v)
-    ok = (signed_lo <= vi <= signed_hi) || (0 <= vi <= unsigned_hi)
+    ok = if w <= 64 && v isa Base.BitInteger && sizeof(v) <= 8
+        vi = Int128(v)   # exact for every ≤64-bit native integer
+        -(Int128(1) << (w - 1)) <= vi <= (Int128(1) << w) - 1
+    else
+        vb = BigInt(v)
+        -(big(1) << (w - 1)) <= vb <= (big(1) << w) - 1
+    end
     ok || throw(ArgumentError(
-        "simulate: input $k value $v does not fit in $w bits"))
+        "simulate: input $k value $v does not fit in $w bits (accepted " *
+        "range is [-2^$(w - 1), 2^$w))"))
+    return nothing
+end
+
+"""
+    _assert_output_decodable(elem_widths) -> nothing
+
+Bennett-qa2g: output elements are decoded into at most 64-bit integers
+(`_read_int`). A wider element would silently lose its high bits, so it is
+rejected loudly instead; wide decoding is not implemented.
+"""
+function _assert_output_decodable(elem_widths)
+    for (k, w) in enumerate(elem_widths)
+        w <= 64 || throw(ArgumentError(
+            "simulate: output element $k has width $w bits; decoding output " *
+            "elements wider than 64 bits is not supported (Bennett-qa2g) — " *
+            "values would be silently truncated"))
+    end
     return nothing
 end
 
@@ -182,6 +206,9 @@ function _simulate_with_buffer!(bits::Vector{Bool}, circuit::ReversibleCircuit,
     end
     circuit.n_wires > 0 || throw(ArgumentError(
         "simulate: circuit has n_wires = 0 (empty circuit)"))
+    # Bennett-qa2g: reject undecodable (>64-bit) output elements before any
+    # gate runs rather than truncating at decode time.
+    _assert_output_decodable(circuit.output_elem_widths)
 
     offset = 0
     for (k, w) in enumerate(circuit.input_widths)
@@ -422,6 +449,10 @@ function _read_output(bits, output_wires, elem_widths, unsigned_out::Bool)
 end
 
 function _read_int(bits, wires, start, width, unsigned::Bool)
+    # Bennett-qa2g: the UInt64 accumulator below would drop bits >= 64.
+    width <= 64 || throw(ArgumentError(
+        "simulate: cannot decode a $width-bit output element (max 64 bits, " *
+        "Bennett-qa2g)"))
     raw = UInt64(0)
     for i in 0:width-1
         raw |= UInt64(bits[wires[start + i]]) << i

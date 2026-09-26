@@ -794,6 +794,9 @@ runfile("test_g27k_cc03_catch_narrow.jl")
 # Bennett-6fg9 / U19 — simulate arity + per-input bit-width guard (was:
 # silent drop of extra tuple elements, silent wrap of over-wide values).
 runfile("test_6fg9_simulate_arity.jl")
+# Bennett-qa2g — simulate range-checks inputs at every width (incl. >= 64) and
+# rejects > 64-bit output elements instead of silently truncating.
+runfile("test_qa2g_simulate_wide_values.jl")
 # Bennett-hmn0 / U20 — HAMT 9th-distinct-hash-slot overflow guard.
 # Gated behind BENNETT_RESEARCH_TESTS as of U54 cycle 4 (HAMT relocated).
 # include("test_hmn0_hamt_overflow.jl")  # → moved into research gate below
