@@ -1,19 +1,46 @@
 # Astra review — B-lowering — 2026-09-26
-Status: IN PROGRESS
+Status: COMPLETE
 Scope: `src/lower.jl`, `src/lowering/*.jl`, `src/narrow.jl`, `src/wire_allocator.jl`; contextual IR, gates, simulation and diagnostics code.
-Method: Read-only source audit and focused Julia probes with bounds checking. Only this report is intentionally written; no issue-tracker operations, full test suite, or repository mutations.
+Method: Source audit, LLVM-verified in-memory fixtures, real Julia extraction, exhaustive small-input simulation, and focused Julia regression files with bounds checking. Only this report was written; no source/worklog edits, issue-tracker commands, full test suite, or git mutations.
 
-Continuation audit: the previous report is preserved below while its S0/S1 claims are independently re-executed. Any refuted claim will be explicitly superseded; continuation measurements and coverage will be recorded here before completion.
+Continuation audit complete: all 16 inherited findings were independently reproduced; two new findings were added. Stable finding IDs are retained and the sections below are ranked by severity.
 
 ## Executive summary
 
-Pending completion.
+**18 confirmed findings: 8 S0, 5 S1, 3 S2, and 2 S3.** All inherited findings were independently reproduced; two new failures were added.
+The most serious defects silently corrupt table/callee results, pointer-mediated memory, narrowed shifts, loop side effects, and irreducible control flow while reversibility passes.
+Ordinary Julia reproducers establish the QROM/call miscompile and loss of tuple bounds errors; LLVM-verified fixtures establish the memory and irreducible-CFG failures.
+Cuccaro ownership, tested scalar predicates/arithmetic, and isolated memory primitives have substantial passing coverage. MUX-EXCH nevertheless costs 6–14× the existing shadow alternative.
+Fixes should prioritize control-flow activation, pointer provenance, allocation ownership, and complete gate-group metadata; passing reversibility alone does not establish functional correctness.
 
 ## Findings
+
+### F7 — [S0] QROM free-list reuse corrupts compact inlined callees while reversibility still passes
+- Where: `src/lowering/call.jl:104–105`, `113`, `120`, `124`, and noncompact twin at `138–158`; `src/wire_allocator.jl:18–25`; `src/qrom.jl:129`.
+- Evidence: VERIFIED-BY-EXECUTION. A 32-entry i8 QROM lookup followed by `inc8(x::UInt8)=x+UInt8(1)` reproduces the previously unconfirmed allocator bug. With `compact_calls=true`, **192/256** inputs are wrong, e.g. x=−128 → **65**, expected 1; x=−127 → **−126**, expected 2. Appending `+3` makes **256/256** wrong, e.g. x=−128 → **−60**, expected 4. Both compact variants **pass `verify_reversibility`**. Without compact calls and without the final add, simulation instead detects `Ancilla wire 68 not zero post-circuit`. Noncompact with the final add happened to give correct results, demonstrating sensitivity to later allocations rather than a universal failure.
+- Stronger continuation witness through **ordinary Julia extraction**: `const tab_review=ntuple(i->UInt8(i-1),32); @noinline inc_review(x::UInt8)=x+UInt8(1); Bennett.register_callee!(inc_review); lookup_review(x::UInt8)=inc_review(tab_review[Int(x&UInt8(31))+1])`. Compile `lookup_review,UInt8; optimize=true,compact_calls=true,strategy=:expression`: **192/256 wrong**, first `0x00 → 0x41`, expected `0x01`; reversibility passes. Extraction contains one global table and one IRCall. With compact calls off, **192/256 inputs instead throw ancilla-clean errors**. With `optimize=false`, both compact settings pass all 256 inputs. Thus the allocation-sensitive bug is reachable from normal registered-callee Julia code, not only hand-built IR.
+- Failure scenario: QROM returns scratch wires to the allocator. The subsequent call discards the vector returned by `allocate!` and uses a bump-pointer offset as if every allocation were contiguous. Reused holes mean the remapped callee reaches registers it did not reserve; copy-out/subsequent allocations overlap those registers.
+- Fix: map every callee wire through the actual vector returned by `allocate!`, including inputs, outputs, gates, and loop guards, or add an explicit contiguous-allocation primitive that reserves exactly the assumed interval. Audit every other use of `wa.next_wire` as an allocation-range description.
+- Test: below across compact on/off, folding on/off, table sizes 16/32/64, calls with constant and SSA arguments, and allocations after calls. Assert output against the table oracle exhaustively and all wire invariants.
+- Already tracked? **Bennett-9k7n**. Its root-cause description is correct; this review supplies the missing reproducer and establishes S0 severity, beyond its current P2/unconfirmed description. The older `aggregate.jl:159–166` comment blaming free-list reuse on Bennett's reverse scheduling should be re-evaluated: correctly cleaned scratch reuse is reversible; this offset remapping violates allocation ownership independently of reverse scheduling.
+
+```julia
+using Bennett: IRCall
+inc8(x::UInt8) = x + UInt8(1)
+insts = IRInst[IRBinOp(:i,:and,ssa(:x),iconst(31),8),
+    IRVarGEP(:p,ssa(:table),ssa(:i),8),IRLoad(:v,ssa(:p),8),
+    IRCall(:c,inc8,[ssa(:v)],[8],8)]
+p = ParsedIR(8,[(:x,8)],[IRBasicBlock(:entry,insts,IRRet(ssa(:c),8))],
+    [8],Dict(:table=>(UInt64.(0:31),8)))
+c = reversible_compile(p;compact_calls=true)
+println((simulate(c,Int8(-128)),verify_reversibility(c))) # (65, true)
+println(count(x->simulate(c,x)!=Int(x&31)+1,typemin(Int8):typemax(Int8))) # 192
+```
 
 ### F1 — [S0] Stores through a selected pointer ignore the store block's predicate
 - Where: `src/lowering/memory.jl:615–648`, especially 624–625, 632–633 and 647–648; guard override at 878–884 and 1051–1064.
 - Evidence: VERIFIED-BY-EXECUTION. A one-input ParsedIR initializes two i8 allocas to 11 and 22, selects pointer `p = (x & 1) != 0 ? a : b` in the entry block, conditionally executes `store 9, p` only when `(x & 2) != 0`, then returns `load a`. Exhaustive Int8 simulation gives **64/256 wrong**, e.g. `x=-127 → 9`, expected 11; `verify_reversibility(c) == true`. Executed with `--check-bounds=yes`, default folding. The multi-origin loop passes only `o.predicate_wire`, completely discarding `block_label`. This affects static shadow, dynamic shadow-checkpoint, and generated MUX-EXCH branches by the same code path.
+- Additional continuation execution: dynamic pointer selects reproduce **64/256 wrong** for both N=4 (generated MUX-EXCH) and N=16 (shadow-checkpoint), each with folding on/off; all four circuits pass reversibility. The preceding stores initialize each selected location to 11/22, so the failure is independent of uninitialized memory.
 - Failure scenario: pointer selection is true while the later store's branch is false; a store that source execution skips still changes memory. This is the named false-path-sensitization failure, now in memory predication rather than scalar PHIs.
 - Frontend confirmation: independently expressed the fixture in LLVM text, parsed it in memory, ran `LLVM.verify(module)` successfully, and passed it through `_module_to_parsed_ir` and `reversible_compile`. The same **64/256** mismatches and passing reversibility check result. No temporary source file was written.
 - Fix: combine the origin predicate with the current store block predicate before every multi-origin dispatch. Pass that conjunction as the external predicate; keep entry-block fast paths only when the block predicate is provably true.
@@ -49,6 +76,7 @@ println(verify_reversibility(c))           # true
 - Failure scenario: `p = &a[x & 3]; q = p + 0; *p = 42; return *q` on a four-byte local array. Every address is in bounds. A zero offset must preserve pointer identity and must not freeze the pointee value.
 - Frontend confirmation: LLVM-verified `alloca i8,i32 4; gep i8 a,(x&3); gep i8 p,0; store 42,p; load q` also extracts and compiles, with **256/256** mismatches and passing reversibility. This is valid LLVM pointer arithmetic, not only a hand-built ParsedIR edge case.
 - A second VERIFIED-BY-EXECUTION form exists in the persistent path: `IRVarGEP(:p1,ssa(:a),iconst(1),8)` followed by `IRPtrOffset(:q,ssa(:p1),0,8)` resets the origin index to zero at `aggregate.jl:219`. With initialized slots 11 and 22, `load q` returns **11 instead of 22**, and reversibility passes. This uses only two stores and is independent of F15's capacity failure.
+- Additional continuation execution: replacing the persistent zero-offset `IRPtrOffset` with `IRVarGEP(:q,ssa(:p1),iconst(0),8)` also returns **11 instead of 22**, reversibility true, for a valid three-slot allocation. Its producer overwrites the base index at `aggregate.jl:328–329` instead of adding to it.
 - Fix: represent every GEP as provenance plus composed index/offset, resolving memory at load time. At minimum propagate a dynamic origin unchanged for offset zero, add constant offsets to dynamic indices, and reject unsupported compositions instead of dropping provenance. The dynamic-GEP-on-GEP path also needs provenance propagation, not just `haskey(alloca_info, base)`.
 - Test: sweep all 256 inputs on zero/nonzero constant GEP after variable GEP, chained variable GEPs, and stores before/after pointer construction; compare with direct pointer use and verify ancilla/input restoration.
 - Already tracked? no matching open bead found (the existing GEP extraction/scale issues concern different code).
@@ -89,14 +117,6 @@ end
 # (true,  [1, 2, 4, 8, 1], true)
 ```
 
-### F4 — [S1] MUX-EXCH rejects a valid negative integer constant store
-- Where: `src/lowering/memory.jl:1049`, `1151–1155`.
-- Evidence: VERIFIED-BY-EXECUTION. In the F2 fixture replace the store value by `iconst(-1)` and load directly from `p` (omit `q`). `reversible_compile` throws `InexactError: convert(UInt64, -1)`. The static-index shadow path uses `resolve!` and handles the same bit pattern. `_operand_to_u64!` uses checked `UInt64(op.value)` rather than bit reinterpretation/modular conversion.
-- Failure scenario: storing an ordinary signed i8 constant such as −1 through an in-bounds dynamic pointer fails compilation for an otherwise supported alloca shape.
-- Fix: use a bit-pattern-preserving conversion, consistent with `resolve!(::ConstOperand)` (`unsigned(op.value)` / `reinterpret(UInt64, Int64(op.value))`); mask to the store width where required by the callee contract.
-- Test: dynamic-index stores of −1, typemin(Int8), −2 and positive edge values across every packed shape; verify all selected slots and all ancillae. Compare equivalent constant versus SSA values and static versus dynamic indices.
-- Already tracked? no matching open bead found.
-
 ### F5 — [S0] Loop-header side effects keep executing after exit, including the “check-only” pass
 - Where: `src/lowering/cfg.jl:419–420`, `444–450`, `523–527`, `549–562`.
 - Evidence: VERIFIED-BY-EXECUTION. The fixture below counts actual visits to a loop header in memory. Its correct result is `(x & 3) + 1`, and every input terminates within three back edges. For K=3 the circuit always returns **4**, wrong on **192/256** inputs; for K=5 it always returns **6**, wrong on **256/256** inputs. Both folding settings reproduce; all four circuits pass `verify_reversibility`. Header execution is guarded by the function-level header predicate, which stays true for every unrolled iteration. Only PHI registers freeze. The post-K “check-only” evaluation dispatches `IRStore` again, so it is observably not check-only.
@@ -128,6 +148,44 @@ end
 # (5, false, 256, 6, true), (5, true, 256, 6, true)
 ```
 
+### F18 — [S0] Irreducible regions are accepted as natural loops and lose side-entry effects
+- Where: `src/lowering/cfg.jl:116–145`, `205–246`, `419–420`, `454–483`; `src/lowering/driver.jl:189–218`, `240–241`.
+- Evidence: VERIFIED-BY-EXECUTION. The LLVM module below passes `LLVM.verify`, then real extraction reports back edge `(:L,:H)`. With K=1 or K=3 and folding on/off, **128/256 Int8 inputs produce 11 instead of 42**; all four circuits pass reversibility. H contains no side effects, so this is independent of F5. Every source execution terminates after visiting H once.
+- Failure scenario: entry can enter either H or L; H exits, while L stores 42 then enters H. The syntactic H↔L cycle has two entries, so H does not dominate L. DFS classifies L→H as a back edge without testing domination. The driver then removes L from ordinary lowering, and the unroller predicates L only as an H successor. The real entry→L edge disappears; even inputs miss the store.
+- Fix: use dominance/SCC analysis to establish a single-entry natural-loop region before invoking `lower_loop!`; reject irreducible regions until modeled. Constant-branch simplification before loop discovery also removes the infeasible H→L edge in this minimal fixture, but is not a substitute for checking side-entry edges on general loops. Ensure every predecessor of every body block is accounted for by the iteration graph.
+- Test: exhaustively simulate the module for K≥1; odd inputs return 11 and even inputs 42. Add equivalent CFGs with nonconstant infeasible edges, body side entries carrying values, and block-order permutations; they must either preserve semantics or fail at an explicit irreducibility check. Verify ancilla/input invariants.
+- Already tracked? no exact open bead found. **Bennett-8nfb** tracks natural-loop exit/multi-exit limitations and loud refusals, not this accepted irreducible side-entry miscompile.
+
+```julia
+using Bennett, LLVM
+ir = """
+define i8 @probe(i8 %x) {
+entry:
+ %a=alloca i8
+ store i8 11,ptr %a
+ %m=and i8 %x,1
+ %c=icmp ne i8 %m,0
+ br i1 %c,label %H,label %L
+H:
+ br i1 true,label %exit,label %L
+L:
+ store i8 42,ptr %a
+ br label %H
+exit:
+ %r=load i8,ptr %a
+ ret i8 %r
+}
+"""
+LLVM.Context() do ctx
+    m=parse(LLVM.Module,ir); LLVM.verify(m)
+    p=Bennett._module_to_parsed_ir(m;entry_function="probe")
+    c=reversible_compile(p;max_loop_iterations=1)
+    println(count(x->simulate(c,x)!=(isodd(x) ? 11 : 42),
+                  typemin(Int8):typemax(Int8))) # 128
+    println(verify_reversibility(c)) # true
+end
+```
+
 ### F6 — [S0] Missing store/allocation gate groups let ValueEager silently erase memory writes
 - Where: `src/lowering/driver.jl:556–568`; consumer `src/pebble/value_eager.jl:56` onward. `IRStore` has no `dest`, and a zero-gate `IRAlloca` creates no group.
 - Evidence: VERIFIED-BY-EXECUTION. Lower `alloca a; store x,a; r=load a; ret r` with `fold_constants=false`. Emitted groups are exactly `[(:__pred_entry,1,1), (:r,26,33)]`; store gates 2–25 and allocation ownership are absent. Default Bennett returns **42** for x=42, but `ValueEagerStrategy()` returns **0** and **passes `verify_reversibility`**. `CheckpointStrategy()` and `PebbledGroupStrategy(4)` fail with `_remap_wire: unmapped wire 10 … not in wmap and not a function input` on the same LR.
@@ -145,26 +203,35 @@ c = Bennett.bennett(lr;strategy=ValueEagerStrategy())
 println((simulate(c,Int8(42)),verify_reversibility(c))) # (0, true)
 ```
 
-### F7 — [S0] QROM free-list reuse corrupts compact inlined callees while reversibility still passes
-- Where: `src/lowering/call.jl:104–105`, `113`, `120`, `124`, and noncompact twin at `138–158`; `src/wire_allocator.jl:18–25`; `src/qrom.jl:129`.
-- Evidence: VERIFIED-BY-EXECUTION. A 32-entry i8 QROM lookup followed by `inc8(x::UInt8)=x+UInt8(1)` reproduces the previously unconfirmed allocator bug. With `compact_calls=true`, **192/256** inputs are wrong, e.g. x=−128 → **65**, expected 1; x=−127 → **−126**, expected 2. Appending `+3` makes **256/256** wrong, e.g. x=−128 → **−60**, expected 4. Both compact variants **pass `verify_reversibility`**. Without compact calls and without the final add, simulation instead detects `Ancilla wire 68 not zero post-circuit`. Noncompact with the final add happened to give correct results, demonstrating sensitivity to later allocations rather than a universal failure.
-- Failure scenario: QROM returns scratch wires to the allocator. The subsequent call discards the vector returned by `allocate!` and uses a bump-pointer offset as if every allocation were contiguous. Reused holes mean the remapped callee reaches registers it did not reserve; copy-out/subsequent allocations overlap those registers.
-- Fix: map every callee wire through the actual vector returned by `allocate!`, including inputs, outputs, gates, and loop guards, or add an explicit contiguous-allocation primitive that reserves exactly the assumed interval. Audit every other use of `wa.next_wire` as an allocation-range description.
-- Test: below across compact on/off, folding on/off, table sizes 16/32/64, calls with constant and SSA arguments, and allocations after calls. Assert output against the table oracle exhaustively and all wire invariants.
-- Already tracked? **Bennett-9k7n**. Its root-cause description is correct; this review supplies the missing reproducer and establishes S0 severity, beyond its current P2/unconfirmed description. The older `aggregate.jl:159–166` comment blaming free-list reuse on Bennett's reverse scheduling should be re-evaluated: correctly cleaned scratch reuse is reversible; this offset remapping violates allocation ownership independently of reverse scheduling.
+### F15 — [S0] Dynamic alloca lowering silently substitutes a four-write history buffer for memory
+- Where: `src/lowering/memory.jl:75–96`, `399–432`; backing semantics `src/persistent/linear_scan.jl:23`, `44–51`.
+- Evidence: VERIFIED-BY-EXECUTION. A dynamic allocation of **two or three i8 slots** (size `(x&1)+2`, always valid), with stores `a[0]=5; a[1]=7; a[0]=9; a[1]=11; a[0]=13`, followed by `load a[1]`, returns **7 instead of 11 for all 256 Int8 inputs** under `mem=:persistent`. `verify_reversibility == true`; circuit has 7298 gates. Only two distinct indices are used, both in bounds, so this is not an oversized source allocation. The dispatcher never checks the implementation's `max_n` or number of writes. `linear_scan_pmap_set` appends even updates and overwrites its final history slot after four calls, discarding the only record of `a[1]=11`.
+- Failure scenario: opting into the recommended lowering for runtime-sized memory changes ordinary store/load semantics after five writes, even when the array size and number of distinct live keys fit below the map's nominal capacity.
+- Fix: require the backing implementation to preserve latest values for repeated keys and enforce a sound capacity contract for all admitted executions. Either statically prove sufficient capacity, allocate a bounded model derived from program constraints, or emit a runtime overflow guard. Never import an implementation-defined map-overflow behavior as silent alloca semantics. Merely checking `n <= max_n` does not fix repeated-write history exhaustion.
+- Test: the fixture below exhaustively, repeated updates longer than max_n, distinct-key overflow, conditional writes, and each offered persistent implementation. Compare against a normal array oracle and check ancilla/input restoration.
+- Already tracked? no exact open bead found. `Bennett-z2dj` introduced this dispatcher; deferred `Bennett-uxn2` concerns CF overflow, not this linear-scan repeated-key witness. Persistent implementation limitations do not authorize silent miscompilation of valid memory operations. The protocol in `persistent/interface.jl:35` only permits implementation-defined behavior after `max_n` **distinct** keys, a threshold this witness never reaches.
 
 ```julia
-using Bennett: IRCall
-inc8(x::UInt8) = x + UInt8(1)
-insts = IRInst[IRBinOp(:i,:and,ssa(:x),iconst(31),8),
-    IRVarGEP(:p,ssa(:table),ssa(:i),8),IRLoad(:v,ssa(:p),8),
-    IRCall(:c,inc8,[ssa(:v)],[8],8)]
-p = ParsedIR(8,[(:x,8)],[IRBasicBlock(:entry,insts,IRRet(ssa(:c),8))],
-    [8],Dict(:table=>(UInt64.(0:31),8)))
-c = reversible_compile(p;compact_calls=true)
-println((simulate(c,Int8(-128)),verify_reversibility(c))) # (65, true)
-println(count(x->simulate(c,x)!=Int(x&31)+1,typemin(Int8):typemax(Int8))) # 192
+insts = IRInst[
+    IRBinOp(:n0,:and,ssa(:x),iconst(1),8),
+    IRBinOp(:n,:add,ssa(:n0),iconst(2),8),IRAlloca(:a,8,ssa(:n)),
+    IRVarGEP(:p0,ssa(:a),iconst(0),8),IRVarGEP(:p1,ssa(:a),iconst(1),8)]
+for (ptr,v) in ((:p0,5),(:p1,7),(:p0,9),(:p1,11),(:p0,13))
+    push!(insts,IRStore(ssa(ptr),iconst(v),8))
+end
+push!(insts,IRLoad(:r,ssa(:p1),8))
+p = ParsedIR(8,[(:x,8)],[IRBasicBlock(:entry,insts,IRRet(ssa(:r),8))],[8])
+c = reversible_compile(p;mem=:persistent)
+println((simulate(c,Int8(2)),verify_reversibility(c))) # (7, true), expected 11
 ```
+
+### F17 — [S1] Reachable error branches vanish: tuple bounds violations silently return a value
+- Where: `src/lowering/cfg.jl:62–66`, `src/lowering/driver.jl:331–373`; `src/extract/instructions.jl:7060–7085` discards throw/trap calls and `6791–6792` emits the `:__unreachable__` sink branch.
+- Evidence: VERIFIED-BY-EXECUTION. Define `indexed(x::Int8) = (Int8(11),Int8(22))[Int(x)]`; compile with `reversible_compile(indexed,Int8; optimize=opt,strategy=:expression)` for both `opt=false` and `true`. Real extraction contains one `:__unreachable__` sink edge. Across all 256 inputs, Julia throws on **254**; simulation throws on **none** of those 254. The two valid inputs return the correct values. `simulate(c,Int8(-1)) == 11` and `verify_reversibility(c) == true` in both modes.
+- Failure scenario: an ordinary bounds-checked Julia function is accepted, then out-of-bounds inputs produce plausible data with no error. This is defined Julia exception behavior, not a raw LLVM overshift/poison witness. `_check_predication_cfg` explicitly permits and omits the sentinel edge, and the driver creates no error guard; with one return it copies that return regardless of its path predicate.
+- Fix: carry reachable failure predicates through lowering into explicit runtime checks that survive Bennett cleanup, analogous to loop convergence guards but gated by block activation. Until supported, reject gate compilation of reachable error-sink edges with a capability error. Do not confuse an LLVM `unreachable` terminator following a throwing call with a block that is unreachable from function entry.
+- Test: sweep all Int8 inputs of `indexed` under both optimization/folding modes, checking outputs for 1/2 and runtime rejection for every other index. Add branches that skip the indexing operation (must not throw), and inlined callees containing bounds checks. Keep ancilla/input restoration assertions for successful executions.
+- Already tracked? no exact open bead found. **Bennett-8nfb** concerns loop-region `:__unreachable__` crashes, not this accepted non-loop error-path erasure. The generic `x<0 && error(...)` probe fails earlier on an unregistered callee and is not claimed as a reproducer.
 
 ### F8 — [S1] An untaken loop can fail its unconditional convergence guard
 - Where: `src/lowering/cfg.jl:567–575`; loop-header reachability is available at 419–420 and 550 but omitted from the guard.
@@ -187,6 +254,30 @@ c = reversible_compile(skiploop,Int8;optimize=false,
 skiploop(Int8(-124))         # 4
 simulate(c,Int8(-124))       # ERROR: ... header block :L4 did not converge ...
 ```
+
+### F4 — [S1] MUX-EXCH rejects a valid negative integer constant store
+- Where: `src/lowering/memory.jl:1049`, `1151–1155`.
+- Evidence: VERIFIED-BY-EXECUTION. In the F2 fixture replace the store value by `iconst(-1)` and load directly from `p` (omit `q`). `reversible_compile` throws `InexactError: convert(UInt64, -1)`. The static-index shadow path uses `resolve!` and handles the same bit pattern. `_operand_to_u64!` uses checked `UInt64(op.value)` rather than bit reinterpretation/modular conversion.
+- Failure scenario: storing an ordinary signed i8 constant such as −1 through an in-bounds dynamic pointer fails compilation for an otherwise supported alloca shape.
+- Fix: use a bit-pattern-preserving conversion, consistent with `resolve!(::ConstOperand)` (`unsigned(op.value)` / `reinterpret(UInt64, Int64(op.value))`); mask to the store width where required by the callee contract.
+- Test: dynamic-index stores of −1, typemin(Int8), −2 and positive edge values across every packed shape; verify all selected slots and all ancillae. Compare equivalent constant versus SSA values and static versus dynamic indices.
+- Already tracked? no matching open bead found.
+
+### F16 — [S1] The loop-exit heuristic rejects an ordinary single-exit natural loop
+- Where: `src/lowering/driver.jl:214–217`; duplicate heuristic `src/lowering/cfg.jl:356–362`.
+- Evidence: VERIFIED-BY-EXECUTION. A valid five-block CFG `entry→H; H: (i<n ? body : exit); body→latch; latch→H; exit: ret i`, with n=`x&3`, initial i=0 and latch i'=i+1, throws `lower_loop!: IRRet in loop body at exit — early return inside a loop not supported` for K=3. There is no early return: exit is outside the loop. The heuristic labels the true successor as the exit whenever it is neither the header itself nor an immediate back-edge source; here it is an ordinary body block before the latch.
+- Failure scenario: splitting the true arm into a body and a latch changes a supported loop into a misleading refusal, despite a single header, latch and exit and an adequate bound.
+- Fix: identify natural-loop membership from dominance/back edges (or an explicit supported-region analysis), then classify outgoing edges. Share that analysis between the driver and unroller. Reject genuinely irreducible/multi-exit CFGs with accurate diagnostics until supported.
+- Test: both branch polarities, zero/one/several blocks before the latch, body diamonds, and block-order permutations, each exhaustively for n=`x&3`; all must give n and clean ancillae at K≥3.
+- Already tracked? **Bennett-8nfb** explicitly describes this heuristic and misleading IRRet error; that part of the tracked description is correct. F5 is a separate accepted silent failure.
+
+### F13 — [S1] Narrowing breaks tuple layout, return widths, and byte offsets
+- Where: `src/narrow.jl:12–24`, `41`, `49–57`, `61–65`, `70–71`.
+- Evidence: VERIFIED-BY-EXECUTION. `reversible_compile((x::Int8) -> (x,x+Int8(1)), Int8; bit_width=4,strategy=:expression)` fails in both modes. At `optimize=false`: `_lower_store_via_shadow!: idx=2 out of range [0, 2)`. At `optimize=true`: `resolve!: SSA operand %new::Tuple.unbox.fca.1.insert has length(wires)=8 but caller advertised width=4`. The pass sets total return width to W even when there are two W-bit return elements. Its memory path changes alloca element widths while leaving byte GEP offsets unchanged, doubling the interpreted element index for W=4.
+- Failure scenario: an ordinary two-element tuple return, supported at the source width, cannot use the advertised narrowing option. The comment that aggregates are mutually exclusive with narrowing is false for this public invocation.
+- Fix: distinguish scalar widths, packed aggregate total widths, logical fields, and address-layout units. Derive return width from the narrowed return shape; rewrite byte layouts consistently or reject aggregate/memory narrowing at the public boundary with an accurate capability error.
+- Test: homogeneous and mixed Boolean/integer tuple returns and arguments at W=1,3,4,8, with both extraction modes; assert actual output tuples and ancilla invariants. Test constant GEPs after narrowed allocas independently.
+- Already tracked? no exact open bead; **Bennett-g7d6** is about metadata loss, and closed **Bennett-6bu3** repaired constructors but did not establish this layout contract.
 
 ### F9 — [S2] Inlined callees discard the caller's arithmetic and compilation options
 - Where: `src/lowering/types.jl:292–294`; `src/lowering/call.jl:91–97`; loop override `src/lowering/cfg.jl:429`, `557`.
@@ -212,23 +303,7 @@ simulate(c,Int8(-124))       # ERROR: ... header block :L4 did not converge ...
 - Test: unknown-pointer loads with dead and live destinations must both fail immediately at the load; legitimate pointer parameters and NTuple loads must still pass.
 - Already tracked? **Bennett-sy9t**; description is correct.
 
-### F12 — [S3] The allocator accepts freeing never-allocated and nonpositive wire IDs
-- Where: `src/wire_allocator.jl:39–49`.
-- Evidence: VERIFIED-BY-EXECUTION. After allocating wires `[1,2]`, each separate `free!(wa,[0])`, `free!(wa,[-1])`, and `free!(wa,[99])` succeeds. The next `allocate!(wa,1)` returns `[0]`, `[-1]`, or `[99]` respectively while `wire_count(wa)==2`. Double-free protection does not enforce ownership/range.
-- Failure scenario: an internal lifetime bug is turned into a successfully allocated invalid gate index, corrupting allocator invariants and deferring failure far from its cause. No existing valid-program producer of such an invalid free was found.
-- Fix: validate the entire batch is unique and each ID lies in `1:wire_count(wa)` and is currently allocated before mutating the free list; keep the zero-state obligation explicit.
-- Test: invalid IDs, duplicate IDs within a batch and already-free IDs fail without changing allocator state; ordinary noncontiguous reuse remains correct.
-- Already tracked? no exact open bead. `Bennett-swee` fixed negative allocations/double frees, but not invalid frees; `Bennett-vt0a` addresses broader lifetime design.
-
-### F13 — [S2] Narrowing breaks tuple layout, return widths, and byte offsets
-- Where: `src/narrow.jl:12–24`, `41`, `49–57`, `61–65`, `70–71`.
-- Evidence: VERIFIED-BY-EXECUTION. `reversible_compile((x::Int8) -> (x,x+Int8(1)), Int8; bit_width=4,strategy=:expression)` fails in both modes. At `optimize=false`: `_lower_store_via_shadow!: idx=2 out of range [0, 2)`. At `optimize=true`: `resolve!: SSA operand %new::Tuple.unbox.fca.1.insert has length(wires)=8 but caller advertised width=4`. The pass sets total return width to W even when there are two W-bit return elements. Its memory path changes alloca element widths while leaving byte GEP offsets unchanged, doubling the interpreted element index for W=4.
-- Failure scenario: an ordinary two-element tuple return, supported at the source width, cannot use the advertised narrowing option. The comment that aggregates are mutually exclusive with narrowing is false for this public invocation.
-- Fix: distinguish scalar widths, packed aggregate total widths, logical fields, and address-layout units. Derive return width from the narrowed return shape; rewrite byte layouts consistently or reject aggregate/memory narrowing at the public boundary with an accurate capability error.
-- Test: homogeneous and mixed Boolean/integer tuple returns and arguments at W=1,3,4,8, with both extraction modes; assert actual output tuples and ancilla invariants. Test constant GEPs after narrowed allocas independently.
-- Already tracked? no exact open bead; **Bennett-g7d6** is about metadata loss, and closed **Bennett-6bu3** repaired constructors but did not establish this layout contract.
-
-### F14 — [S3] MUX-EXCH priority costs roughly 9–14× more gates than the existing shadow arm
+### F14 — [S3] MUX-EXCH priority costs 6–14× more gates than the existing shadow arm
 - Where: `src/lowering/memory.jl:144–157`; generated helpers `989–1068`.
 - Evidence: VERIFIED-BY-EXECUTION. Constructed identical contexts with N i8 slots initialized to `17+k`, then a runtime-indexed store and an independently indexed load. Called each existing helper directly, applied the same `_fold_constants` and default Bennett wrapper, and checked every index pair with values 0,1,127,128,255 plus `verify_reversibility`. Both arms were correct. Measurements:
 
@@ -238,42 +313,30 @@ simulate(c,Int8(-124))       # ERROR: ... header block :L4 did not converge ...
   | 4 | 3600 | 258 | 5827 | 185 |
   | 8 | 5572 | 594 | 9379 | 353 |
 
+- Continuation cost check independently reproduced every number in the table. The same comparison on all 11 registered packed shapes keeps shadow cheaper: gate ratios span approximately **6.4–14.0×** (including i16/i32 shapes); N=3/5/6/7 i8 gave MUX/shadow gate counts 2624/206, 4754/386, 5842/458, 6928/538. All 11 shapes passed all independent store/load index pairs for values 0, 1, 127, and the W-bit all-ones value: **1,888 total helper/oracle comparisons**, plus reversibility. Wider outputs were compared as W-bit patterns after confirming the simulator decodes all-ones as −1; the initial signed/unsigned oracle discrepancy was not a memory defect.
 - Failure scenario: every supported small dynamic array is forced into the more expensive arm; the fallback is selected only when `N*W>64`. The comment claiming a cheaper MUX per-op cost contradicts these same-shape measurements. The measured ratio differs from historical 15–40× figures because the fixture and constant folding differ, but the direction is unequivocal.
 - Fix: benchmark the shape-generic shadow helpers across the supported lattice, use the cheaper verified strategy by default, and expose explicit strategy selection if preserving a research comparison is useful. Update the inaccurate priority rationale and record default-count deltas.
 - Test: compare both arms on identical initialized memory with independent store/load indices, multiple writes, and guards; retain result/ancilla checks alongside local resource regression limits.
 - Already tracked? **Bennett-vscb**; root cause and recommended comparison are correct. This review verifies the primitives on valid indices as well as their cost; F1/F2 concern surrounding dispatch/provenance, not a failure of the isolated MUX primitive.
 
-### F15 — [S0] Dynamic alloca lowering silently substitutes a four-write history buffer for memory
-- Where: `src/lowering/memory.jl:75–96`, `399–432`; backing semantics `src/persistent/linear_scan.jl:23`, `44–51`.
-- Evidence: VERIFIED-BY-EXECUTION. A dynamic allocation of **two or three i8 slots** (size `(x&1)+2`, always valid), with stores `a[0]=5; a[1]=7; a[0]=9; a[1]=11; a[0]=13`, followed by `load a[1]`, returns **7 instead of 11 for all 256 Int8 inputs** under `mem=:persistent`. `verify_reversibility == true`; circuit has 7298 gates. Only two distinct indices are used, both in bounds, so this is not an oversized source allocation. The dispatcher never checks the implementation's `max_n` or number of writes. `linear_scan_pmap_set` appends even updates and overwrites its final history slot after four calls, discarding the only record of `a[1]=11`.
-- Failure scenario: opting into the recommended lowering for runtime-sized memory changes ordinary store/load semantics after five writes, even when the array size and number of distinct live keys fit below the map's nominal capacity.
-- Fix: require the backing implementation to preserve latest values for repeated keys and enforce a sound capacity contract for all admitted executions. Either statically prove sufficient capacity, allocate a bounded model derived from program constraints, or emit a runtime overflow guard. Never import an implementation-defined map-overflow behavior as silent alloca semantics. Merely checking `n <= max_n` does not fix repeated-write history exhaustion.
-- Test: the fixture below exhaustively, repeated updates longer than max_n, distinct-key overflow, conditional writes, and each offered persistent implementation. Compare against a normal array oracle and check ancilla/input restoration.
-- Already tracked? no exact open bead found. `Bennett-z2dj` introduced this dispatcher; deferred `Bennett-uxn2` concerns CF overflow, not this linear-scan repeated-key witness. Persistent implementation limitations do not authorize silent miscompilation of valid memory operations. The protocol in `persistent/interface.jl:35` only permits implementation-defined behavior after `max_n` **distinct** keys, a threshold this witness never reaches.
-
-```julia
-insts = IRInst[
-    IRBinOp(:n0,:and,ssa(:x),iconst(1),8),
-    IRBinOp(:n,:add,ssa(:n0),iconst(2),8),IRAlloca(:a,8,ssa(:n)),
-    IRVarGEP(:p0,ssa(:a),iconst(0),8),IRVarGEP(:p1,ssa(:a),iconst(1),8)]
-for (ptr,v) in ((:p0,5),(:p1,7),(:p0,9),(:p1,11),(:p0,13))
-    push!(insts,IRStore(ssa(ptr),iconst(v),8))
-end
-push!(insts,IRLoad(:r,ssa(:p1),8))
-p = ParsedIR(8,[(:x,8)],[IRBasicBlock(:entry,insts,IRRet(ssa(:r),8))],[8])
-c = reversible_compile(p;mem=:persistent)
-println((simulate(c,Int8(2)),verify_reversibility(c))) # (7, true), expected 11
-```
-
-### F16 — [S1] The loop-exit heuristic rejects an ordinary single-exit natural loop
-- Where: `src/lowering/driver.jl:214–217`; duplicate heuristic `src/lowering/cfg.jl:356–362`.
-- Evidence: VERIFIED-BY-EXECUTION. A valid five-block CFG `entry→H; H: (i<n ? body : exit); body→latch; latch→H; exit: ret i`, with n=`x&3`, initial i=0 and latch i'=i+1, throws `lower_loop!: IRRet in loop body at exit — early return inside a loop not supported` for K=3. There is no early return: exit is outside the loop. The heuristic labels the true successor as the exit whenever it is neither the header itself nor an immediate back-edge source; here it is an ordinary body block before the latch.
-- Failure scenario: splitting the true arm into a body and a latch changes a supported loop into a misleading refusal, despite a single header, latch and exit and an adequate bound.
-- Fix: identify natural-loop membership from dominance/back edges (or an explicit supported-region analysis), then classify outgoing edges. Share that analysis between the driver and unroller. Reject genuinely irreducible/multi-exit CFGs with accurate diagnostics until supported.
-- Test: both branch polarities, zero/one/several blocks before the latch, body diamonds, and block-order permutations, each exhaustively for n=`x&3`; all must give n and clean ancillae at K≥3.
-- Already tracked? **Bennett-8nfb** explicitly describes this heuristic and misleading IRRet error; that part of the tracked description is correct. F5 is a separate accepted silent failure.
+### F12 — [S3] The allocator accepts freeing never-allocated and nonpositive wire IDs
+- Where: `src/wire_allocator.jl:39–49`.
+- Evidence: VERIFIED-BY-EXECUTION. After allocating wires `[1,2]`, each separate `free!(wa,[0])`, `free!(wa,[-1])`, and `free!(wa,[99])` succeeds. The next `allocate!(wa,1)` returns `[0]`, `[-1]`, or `[99]` respectively while `wire_count(wa)==2`. Double-free protection does not enforce ownership/range.
+- Failure scenario: an internal lifetime bug is turned into a successfully allocated invalid gate index, corrupting allocator invariants and deferring failure far from its cause. No existing valid-program producer of such an invalid free was found.
+- Fix: validate the entire batch is unique and each ID lies in `1:wire_count(wa)` and is currently allocated before mutating the free list; keep the zero-state obligation explicit.
+- Test: invalid IDs, duplicate IDs within a batch and already-free IDs fail without changing allocator state; ordinary noncontiguous reuse remains correct.
+- Already tracked? no exact open bead. `Bennett-swee` fixed negative allocations/double frees, but not invalid frees; `Bennett-vt0a` addresses broader lifetime design.
 
 ## Unconfirmed suspicions
+
+No unresolved numerical suspicion is promoted to a finding. Ordinary Julia reachability remains unestablished for the LLVM memory fixtures in F1/F2/F5 and the irreducible fixture F18; their valid LLVM extraction witnesses are confirmed. Research persistent implementations other than linear_scan were read at the dispatcher boundary but not comprehensively executed.
+
+### Superseded / refuted interpretations
+
+- No inherited finding was refuted; all 16 were reproduced. F13 is promoted from S2 to S1 because the brief classifies crashes on supported input as S1.
+- The historical c2 A1/A2 Cuccaro/liveness defects and A3 predicate fallbacks describe old code. Current ownership checks and fail-loud predicates are present and their focused regressions pass. F18 concerns the surrounding loop-region analysis.
+- Raw LLVM overshift poison, dirty intermediates before the outer reverse pass, and a signed −1 versus unsigned all-ones display are not additional lowering miscompiles.
+- A possible wider group-replay defect after QROM followed by arithmetic was refuted on the tested four strategies; F7 specifically requires the confirmed call allocation/remapping path.
 
 ## What is sound (brief)
 
@@ -293,6 +356,8 @@ println((simulate(c,Int8(2)),verify_reversibility(c))) # (7, true), expected 11
 
 ## Coverage log
 
+The first block retains the original instance's saved coverage record; the continuation checkpoints record independent repetition and extensions. The continuation reran every finding, but did not rerun the entire inherited 655,360-case comparison sweep or the full c6ex test file.
+
 - Read `CLAUDE.md` in full. The explicit review-only instructions override its worklog, issue-tracker, and commit/push workflow for this session.
 - Read all lowering source files, narrow pass and allocator; contextual IR/simulator/diagnostics/QROM code. Read the c2 architecture review, relevant chunk 108 history and the open bead snapshot.
 - Executed `test/test_c6ex_predication_soundness.jl` with `--compiled-modules=existing --project --check-bounds=yes --startup-file=no`: **115/115 passed (30.0s)**. Fresh focused probes above expose intersections absent from that regression battery.
@@ -308,3 +373,25 @@ println((simulate(c,Int8(2)),verify_reversibility(c))) # (7, true), expected 11
 
 - Re-executed the saved Julia snippets under Julia with `--compiled-modules=existing --project --check-bounds=yes --startup-file=no`. F1: 64 mismatches and reversibility true. F2: 256 mismatches in both folding modes, output 0 and reversibility true. F3: exactly the recorded `[0,0,0,0,0]` / `[1,2,4,8,1]` outputs, both reversible. F5: all four recorded mismatch counts and outputs reproduced. F6: output 0 instead of 42, reversible. F7: output 65 for -128 and 192 mismatches, reversible. F8: the recorded false convergence exception reproduced. F15: output 7 instead of 11, reversible. These claims remain confirmed; real Julia extraction follow-ups and the two remaining S1 fixtures follow.
 - Independently read the complete CFG/loop and PHI implementations, call lowering, allocator, and driver control-flow walk. No repository source files were changed.
+
+### Continuation checkpoint 2 — frontend reachability and S1 checks
+
+- Independently rebuilt F1, F2, and F5 as LLVM text **in memory**, verified each module with `LLVM.verify`, extracted with `_module_to_parsed_ir`, and exhaustively simulated all Int8 inputs. Results: F1 64 mismatches; F2 256; F5 192 at K=3. All three pass reversibility. No temporary LLVM files were written. These are valid extracted LLVM failures, not merely permissive ParsedIR-constructor behavior.
+- Tried ordinary Julia `Ref` functions: selected-reference stores fail earlier in extraction (GC/inline-assembly handling); the counter loop is promoted to pure SSA and passes all 256 inputs in both optimization modes. Julia `llvmcall` module wrappers initially fail at an unregistered helper call. These attempts do **not** establish an ordinary Julia-source reproducer for F1/F2/F5, and do not refute their verified LLVM witnesses.
+- Independently re-executed F4: `InexactError: convert(UInt64, -1)`. Independently reconstructed F16: the recorded misleading `IRRet in loop body at exit` rejection occurs. Every inherited S0/S1 headline now has an independently repeated witness.
+- A suspected Boolean ABI narrowing failure was **refuted** for actual Julia extraction: `(x::Int8)->x>0` and `(x::Bool)->!x` compile at W=4/8 in both optimization modes. Julia inserts byte-width conversions, so preserving internal i1 instructions is sufficient for those examples. No finding is claimed.
+
+### Continuation checkpoint 3 — wider coverage
+
+- Independently repeated F9–F13: call variants all 414 gates/242 wires; constant folding empties four groups and restores the 441-wire default behavior versus 241 wires for unfolded checkpoint/group cleanup; unknown-pointer dead load returns 42; invalid frees return 0/-1/99 while allocator count stays 2; both tuple-narrowing errors match the saved report. All successful circuits checked outputs and reversibility.
+- Focused existing regression files: stwr **872/872**, tuple return **4867/4867**, NTuple input **770/770**, variable GEP **9/9**, switch **5/5**, predicated PHI **1796/1796**, narrowing **77/77**. All ran with bounds checking; no full suite was run.
+- Broadened the allocator investigation: a QROM lookup followed directly by arithmetic (no IRCall) passes all 256 inputs with Default, ValueEager, Checkpoint, and PebbledGroup under folding off. Thus F7 does not establish that every free-list reuse or group replay is corrupt; the confirmed failure is the call offset remapping.
+- Completed independent reads of arithmetic dispatch/shifts/comparisons/select/casts, operand counting/ownership, metadata constructors/dispatch, constant folding, pointer/GEP/load and aggregate workers, static/dynamic/persistent store/load dispatch, generated MUX helpers, and narrowing. Reviewed c2/c3 historical claims and relevant open-bead descriptions.
+
+### Final continuation coverage and limits
+
+- New F17 was tested through real Julia extraction on every Int8 input in both optimization modes; F18 through LLVM-verified extraction on every Int8 input at K=1/3 and folding on/off. F7 additionally reproduces through ordinary Julia constant-table/registered-callee code, with all 256 UInt8 inputs tested in all four optimize/compact combinations.
+- All 11 MUX-EXCH shapes were compared against direct shadow helpers with independent store/load indices and bit-pattern oracles. Every previous F14 gate/wire count was independently reproduced. F1 was extended to both dynamic dispatch families; persistent zero-index composition additionally confirms F2.
+- Read the aggregate field-layout constructors and insertion/extraction loops; their fresh result-copy design is consistent with the Cuccaro ownership whitelist. Standard scalar/tuple/NTuple and predicate regression files passed. No new insertbits numerical defect was established.
+- A cross-scope probe `(x::Int8)->(Int8(0),x)` fails before a valid LR exists: optimize=false extraction emits a return referencing an undefined aggregate SSA name, while optimize=true rejects a partially-poison constant aggregate. This is an extraction handoff issue, not attributed to lowering here. A scalar constant-zero return works under ValueEager, Checkpoint, and PebbledGroup, so zero-gate definitions alone do not establish F6's memory defect.
+- No full-suite run, exhaustive 64-bit domain sweep, exhaustive strategy cross-product, or complete execution of experimental persistent backends is claimed. Individual successful simulations check output and input/ancilla invariants; `verify_reversibility` supplements those checks, and is never treated as a numerical oracle.
