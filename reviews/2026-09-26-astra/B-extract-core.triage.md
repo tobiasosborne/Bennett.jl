@@ -24,7 +24,7 @@ Julia-reachable silent miscompiles: F1, F6, F7, F12, F13 (+F11 dup).
 | F21 ConstantExpr ptr-compare folds extern_weak vs null to 0 (partially verified) | S1 | Bennett-0juv (P3) |
 | F24 inttoptr fold sign-extends narrow addresses (from_ll) | S0 latent | Bennett-ewjv (P3) |
 | F25 llvm.{floor,ceil,trunc,rint}.f64 rejected despite claimed dispatch (Julia) | S2 | Bennett-1qws (P2) |
-| F26 memssa merges per-function node ids (overlaps extract-vm F8/F13) | S2 | Bennett-7nez (P3) |
+| F26 memssa merges per-function node ids (overlaps extract-vm F13) | S2 | Bennett-7nez (P3) |
 | F6 fptosi f32 lowered as bit-preserving IRCast; Julia-reachable | S0 | DUPLICATE → Bennett-3wk7 (note; reachability text corrected; P3→P1) |
 | F11 stale circuit after method redefinition | S0 | DUPLICATE → Bennett-4ddk (note) |
 | F14 volatile/atomic guard bypassed by vector + sret dispatch | S1 | OVERLAPS closed Bennett-4mmt (note: reopen/follow-up) |
