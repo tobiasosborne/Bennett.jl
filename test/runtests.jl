@@ -86,6 +86,8 @@ runfile("test_softfpow_julia.jl")
 runfile("test_jexo_pow_accuracy_contract.jl")
 runfile("test_softfsin.jl")
 runfile("test_softftan.jl")
+# Bennett-6gxm: Payne-Hanek INV_2PI limb-12 typo — table pin + large-argument (2^60..2^1023) trig sweep.
+runfile("test_6gxm_large_argument_trig.jl")
 runfile("test_softfatan.jl")
 runfile("test_softfatan2.jl")
 runfile("test_softfasin.jl")

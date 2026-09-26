@@ -111,7 +111,7 @@ const _RP_INV_2PI = (
     UInt64(0x3a671c09ad17df90),
     UInt64(0x4e64758e60d4ce7d),
     UInt64(0x272117e2ef7e4a0e),
-    UInt64(0xc7fe25ffff781660),  # NB: musl/openlibm value; cross-checked vs Julia table
+    UInt64(0xc7fe25fff7816603),  # Bennett-6gxm: was 0xc7fe25ffff781660 (nibble slip); pinned vs Base.Math.INV_2PI + 4096-bit BigFloat in test_6gxm
     UInt64(0xfbcbc462d6829b47),
     UInt64(0xdb4d9fb3c9f2c26d),
     UInt64(0xd3d18fd9a797fa8b),
