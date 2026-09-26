@@ -1,13 +1,21 @@
 # Astra review — B-extract-core — 2026-09-26
-Status: IN PROGRESS
+Status: COMPLETE
 Scope: src/ir_extract.jl; src/extract/{entry,callees,callgraph,julia_set,errors,sret,module_walk,instructions,heap,constexpr,vectors,helpers,target_pin}.jl; src/{ir_types,callees,memssa,ir_parser}.jl.
 Method: Read-only source audit, inherited-finding re-verification, targeted Julia 1.12.3 / LLVM 18 probes with --compiled-modules=existing --check-bounds=yes, one standalone poison-lane test file, and pinned-target subprocess comparisons. Read the supplied open-bead snapshot and relevant .beads/issues.jsonl records. No full suite, issue-tracker commands, or source changes. This report is the only file intentionally written.
 
 ## Executive summary
 
-Pending completion.
+26 findings: **15 S0, 7 S1, 4 S2**. All 17 inherited findings reproduced; this continuation added nine findings.
+
+The highest risks are erased memory effects, incorrect sret/callee substitution, conflated LLVM identities, wrong numeric/address conversions, and stale circuits after method redefinition. A valid nested constant array crashes Julia.
+
+Every S0 has an executed counterexample. Overall, 25 findings are execution-verified; the weak-symbol folding finding is REASONED-ONLY with executed extractor evidence.
+
+Pinned-target comparisons, poison-lane tests and live literal certification passed their targeted checks. Those successes do not cover the separate type-tag interner or the failing memory conversions.
 
 ## Findings
+
+Ranked by severity; original finding IDs are retained for cross-references.
 
 ### F1 — [S0] Bare-name callee registration substitutes a different module's function
 - Where: `src/extract/callees.jl:14–19,75–89`; `src/extract/instructions.jl:6849–6871`.
@@ -36,6 +44,15 @@ Pending completion.
 - Test: initialize an alloca from each Int8 input, zero all/part of it, then read; also cover non-fresh destinations and volatile zero fills. Compare outputs and ancilla restoration.
 - Already tracked? Bennett-zmry (open; the real ID behind the notional `Bennett-8bys-uncompute`) explicitly includes the same `store; memset(0); load→0` acceptance test and correctly identifies the missing destructive-zeroing behavior. Its deferred-feature framing understates the actively accepted miscompile. Bennett-9nwt and Bennett-8su4 (closed) deliberately retained the zero/volatile bypass for GC frames; extending that rationale to arbitrary destinations is unsound.
 
+### F12 — [S0] Heap classification drops writes to live element data as “GC machinery”
+- Where: `src/extract/heap.jl:590–594,1521–1536,1795–1799,1834–1841,1873–1895,2061–2062`.
+- Evidence: VERIFIED-BY-EXECUTION. A one-element recognized Memory skeleton containing `store i8 %x,ptr %data; call void @llvm.memset.p0.i64(ptr %data,i8 7,i64 1,i1 false); %r=load i8,ptr %data` compiles under `mem=:heap` to just the original store/load. Input 42 prints `(got = 0x2a, want = 7, reversible = true)`. This is a **nonzero** fill, so it is separate from F2's zero-fill fast path. An additional mutation of the checked-in heap fixture is recorded below.
+- Continuation verification: read `test/fixtures/heap_m2_cond_pair.ll` into a String, replace `  %3 = load i8` with `  call void @llvm.memset.p0.i64(ptr %memory_data,i8 7,i64 1,i1 false)\n  %3 = load i8`, and compile with `_parsed_ir_from_ir_string(modified;mem=:heap)`. Input `Int8(42)` returns 42, expected 7, reversibility true. Repeating with `%old=atomicrmw xchg ptr %memory_data,i8 7 monotonic` yields the same wrong 42. Both distinct effect families are executed, not merely suspected.
+- Failure scenario: every memset is seeded as skeleton and every skeleton call is classed as machinery; the allowlist accepts memset without checking whether its destination is GC storage or the live element region. O1/O2 inspect only LLVMStore/LLVMLoad, leaving bulk writes outside the proof. The M2 forbidden-opcode list also excludes AtomicRMW wholesale on the assumption that it is GC bookkeeping.
+- Fix: classify all memory-writing instructions by destination provenance and effect. Only suppress certified GC-frame/tag operations. Lower or reject memset/atomicrmw on element data, and include call memory effects in the partition obligations.
+- Test: insert nonzero memset and atomicrmw into `test/fixtures/heap_m2_cond_pair.ll` immediately before `%3 = load i8`, with `%memory_data` as destination. Verify data effects survive or extraction rejects; check oracle output and ancillae for accepted forms.
+- Already tracked? No matching open issue. This refutes c1-extraction's blanket description of heap recognizers as safely subtractive fail-loud partitions.
+
 ### F3 — [S0] Sret return-funnel deletion removes live instructions and changes the returned aggregate
 - Where: `src/extract/sret.jl:953–959`; `src/extract/module_walk.jl:522–525,578–597,680–695`.
 - Evidence: VERIFIED-BY-EXECUTION. Extracting and compiling this module with the same in-memory helper as F2 gives `(got = 0x03, want = 99, reversible = true)` for `UInt8(3)`. ParsedIR contains only an insertvalue of `%x` and a return; the modifying call disappears.
@@ -58,6 +75,23 @@ Pending completion.
 - Fix: eliminate only a certified empty funnel (or explicitly proven inert instructions). Preserve the funnel and carry aggregate values through it when it has effects; reject unsupported sret-pointer escape to a call. Check every sret pointer use, not just stores/GEPs.
 - Test: the module above, plus a funnel with an unrelated memory store or trapping call, should execute faithfully or fail during extraction. Retain the existing truly empty shared-return-funnel tests.
 - Already tracked? No. Bennett-jghk (closed) introduced the per-block/funnel scheme; this contradicts its claim that only store-free return plumbing is dropped.
+
+### F8 — [S0] ParsedIR naming conflates distinct LLVM values
+- Where: `src/extract/callees.jl:164–168`; `src/extract/module_walk.jl:277–280,344–348,1061`; `src/extract/instructions.jl:7163–7173`; intrinsic/scalarization users of `_auto_name`.
+- Evidence: VERIFIED-BY-EXECUTION. `define i8 @julia_names(i8 %__v1) { entry: %0=add i8 %__v1,1 %r=add i8 %0,%__v1 ret i8 %r }` extracts the unnamed `%0` as **the same** `:__v1` symbol as the input. The second add then uses the first add's result twice. Input `UInt8(3)` prints `(got = 0x08, want = 7, reversible = true)`.
+- Failure scenario: `%__vN` is a legal LLVM source name. The counter never reserves existing names; first-pass unnamed instructions and synthetic expansion temporaries can overwrite parameters or named results in ParsedIR. This is a concrete valid-IR SSA corruption, independent of any malformed input.
+- Additional VERIFIED-BY-EXECUTION namespace collision: `@p=constant [1 x i8] [i8 99]` plus `define i8 @julia_ns(ptr dereferenceable(1) %p,i8 %idx){entry: %q=getelementptr i8,ptr %p,i8 %idx %r=load i8,ptr %q ret i8 %r}`. `@p` and `%p` are distinct LLVM namespaces but both become `:p`. The QROM lookup selects the unused global instead of the pointer input: `simulate(c,(UInt8(42),UInt8(0))) == 99`, expected 42, reversibility true.
+- Fix: allocate every ParsedIR identity through a collision-free namespace that distinguishes global values, local values, basic blocks and generated temporaries. Reserving only source local names fixes the auto-name witness but not the global/local collision. Prefer opaque internal identities with source names retained for diagnostics. Apply the same policy to synthetic switch labels/compare names.
+- Test: named `%__v1` parameters/results combined with unnamed LLVM values and intrinsic-created temporaries; exhaust Int8 inputs and verify output plus ancilla restoration.
+- Already tracked? No matching issue found.
+
+### F11 — [S0] Recompilation after a Julia method redefinition returns the old circuit
+- Where: `src/extract/callees.jl:37–61`; public compilation routes through `_extract_parsed_ir_cached`.
+- Evidence: VERIFIED-BY-EXECUTION. Define `cache_review(x::Int8)=x+Int8(1)`, compile it and simulate input 3 (output 4). Redefine the same method as `x+Int8(2)` and call `reversible_compile(cache_review,Int8)` again. Printed result: `(native = 5, compiled = 4, reversible = true)`.
+- Failure scenario: the cache key contains the Function object/type/options, which do not change when the method body changes. The cache now serves public user functions, not just stable package primitives. A fresh compile request silently uses stale source semantics.
+- Fix: include method/world validity in the cache key and invalidate downstream circuit caches when relevant methods or dependencies change; alternatively limit caching to explicitly immutable primitives or provide an explicit opt-in cache with documented invalidation. Method identity alone is insufficient if an inlined dependency is redefined.
+- Test: redefine a root method and a noinline/inlined dependency between compiles; both fresh circuits must match current Julia execution and restore ancillae.
+- Already tracked? Bennett-ej4n/Bennett-uiaq (closed) introduced and extended caching. The source documents a manual internal clear helper, but no matching open correctness issue covers stale public recompilation.
 
 ### F4 — [S0] Funnel-shift expansion returns a OR b at zero dynamic shift
 - Where: `src/extract/instructions.jl:4987–5033`; interacts with the barrel-shift count masking in `src/lowering/arith.jl`.
@@ -91,48 +125,6 @@ Pending completion.
 - Test: 0, 2^53±1, 2^63−1, 2^63, 2^64−1, comparing result bits to `Float64(::UInt64)` and checking reversibility.
 - Already tracked? Bennett-tfx mentions “uitofp-edge” as deferred; this is an actively accepted wrong result, not merely a missing operation. Bennett-1la (closed) claims actual sitofp/uitofp conversion, but full-width unsigned conversion remains incorrect.
 
-### F8 — [S0] ParsedIR naming conflates distinct LLVM values
-- Where: `src/extract/callees.jl:164–168`; `src/extract/module_walk.jl:277–280,344–348,1061`; `src/extract/instructions.jl:7163–7173`; intrinsic/scalarization users of `_auto_name`.
-- Evidence: VERIFIED-BY-EXECUTION. `define i8 @julia_names(i8 %__v1) { entry: %0=add i8 %__v1,1 %r=add i8 %0,%__v1 ret i8 %r }` extracts the unnamed `%0` as **the same** `:__v1` symbol as the input. The second add then uses the first add's result twice. Input `UInt8(3)` prints `(got = 0x08, want = 7, reversible = true)`.
-- Failure scenario: `%__vN` is a legal LLVM source name. The counter never reserves existing names; first-pass unnamed instructions and synthetic expansion temporaries can overwrite parameters or named results in ParsedIR. This is a concrete valid-IR SSA corruption, independent of any malformed input.
-- Additional VERIFIED-BY-EXECUTION namespace collision: `@p=constant [1 x i8] [i8 99]` plus `define i8 @julia_ns(ptr dereferenceable(1) %p,i8 %idx){entry: %q=getelementptr i8,ptr %p,i8 %idx %r=load i8,ptr %q ret i8 %r}`. `@p` and `%p` are distinct LLVM namespaces but both become `:p`. The QROM lookup selects the unused global instead of the pointer input: `simulate(c,(UInt8(42),UInt8(0))) == 99`, expected 42, reversibility true.
-- Fix: allocate every ParsedIR identity through a collision-free namespace that distinguishes global values, local values, basic blocks and generated temporaries. Reserving only source local names fixes the auto-name witness but not the global/local collision. Prefer opaque internal identities with source names retained for diagnostics. Apply the same policy to synthetic switch labels/compare names.
-- Test: named `%__v1` parameters/results combined with unnamed LLVM values and intrinsic-created temporaries; exhaust Int8 inputs and verify output plus ancilla restoration.
-- Already tracked? No matching issue found.
-
-### F9 — [S1] Pure vector plumbing leaves supported sret stores permanently pending
-- Where: `src/extract/module_walk.jl:662–667`; `src/extract/sret.jl:1018–1046`; `src/extract/vectors.jl:482–499`.
-- Evidence: VERIFIED-BY-EXECUTION. `define void @julia_vret(ptr sret([2 x i8]) %out,i8 %x) { entry: %v0=insertelement <2 x i8> poison,i8 %x,i32 0 %v=insertelement <2 x i8> %v0,i8 %x,i32 1 store <2 x i8> %v,ptr %out,align 1 ret void }` fails with `AssertionError: ir_extract.jl: 1 pending sret vector store(s) remain unresolved at ret void`. Both lanes are fully defined. `_convert_vector_instruction` has populated `lanes`, but returns `nothing`; the walker continues before calling the pending-store resolver.
-- Failure scenario: a vector returned via sret is built by insertelement/shuffle/same-shape bitcast, which are intentionally zero-instruction aliases. The resolver is never notified. Related incompleteness: constant vector values have no producer visit, and the resolver resolves only one pending store per producer.
-- Fix: resolve pending lane references after every successfully processed producer, including `nothing` results that update `lanes`; initialize constants directly and resolve all stores referring to the producer. Distinguish intentionally empty conversion from an unsupported skipped instruction.
-- Test: the module above, a shuffle-only sret producer, constant-vector sret stores, and one vector stored into two disjoint sret regions; check tuple outputs and ancilla restoration.
-- Already tracked? No matching open issue. Bennett-0c8o claims vector-lane sret support, but this basic accepted vector plumbing is omitted.
-
-### F10 — [S1] A valid nested ConstantArray crashes Julia in the LLVM C API
-- Where: `src/extract/module_walk.jl:877–884` (`_flatten_struct_to_bytes`).
-- Evidence: VERIFIED-BY-EXECUTION in an isolated process with core dumps disabled. `Bennett._parsed_ir_from_ir_string("@g = constant { [2 x i8] } { [2 x i8] [i8 1,i8 undef] }\ndefine i8 @julia_const(i8 %x){ entry: ret i8 %x }")` exits **139 / SIGSEGV**. Stack: `llvm::ConstantDataSequential::getElementAsInteger` → `getElementAsConstant` → `LLVMGetElementAsConstant` → `_flatten_struct_to_bytes … module_walk.jl:880`.
-- Failure scenario: `ConstantArray` and `ConstantDataArray` are admitted by the same branch, but `LLVMGetElementAsConstant` requires a ConstantDataSequential object. The non-data array is cast to the wrong C++ class. The global need not even be referenced by the entry function; scanning all globals makes an otherwise trivial identity function crash the process. `undef` is valid in this initializer and should be rejected or handled explicitly, never segfault.
-- Fix: use the operand accessor for `ConstantArray`; reserve `LLVMGetElementAsConstant` for `ConstantDataArray`. Explicitly reject undef/poison/non-integer elements under the existing policy, rather than replacing arbitrary elements with zero. Audit every raw C API accessor against its required value kind.
-- Test: subprocess extraction of nested integer arrays containing undef, poison, and constant expressions, plus ordinary dense integer arrays. Require a contextual Julia exception or correct data, never abnormal process exit.
-- Already tracked? No matching issue found. This is a distinct C API type-confusion crash, not an LLVM-context lifetime suspicion.
-
-### F11 — [S0] Recompilation after a Julia method redefinition returns the old circuit
-- Where: `src/extract/callees.jl:37–61`; public compilation routes through `_extract_parsed_ir_cached`.
-- Evidence: VERIFIED-BY-EXECUTION. Define `cache_review(x::Int8)=x+Int8(1)`, compile it and simulate input 3 (output 4). Redefine the same method as `x+Int8(2)` and call `reversible_compile(cache_review,Int8)` again. Printed result: `(native = 5, compiled = 4, reversible = true)`.
-- Failure scenario: the cache key contains the Function object/type/options, which do not change when the method body changes. The cache now serves public user functions, not just stable package primitives. A fresh compile request silently uses stale source semantics.
-- Fix: include method/world validity in the cache key and invalidate downstream circuit caches when relevant methods or dependencies change; alternatively limit caching to explicitly immutable primitives or provide an explicit opt-in cache with documented invalidation. Method identity alone is insufficient if an inlined dependency is redefined.
-- Test: redefine a root method and a noinline/inlined dependency between compiles; both fresh circuits must match current Julia execution and restore ancillae.
-- Already tracked? Bennett-ej4n/Bennett-uiaq (closed) introduced and extended caching. The source documents a manual internal clear helper, but no matching open correctness issue covers stale public recompilation.
-
-### F12 — [S0] Heap classification drops writes to live element data as “GC machinery”
-- Where: `src/extract/heap.jl:590–594,1521–1536,1795–1799,1834–1841,1873–1895,2061–2062`.
-- Evidence: VERIFIED-BY-EXECUTION. A one-element recognized Memory skeleton containing `store i8 %x,ptr %data; call void @llvm.memset.p0.i64(ptr %data,i8 7,i64 1,i1 false); %r=load i8,ptr %data` compiles under `mem=:heap` to just the original store/load. Input 42 prints `(got = 0x2a, want = 7, reversible = true)`. This is a **nonzero** fill, so it is separate from F2's zero-fill fast path. An additional mutation of the checked-in heap fixture is recorded below.
-- Continuation verification: read `test/fixtures/heap_m2_cond_pair.ll` into a String, replace `  %3 = load i8` with `  call void @llvm.memset.p0.i64(ptr %memory_data,i8 7,i64 1,i1 false)\n  %3 = load i8`, and compile with `_parsed_ir_from_ir_string(modified;mem=:heap)`. Input `Int8(42)` returns 42, expected 7, reversibility true. Repeating with `%old=atomicrmw xchg ptr %memory_data,i8 7 monotonic` yields the same wrong 42. Both distinct effect families are executed, not merely suspected.
-- Failure scenario: every memset is seeded as skeleton and every skeleton call is classed as machinery; the allowlist accepts memset without checking whether its destination is GC storage or the live element region. O1/O2 inspect only LLVMStore/LLVMLoad, leaving bulk writes outside the proof. The M2 forbidden-opcode list also excludes AtomicRMW wholesale on the assumption that it is GC bookkeeping.
-- Fix: classify all memory-writing instructions by destination provenance and effect. Only suppress certified GC-frame/tag operations. Lower or reject memset/atomicrmw on element data, and include call memory effects in the partition obligations.
-- Test: insert nonzero memset and atomicrmw into `test/fixtures/heap_m2_cond_pair.ll` immediately before `%3 = load i8`, with `%memory_data` as destination. Verify data effects survive or extraction rejects; check oracle output and ancillae for accepted forms.
-- Already tracked? No matching open issue. This refutes c1-extraction's blanket description of heap recognizers as safely subtractive fail-loud partitions.
-
 ### F13 — [S0] Integer GEP scaling uses bit width instead of LLVM allocation size
 - Where: `src/extract/instructions.jl:7143–7149,7165–7173` (also width-derived offsets in `_global_root_and_offset`).
 - Evidence: VERIFIED-BY-EXECUTION. Extract `target datalayout="e-i24:32"` plus `define i8 @julia_gep(ptr dereferenceable(8) %p){ entry: %q=getelementptr i24,ptr %p,i64 1 %r=load i8,ptr %q ret i8 %r }`. ParsedIR reports `IRPtrOffset(:q,ssa(:p),3,24)`, but the target's i24 allocation stride is 4 bytes. Input `UInt64(0x0000009907000000)` prints `(got = 7, want = 0x99, reversible = true)`.
@@ -142,46 +134,6 @@ Pending completion.
 - Already tracked? Bennett-0ucg covers the analogous **non-integer** raw-index branch, not this integer-type ABI-stride error.
 - The adjacent tracked non-integer bug also reproduces: `getelementptr float,ptr %p,i64 1` from `ptr dereferenceable(8) %p` emits byte offset 1 instead of 4; load i8 on input `UInt64(0x0000009900000700)` returns 7 rather than 153, reversibility true. Bennett-0ucg's description is correct and applies to the circuit path as well as cell-scale checking.
 
-### F14 — [S1] Volatile memory guards are bypassed by vector and sret dispatch
-- Where: `src/extract/instructions.jl:6265–6267,7392–7405,7889–7902`; `src/extract/vectors.jl:825–846`; `src/extract/sret.jl:898–925`.
-- Evidence: VERIFIED-BY-EXECUTION. Both `define i8 @julia_vol(ptr dereferenceable(1) %p){ entry: %v=load volatile <1 x i8>,ptr %p,align 1 %r=extractelement <1 x i8> %v,i32 0 ret i8 %r }` and `define void @julia_vol(ptr sret([1 x i8]) %out,i8 %x){entry: store volatile i8 %x,ptr %out ret void}` extract successfully. The former becomes ordinary IRLoad; the latter becomes only IRInsertValue+IRRet. Scalar counterparts outside these paths reject volatile effects.
-- Failure scenario: recognized shapes bypass the common dispatch guards, so memory operations whose observable access semantics are unsupported are nevertheless accepted with those semantics discarded. The sret pre-walk likewise never checks atomic ordering on its suppressed stores.
-- Fix: apply volatile/atomic policy checks before vector/sret/heap recognition can suppress or replace any instruction. Reuse one validation helper across every producer.
-- Test: scalar, vector, sret and heap load/store matrices with volatile and supported/unsupported atomic orderings; equivalent effects must receive equivalent rejection policy.
-- Already tracked? Bennett-4mmt (closed) claims atomic/volatile load/store rejection; the bypasses remain. F2 covers the separate memset zero-fill bypass.
-
-### F15 — [S2] MemorySSA printing deadlocks once its undrained stderr pipe fills
-- Where: `src/memssa.jl:123–142`.
-- Evidence: VERIFIED-BY-EXECUTION. `timeout 35s julia --compiled-modules=existing --project --check-bounds=yes -e 'using Bennett; ir="define i8 @julia_mem(ptr %p,i8 %x) {\nentry:\n" * repeat("store i8 %x, ptr %p\n",2000) * "ret i8 %x\n}"; println("MEMSSA_START"); flush(stdout); s=Bennett._run_memssa_on_ir(ir;preprocess=false); println("MEMSSA_DONE ",sizeof(s))'` prints only `MEMSSA_START` and exits 124 (timeout). The producer runs synchronously inside `redirect_stderr`; no reader starts until after the pass returns and the write endpoint closes.
-- Failure scenario: a moderately sized valid module fills the OS pipe buffer while the LLVM printer is still writing. The producer waits for a reader that is scheduled only after producer completion. The public `use_memory_ssa=true` route inherits this hang.
-- Fix: drain the pipe concurrently with the pass and close both endpoints in finally blocks; serialize process-wide stderr capture. Avoid a shared stderr channel if LLVM can supply an owned output stream.
-- Test: printer output substantially larger than the pipe capacity, with a bounded timeout, plus exception cleanup and concurrent callers.
-- Already tracked? No matching open issue found; Bennett-law3/08wr are closed MemorySSA implementation/integration work.
-
-### F16 — [S2] Recursive callgraph walks include the root despite promising to exclude it
-- Where: `src/extract/callgraph.jl:98–110,122–136`; `src/extract/julia_set.jl:488–509`.
-- Evidence: VERIFIED-BY-EXECUTION. `Base.@noinline rec_review(x::Int8)=x<=0 ? Int8(0) : rec_review(x-Int8(1))`. `transitive_callees(rec_review,Tuple{Int8})` prints `[(typeof(rec_review),Tuple{Int8})]`. `extract_parsed_ir_set_from_julia(rec_review,Tuple{Int8})` then fails with `duplicate canonical key rec_review#6f2728c5` (digest is session-dependent).
-- Failure scenario: visited starts empty. A recursive edge adds the root as a callee; set assembly extracts it once in the callee loop and again as the prepended root. This fails before any actual downstream recursion limitation can be diagnosed. Mutual recursion has the same root-reentry issue.
-- Fix: seed visited with the root while keeping the discovered non-root output separate; do the same for the raw-specTypes helper. Register the root explicitly when recursive linkage needs it, without emitting its body twice.
-- Test: direct and mutual recursion, both include_root values, exactly one root body when requested and none when excluded; check closed-world linkage separately from circuit recursion support.
-- Already tracked? Bennett-t7zu concerns downstream recursive sret lowering, not this callgraph/set-construction bug.
-
-### F17 — [S0] Non-jl_global aliases still cause entire side-effecting instructions to disappear
-- Where: `src/extract/module_walk.jl:648–662`; `src/extract/instructions.jl:7904`.
-- Evidence: VERIFIED-BY-EXECUTION. `@g=global i8 0; @a=alias i8,ptr @g; define i8 @julia_alias(i8 %x){entry: store i8 42,ptr @a ret i8 %x}` (each global on its own line) extracts to a block with **zero instructions** and `IRRet(ssa(:x),8)`. The alias store's LLVM.jl wrapping error is swallowed as benign. The direct-global equivalent would reject an unsupported store destination.
-- Failure scenario: a valid write through a global alias is erased, so state mutations vanish without any remaining SSA consumer to trigger a later error. The claim that skipped instructions are necessarily caught by unbound-result consumers does not apply to stores or unused calls.
-- Fix: resolve aliases with the raw API before typed dispatch, or reject them at the original instruction; never use exception-message matching to classify an instruction as harmless. Apply the same rule to called-function aliases.
-- Test: alias-backed store and side-effecting alias call, plus alias loads with live/dead uses; unsupported effects must fail at extraction, supported ones must match native state changes.
-- Already tracked? Bennett-n4di (open) is accurate. This probe strengthens it from a possible dangling SSA failure to an actual silently dropped side effect. Bennett-fnxh/hsm3 only protect the specifically named jl_global JIT-alias family.
-
-### F18 — [S1] Unnamed LLVM basic blocks all become the same empty label
-- Where: `src/extract/module_walk.jl:477–478`; `src/extract/instructions.jl:6658–6667,6326–6353`.
-- Evidence: VERIFIED-BY-EXECUTION. `_parsed_ir_from_ir_string` on `define i8 @julia_unnamed(i8 %x) { %1=icmp eq i8 %x,0 br i1 %1,label %2,label %3 2: ret i8 7 3: ret i8 9 }` produces three blocks all labelled `Symbol("")`; both branch targets are also `Symbol("")`. `reversible_compile(p)` rejects with `lower: duplicate basic-block labels in ParsedIR (Bennett-c6ex)`.
-- Failure scenario: numeric block slots are valid LLVM IR and common in external compiler output. `LLVM.name` returns an empty string for an unnamed block, not its printed slot number. The value naming pass handles unnamed instructions but omits block identities entirely.
-- Fix: build a collision-free `LLVMValueRef => Symbol` block table before conversion and consult it for block labels, branch/switch targets and phi predecessor labels. Never use an empty string as block identity.
-- Test: unnamed entry/diamond/loop blocks with named and unnamed values; extraction must retain distinct CFG nodes, and the diamond must return 7 for zero and 9 otherwise over all 256 UInt8 inputs with ancilla checks.
-- Already tracked? No matching open bead; Bennett-c6ex's downstream duplicate-label guard catches the extractor defect but does not fix it.
-
 ### F19 — [S0] Type-tag interning turns a non-null type pointer into null
 - Where: `src/extract/module_walk.jl:185–197`; `src/extract/instructions.jl:7480–7487,6296–6304`.
 - Evidence: VERIFIED-BY-EXECUTION. Under `ptr_cells=true`, extract `@"+Main.Core.Int8#1" = constant ptr inttoptr (i64 1234 to ptr)` followed by `define i1 @julia_tag(i8 %x){ entry: %tag=load ptr,ptr @"+Main.Core.Int8#1" %r=icmp eq ptr %tag,null ret i1 %r }`. ParsedIR contains `IRBinOp(:tag,:or,iconst(0),iconst(0),64)` and compares it to null's `iconst(0)`. Compilation returns 1 for input `UInt8(1)`, expected 0, with reversibility true. No dereference of address 1234 occurs or is needed: equality with null is fully defined.
@@ -189,38 +141,6 @@ Pending completion.
 - Fix: reserve null and other pointer namespaces, allocate nonzero type identities consistently for the entire closed-world set, and preserve type provenance or a semantic type-ID operand through linkage. Reject arithmetic/escaping type IDs if those operations are not part of the supported abstraction. Validate the type-tag global's shape before replacing its load.
 - Test: non-null type tag compared to null; two different types compared within/across functions; same type encountered in different orders across functions. Check extracted IDs and actual equality results, with ancilla checks on circuit-compatible cases.
 - Already tracked? No matching open bead. Bennett-iwo9 introduced the interner; Bennett-eqjl concerns empty-Memory singleton identities, a different identity namespace.
-
-### F20 — [S0] Vector-to-integer bitcasts silently ignore big-endian datalayouts
-- Where: `src/extract/vectors.jl:779–819`; `src/extract/entry.jl:122–138`.
-- Evidence: VERIFIED-BY-EXECUTION. Extract `target datalayout="E"` and `define i8 @julia_endian(i8 %x){entry: %b=trunc i8 %x to i1 %v=insertelement <8 x i1> zeroinitializer,i1 %b,i32 0 %r=bitcast <8 x i1> %v to i8 ret i8 %r}`. Compiling and simulating input `UInt8(1)` returns 1, expected 128; reversibility is true. Repeating with layout `"e"` correctly returns 1. The expected big-endian result follows the explicit vector packing rule in [LLVM 18 LangRef](https://releases.llvm.org/18.1.8/docs/LangRef.html#bitcast-to-instruction): lane zero occupies the most significant bits.
-- Failure scenario: `.ll`/`.bc` ingest admits a big-endian module, but scalarization always shifts lane k by k. The module layout is lost before lowering, so no later layer can repair it. This failure does not require executing machine code on a non-x86 host.
-- Fix: read the module datalayout when packing lanes and reverse their bit positions for big endian, or reject big-endian extraction consistently before any conversion until memory/bitcast paths support it. Retain the struct flattener's existing endianness guard.
-- Test: all 256 lane masks for both `e` and `E`, comparing against the layout-specific packing oracle and checking ancilla restoration.
-- Already tracked? No matching issue found.
-
-### F21 — [S1] ConstantExpr pointer comparison mistakes symbolic identity for known address inequality
-- Where: `src/extract/constexpr.jl:215–265,273–322`.
-- Evidence: REASONED-ONLY for the end-to-end linked-program counterexample; extractor behavior was executed. `@review_undefined_weak = extern_weak global i8` plus `define i1 @julia_weak(i8 %x){entry: ret i1 icmp eq (ptr @review_undefined_weak,ptr null)}` extracts to `IRRet(ConstOperand(0),1)`. `_ptr_addresses_equal` compares `(:named,ref)` with `(:null,0)` and returns false. An undefined ELF weak symbol resolves to null, so this program must return true when that symbol is not supplied. This is specified by [LLVM 18 linkage semantics](https://releases.llvm.org/18.1.8/docs/LangRef.html#linkage-types). A native `Base.llvmcall` attempt reported `JIT session error: Symbols not found: [ review_undefined_weak ]` and was interrupted; the Julia JIT did not provide an ELF-linker oracle.
-- Failure scenario: a conventional optional weak-symbol availability check is constant-folded to the wrong branch. More generally, a named symbol and a numerical address are not proven unequal merely because their identity tags differ; IFunc results also require resolver semantics.
-- Fix: make equality tri-valued. Same proven identity can return true; provably distinct non-interposable/non-null objects can return false; extern_weak, IFunc, symbolic-versus-absolute, and other unresolved relationships must return `nothing` and reject rather than guess.
-- Test: undefined/resolved weak symbol null checks via a local native linker fixture, aliases of the same symbol, distinct fixed globals, and undecidable symbolic/absolute comparisons. Require correct folding or explicit rejection.
-- Already tracked? No matching issue found.
-
-### F22 — [S1] Array allocas discard the outer allocation count
-- Where: `src/extract/instructions.jl:118–128,8211–8225`.
-- Evidence: VERIFIED-BY-EXECUTION. `define i8 @julia_count(i8 %x){entry: %p=alloca [1 x i8],i32 2 %q=getelementptr i8,ptr %p,i64 1 store i8 %x,ptr %q %r=load i8,ptr %q ret i8 %r}` produces `IRAlloca(:p,8,ConstOperand(1))`. Compilation rejects the valid second-byte store with `ArgumentError: _lower_store_via_shadow!: idx=1 out of range [0, 1)`.
-- Failure scenario: `alloca [K x T],N` reserves K×N elements in LLVM; the extractor reserves K. Runtime counts are silently replaced by K too. The circuit's bound guard prevents this witness becoming a wrong result, but the ParsedIR handed to external consumers has the wrong reservation.
-- Fix: multiply the array length by the outer count, checking overflow. Preserve dynamic counts via a supported multiplication or reject them at extraction. Make reservation and all capacity proofs consume this one correct definition.
-- Test: outer counts 0/1/2 and runtime N, read/write the last valid element, reject the first invalid one; compare accepted circuit results and ancilla restoration.
-- Already tracked? Bennett-uiqq accurately describes this defect; the executed valid-input failure confirms it is active.
-
-### F23 — [S1] Closed-world validation accepts genuinely ambiguous specialization calls
-- Where: `src/extract/julia_set.jl:249–284,434–449,503–509`; `src/extract/callees.jl:101–154`.
-- Evidence: VERIFIED-BY-EXECUTION. Define `struct ReviewAdder{T}; offset::T; end`, `Base.@noinline (a::ReviewAdder)(x::Int8)=x+Int8(a.offset)`, and `root_adder(x::Int8)=ReviewAdder(x)(x)+ReviewAdder(Int16(x))(x)`. `extract_parsed_ir_set_from_julia(root_adder,Tuple{Int8};ptr_cells=true)` **returns successfully** with keys `root_adder#48af7fb4`, `ReviewAdder#20e9b5fb`, `throw_inexacterror#223736bc`, `ReviewAdder#7be14e9b` (digests session-dependent). The two root calls both carry `callee=:ReviewAdder`, `arg_widths=[64,8]`, `ret_width=8`, despite referring to distinct specializations. The checker accepts any `haskey(bare_to_key,sym)`, without requiring one candidate. No downstream VM execution is claimed.
-- Failure scenario: the producer promises a closed, resolvable set, but has erased the information needed to bind these two calls. Arity/width matching cannot disambiguate the printed calls. The corresponding Function-callee path correctly rejects multiple candidates; the Symbol path does not.
-- Fix: carry the canonical specialization key at every call site using the typed/LLVM method mapping. Until that exists, make exact-bare and demangled-bare Symbol lookups require exactly one candidate, with an ambiguity error naming both keys.
-- Test: the real functor example above must either link each call to the proper body or reject at set construction. Also test same-width closures of different captured types and plain Function/Symbol parity.
-- Already tracked? Bennett-zuk5 accurately identifies the missing guard, but its “defense-in-depth” framing understates an executed public-producer acceptance with two indistinguishable calls.
 
 ### F24 — [S0] ConstantExpr inttoptr folding sign-extends narrow unsigned addresses
 - Where: `src/extract/constexpr.jl:242–253`; `src/extract/helpers.jl:124–132`.
@@ -231,13 +151,85 @@ Pending completion.
 - Test: equivalent inttoptr expressions from i8/i16/i32/i64, including each width's high bit, plus truncation on a 32-bit layout; compare eq/ne outcomes and reversibility.
 - Already tracked? No matching issue found.
 
-### F25 — [S2] Four rounding intrinsics fall through despite claiming registered dispatch
-- Where: `src/extract/instructions.jl:5093–5107,6847–6871`; `src/callees.jl:27–36`.
-- Evidence: VERIFIED-BY-EXECUTION. For each `op ∈ (floor,ceil,trunc,rint)`, extract `declare double @llvm.op.f64(double)` and an integer-bit wrapper: `define i64 @julia_f(i64 %x){entry: %a=bitcast i64 %x to double %b=call double @llvm.op.f64(double %a) %r=bitcast double %b to i64 ret i64 %r}`. All four reject with `call to 'llvm.<op>.f64' has no registered callee handler or intrinsic pattern`.
-- Failure scenario: the explicit branch's comment says the callee registry handles these names, but registration keys are `soft_floor`, `soft_ceil`, `soft_trunc`, `soft_round`. `_lookup_callee` has no LLVM-name-to-soft-name mapping. Available implementations therefore cannot be reached from the stated intrinsic surface.
-- Fix: add explicit f64 dispatch to the matching soft primitive, with width checks like round/roundeven. State the assumed rounding environment for rint. Remove the empty conditional and stale explanation.
-- Test: raw LLVM bit-pattern wrappers on positive/negative fractional values, ties, ±0, infinities and NaNs; compare supported semantics and ancilla restoration. Keep unsupported widths loud.
-- Already tracked? Bennett-6pa (closed) claims the rounding-intrinsic work; its scope includes these four intrinsics, but their direct dispatch is absent. Bennett-0hu (closed) adds a SoftFloat ceil test, which does not establish raw LLVM intrinsic linkage. No open issue specifically repairs the missing dispatch.
+### F20 — [S0] Vector-to-integer bitcasts silently ignore big-endian datalayouts
+- Where: `src/extract/vectors.jl:779–819`; `src/extract/entry.jl:122–138`.
+- Evidence: VERIFIED-BY-EXECUTION. Extract `target datalayout="E"` and `define i8 @julia_endian(i8 %x){entry: %b=trunc i8 %x to i1 %v=insertelement <8 x i1> zeroinitializer,i1 %b,i32 0 %r=bitcast <8 x i1> %v to i8 ret i8 %r}`. Compiling and simulating input `UInt8(1)` returns 1, expected 128; reversibility is true. Repeating with layout `"e"` correctly returns 1. The expected big-endian result follows the explicit vector packing rule in [LLVM 18 LangRef](https://releases.llvm.org/18.1.8/docs/LangRef.html#bitcast-to-instruction): lane zero occupies the most significant bits.
+- Failure scenario: `.ll`/`.bc` ingest admits a big-endian module, but scalarization always shifts lane k by k. The module layout is lost before lowering, so no later layer can repair it. This failure does not require executing machine code on a non-x86 host.
+- Fix: read the module datalayout when packing lanes and reverse their bit positions for big endian, or reject big-endian extraction consistently before any conversion until memory/bitcast paths support it. Retain the struct flattener's existing endianness guard.
+- Test: all 256 lane masks for both `e` and `E`, comparing against the layout-specific packing oracle and checking ancilla restoration.
+- Already tracked? No matching issue found.
+
+### F17 — [S0] Non-jl_global aliases still cause entire side-effecting instructions to disappear
+- Where: `src/extract/module_walk.jl:648–662`; `src/extract/instructions.jl:7904`.
+- Evidence: VERIFIED-BY-EXECUTION. `@g=global i8 0; @a=alias i8,ptr @g; define i8 @julia_alias(i8 %x){entry: store i8 42,ptr @a ret i8 %x}` (each global on its own line) extracts to a block with **zero instructions** and `IRRet(ssa(:x),8)`. The alias store's LLVM.jl wrapping error is swallowed as benign. The direct-global equivalent would reject an unsupported store destination.
+- Failure scenario: a valid write through a global alias is erased, so state mutations vanish without any remaining SSA consumer to trigger a later error. The claim that skipped instructions are necessarily caught by unbound-result consumers does not apply to stores or unused calls.
+- Fix: resolve aliases with the raw API before typed dispatch, or reject them at the original instruction; never use exception-message matching to classify an instruction as harmless. Apply the same rule to called-function aliases.
+- Test: alias-backed store and side-effecting alias call, plus alias loads with live/dead uses; unsupported effects must fail at extraction, supported ones must match native state changes.
+- Already tracked? Bennett-n4di (open) is accurate. This probe strengthens it from a possible dangling SSA failure to an actual silently dropped side effect. Bennett-fnxh/hsm3 only protect the specifically named jl_global JIT-alias family.
+
+### F10 — [S1] A valid nested ConstantArray crashes Julia in the LLVM C API
+- Where: `src/extract/module_walk.jl:877–884` (`_flatten_struct_to_bytes`).
+- Evidence: VERIFIED-BY-EXECUTION in an isolated process with core dumps disabled. `Bennett._parsed_ir_from_ir_string("@g = constant { [2 x i8] } { [2 x i8] [i8 1,i8 undef] }\ndefine i8 @julia_const(i8 %x){ entry: ret i8 %x }")` exits **139 / SIGSEGV**. Stack: `llvm::ConstantDataSequential::getElementAsInteger` → `getElementAsConstant` → `LLVMGetElementAsConstant` → `_flatten_struct_to_bytes … module_walk.jl:880`.
+- Failure scenario: `ConstantArray` and `ConstantDataArray` are admitted by the same branch, but `LLVMGetElementAsConstant` requires a ConstantDataSequential object. The non-data array is cast to the wrong C++ class. The global need not even be referenced by the entry function; scanning all globals makes an otherwise trivial identity function crash the process. `undef` is valid in this initializer and should be rejected or handled explicitly, never segfault.
+- Fix: use the operand accessor for `ConstantArray`; reserve `LLVMGetElementAsConstant` for `ConstantDataArray`. Explicitly reject undef/poison/non-integer elements under the existing policy, rather than replacing arbitrary elements with zero. Audit every raw C API accessor against its required value kind.
+- Test: subprocess extraction of nested integer arrays containing undef, poison, and constant expressions, plus ordinary dense integer arrays. Require a contextual Julia exception or correct data, never abnormal process exit.
+- Already tracked? No matching issue found. This is a distinct C API type-confusion crash, not an LLVM-context lifetime suspicion.
+
+### F23 — [S1] Closed-world validation accepts genuinely ambiguous specialization calls
+- Where: `src/extract/julia_set.jl:249–284,434–449,503–509`; `src/extract/callees.jl:101–154`.
+- Evidence: VERIFIED-BY-EXECUTION. Define `struct ReviewAdder{T}; offset::T; end`, `Base.@noinline (a::ReviewAdder)(x::Int8)=x+Int8(a.offset)`, and `root_adder(x::Int8)=ReviewAdder(x)(x)+ReviewAdder(Int16(x))(x)`. `extract_parsed_ir_set_from_julia(root_adder,Tuple{Int8};ptr_cells=true)` **returns successfully** with keys `root_adder#48af7fb4`, `ReviewAdder#20e9b5fb`, `throw_inexacterror#223736bc`, `ReviewAdder#7be14e9b` (digests session-dependent). The two root calls both carry `callee=:ReviewAdder`, `arg_widths=[64,8]`, `ret_width=8`, despite referring to distinct specializations. The checker accepts any `haskey(bare_to_key,sym)`, without requiring one candidate. No downstream VM execution is claimed.
+- Failure scenario: the producer promises a closed, resolvable set, but has erased the information needed to bind these two calls. Arity/width matching cannot disambiguate the printed calls. The corresponding Function-callee path correctly rejects multiple candidates; the Symbol path does not.
+- Fix: carry the canonical specialization key at every call site using the typed/LLVM method mapping. Until that exists, make exact-bare and demangled-bare Symbol lookups require exactly one candidate, with an ambiguity error naming both keys.
+- Test: the real functor example above must either link each call to the proper body or reject at set construction. Also test same-width closures of different captured types and plain Function/Symbol parity.
+- Already tracked? Bennett-zuk5 accurately identifies the missing guard, but its “defense-in-depth” framing understates an executed public-producer acceptance with two indistinguishable calls.
+
+### F14 — [S1] Volatile memory guards are bypassed by vector and sret dispatch
+- Where: `src/extract/instructions.jl:6265–6267,7392–7405,7889–7902`; `src/extract/vectors.jl:825–846`; `src/extract/sret.jl:898–925`.
+- Evidence: VERIFIED-BY-EXECUTION. Both `define i8 @julia_vol(ptr dereferenceable(1) %p){ entry: %v=load volatile <1 x i8>,ptr %p,align 1 %r=extractelement <1 x i8> %v,i32 0 ret i8 %r }` and `define void @julia_vol(ptr sret([1 x i8]) %out,i8 %x){entry: store volatile i8 %x,ptr %out ret void}` extract successfully. The former becomes ordinary IRLoad; the latter becomes only IRInsertValue+IRRet. Scalar counterparts outside these paths reject volatile effects.
+- Failure scenario: recognized shapes bypass the common dispatch guards, so memory operations whose observable access semantics are unsupported are nevertheless accepted with those semantics discarded. The sret pre-walk likewise never checks atomic ordering on its suppressed stores.
+- Fix: apply volatile/atomic policy checks before vector/sret/heap recognition can suppress or replace any instruction. Reuse one validation helper across every producer.
+- Test: scalar, vector, sret and heap load/store matrices with volatile and supported/unsupported atomic orderings; equivalent effects must receive equivalent rejection policy.
+- Already tracked? Bennett-4mmt (closed) claims atomic/volatile load/store rejection; the bypasses remain. F2 covers the separate memset zero-fill bypass.
+
+### F18 — [S1] Unnamed LLVM basic blocks all become the same empty label
+- Where: `src/extract/module_walk.jl:477–478`; `src/extract/instructions.jl:6658–6667,6326–6353`.
+- Evidence: VERIFIED-BY-EXECUTION. `_parsed_ir_from_ir_string` on `define i8 @julia_unnamed(i8 %x) { %1=icmp eq i8 %x,0 br i1 %1,label %2,label %3 2: ret i8 7 3: ret i8 9 }` produces three blocks all labelled `Symbol("")`; both branch targets are also `Symbol("")`. `reversible_compile(p)` rejects with `lower: duplicate basic-block labels in ParsedIR (Bennett-c6ex)`.
+- Failure scenario: numeric block slots are valid LLVM IR and common in external compiler output. `LLVM.name` returns an empty string for an unnamed block, not its printed slot number. The value naming pass handles unnamed instructions but omits block identities entirely.
+- Fix: build a collision-free `LLVMValueRef => Symbol` block table before conversion and consult it for block labels, branch/switch targets and phi predecessor labels. Never use an empty string as block identity.
+- Test: unnamed entry/diamond/loop blocks with named and unnamed values; extraction must retain distinct CFG nodes, and the diamond must return 7 for zero and 9 otherwise over all 256 UInt8 inputs with ancilla checks.
+- Already tracked? No matching open bead; Bennett-c6ex's downstream duplicate-label guard catches the extractor defect but does not fix it.
+
+### F22 — [S1] Array allocas discard the outer allocation count
+- Where: `src/extract/instructions.jl:118–128,8211–8225`.
+- Evidence: VERIFIED-BY-EXECUTION. `define i8 @julia_count(i8 %x){entry: %p=alloca [1 x i8],i32 2 %q=getelementptr i8,ptr %p,i64 1 store i8 %x,ptr %q %r=load i8,ptr %q ret i8 %r}` produces `IRAlloca(:p,8,ConstOperand(1))`. Compilation rejects the valid second-byte store with `ArgumentError: _lower_store_via_shadow!: idx=1 out of range [0, 1)`.
+- Failure scenario: `alloca [K x T],N` reserves K×N elements in LLVM; the extractor reserves K. Runtime counts are silently replaced by K too. The circuit's bound guard prevents this witness becoming a wrong result, but the ParsedIR handed to external consumers has the wrong reservation.
+- Fix: multiply the array length by the outer count, checking overflow. Preserve dynamic counts via a supported multiplication or reject them at extraction. Make reservation and all capacity proofs consume this one correct definition.
+- Test: outer counts 0/1/2 and runtime N, read/write the last valid element, reject the first invalid one; compare accepted circuit results and ancilla restoration.
+- Already tracked? Bennett-uiqq accurately describes this defect; the executed valid-input failure confirms it is active.
+
+### F9 — [S1] Pure vector plumbing leaves supported sret stores permanently pending
+- Where: `src/extract/module_walk.jl:662–667`; `src/extract/sret.jl:1018–1046`; `src/extract/vectors.jl:482–499`.
+- Evidence: VERIFIED-BY-EXECUTION. `define void @julia_vret(ptr sret([2 x i8]) %out,i8 %x) { entry: %v0=insertelement <2 x i8> poison,i8 %x,i32 0 %v=insertelement <2 x i8> %v0,i8 %x,i32 1 store <2 x i8> %v,ptr %out,align 1 ret void }` fails with `AssertionError: ir_extract.jl: 1 pending sret vector store(s) remain unresolved at ret void`. Both lanes are fully defined. `_convert_vector_instruction` has populated `lanes`, but returns `nothing`; the walker continues before calling the pending-store resolver.
+- Failure scenario: a vector returned via sret is built by insertelement/shuffle/same-shape bitcast, which are intentionally zero-instruction aliases. The resolver is never notified. Related incompleteness: constant vector values have no producer visit, and the resolver resolves only one pending store per producer.
+- Fix: resolve pending lane references after every successfully processed producer, including `nothing` results that update `lanes`; initialize constants directly and resolve all stores referring to the producer. Distinguish intentionally empty conversion from an unsupported skipped instruction.
+- Test: the module above, a shuffle-only sret producer, constant-vector sret stores, and one vector stored into two disjoint sret regions; check tuple outputs and ancilla restoration.
+- Already tracked? No matching open issue. Bennett-0c8o claims vector-lane sret support, but this basic accepted vector plumbing is omitted.
+
+### F21 — [S1] ConstantExpr pointer comparison mistakes symbolic identity for known address inequality
+- Where: `src/extract/constexpr.jl:215–265,273–322`.
+- Evidence: REASONED-ONLY for the end-to-end linked-program counterexample; extractor behavior was executed. `@review_undefined_weak = extern_weak global i8` plus `define i1 @julia_weak(i8 %x){entry: ret i1 icmp eq (ptr @review_undefined_weak,ptr null)}` extracts to `IRRet(ConstOperand(0),1)`. `_ptr_addresses_equal` compares `(:named,ref)` with `(:null,0)` and returns false. An undefined ELF weak symbol resolves to null, so this program must return true when that symbol is not supplied. This is specified by [LLVM 18 linkage semantics](https://releases.llvm.org/18.1.8/docs/LangRef.html#linkage-types). A native `Base.llvmcall` attempt reported `JIT session error: Symbols not found: [ review_undefined_weak ]` and was interrupted; the Julia JIT did not provide an ELF-linker oracle.
+- Failure scenario: a conventional optional weak-symbol availability check is constant-folded to the wrong branch. More generally, a named symbol and a numerical address are not proven unequal merely because their identity tags differ; IFunc results also require resolver semantics.
+- Fix: make equality tri-valued. Same proven identity can return true; provably distinct non-interposable/non-null objects can return false; extern_weak, IFunc, symbolic-versus-absolute, and other unresolved relationships must return `nothing` and reject rather than guess.
+- Test: undefined/resolved weak symbol null checks via a local native linker fixture, aliases of the same symbol, distinct fixed globals, and undecidable symbolic/absolute comparisons. Require correct folding or explicit rejection.
+- Already tracked? No matching issue found.
+
+### F15 — [S2] MemorySSA printing deadlocks once its undrained stderr pipe fills
+- Where: `src/memssa.jl:123–142`.
+- Evidence: VERIFIED-BY-EXECUTION. `timeout 35s julia --compiled-modules=existing --project --check-bounds=yes -e 'using Bennett; ir="define i8 @julia_mem(ptr %p,i8 %x) {\nentry:\n" * repeat("store i8 %x, ptr %p\n",2000) * "ret i8 %x\n}"; println("MEMSSA_START"); flush(stdout); s=Bennett._run_memssa_on_ir(ir;preprocess=false); println("MEMSSA_DONE ",sizeof(s))'` prints only `MEMSSA_START` and exits 124 (timeout). The producer runs synchronously inside `redirect_stderr`; no reader starts until after the pass returns and the write endpoint closes.
+- Failure scenario: a moderately sized valid module fills the OS pipe buffer while the LLVM printer is still writing. The producer waits for a reader that is scheduled only after producer completion. The public `use_memory_ssa=true` route inherits this hang.
+- Fix: drain the pipe concurrently with the pass and close both endpoints in finally blocks; serialize process-wide stderr capture. Avoid a shared stderr channel if LLVM can supply an owned output stream.
+- Test: printer output substantially larger than the pipe capacity, with a bounded timeout, plus exception cleanup and concurrent callers.
+- Already tracked? No matching open issue found; Bennett-law3/08wr are closed MemorySSA implementation/integration work.
 
 ### F26 — [S2] MemorySSA parsing merges different functions' local node IDs
 - Where: `src/memssa.jl:36–100,133–136`; `src/ir_types.jl:559–566`.
@@ -247,10 +239,26 @@ Pending completion.
 - Test: two functions that deliberately reuse def/phi IDs in different roles; assert each graph independently, and retain a single-function control.
 - Already tracked? No matching open issue found.
 
+### F16 — [S2] Recursive callgraph walks include the root despite promising to exclude it
+- Where: `src/extract/callgraph.jl:98–110,122–136`; `src/extract/julia_set.jl:488–509`.
+- Evidence: VERIFIED-BY-EXECUTION. `Base.@noinline rec_review(x::Int8)=x<=0 ? Int8(0) : rec_review(x-Int8(1))`. `transitive_callees(rec_review,Tuple{Int8})` prints `[(typeof(rec_review),Tuple{Int8})]`. `extract_parsed_ir_set_from_julia(rec_review,Tuple{Int8})` then fails with `duplicate canonical key rec_review#6f2728c5` (digest is session-dependent).
+- Failure scenario: visited starts empty. A recursive edge adds the root as a callee; set assembly extracts it once in the callee loop and again as the prepended root. This fails before any actual downstream recursion limitation can be diagnosed. Mutual recursion has the same root-reentry issue.
+- Fix: seed visited with the root while keeping the discovered non-root output separate; do the same for the raw-specTypes helper. Register the root explicitly when recursive linkage needs it, without emitting its body twice.
+- Test: direct and mutual recursion, both include_root values, exactly one root body when requested and none when excluded; check closed-world linkage separately from circuit recursion support.
+- Already tracked? Bennett-t7zu concerns downstream recursive sret lowering, not this callgraph/set-construction bug.
+
+### F25 — [S2] Four rounding intrinsics fall through despite claiming registered dispatch
+- Where: `src/extract/instructions.jl:5093–5107,6847–6871`; `src/callees.jl:27–36`.
+- Evidence: VERIFIED-BY-EXECUTION. For each `op ∈ (floor,ceil,trunc,rint)`, extract `declare double @llvm.op.f64(double)` and an integer-bit wrapper: `define i64 @julia_f(i64 %x){entry: %a=bitcast i64 %x to double %b=call double @llvm.op.f64(double %a) %r=bitcast double %b to i64 ret i64 %r}`. All four reject with `call to 'llvm.<op>.f64' has no registered callee handler or intrinsic pattern`.
+- Failure scenario: the explicit branch's comment says the callee registry handles these names, but registration keys are `soft_floor`, `soft_ceil`, `soft_trunc`, `soft_round`. `_lookup_callee` has no LLVM-name-to-soft-name mapping. Available implementations therefore cannot be reached from the stated intrinsic surface.
+- Fix: add explicit f64 dispatch to the matching soft primitive, with width checks like round/roundeven. State the assumed rounding environment for rint. Remove the empty conditional and stale explanation.
+- Test: raw LLVM bit-pattern wrappers on positive/negative fractional values, ties, ±0, infinities and NaNs; compare supported semantics and ancilla restoration. Keep unsupported widths loud.
+- Already tracked? Bennett-6pa (closed) claims the rounding-intrinsic work; its scope includes these four intrinsics, but their direct dispatch is absent. Bennett-0hu (closed) adds a SoftFloat ceil test, which does not establish raw LLVM intrinsic linkage. No open issue specifically repairs the missing dispatch.
+
 ## Unconfirmed suspicions
 
 - No additional suspected defect is promoted without a concrete trace. Non-x86 execution, GC-window task migration, and concurrent same-key registry replacement were not exercised. The registry locks protect individual dictionary operations, not an entire extraction snapshot; a concurrency stress review remains useful, but no concurrency miscompile is claimed here.
-- Refuted during continuation: treating the new `select ?, poison, X → X` lane refinement itself as a wrong-result bug. Poison refinement permits this; undef is kept separate and the checked test rejects an undef computation. Ignoring nsw/nuw/exact flags is likewise not by itself a defined-input counterexample: the flagged poison cases admit refinement. The report's arithmetic findings use defined inputs.
+- Refuted during continuation: treating the new `select ?, poison, X → X` lane refinement itself as a wrong-result bug. The [LLVM poison refinement rule](https://releases.llvm.org/18.1.8/docs/LangRef.html#poison-values) permits this; undef is kept separate and the checked test rejects an undef computation. Ignoring nsw/nuw/exact flags is likewise not by itself a defined-input counterexample: the flagged poison cases admit refinement. The report's arithmetic findings use defined inputs.
 - Refuted during continuation: a proposed wider-element M2 miscompile based solely on the `offset_bytes` comment. An i16 version of the heap fixture with capacity 4, stores at bytes 16/18 and a runtime element index returned the correct 3 for input −3. Do not turn Bennett-xroi's representation concern into an asserted wrong-result case without a stronger witness.
 - No inherited finding was superseded. F2's tracking attribution was corrected after reading Bennett-zmry, and F25 was connected to the closed Bennett-6pa work rather than labelled wholly untracked.
 
