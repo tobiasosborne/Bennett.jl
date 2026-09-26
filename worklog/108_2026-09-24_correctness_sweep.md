@@ -47,6 +47,26 @@ valid syntax in 0.157.1 (it exec'd "read-only" as a binary) — irrelevant for
 `exec -s read-only`, noted so nobody repeats the probe.
 Wave 1 launched 09:49 UTC: B-lowering, B-extract-core, B-circuit-core, VM-core.
 
+**Interim (10:55 UTC).** Six of nine scopes complete (circuit-core 23 findings, VM-core 15,
+arith 15, lowering 18, extract-core 26, VM-ingest 19); softfloat / extract-vm / tests-api
+running; quota 82 %. **Two reviewers (extract-core, lowering) were killed mid-run by the
+provider's "cybersecurity risk" content filter** — a false positive on compiler code; the
+flagged context stays in the thread so `codex exec resume` re-fails instantly. Recovery that
+worked: fresh session with the original brief + a continuation note pointing at the saved
+partial report ("it is YOUR report now; re-verify before trusting"). Both continuations
+reproduced every inherited finding and added more. **The incremental-report rule paid for
+itself twice.** Triage pipeline: every S0/S1 finding is re-executed by an independent Claude
+verifier (no codex quota) before a bead is filed; so far 15/15 (circuit-core), 10/10 (VM-core),
+5/5 (arith), 13/13 (lowering) reproduced, with a handful of severity downgrades (core F7/F8→S1,
+F14→S2; VM-core F4→S2; arith F4→S2, F14→S3). Beads carry label `astra-2026-09-26` and
+`discovered-from:Bennett-yjd5` (BennettVM: `bennettvm-b1e5`); per-report `*.triage.md` maps
+finding→bead. Headline classes so far: tabulate path ≠ narrowed semantics (iwj6), compile
+cache ignores method redefinition (4ddk), select-ed-pointer stores ignore block predicate
+(37w3), loop-header side effects after exit are SILENT not loud (i5zn, corrects 8nfb),
+irreducible CFGs accepted as loops (73gr), QROM free-list + compact_calls collision (9k7n→P1),
+add=:qcla self-CNOT on x+x (retr; stwr covered only cuccaro), BVM mixed-width accesses and
+ROM-source memcpy copying zeros (aul4, gn6o).
+
 ## Session log — 2026-09-24 — SESSION CLOSE (wind-down) — handoff: READ FIRST
 
 **State of main (fast-forwarded from claude/loving-ptolemy-8a914n):** stwr, t9rh,
