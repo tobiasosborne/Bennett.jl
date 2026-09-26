@@ -372,6 +372,8 @@ runfile("test_uyf9_memcpy_sret.jl")
 # Bennett-asw2 / U01 — verify_reversibility now checks Bennett invariants
 # (ancilla-zero + input-preservation) instead of the tautological round-trip.
 runfile("test_asw2_verify_reversibility.jl")
+# Bennett-ukup — verify_reversibility rejects n_tests <= 0 (vacuous `true`).
+runfile("test_ukup_verify_budget.jl")
 # Bennett-rggq / U02 — value_eager_bennett falls back to bennett(lr) on any
 # CFG containing __pred_* groups (branching), avoiding Kahn-topo ordering bug.
 runfile("test_rggq_value_eager_branching.jl")

@@ -242,9 +242,10 @@ Verify Bennett's invariants on a controlled circuit across `n_tests` random
 
 Returns `true` on success; raises `ErrorException` with context on any
 violation. Replaces an earlier tautological round-trip check. See
-Bennett-asw2 / U01.
+Bennett-asw2 / U01. `n_tests <= 0` throws `ArgumentError` (Bennett-ukup).
 """
 function verify_reversibility(cc::ControlledCircuit; n_tests::Int=100)
+    _check_verify_budget(n_tests)  # Bennett-ukup: reject vacuous 0/-1 budgets
     # Bennett-6azb / U58: ctrl is now `cc.circuit.input_wires[1]`, so
     # delegating to the `ReversibleCircuit` probe covers all three
     # invariants — ancilla-zero, input-preservation (which now

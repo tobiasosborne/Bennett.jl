@@ -219,6 +219,15 @@ function peak_live_wires(c::ReversibleCircuit)
     return peak
 end
 
+# Bennett-ukup: a non-positive budget runs zero probes; returning `true` would
+# be a vacuous success certificate. Shared by the ControlledCircuit overload.
+function _check_verify_budget(n_tests::Integer)
+    n_tests > 0 || throw(ArgumentError(
+        "verify_reversibility: n_tests must be positive (got $n_tests) — a " *
+        "non-positive budget executes no probe and cannot certify the circuit"))
+    return nothing
+end
+
 """
     verify_reversibility(c::ReversibleCircuit; n_tests::Int=100) -> true
 
@@ -235,8 +244,13 @@ Returns `true` on success; raises `ErrorException` with context on any
 violation. Replaces an earlier version that only checked (3), which was a
 mathematical tautology for any sequence of self-inverse gates and therefore
 missed every ancilla-leak and input-corruption bug. See Bennett-asw2 / U01.
+
+`n_tests` must be positive: a budget of `0` (or less) would execute no probe
+and would otherwise return the same `true` as a checked circuit, so it throws
+`ArgumentError` instead (Bennett-ukup).
 """
 function verify_reversibility(c::ReversibleCircuit; n_tests::Int=100)
+    _check_verify_budget(n_tests)
     for t in 1:n_tests
         bits = zeros(Bool, c.n_wires)
         offset = 0
