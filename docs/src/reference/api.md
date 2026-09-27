@@ -355,7 +355,10 @@ call `Bennett._clear_compile_cache!()` to invalidate stale entries.
 enumerate) evaluates `f` on all `2^W` inputs and emits the result as a QROM
 lookup — a binary decision tree of Toffolis (Babbush–Gidney 2018). The cost is
 `2(L-1)` Toffoli + `O(L·W)` CNOT, with a T-count of `4(L-1)` that is
-**independent of the value width**. A 2-bit S-box table is a tiny circuit:
+**independent of the value width**. Tabulation applies only at natural width:
+any explicit `bit_width` makes `strategy=:tabulate` throw and `:auto` use
+expression lowering, because the table evaluates the natural-width function
+(Bennett-iwj6). The output width is the function's inferred return type. A 2-bit S-box table is a tiny circuit:
 
 ```julia
 sbox(x::UInt8) = (UInt8(0x63), UInt8(0x7c), UInt8(0x77), UInt8(0x7b))[(x & UInt8(0x3)) + 1]

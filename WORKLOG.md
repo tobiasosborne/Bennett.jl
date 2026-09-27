@@ -1,5 +1,7 @@
 # Bennett.jl Work Log
 
+> **2026-09-27 — Bennett-iwj6 landed (3f3ff1b + ff7d635): tabulate is refused for any explicit `bit_width` (W == natural width is still narrowing: 191/256 disagreement witness), output width from the return type, one shared option validator. `:auto`→QROM redirect now unreachable (Bennett-iq0r). Audition: space-bunny-alpha cleaner, deepseek-flash caught the hole. Full suite 1546540/4 broken/0 fail.** Detail: [`worklog/109`](worklog/109_2026-09-26_astra_verdict.md).
+
 > **2026-09-27 — 3+1 RETIRED (single implementer + semiregular review; CLAUDE.md rule 2); grind through the Astra queue begins. Bennett-q7yd + lcye landed (7d83702): irreversible gates and malformed circuits throw at construction; `Toffoli(c,c,t)` stays legal (squaring emits it). Full suite 1527507/3 broken/0 fail.** Detail: [`worklog/109`](worklog/109_2026-09-26_astra_verdict.md).
 
 > **2026-09-26 VERDICT — Bennett survives the Astra review as a compiler with a sound core and an unsound perimeter: zero wrong answers from the construction or integer arithmetic; ~40 silent-acceptance defects in the layers around it, in four classes (boundary recognisers, globally-wrong predicates, second implementations without the first one's oracle, checkers that certify nothing). Classes 2–4 are fixable by the known loop; class 1 needs the V2-PRD D0 input-contract decision first. Recommended order + close state inside.** Detail: [`worklog/109`](worklog/109_2026-09-26_astra_verdict.md).

@@ -1,5 +1,50 @@
 # Worklog chunk 109 — 2026-09-26 — Astra campaign verdict + handoff
 
+## Session log — 2026-09-27 — Bennett-iwj6 landed (3f3ff1b + ff7d635); model audition; BennettVM worker started
+
+**iwj6 (verdict step (b): second implementations held to the first one's oracle).** Implemented by
+`stealth/space-bunny-alpha`; follow-up fix by the orchestrator from a deepseek-flash finding.
+- F2: tabulation is refused for ANY explicit `bit_width` (explicit `:tabulate` throws, `:auto`
+  falls through to expression lowering). The table evaluates the natural-width Julia function;
+  `bit_width=W` means `_narrow_ir` semantics, a different function.
+- **`bit_width == natural width` is STILL narrowing.** `_narrow_ir` rewrites every width, so
+  `f(x::Int8) = Int16(x)*Int16(x) > 200 ? 1 : 0` at `bit_width=8` differs from native on 191/256
+  inputs under `:expression` while the table matched native. The first landing (3f3ff1b) treated
+  W == natural as a no-op and tabulated; ff7d635 closes it. That the expression result at
+  bit_width=8 differs from native is Bennett-mrhg territory (casts between source widths).
+- F3: QROM output width now comes from `Base.return_types` (single concrete supported Integer),
+  not the first argument. Int8→Int16 widening gives 16 bits / 400, was 8 bits / -112.
+- F23: `_validate_compile_options` (driver.jl) is the single copy of the option whitelists, used
+  by `lower()` and every entry point before either tabulate exit. The entry points admit
+  `:reversible_vm` via `_VALID_TARGET_ENTRY`; `lower()` does not. `Tuple{Float64}` + `bit_width`
+  now throws.
+- **Consequence:** the `:auto` → tabulate redirect is UNREACHABLE today (cost model needs total
+  input width ≤ 4; every supported scalar type is ≥ 8 bits). test_h0ai T17 takes its documented
+  `@test_skip` → suite Broken count 3 → 4. Follow-up Bennett-iq0r (tabulate under true narrowed
+  semantics; depends on mrhg).
+- test_tabulate.jl's small-W testsets pinned the defect (masked natural-width values); rewritten
+  to assert the refusal plus natural-width exhaustive tabulation.
+- Known, not this bead: untyped `simulate` decodes UInt8→UInt16 widening returns as signed
+  (zc50 heuristic, Astra F4); captured closure variables become extra inputs (Bennett-o9sv).
+- Gates: new file 18616/18616; **full suite at 3f3ff1b: 1546540 pass / 4 broken / 0 fail**.
+  ff7d635 verified by the iwj6, tabulate, h0ai, xlsz, bennett, reversible_vm_dispatch files.
+
+**Model audition (same iwj6 prompt, separate worktrees).** space-bunny-alpha (`--thinking max`):
+47 min, cleaner structure and docs, candid report, but shipped the W == natural hole.
+deepseek-flash (`--thinking high`): 27 min, same overall design, and caught that hole unprompted.
+Both rewrote test_tabulate.jl for the same reason. Conclusion: space-bunny is a fine default
+implementer (and free); its diffs still need witness re-execution and review.
+
+**Orchestration notes.**
+- `ps` CPU time is NOT a liveness signal for `pi` (always 00:00:00). An earlier deepseek run was
+  killed as "hung" on that signal after an hour without file changes; that diagnosis is unproven.
+- Bennett.jl workers run in detached worktrees under the session scratchpad; the full suite runs
+  in its own worktree per commit. BennettVM loads Bennett by relative path `../Bennett.jl`, so
+  BVM workers cannot use worktrees and see the Bennett.jl main tree live.
+- BennettVM: space-bunny started on bennettvm-tghl (independent forward oracle for the property
+  gate); queue then 6xy0, wtda, aul4, gn6o, hyi6, av72.
+
+
 ## Session log — 2026-09-27 — rule change (3+1 retired) + Bennett-q7yd / Bennett-lcye landed (7d83702)
 
 **Rule change (maintainer, 2026-09-27):** the 3+1 protocol is RETIRED. One implementer per bead,
