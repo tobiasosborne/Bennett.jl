@@ -1,5 +1,7 @@
 # Bennett.jl Work Log
 
+> **2026-09-27 SESSION CLOSE — Bennett-mrhg landed (12a3f96): `bit_width` narrowing is a validating allowlist (runtime shifts, second widths, tuples, memory, loops REFUSED); full suite 1766536/4 broken/0 fail. Four beads closed today (q7yd, lcye, iwj6, mrhg). i5zn parked on `wip/i5zn-loop-header-effects` (core CFG, no full suite yet). `pi -p` text mode silently stalls — use `--mode json`. Independent codex review NOT yet run.** Detail: [`worklog/109`](worklog/109_2026-09-26_astra_verdict.md).
+
 > **2026-09-27 — Bennett-iwj6 landed (3f3ff1b + ff7d635): tabulate is refused for any explicit `bit_width` (W == natural width is still narrowing: 191/256 disagreement witness), output width from the return type, one shared option validator. `:auto`→QROM redirect now unreachable (Bennett-iq0r). Audition: space-bunny-alpha cleaner, deepseek-flash caught the hole. Full suite 1546540/4 broken/0 fail.** Detail: [`worklog/109`](worklog/109_2026-09-26_astra_verdict.md).
 
 > **2026-09-27 — 3+1 RETIRED (single implementer + semiregular review; CLAUDE.md rule 2); grind through the Astra queue begins. Bennett-q7yd + lcye landed (7d83702): irreversible gates and malformed circuits throw at construction; `Toffoli(c,c,t)` stays legal (squaring emits it). Full suite 1527507/3 broken/0 fail.** Detail: [`worklog/109`](worklog/109_2026-09-26_astra_verdict.md).

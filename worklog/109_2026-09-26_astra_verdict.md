@@ -1,5 +1,55 @@
 # Worklog chunk 109 — 2026-09-26 — Astra campaign verdict + handoff
 
+## Session log — 2026-09-27 — SESSION CLOSE: Bennett-mrhg landed (12a3f96); i5zn + bennettvm-tghl parked on wip branches; handoff
+
+**mrhg — `bit_width` narrowing is now a validating allowlist** (space-bunny-alpha). `_narrow_ir`
+either proves the re-typing to W bits preserves W-bit two's-complement modular semantics or
+throws `ArgumentError` naming the bead.
+- ACCEPTED: add/sub/mul/and/or/xor; shl/lshr/ashr with a constant amount `0 <= k <= W`; icmp
+  whose constants fit in W bits; select; trunc/sext/zext between `i1` and the source width S;
+  phi, branch, ret (width == S).
+- REFUSED: runtime shift amounts (Julia bakes i64 shift-amount guards into the IR — Astra F3),
+  any second scalar width (`Int16(x)` on an Int8 arg), division/remainder, bit counts,
+  aggregates and tuple returns (F13), memory, calls, switches, loops, Bool returns, constants
+  that are source-width limits (`typemin(Int8)`, the `ashr x, 7` sign-fill at W < 8).
+- **Same function, different verdict per optimisation mode**: `x == 1 ? 1 : 0` and `x >> 1` are
+  accepted at optimize=true and refused at optimize=false (the unoptimised IR carries i64
+  promotion / source-width guards). By design.
+- **W == S still needed the fix**: at `bit_width=8` on Int8, `Int8(1) << x` was wrong pre-fix
+  because the i64 guard constant `typemin(Int64)` re-typed to 0. The widened-domain rule
+  catches it.
+- NOT covered, stated in the test header: LLVM can fold a width-dependent chain at the SOURCE
+  width before `_narrow_ir` runs (optimize=true). That is upstream of the pass.
+- Loop refusal is blanket (loops are unrolled at source width); `W > S` remains allowed and is
+  outside the exhaustive contract tests.
+- test_fd1r / test_ir_memory_types pinned the per-node aggregate/memory rewrite (the thing that
+  corrupts layouts); both now pin the refusal. `_narrow_inst` is 3-arg `(inst, S, W)`.
+- Gates: new file 220514/220514; orchestrator probe with an independently written oracle (8
+  functions × both modes × W ∈ {2,3,4,6,8}) — zero wrong values; test_narrow 77/77 unchanged;
+  gate-count 39/39; **full suite at 12a3f96: 1766536 pass / 4 broken / 0 fail**.
+
+**Parked, NOT on main (no full suite, no independent review):**
+- `wip/i5zn-loop-header-effects` — space-bunny's iteration-active predicate in
+  `src/lowering/cfg.jl` (+108/−10), new `test/test_i5zn_loop_header_effects.jl`, edits to
+  test_c6ex and test_y986. CORE CFG code: needs the full suite and a review before merging.
+- BennettVM `wip/tghl-forward-oracle` — independent semantic model for the random-program
+  property gate (+ jpb generator hardening). See BennettVM HANDOFF.md.
+
+**`pi` reliability finding.** Four unattended runs launched in plain text mode (`pi -p`)
+timed out after 1–2 h with no file changes and no output (deepseek-flash, mimo-v2.6-pro,
+space-bunny ×2). Every run launched with `--mode json` worked. Mechanism unknown. Launch recipe
+that works: `timeout N pi -p --mode json --session-dir <dir> --name <bead> --provider … --model …
+--thinking max "$(cat prompt.md)" > run.jsonl`, in the foreground of a background task; read
+progress by counting `tool_execution_start` events and the log's mtime.
+
+**Next session, in order:** (1) full suite + review on `wip/i5zn-…`, then merge; (2) Bennett-73gr
+(irreducible CFGs); (3) codex `gpt-6-sol` xhigh review over `96c7512..HEAD` — NOT run today, so
+q7yd/lcye/iwj6/mrhg have orchestrator review + full suite but no independent reviewer;
+(4) BennettVM: merge tghl, then 6xy0, wtda, aul4, gn6o, hyi6, av72; (5) decide V2-PRD D0 before
+any class-1 (recogniser) bead. Open question for the maintainer: retire 3+1 in BennettVM's
+CLAUDE.md too?
+
+
 ## Session log — 2026-09-27 — Bennett-iwj6 landed (3f3ff1b + ff7d635); model audition; BennettVM worker started
 
 **iwj6 (verdict step (b): second implementations held to the first one's oracle).** Implemented by
