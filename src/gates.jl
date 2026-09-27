@@ -6,20 +6,86 @@ abstract type ReversibleGate end
 """NOT gate: flips the target bit. Self-inverse."""
 struct NOTGate <: ReversibleGate
     target::WireIndex
+    # Bennett-lcye / F13: validate at construction. Wire indices are
+    # 1-based; a 0/negative index means a lowering bug and would either
+    # alias wire 1 or index out of bounds in `simulate`. Inner
+    # constructor (not an outer check) so no code path can build an
+    # invalid primitive. Cost is one comparison — this runs ~11M times
+    # for a soft-float transcendental, so keep it branch-only.
+    function NOTGate(target::WireIndex)
+        target >= 1 || throw(ArgumentError(
+            "NOTGate: target wire $target is not a valid 1-based wire " *
+            "index (Bennett-lcye)"))
+        return new(target)
+    end
 end
 
 """Controlled-NOT gate: flips target when control is 1. Self-inverse."""
 struct CNOTGate <: ReversibleGate
     control::WireIndex
     target::WireIndex
+    # Bennett-lcye / F13: `CNOTGate(c,c)` is NOT self-inverse — it
+    # implements `b[c] ⊻= b[c]`, zeroing the bit in one application.
+    # Reject it (and out-of-range wires) at construction so the defect
+    # can never reach `simulate` / `verify_reversibility`.
+    function CNOTGate(control::WireIndex, target::WireIndex)
+        control >= 1 || throw(ArgumentError(
+            "CNOTGate: control wire $control is not a valid 1-based wire " *
+            "index (Bennett-lcye)"))
+        target >= 1 || throw(ArgumentError(
+            "CNOTGate: target wire $target is not a valid 1-based wire " *
+            "index (Bennett-lcye)"))
+        control != target || throw(ArgumentError(
+            "CNOTGate: control == target == $control is not reversible — " *
+            "it zeroes the bit (Bennett-lcye)"))
+        return new(control, target)
+    end
 end
 
-"""Toffoli gate: flips target when both controls are 1. Self-inverse. Universal for classical reversible computation."""
+"""
+Toffoli gate: flips target when both controls are 1. Self-inverse. Universal for classical reversible computation.
+
+Bennett-lcye / F13: the target must differ from both controls — a
+self-targeting Toffoli is irreversible and is rejected at construction.
+
+`control1 == control2 == c` is *accepted*: `Toffoli(c, c, target)` is
+exactly `CNOT(c, target)`, a legitimate self-inverse permutation. It is
+not merely allowed in principle — `lower_mul_wide!` (src/multiplier.jl)
+emits it on the diagonal `a[k] == b[i]` when squaring a value (`a === b`),
+so rejecting it would break real compilation of `x*x`. Only the
+target-equals-a-control case is a defect (and that one no emitter
+produces), so the constructor check draws the line there.
+"""
 struct ToffoliGate <: ReversibleGate
     control1::WireIndex
     control2::WireIndex
     target::WireIndex
+    function ToffoliGate(control1::WireIndex, control2::WireIndex, target::WireIndex)
+        control1 >= 1 || throw(ArgumentError(
+            "ToffoliGate: control1 wire $control1 is not a valid 1-based " *
+            "wire index (Bennett-lcye)"))
+        control2 >= 1 || throw(ArgumentError(
+            "ToffoliGate: control2 wire $control2 is not a valid 1-based " *
+            "wire index (Bennett-lcye)"))
+        target >= 1 || throw(ArgumentError(
+            "ToffoliGate: target wire $target is not a valid 1-based wire " *
+            "index (Bennett-lcye)"))
+        target != control1 || throw(ArgumentError(
+            "ToffoliGate: target == control1 == $target is not reversible " *
+            "(Bennett-lcye)"))
+        target != control2 || throw(ArgumentError(
+            "ToffoliGate: target == control2 == $target is not reversible " *
+            "(Bennett-lcye)"))
+        return new(control1, control2, target)
+    end
 end
+
+# Bennett-q7yd: (min, max) wire touched by a gate, used by the
+# `ReversibleCircuit` constructor to bound-check the whole gate stream.
+_gate_wire_extent(g::NOTGate)     = (g.target, g.target)
+_gate_wire_extent(g::CNOTGate)    = (min(g.control, g.target), max(g.control, g.target))
+_gate_wire_extent(g::ToffoliGate) = (min(g.control1, g.control2, g.target),
+                                     max(g.control1, g.control2, g.target))
 
 """
     LoopGuard
@@ -43,6 +109,26 @@ struct LoopGuard
     wire::Int             # convergence wire; 1 ⇔ loop converged within K
     header_label::Symbol  # loop header block label (diagnostics)
     K::Int                # max_loop_iterations this loop was unrolled to
+end
+
+"""
+    _first_duplicate_wire(wires) -> Union{WireIndex,Nothing}
+
+Return the first wire position that appears more than once in `wires`,
+or `nothing` if all positions are distinct. Bennett-q7yd / F7: the
+partition validator's `Set` construction silently erases duplicates, so
+a circuit with `input_wires == [1, 1]` slipped through and
+`verify_reversibility` certified a preservation check that only ever saw
+one physical wire. Called only on the failure path (length mismatch), so
+the happy path pays no extra Set.
+"""
+function _first_duplicate_wire(wires::Vector{WireIndex})
+    seen = Set{WireIndex}()
+    for w in wires
+        w in seen && return w
+        push!(seen, w)
+    end
+    return nothing
 end
 
 """
@@ -115,6 +201,73 @@ struct ReversibleCircuit
         out_set = Set(output_wires)
         anc_set = Set(ancilla_wires)
         lc_set  = Set(lg.wire for lg in loop_check_wires)
+
+        # Bennett-q7yd / F7: the Set-based checks below erase duplicate
+        # positions, so `input_wires == [1, 1]` survived construction and
+        # `verify_reversibility` certified preservation of one physical
+        # wire while the caller declared two independent inputs. Compare
+        # each class's Set size to its list length — equality holds iff
+        # the list is duplicate-free (and, combined with the cross-class
+        # intersections, iff every position is classified exactly once).
+        # Within-class duplicates are never legitimate: two output bits
+        # of one result must live on distinct wires. `input ∩ output`
+        # overlap (self-reversing soft-float / QROM circuits writing their
+        # result back onto the input wires) is a *cross-class* alias and
+        # remains permitted — it is checked by the intersections below,
+        # not here.
+        for (wires, wset, name) in ((input_wires, in_set, "input_wires"),
+                                    (output_wires, out_set, "output_wires"),
+                                    (ancilla_wires, anc_set, "ancilla_wires"))
+            length(wset) == length(wires) || throw(ArgumentError(
+                "ReversibleCircuit: $name contains duplicate wire position " *
+                "$(_first_duplicate_wire(wires)); every position must be " *
+                "classified exactly once (Bennett-q7yd)"))
+        end
+        length(lc_set) == length(loop_check_wires) || throw(ArgumentError(
+            "ReversibleCircuit: loop_check_wires contains a duplicate wire " *
+            "position; each data-dependent loop needs its own guard wire " *
+            "(Bennett-q7yd)"))
+
+        # Bennett-q7yd / F7: cross-check the declared element widths
+        # against the physical wire lists. `sum(input_widths)` must equal
+        # `length(input_wires)` — otherwise a logical input is never
+        # randomized (width 0) or two inputs collapse onto one wire, and
+        # `verify_reversibility` can return true on a malformed fixture.
+        n_wires >= 0 || throw(ArgumentError(
+            "ReversibleCircuit: n_wires=$n_wires must be >= 0 (Bennett-q7yd)"))
+        for (k, w) in enumerate(input_widths)
+            w > 0 || throw(ArgumentError(
+                "ReversibleCircuit: input_widths[$k] = $w must be positive " *
+                "(Bennett-q7yd)"))
+        end
+        for (k, w) in enumerate(output_elem_widths)
+            w > 0 || throw(ArgumentError(
+                "ReversibleCircuit: output_elem_widths[$k] = $w must be " *
+                "positive (Bennett-q7yd)"))
+        end
+        sum(input_widths) == length(input_wires) || throw(ArgumentError(
+            "ReversibleCircuit: sum(input_widths)=$(sum(input_widths)) != " *
+            "length(input_wires)=$(length(input_wires)) (Bennett-q7yd)"))
+        sum(output_elem_widths) == length(output_wires) || throw(ArgumentError(
+            "ReversibleCircuit: sum(output_elem_widths)=$(sum(output_elem_widths)) " *
+            "!= length(output_wires)=$(length(output_wires)) (Bennett-q7yd)"))
+
+        # Bennett-q7yd / Bennett-pksz: every gate wire must lie in
+        # 1:n_wires. Pre-fix only `controlled()` cross-checked this; a
+        # circuit carrying a gate on wire 99 of 3 constructed cleanly and
+        # could collide with `controlled()`'s freshly-allocated wires.
+        # Linear in the gate count (the only O(gates) work in this
+        # constructor); measured 0.061 s for an 11,033,736-gate soft-float
+        # `sin` circuit whose lowering took ~50 s — ~0.1% overhead.
+        for (i, g) in enumerate(gates)
+            lo, hi = _gate_wire_extent(g)
+            lo >= 1 || throw(ArgumentError(
+                "ReversibleCircuit: gate $i ($(typeof(g))) references wire " *
+                "$lo < 1 (Bennett-q7yd)"))
+            hi <= n_wires || throw(ArgumentError(
+                "ReversibleCircuit: gate $i ($(typeof(g))) references wire " *
+                "$hi > n_wires=$n_wires (Bennett-q7yd)"))
+        end
 
         bad_in_anc = intersect(in_set, anc_set)
         isempty(bad_in_anc) || throw(AssertionError(

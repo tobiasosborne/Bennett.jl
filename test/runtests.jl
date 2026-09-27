@@ -840,6 +840,11 @@ runfile("test_stwr_cuccaro_soundness.jl")
 # Bennett-6azb / U58 — simulator verifies input-preservation
 # invariant; ReversibleCircuit asserts input/output/ancilla partition.
 runfile("test_6azb_input_preservation.jl")
+# Bennett-q7yd + Bennett-lcye — gate primitives reject self-control and
+# non-1-based wires; ReversibleCircuit rejects duplicate positions,
+# width-total mismatches, non-positive widths, and out-of-range gate
+# wires at construction (Astra B-circuit-core F7 / F13).
+runfile("test_q7yd_lcye_construction_validation.jl")
 # Bennett-mlny / U63 — `depth` was exported + documented but never tested.
 # Pins the basic shapes (empty=0, sequential=N, parallel=1, mixed) +
 # regression-anchors the depth=19 number documented in the diagnostics

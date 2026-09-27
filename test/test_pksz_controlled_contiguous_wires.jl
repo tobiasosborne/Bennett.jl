@@ -1,18 +1,22 @@
 # Bennett-pksz / U98 — `controlled(c)` allocates ctrl_wire at
 # `c.n_wires + 1` (and anc_wire at + 2 if any Toffoli exists). That
 # choice is safe only if every inner gate references wires within
-# `1:c.n_wires`. The `ReversibleCircuit` constructor partitions
-# input/output/ancilla to cover that range, but does NOT cross-check
-# that gate wire indices stay inside it — a malformed circuit could
-# carry a gate referencing a wire beyond n_wires and silently
-# collide with our chosen ctrl_wire.
+# `1:c.n_wires`.
+#
+# Bennett-q7yd (2026-09-26) moved the gate-bounds check into the
+# `ReversibleCircuit` inner constructor, so a malformed circuit is now
+# rejected at construction. The `controlled()` guard is retained as
+# defence-in-depth against a mutated gate vector (e.g. a lowering bug
+# that pushes a gate after the constructor ran); that path is pinned by
+# the second assertion in the rejection testset.
 #
 # These tests pin:
 #   1. Happy path: `controlled(reversible_compile(...))` works
 #      end-to-end on the canonical i8 x+1 baseline.
-#   2. Rejection path: a `ReversibleCircuit` with a gate index
-#      greater than n_wires is rejected by `controlled()` with a
-#      clear, attributable error message.
+#   2. Rejection path: a `ReversibleCircuit` with a gate index greater
+#      than n_wires is rejected at construction (Bennett-q7yd), and
+#      `controlled()` still rejects a post-construction mutation with a
+#      clear, attributable error message (Bennett-pksz).
 
 using Test
 using Bennett
@@ -36,18 +40,20 @@ using Bennett
     end
 
     @testset "rejection: gate references wire > n_wires" begin
-        # Construct a malformed inner ReversibleCircuit. The partition
-        # validator covers 1:3 exactly; the gate stream references
-        # wire 99 outside that range. The `ReversibleCircuit` inner
-        # constructor does NOT cross-check this — only `controlled()`
-        # does (Bennett-pksz / U98).
+        # Bennett-q7yd: the constructor now rejects the out-of-range gate
+        # outright — no malformed circuit can be built in the first place.
         gates = ReversibleGate[NOTGate(99)]
-        bad = ReversibleCircuit(3, gates, [1], [2], [3], [1], [1])
+        @test_throws ArgumentError ReversibleCircuit(3, gates, [1], [2], [3], [1], [1])
 
-        @test_throws "wire 99 > n_wires=3" controlled(bad)
+        # Bennett-pksz: `controlled()` still guards a gate vector mutated
+        # after construction. Build a well-formed circuit, then append the
+        # out-of-range gate directly to the underlying vector.
+        good = ReversibleCircuit(3, ReversibleGate[NOTGate(1)], [1], [2], [3], [1], [1])
+        push!(good.gates, NOTGate(99))
+        @test_throws "wire 99 > n_wires=3" controlled(good)
         # Substring match also catches the bead reference, which we
         # want to be present in the error so a future grep finds it.
-        @test_throws "Bennett-pksz" controlled(bad)
+        @test_throws "Bennett-pksz" controlled(good)
     end
 
     @testset "edge case: empty gates list does not error" begin
