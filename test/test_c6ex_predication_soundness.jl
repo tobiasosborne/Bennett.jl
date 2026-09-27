@@ -672,6 +672,17 @@ _c6ex_bi() = Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}()
         # (name, circuit thunk, reference, inputs, pinned total gates). Pins were
         # measured on the PRE-c6ex code (2026-09-24) and must not move: every
         # program here was already correct, so the fix is gate-neutral for it.
+        #
+        # Bennett-i5zn (2026-09-26): the UNROLLED loop cases below do move, by
+        # exactly `12K` gates — the iteration-active ("not yet exited")
+        # predicate `lower_loop!` now ANDs into the header's path predicate
+        # and into the check-only convergence pass, plus the continue/stopped
+        # wires. That is 6 forward gates per unrolled iteration (`2 + 6(K-1) +
+        # 4` = 6K) doubled by Bennett's reverse pass. The loop-free cases and
+        # the loops LLVM ELIMINATES at optimize=true (`g2 t`, `l5 t`, `acc t`,
+        # `brbody t`) are unchanged, which is what keeps the CLAUDE.md §6
+        # explicit-strategy baselines in test_gate_count_regression.jl — all
+        # loop-free — pinned. Correctness (`_c6ex_wrong == 0`) is unaffected.
         cases = [
             ("diamond f", () -> reversible_compile(_c6ex_diamond, Int8; optimize=false, kw...),
              _c6ex_diamond, _C6EX_I8, 318),
@@ -691,40 +702,40 @@ _c6ex_bi() = Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}()
              _c6ex_switchy, _C6EX_I8, 634),
             ("g1 f K9", () -> reversible_compile(_c6ex_g1, Int8; optimize=false,
                                                  max_loop_iterations=9, kw...),
-             _c6ex_g1, _C6EX_I8, 3709),
+             _c6ex_g1, _C6EX_I8, 3817),
             ("g2 t K9", () -> reversible_compile(_c6ex_g2, Int8; max_loop_iterations=9, kw...),
              _c6ex_g2, _C6EX_I8, 274),
             ("l5 t K8", () -> reversible_compile(_c6ex_l5, Int8; max_loop_iterations=8, kw...),
              _c6ex_l5, _C6EX_I8, 566),
             ("pre3 f K8", () -> reversible_compile(_c6ex_pre3, Int8, Int8; optimize=false,
                                                    max_loop_iterations=8, kw...),
-             _c6ex_pre3, _c6ex_i8n(8), 3437),
+             _c6ex_pre3, _c6ex_i8n(8), 3533),
             ("cl f K8", () -> reversible_compile(_c6ex_cl, Int8, Int8; optimize=false,
                                                  max_loop_iterations=8, kw...),
-             _c6ex_cl, _c6ex_i8n(8), 3367),
+             _c6ex_cl, _c6ex_i8n(8), 3463),
             ("cont f K8", () -> reversible_compile(_c6ex_cont, Int8, Int8; optimize=false,
                                                    max_loop_iterations=8, kw...),
-             _c6ex_cont, _c6ex_i8n(8), 3443),
+             _c6ex_cont, _c6ex_i8n(8), 3539),
             ("acc f K6", () -> reversible_compile(_c6ex_acc, Int8, Int8; optimize=false,
                                                   max_loop_iterations=6, kw...),
-             _c6ex_acc, _c6ex_i8n(6), 1875),
+             _c6ex_acc, _c6ex_i8n(6), 1947),
             ("acc t K6", () -> reversible_compile(_c6ex_acc, Int8, Int8;
                                                   max_loop_iterations=6, kw...),
              _c6ex_acc, _c6ex_i8n(6), 506),
             ("brbody f K4", () -> reversible_compile(_c6ex_brbody, Int8, Int8; optimize=false,
                                                      max_loop_iterations=4, kw...),
-             _c6ex_brbody, _c6ex_i8n(4), 2297),
+             _c6ex_brbody, _c6ex_i8n(4), 2345),
             ("brbody t K4", () -> reversible_compile(_c6ex_brbody, Int8, Int8;
                                                      max_loop_iterations=4, kw...),
              _c6ex_brbody, _c6ex_i8n(4), 774),
             ("collatz t K20", () -> reversible_compile(_c6ex_collatz, Int8;
                                                        max_loop_iterations=20, kw...),
-             _c6ex_collatz, _C6EX_I8, 12663),
+             _c6ex_collatz, _C6EX_I8, 12903),
             ("CE1 .ll", () -> reversible_compile(_c6ex_ll(_C6EX_CE1, "ce1"); kw...),
              _c6ex_ce1_ref, _C6EX_I8, 320),
             ("H12 .ll K4", () -> reversible_compile(_c6ex_ll(_C6EX_H12, "h12");
                                                     max_loop_iterations=4, kw...),
-             _c6ex_h12_ref, _C6EX_I8, 1081),
+             _c6ex_h12_ref, _C6EX_I8, 1101),
             ("SW2 .ll", () -> reversible_compile(_c6ex_ll(_C6EX_SW2, "sw2"); kw...),
              _c6ex_sw2_ref, _C6EX_I8, 310),
         ]
