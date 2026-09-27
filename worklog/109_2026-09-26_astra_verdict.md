@@ -1,5 +1,44 @@
 # Worklog chunk 109 — 2026-09-26 — Astra campaign verdict + handoff
 
+## Session log — 2026-09-27 — rule change (3+1 retired) + Bennett-q7yd / Bennett-lcye landed (7d83702)
+
+**Rule change (maintainer, 2026-09-27):** the 3+1 protocol is RETIRED. One implementer per bead,
+plus a semiregular independent code review over the accumulated diff. CLAUDE.md rule 2 rewritten.
+Beads/worklog text saying "CORE → 3+1" predates this. Orchestration this session: Claude
+orchestrates serially; implementers are `pi` agents (`deepseek/deepseek-flash`,
+`openrouter/xiaomi/mimo-v2.6-pro`, and an audition of `openrouter/stealth/space-bunny-alpha`);
+`codex exec -m gpt-6-sol` xhigh for review. Workers never commit, never touch `.beads/` or
+`worklog/`; the orchestrator re-runs witnesses, runs the full suite, commits, closes.
+
+**q7yd + lcye (verdict step (a): checkers that certify nothing).** Implemented by deepseek-flash.
+- Gate primitives now have inner constructors: `CNOTGate(c,c)`, Toffoli with `target ∈ controls`,
+  and any wire index < 1 throw `ArgumentError`.
+- **`ToffoliGate(c,c,t)` is LEGAL and must stay legal**: `lower_mul_wide!` (multiplier.jl) emits it
+  on the diagonal when squaring (`a === b`). Rejecting it breaks `x*x` and trips
+  test_gate_count_regression. It is exactly CNOT(c,t). Only target-equals-control is a defect, and
+  no emitter in src/ produces that.
+- `ReversibleCircuit` constructor: within-class duplicate positions (input/output/ancilla/
+  loop-check), non-positive widths, `sum(widths) != length(wires)`, and gate wires outside
+  `1:n_wires` all throw. Cross-class `input ∩ output` aliasing remains permitted (self-reversing).
+- Cost: gate-bounds scan is 0.06 s on the 11,033,736-gate soft_sin circuit; constructor total
+  (~2.7 s there) is dominated by the pre-existing Set partition work.
+- test_pksz's rejection testset relied on the constructor NOT checking gate bounds; it now asserts
+  construction-time rejection, and pins `controlled()`'s own guard via post-construction
+  `push!(c.gates, …)`.
+- Inner constructors remove Julia's implicit converting constructor (`CNOTGate(::Int32, …)` is now
+  a MethodError). Full suite shows no emitter relied on it.
+- Gates: new file 586/586; gate-count 39/39; **full suite at 7d83702: 1527507 pass / 3 broken /
+  0 fail** (run in a detached worktree while the next worker used the main tree).
+
+**Orchestration gotchas.**
+- A wait loop of the form `while pgrep -f <pattern>` matches ITS OWN command line and never exits;
+  likewise `pkill -f` kills the calling shell. Run the worker in the foreground of a background
+  task instead and let the harness notify.
+- Full suite wall time was ~52 min (vs ~28) with two workers and another Julia job on the box.
+- Workers run `bd show`, which churns `.beads/embeddeddolt` in their tree — never stage `.beads/`
+  from a worker worktree.
+
+
 ## Session log — 2026-09-26 — VERDICT: does Bennett survive the review? (maintainer question, orchestrator answer) — READ FIRST
 
 Campaign detail, numbers, landed fixes and gotchas: top of `worklog/108`. Finding→bead maps:
