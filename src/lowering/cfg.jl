@@ -277,6 +277,24 @@ function _seed_loop_phi!(gates, wa, vw, dest::Symbol, pre_ops::Vector{Tuple{IROp
 end
 
 """
+    _loop_and!(gates, wa, w::Int, active::Union{Nothing,Int}) -> Int
+
+Bennett-i5zn: a block predicate conjoined with the loop's iteration-active
+("not yet exited") wire. `active === nothing` means "no active predicate yet"
+— iteration 1, and only iteration 1, where entering the loop is by definition
+active — and returns `w` unchanged, so the guard itself costs no gate there
+(the one NOT that seeds `active_2` is emitted at the (c)/(e) step instead).
+`w == active` returns `w` (a Toffoli with the same control twice is malformed
+and would XOR 0).
+"""
+function _loop_and!(gates::Vector{ReversibleGate}, wa::WireAllocator,
+                    w::Int, active::Union{Nothing,Int})
+    active === nothing && return w
+    active == w && return w
+    return _and_wire!(gates, wa, [w], [active])[1]
+end
+
+"""
     lower_loop!(gates, wa, vw, header_block, block_map, back_edges, K, preds, branch_info; <ctx kwargs>)
 
 Unroll a loop K times. The header block has phi nodes for loop-carried
@@ -289,6 +307,16 @@ variables. Each iteration:
   3. Compute the exit condition.
   4. MUX-freeze header phis: keep current value on exit, take latch value
      on continue.
+
+Bennett-i5zn — iteration-active ("not yet exited") predicate. Every
+observable effect of iteration k runs under `active_k` (see the block below):
+the header's non-phi instructions (so a load / increment / store in the
+header stops firing once the source loop exited), every body block (their
+path predicates are derived from the header's), the loop-carried phi MUX
+select, and the Bennett-s0tn check-only pass. After the first exit all
+observable state is frozen, so the answer no longer depends on K. Pre-i5zn
+only the phis were frozen, and the answer DID depend on K: a header store
+replayed on every unrolled iteration, silently (verify_reversibility passed).
 """
 # Bennett-x2iw / U88: optional state bundled in `opts::BlockLoweringOpts`
 # (loop_headers field is consumed by `lower_loop!`; lower_block_insts!
@@ -298,6 +326,13 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
                      back_edges, K::Int, preds, branch_info, block_order;
                      opts::BlockLoweringOpts = BlockLoweringOpts())
     hlabel = header.label
+
+    # Bennett-i5zn: K >= 1 is a precondition of the iteration-active
+    # recurrence (`active_{k+1}` is what the convergence pass below reads).
+    # `lower()` already refuses max_loop_iterations <= 0 for a looping IR.
+    K >= 1 || throw(AssertionError("lower_loop!: max_loop_iterations=$K is not a " *
+          "valid unroll bound for loop header $hlabel — the Bennett-i5zn " *
+          "iteration-active recurrence needs at least one unrolled iteration"))
 
     # Find which phi inputs are from the pre-header vs the back-edge (latch)
     latch_labels = Set(src for (src, dst) in back_edges if dst == hlabel)
@@ -369,6 +404,13 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
         throw(AssertionError("lower_loop!: block_pred[$hlabel] must be populated by the " *
               "function-level pass before lower_loop! is called " *
               "(Bennett-jepw contract)"))
+    # Bennett-p94b: every block_pred entry is a SINGLE-bit wire. Bennett-i5zn
+    # conjoins this one wire with the iteration-active wire, so a multi-bit
+    # predicate would silently use only bit 0.
+    length(opts.block_pred[hlabel]) == 1 ||
+        throw(AssertionError("lower_loop!: block_pred[$hlabel] has " *
+              "$(length(opts.block_pred[hlabel])) wires; expected 1 (Bennett-p94b)"))
+    header_pred::Int = opts.block_pred[hlabel][1]
 
     # Seed header phis from pre-header values (iter 1).
     for (dest, width, pre_ops, _) in phi_info
@@ -382,6 +424,26 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
     # iteration's re-lowering allocates fresh wires instead of in-place
     # mutating the previous iteration's result wires.
     phi_dests = Set(dest for (dest, _, _, _) in phi_info)
+
+    # ---- Bennett-i5zn: the iteration-active ("not yet exited") predicate ----
+    #
+    # `iter_active` is `nothing` for iteration 1 (entering the loop for the
+    # first time is always active) and a 1-bit wire from iteration 2 on,
+    # holding 1 iff the SOURCE loop had not exited before this iteration
+    # started. It is conjoined into the header's non-phi instructions, into
+    # the iteration-local header path predicate (from which every BODY block
+    # predicate is derived, since `_compute_block_pred!` ANDs the predicates
+    # of the in-region predecessors), into the loop-carried phi MUX select
+    # (as `stopped_k = NOT(active_{k+1})`), and into the s0tn check-only pass.
+    # Once the source loop exits, `iter_active` stays 0 and every remaining
+    # unrolled iteration is effect-free.
+    #
+    # `stopped` = 1 ⇔ the loop stopped after the iteration just lowered
+    # ⇔ NOT(active_{k+1}). On iteration 1 the MUX select is the historical
+    # `exit_cond_wire` (no gate added to the select); the ONLY addition on
+    # iteration 1 is the single NOT at (c) that seeds `active_2`.
+    iter_active::Union{Nothing,Int} = nothing
+    stopped::Int = 0
 
     for _iter in 1:K
         vw_snapshot = Set(keys(vw))
@@ -417,7 +479,10 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
         #   see the last iteration's view of body-block wires — useless
         #   to any consumer.
         iter_block_pred = Dict{Symbol,Vector{Int}}()
-        iter_block_pred[hlabel] = opts.block_pred[hlabel]
+        # Bennett-i5zn: the header's own effects (a load / increment / store
+        # before the exit test) are gated by the iteration-active predicate.
+        # Every body block below inherits it through `_compute_block_pred!`.
+        iter_block_pred[hlabel] = [_loop_and!(gates, wa, header_pred, iter_active)]
         iter_branch_info = Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}()
         iter_preds = Dict{Symbol,Vector{Symbol}}()
 
@@ -506,12 +571,18 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
         end
 
         # (c) Exit condition — always reuses the wire computed at (a2).
-        # `exit_cond_wire[1]` has "1 = loop exited / done" semantics; it
-        # feeds the MUX at (e). Bennett-s0tn: the convergence check is NOT
+        # `exit_cond_wire[1]` has "1 = loop exited / done" semantics;
+        # `cont_wire[1]` is its complement ("1 = the loop continues"), which
+        # is what seeds `active_{k+1}`. One NOT total, whichever polarity
+        # `exit_on_true` needs, so the pre-i5zn gate sequence is preserved up
+        # to that single NOT. Bennett-s0tn: the convergence check is NOT
         # this wire — see the post-loop (K+1)-th check-only pass below.
-        exit_cond_wire = raw_cond_wire
-        if !exit_on_true
-            exit_cond_wire = lower_not1!(gates, wa, exit_cond_wire)
+        if exit_on_true
+            exit_cond_wire = raw_cond_wire
+            cont_wire = lower_not1!(gates, wa, raw_cond_wire)
+        else
+            cont_wire = raw_cond_wire
+            exit_cond_wire = lower_not1!(gates, wa, raw_cond_wire)
         end
 
         # (d) Resolve latch values (what the phi would receive on next iter).
@@ -520,11 +591,21 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
             push!(latch_vals, resolve!(gates, wa, vw, latch_op, width))
         end
 
-        # (e) MUX: exit=1 → keep current, exit=0 → take latch value.
+        # (e) MUX: keep the current value unless this iteration was still
+        # active AND the exit condition did not fire.
+        # Bennett-i5zn: `active_{k+1} = active_k ∧ continue_k`, so
+        # `stopped_k = NOT(active_{k+1})` is exactly the freeze condition. On
+        # iteration 1 that is the historical `exit_cond_wire`; from iteration 2
+        # on it ALSO freezes an iteration that was already inactive, where
+        # `exit_cond_wire` is garbage.
+        cont = _loop_and!(gates, wa, cont_wire[1], iter_active)
+        stopped = iter_active === nothing ? exit_cond_wire[1] :
+                  lower_not1!(gates, wa, [cont])[1]
+        iter_active = cont
         for (k, (dest, width, _, _)) in enumerate(phi_info)
             current = vw[dest]
             new_val = latch_vals[k]
-            vw[dest] = lower_mux!(gates, wa, exit_cond_wire, current, new_val, width)
+            vw[dest] = lower_mux!(gates, wa, [stopped], current, new_val, width)
         end
 
     end
@@ -546,8 +627,19 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
     # instructions + the header's exit condition AFTER the K-th MUX, using
     # the frozen phi values. No body, no latch, no MUX — this is the
     # (K+1)-th condition check. Its result is the true convergence bit.
+    #
+    # Bennett-i5zn: this pass models the source loop's (K+1)-th header
+    # VISIT, which happens iff the loop was still running after iteration K.
+    # Its instructions therefore run under `active_{K+1}` — pre-i5zn they ran
+    # under the constant function-level header predicate and REPLAYED header
+    # effects (a store!) on an already-exited path, which is what made a
+    # header-side-effecting loop's answer depend on K.
+    iter_active === nothing &&
+        throw(AssertionError("lower_loop!: the (K+1)-th check-only pass of loop " *
+              "$hlabel has no iteration-active wire; K=$K produced no iteration " *
+              "(Bennett-i5zn)"))
     conv_block_pred = Dict{Symbol,Vector{Int}}()
-    conv_block_pred[hlabel] = opts.block_pred[hlabel]
+    conv_block_pred[hlabel] = [_loop_and!(gates, wa, header_pred, iter_active)]
     conv_ctx = LoweringCtx(gates, wa, vw, Dict{Symbol,Vector{Symbol}}(),
                            Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}(),
                            block_order, conv_block_pred,
@@ -564,7 +656,13 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
     postk_cond = resolve!(gates, wa, vw, term.cond, 1)
     # `postk_cond[1]==1` ⇔ header branch would take the body again.
     # Convergence ⇔ branch would take the EXIT instead.
-    conv_cond = exit_on_true ? postk_cond : lower_not1!(gates, wa, postk_cond)
+    conv_exit = exit_on_true ? postk_cond : lower_not1!(gates, wa, postk_cond)
+    # Bennett-i5zn: converged ⇔ the loop stopped within the K unrolled
+    # iterations (`stopped` = NOT(active_{K+1}); pre-i5zn the check-only pass
+    # saw the frozen state, whose exit condition equals the one that stopped
+    # the loop, so this term is the same value in the pure-SSA case) OR this
+    # (K+1)-st header visit would itself have exited.
+    conv_cond = _or_wire!(gates, wa, [stopped], conv_exit)
 
     # Copy the convergence bit into a fresh dedicated wire `conv_w`
     # (forward block). `bennett`'s copy-out then copies `conv_w` into a

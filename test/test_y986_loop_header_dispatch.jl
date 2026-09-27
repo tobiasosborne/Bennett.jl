@@ -154,11 +154,17 @@
         # per-bead regression pin (NOT a CLAUDE.md §6 explicit-strategy
         # baseline — those live in test_gate_count_regression.jl and are
         # loop-free, hence unchanged).
+        # Bennett-i5zn (2026-09-26): bumped again 14673/2412/9276 →
+        # 14913/2492/9355 (+240 gates, +79 ancillae) — exactly `12K` for the
+        # iteration-active ("not yet exited") predicate `lower_loop!` now
+        # conjoins into the header path predicate, the loop-carried phi MUX
+        # select and the check-only convergence pass, doubled by Bennett's
+        # reverse pass. The non-loop pins in this file (T4) are unmoved.
         c = reversible_compile(collatz_steps, Int8; max_loop_iterations=20)
         gc = gate_count(c)
-        @test gc.total == 14673
-        @test gc.Toffoli == 2412
-        @test ancilla_count(c) == 9276
+        @test gc.total == 14913
+        @test gc.Toffoli == 2492
+        @test ancilla_count(c) == 9355
         for x in Int8(1):Int8(30)
             @test simulate(c, Int8, x) == collatz_steps(x)
         end

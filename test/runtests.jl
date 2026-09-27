@@ -410,6 +410,14 @@ runfile("test_httg_loop_multiblock.jl")
 # convergence wire copied out parallel to Bennett's output copy-out;
 # simulate errors loud when an input needs more than max_loop_iterations.
 runfile("test_s0tn_loop_overflow.jl")
+# Bennett-i5zn (Astra B-lowering F5) — the iteration-active ("not yet exited")
+# predicate in lower_loop!: every observable effect of an unrolled iteration
+# (header load/increment/store, body stores, loop-carried phi freeze, and the
+# s0tn check-only pass) is gated on "the source loop had not exited yet", so
+# for K >= the trip count the answer no longer depends on K. Pins K-invariance
+# on all 256 Int8 inputs against independent oracles, plus the loud rejection
+# of nested loops and the K-below-trip-count overflow guard.
+runfile("test_i5zn_loop_header_effects.jl")
 # Bennett-k286 / U07 — soft_fpext force-quiets signalling-NaN inputs per
 # IEEE 754-2019 §5.4.1 (bit 51 of the Float64 result).
 runfile("test_k286_fpext_snan_quiet.jl")
