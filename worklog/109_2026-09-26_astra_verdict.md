@@ -28,12 +28,15 @@ throws `ArgumentError` naming the bead.
   functions × both modes × W ∈ {2,3,4,6,8}) — zero wrong values; test_narrow 77/77 unchanged;
   gate-count 39/39; **full suite at 12a3f96: 1766536 pass / 4 broken / 0 fail**.
 
-**Parked, NOT on main (no full suite, no independent review):**
+**Parked, NOT on main (no full suite, no independent review) — pushed to origin:**
 - `wip/i5zn-loop-header-effects` — space-bunny's iteration-active predicate in
   `src/lowering/cfg.jl` (+108/−10), new `test/test_i5zn_loop_header_effects.jl`, edits to
   test_c6ex and test_y986. CORE CFG code: needs the full suite and a review before merging.
-- BennettVM `wip/tghl-forward-oracle` — independent semantic model for the random-program
-  property gate (+ jpb generator hardening). See BennettVM HANDOFF.md.
+
+**BennettVM: bennettvm-tghl LANDED on master** (not parked) — independent semantic model for the
+random-program property gate, test tree only, BVM suite 11479/11479. jpb partly done;
+bennettvm-zbog filed (mutation harness cannot restore a same-signature method). See BennettVM
+HANDOFF.md.
 
 **`pi` reliability finding.** Four unattended runs launched in plain text mode (`pi -p`)
 timed out after 1–2 h with no file changes and no output (deepseek-flash, mimo-v2.6-pro,
@@ -45,7 +48,7 @@ progress by counting `tool_execution_start` events and the log's mtime.
 **Next session, in order:** (1) full suite + review on `wip/i5zn-…`, then merge; (2) Bennett-73gr
 (irreducible CFGs); (3) codex `gpt-6-sol` xhigh review over `96c7512..HEAD` — NOT run today, so
 q7yd/lcye/iwj6/mrhg have orchestrator review + full suite but no independent reviewer;
-(4) BennettVM: merge tghl, then 6xy0, wtda, aul4, gn6o, hyi6, av72; (5) decide V2-PRD D0 before
+(4) BennettVM: 6xy0, wtda, aul4, gn6o, hyi6, av72; (5) decide V2-PRD D0 before
 any class-1 (recogniser) bead. Open question for the maintainer: retire 3+1 in BennettVM's
 CLAUDE.md too?
 
