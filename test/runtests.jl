@@ -1184,6 +1184,11 @@ runfile("test_fidj_liveness_auto_dispatcher.jl")
 # Bennett-33zr / BennettVM ADR 0003: target=:reversible_vm dispatch arm.
 runfile("test_reversible_vm_dispatch.jl")
 
+# Bennett-iwj6 — the tabulate path held to the expression-lowering oracle:
+# narrowed tabulation refused (F2), output width from the return type (F3),
+# option domains validated on both tabulate exits (F23).
+runfile("test_iwj6_tabulate_oracle.jl")
+
 # Bennett-gk1h / U210: package hygiene gates (Aqua.jl + JET.jl).
 runfile("test_hygiene_aqua_jet.jl")
 

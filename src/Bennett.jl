@@ -127,7 +127,15 @@ Per-overload applicability (Bennett-u71l / U161):
   default value on this path raises `ArgumentError`.
 - **Float64 overload** (`reversible_compile(f, ::Type{Float64}, …)`) uses
   every field except `bit_width` (Float64 is fixed-width 64); non-default
-  `bit_width` raises `ArgumentError`.
+  `bit_width` raises `ArgumentError`. The same rejection applies to the
+  `Tuple{Float64}` route of the Tuple overload (Bennett-iwj6) — a Float64
+  argument cannot be narrowed on either path.
+
+`add`, `mul`, `target`, `mem`, `persistent_impl`, `hashcons` and
+`max_loop_iterations` are domain-checked by ONE shared validator
+(`_validate_compile_options`, `src/lowering/driver.jl`) that `lower()` and
+every entry point call BEFORE any circuit exists, so a given value is
+accepted or rejected identically on every strategy (Bennett-iwj6 / F23).
 
 Adder strategy `add` (`:auto` | `:ripple` | `:cuccaro` | `:qcla`): `:auto`
 always resolves to `:ripple` (Bennett-spa8 / U27). `:cuccaro` lowers EVERY
@@ -299,6 +307,18 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     # hashcons) errors at the surface so users hit them at reversible_compile
     # entry rather than deep inside lower_alloca!.
     validate_persistent_config(mem, persistent_impl, hashcons)
+    # Bennett-gps7 / M1: `mem=:heap` is an EXTRACTION-phase flag (see below) —
+    # normalise it to `:auto` for the lowering domain, here rather than after
+    # extraction, so the option validation below sees the value lower() will.
+    lower_mem = mem === :heap ? :auto : mem
+    # Bennett-iwj6 / F23: option-domain validation lives in ONE place
+    # (`_validate_compile_options`, shared with `lower()`) and runs BEFORE
+    # either tabulate exit, so an invalid symbol is rejected the same way on
+    # every strategy instead of only on the ones that reach `lower()`.
+    _validate_compile_options(; add, mul, target, mem=lower_mem,
+                              persistent_impl, hashcons, max_loop_iterations,
+                              target_domain=_VALID_TARGET_ENTRY,
+                              origin="reversible_compile")
     # Bennett-k0bg / U25: up-front kwarg + type validation.
     # `bit_width == 0` means "infer from arg_types"; otherwise the width
     # must be in [1, 64] (powers-of-2 are the common case but narrow
@@ -306,9 +326,17 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     (bit_width == 0 || 1 <= bit_width <= 64) || throw(ArgumentError(
         "reversible_compile: bit_width must be 0 (infer) or in [1, 64] — " *
         "got $bit_width"))
-    max_loop_iterations >= 0 || throw(ArgumentError(
-        "reversible_compile: max_loop_iterations must be >= 0, got " *
-        "$max_loop_iterations"))
+    # Bennett-iwj6 / F23: Float64 is fixed-width 64, and the dedicated Float64
+    # overload rejects `bit_width` outright (`_FLOAT64_OVERLOAD_CROSS_REJECT`).
+    # This route reaches the same functions through `Tuple{Float64}`, so it
+    # must reject narrowing too rather than compiling 4-bit soft-float.
+    if bit_width > 0 && any(T -> T === Float64, arg_types.parameters)
+        throw(ArgumentError(
+            "reversible_compile: bit_width=$bit_width is not supported for a " *
+            "Float64 argument ($arg_types) — Float64 is fixed-width 64, " *
+            "matching the Float64 overload's cross-overload rejection " *
+            "(Bennett-iwj6)"))
+    end
     for (i, T) in enumerate(arg_types.parameters)
         _is_supported_arg_type(T) || throw(ArgumentError(
             "reversible_compile: arg_types[$i] = $T is not supported; " *
@@ -350,13 +378,15 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     # this circuit short-circuit (it returns a ReversibleCircuit, silently
     # swallowing the VM request); fall through to the ParsedIR delegation below
     # where the VM hook fires (CLAUDE.md Rule 1: no fail-silent).
+    #
+    # Bennett-iwj6: `_tabulate_circuit` owns the whole decision (eligibility +
+    # output width). It refuses a narrowed compile — the table evaluates the
+    # natural-width function, which is not what `bit_width=W` asks for — and
+    # a return type it has no layout for.
     if strategy === :tabulate && target !== :reversible_vm
-        ok, reason = _tabulate_applicable(arg_types, bit_width)
-        ok || throw(ArgumentError(
+        lr, reason = _tabulate_circuit(f, arg_types, bit_width, auto_self_reversing)
+        lr === nothing && throw(ArgumentError(
             "reversible_compile: strategy=:tabulate not applicable — $reason"))
-        widths = _tabulate_input_widths(arg_types, bit_width)
-        out_width = bit_width > 0 ? bit_width : sizeof(arg_types.parameters[1]) * 8
-        lr = lower_tabulate(f, arg_types, widths; out_width, auto_self_reversing)
         return bennett(lr)
     end
 
@@ -366,24 +396,25 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     # Bennett-gps7 / M1: `mem=:heap` is an EXTRACTION-phase flag — it enables
     # the GC/heap-skeleton recogniser in the IR walker. By the time the
     # ParsedIR is built the dead skeleton is already gone, so `:heap` has no
-    # meaning for `lower()`; we normalise it to `:auto` for the lowering call
-    # below (`lower()` only knows :auto / :persistent).
+    # meaning for `lower()`; `lower_mem` (computed at the top of this method)
+    # carries the normalised `:auto` down to the delegation below.
     # Bennett-uiaq: route through `_extract_parsed_ir_cached` so repeat
     # `reversible_compile(f, arg_types)` calls auto-hit the Bennett-sr8v
     # compile cache (which keys on `objectid(parsed)`). The cache key
     # includes `optimize` and `mem` so non-default extraction kwargs do
     # not collide.
     parsed = _extract_parsed_ir_cached(f, arg_types; optimize, mem)
-    lower_mem = mem === :heap ? :auto : mem
 
     # Bennett-33zr: same `:reversible_vm` carve-out as the explicit-tabulate
     # branch above — the :auto cost model must not divert a VM compile to QROM.
     if strategy === :auto && target !== :reversible_vm &&
        _tabulate_auto_picks(parsed, arg_types, bit_width)
-        widths = _tabulate_input_widths(arg_types, bit_width)
-        out_width = bit_width > 0 ? bit_width : sizeof(arg_types.parameters[1]) * 8
-        lr = lower_tabulate(f, arg_types, widths; out_width, auto_self_reversing)
-        return bennett(lr)
+        lr, _ = _tabulate_circuit(f, arg_types, bit_width, auto_self_reversing)
+        # Bennett-iwj6: `nothing` means the cost model picked a shape the
+        # table cannot honour (narrowing, no scalar-Integer return). Fall
+        # through to expression lowering — which computes exactly that
+        # function — rather than emit a differently-defined one.
+        lr === nothing || return bennett(lr)
     end
 
     if bit_width > 0
@@ -490,6 +521,14 @@ function reversible_compile(parsed::ParsedIR;
                            _PARSED_OVERLOAD_CROSS_REJECT, kwargs)
     # Bennett-z2dj T5-P6 (Step 9): front-load NYI errors at the surface.
     validate_persistent_config(mem, persistent_impl, hashcons)
+    # Bennett-iwj6 / F23: the SAME domain check `lower()` performs, hoisted to
+    # the surface so a bad `add`/`mul`/`target`/`hashcons` symbol (or a
+    # negative `max_loop_iterations`) is rejected on this path too — and on
+    # the tabulate exits, which never reach `lower()` at all.
+    _validate_compile_options(; add, mul, target, mem, persistent_impl, hashcons,
+                              max_loop_iterations,
+                              target_domain=_VALID_TARGET_ENTRY,
+                              origin="reversible_compile")
     # Bennett-33zr / BennettVM ADR 0003: the `target=:reversible_vm` dispatch
     # arm. Single funnel for the Julia-fn route (the Tuple overload delegates
     # here after its `target!==:reversible_vm`-guarded tabulate short-circuits)

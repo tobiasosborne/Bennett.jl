@@ -101,6 +101,85 @@ function _bvmd_reject_normalised_alloca!(parsed::ParsedIR)
     return nothing
 end
 
+# ---- compile-option domains: ONE source of truth (Bennett-iwj6 / F23) ----
+#
+# These whitelists used to be inlined in `lower()`. That made them reachable
+# ONLY through `lower()`, and both tabulate exits in `reversible_compile`
+# (explicit `strategy=:tabulate` and the `:auto` cost-model redirect) return
+# a circuit without ever calling it — so `strategy=:tabulate, add=:bogus`
+# compiled happily while the same typo raised on `strategy=:expression`
+# (Astra review B-circuit-core F23). The entry points call
+# `_validate_compile_options` too, before any circuit exists, so a given
+# symbol is accepted or rejected identically on every path.
+const _VALID_ADD             = (:auto, :ripple, :cuccaro, :qcla)
+const _VALID_MUL             = (:auto, :shift_add, :qcla_tree)  # :karatsuba removed 2026-04-27 (Bennett-tbm6)
+const _VALID_TARGET          = (:gate_count, :depth)
+# Bennett-33zr / BennettVM ADR 0003: `:reversible_vm` is a
+# `reversible_compile`-level BACKEND selector — the ParsedIR overload
+# intercepts it before any lowering, so `lower()` never sees it. The
+# entry-point domain is therefore the lowering domain plus that one value,
+# derived from the same list (not a second copy of its spelling).
+const _VALID_TARGET_ENTRY    = (_VALID_TARGET..., :reversible_vm)
+const _VALID_LOWER_MEM       = (:auto, :persistent)
+const _VALID_PERSISTENT_IMPL = (:linear_scan, :okasaki, :hamt, :cf)
+const _VALID_HASHCONS        = (:none, :naive, :feistel)
+
+_syms(t) = join(map(s -> ":$s", t), ", ")
+
+"""
+    _validate_compile_options(; add, mul, target, mem, persistent_impl,
+                               hashcons, max_loop_iterations=nothing,
+                               origin="lower") -> Nothing
+
+Reject out-of-domain compile kwargs with a scoped `ArgumentError` (Bennett-iwj6
+/ F23). One function, one copy of each whitelist — `lower()` and every
+`reversible_compile` entry point share it, so no exit can skip it.
+
+`origin` prefixes the message with the surface the user called (`lower` or
+`reversible_compile`). `max_loop_iterations` is validated when passed (the
+entry points always pass it; `lower()`'s own default of 0 is trivially valid).
+`target_domain` defaults to the lowering target list; the entry points pass
+`_VALID_TARGET_ENTRY`, which also admits the `:reversible_vm` backend
+selector they intercept themselves.
+
+The `mem` domain is the LOWERING one: `:heap` is an extraction-phase flag
+(Bennett-gps7 / M1) that callers normalise to `:auto` before lowering.
+"""
+function _validate_compile_options(; add::Symbol, mul::Symbol, target::Symbol,
+                                   mem::Symbol, persistent_impl::Symbol,
+                                   hashcons::Symbol,
+                                   max_loop_iterations::Union{Nothing,Int}=nothing,
+                                   target_domain::Tuple=_VALID_TARGET,
+                                   origin::AbstractString="lower")
+    add in _VALID_ADD ||
+        throw(ArgumentError("$origin: unknown add strategy :$add; supported: $(_syms(_VALID_ADD))"))
+    mul in _VALID_MUL ||
+        throw(ArgumentError("$origin: unknown mul strategy :$mul; supported: $(_syms(_VALID_MUL)) (Bennett-tbm6: :karatsuba removed 2026-04-27)"))
+    # Bennett-z2dj / T5-P6 (Step 2): the persistent kwargs were added here.
+    # Only `:auto` / `:linear_scan` / `:none` defaults were wired in Step 2;
+    # the other registered values are accepted (and dispatched) as later
+    # steps landed. Unknown symbols still error fast per CLAUDE.md §1.
+    mem in _VALID_LOWER_MEM ||
+        throw(ArgumentError("$origin: unknown mem :$mem; supported: $(_syms(_VALID_LOWER_MEM))"))
+    persistent_impl in _VALID_PERSISTENT_IMPL ||
+        throw(ArgumentError("$origin: unknown persistent_impl :$persistent_impl; supported: $(_syms(_VALID_PERSISTENT_IMPL))"))
+    hashcons in _VALID_HASHCONS ||
+        throw(ArgumentError("$origin: unknown hashcons :$hashcons; supported: $(_syms(_VALID_HASHCONS))"))
+    # Bennett-4fri / U30: `target` selects the objective the `:auto`
+    # dispatchers optimise for. `:gate_count` (default) preserves the
+    # pre-U30 choices; `:depth` switches `mul=:auto` to `qcla_tree`
+    # (O(log² n) T-depth vs shift-and-add's O(n)). `target_domain` is
+    # `_VALID_TARGET_ENTRY` on the entry points, which also admit the
+    # `:reversible_vm` backend selector they intercept themselves.
+    target in target_domain ||
+        throw(ArgumentError("$origin: unknown target :$target; supported: $(_syms(target_domain))"))
+    if max_loop_iterations !== nothing
+        max_loop_iterations >= 0 ||
+            throw(ArgumentError("$origin: max_loop_iterations must be >= 0, got $max_loop_iterations"))
+    end
+    return nothing
+end
+
 function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=true,
                fold_constants::Bool=true, compact_calls::Bool=false,
                add::Symbol=:auto, mul::Symbol=:auto,
@@ -114,28 +193,8 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
                mem::Symbol = :auto,
                persistent_impl::Symbol = :linear_scan,
                hashcons::Symbol = :none)
-    add in (:auto, :ripple, :cuccaro, :qcla) ||
-        throw(ArgumentError("lower: unknown add strategy :$add; supported: :auto, :ripple, :cuccaro, :qcla"))
-    mul in (:auto, :shift_add, :qcla_tree) ||
-        throw(ArgumentError("lower: unknown mul strategy :$mul; supported: :auto, :shift_add, :qcla_tree (Bennett-tbm6: :karatsuba removed 2026-04-27)"))
-    # Bennett-z2dj / T5-P6 (Step 2): validate new kwargs at function entry,
-    # mirroring add/mul validation above. Only `:auto` / `:linear_scan` /
-    # `:none` defaults are wired in Step 2; non-default values are accepted
-    # at the surface (so Step 1's RED tests reach further) but the actual
-    # dispatch and handlers light up in Steps 3-9. Unknown symbols still
-    # error fast per CLAUDE.md §1.
-    mem in (:auto, :persistent) ||
-        throw(ArgumentError("lower: unknown mem :$mem; supported: :auto, :persistent"))
-    persistent_impl in (:linear_scan, :okasaki, :hamt, :cf) ||
-        throw(ArgumentError("lower: unknown persistent_impl :$persistent_impl; supported: :linear_scan (others NYI)"))
-    hashcons in (:none, :naive, :feistel) ||
-        throw(ArgumentError("lower: unknown hashcons :$hashcons; supported: :none (others NYI)"))
-    # Bennett-4fri / U30: `target` selects the objective the `:auto`
-    # dispatchers optimise for. `:gate_count` (default) preserves the
-    # pre-U30 choices; `:depth` switches `mul=:auto` to `qcla_tree`
-    # (O(log² n) T-depth vs shift-and-add's O(n)).
-    target in (:gate_count, :depth) || throw(ArgumentError(
-        "lower: unknown target :$target; supported: :gate_count, :depth"))
+    _validate_compile_options(; add, mul, target, mem, persistent_impl, hashcons,
+                              max_loop_iterations, origin="lower")
     # Pre-resolve `mul=:auto` when the user asks for depth-optimised
     # output. Downstream sees this as an explicit choice — no ctx field
     # needed and no per-call-site threading beyond the existing `mul`.

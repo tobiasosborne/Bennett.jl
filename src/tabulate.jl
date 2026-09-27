@@ -28,16 +28,54 @@ function _tabulate_input_widths(arg_types::Type{<:Tuple}, bit_width::Int)
 end
 
 """
+    _tabulate_narrows(arg_types, bit_width) -> Bool
+
+Does `bit_width` ask for arithmetic at a width other than the argument types'
+own? (Bennett-iwj6 / F2)
+
+`bit_width=0` means natural width, so it never narrows. `bit_width=W` equals
+the natural width of every argument is also a no-op — `_narrow_ir` rewrites
+each width to the value it already has, so the narrowed semantics ARE the
+natural ones and a table of the natural-width function is a table of the
+narrowed function. Any other `W` changes the arithmetic, and that is what
+tabulation cannot express (see `_tabulate_applicable`).
+"""
+function _tabulate_narrows(arg_types::Type{<:Tuple}, bit_width::Int)
+    bit_width > 0 || return false
+    return any(T -> bit_width != sizeof(T) * 8, arg_types.parameters)
+end
+
+"""
     _tabulate_applicable(arg_types, bit_width) -> (Bool, String)
 
 Predicate for whether the tabulate path can handle this compile. Returns
 `(applicable, reason)`. Non-applicable reasons are short messages for the
 explicit-`:tabulate` error path.
+
+Bennett-iwj6 / F2 added the narrowing arm. The table is built by evaluating
+`f` — the ORIGINAL, natural-width Julia function — on `0:2^W-1` and masking
+each result. `strategy=:expression` instead does W-bit modular arithmetic:
+the sign bit sits at W-1 and every intermediate wraps mod 2^W, so a branch on
+a sign or a shift after an overflowing multiply sees different values. That
+is not a decoding bug, it is a different function, and a classical evaluator
+cannot recover it (re-evaluating an Int8 body in 4 bits IS a compiler).
+Narrowed compiles therefore must not be tabulated: `:auto` falls through to
+expression lowering, explicit `:tabulate` raises.
 """
 function _tabulate_applicable(arg_types::Type{<:Tuple}, bit_width::Int)
     isempty(arg_types.parameters) && return (false, "no arguments")
     for T in arg_types.parameters
         T <: Integer || return (false, "non-integer arg type $T (got $(arg_types.parameters))")
+    end
+    if _tabulate_narrows(arg_types, bit_width)
+        natural = join([sizeof(T) * 8 for T in arg_types.parameters], ", ")
+        return (false,
+            "bit_width=$bit_width narrows $(arg_types.parameters) (natural width(s): " *
+            "$natural bits) and the QROM table evaluates f at its natural width, " *
+            "so it cannot reproduce W-bit modular arithmetic — the sign bit at " *
+            "bit W-1 and intermediate overflow mod 2^W before a comparison or a " *
+            "shift. Use strategy=:expression, or :auto, which falls through to it " *
+            "(Bennett-iwj6)")
     end
     widths = _tabulate_input_widths(arg_types, bit_width)
     total = sum(widths)
@@ -45,6 +83,51 @@ function _tabulate_applicable(arg_types::Type{<:Tuple}, bit_width::Int)
     # than the IR-lowered circuit for any realistic function.
     total <= 16 || return (false, "total input width $total exceeds tabulate cap (16)")
     return (true, "")
+end
+
+"""
+    _tabulate_out_width(f, arg_types, bit_width) -> (Int, String)
+
+Output width of the QROM table, or `(0, reason)` when `f` has no table layout.
+(Bennett-iwj6 / F3.)
+
+`out_width` used to be the FIRST ARGUMENT's width, which truncated a widening
+return: `f(x::Int8) = Int16(x)*Int16(x)` gave an 8-bit output (-112 at
+`x=20`) where `strategy=:expression` gives 400 in 16 bits. The width now
+comes from the function itself:
+
+  * `bit_width > 0` — the answer is `bit_width`, because `_narrow_ir` sets
+    EVERY width in the IR to W, the return value included, so W is the width
+    the expression path produces for the same compile.
+  * `bit_width == 0` (no narrowing) — the answer is `8*sizeof(R)` for the
+    single concrete fixed-width Integer return type `R` that
+    `Base.return_types` infers, which is the width the expression path reads
+    off the LLVM `ret`.
+
+A return type that is not one of those (a tuple, a Float64, a non-concrete
+inference result) is refused rather than guessed at.
+"""
+function _tabulate_out_width(f, arg_types::Type{<:Tuple}, bit_width::Int)
+    rts = try
+        Base.return_types(f, arg_types)
+    catch e
+        return (0, "return type of $f on $arg_types could not be inferred ($e) (Bennett-iwj6)")
+    end
+    length(rts) == 1 || return (0,
+        "expected exactly one inferred return type for $f on $arg_types, got $rts (Bennett-iwj6)")
+    R = rts[1]
+    isconcretetype(R) || return (0, "$f returns the non-concrete type $R on $arg_types (Bennett-iwj6)")
+    # `_SUPPORTED_SCALAR_ARGS` (src/Bennett.jl) is the fixed-width whitelist
+    # `reversible_compile` already applies to arguments; the QROM table holds
+    # at most 64 output bits, so the return must be one of those integers.
+    (R <: Integer && R in _SUPPORTED_SCALAR_ARGS) || return (0,
+        "$f returns $R on $arg_types; the QROM table needs a single " *
+        "fixed-width scalar Integer return, one of " *
+        "$([T for T in _SUPPORTED_SCALAR_ARGS if T <: Integer]) (Bennett-iwj6)")
+    # bit_width > 0 == a natural-width value (see `_tabulate_narrows`), so
+    # this is a no-op override, not a truncation: the expression path narrows
+    # the return to W in exactly the same way.
+    return (bit_width > 0 ? bit_width : 8 * sizeof(R), "")
 end
 
 """
@@ -60,8 +143,15 @@ Two-factor heuristic:
      (`mul`, `udiv`, `sdiv`, `urem`, `srem`). Pure add/sub/shift/bitwise
      functions lower to O(W) gates via ripple — cheaper than any QROM.
 
-Both must hold. This correctly picks tabulate for `x^2+3x+1` @ W=2 and
-keeps `x+1` on the expression path at every width.
+Both must hold, which is what kept `x+1` on the (much cheaper) expression path
+at every width while routing the tabulate-shaped `x^2+3x+1` to a QROM.
+
+Bennett-iwj6 / F2: `_tabulate_applicable` now refuses a narrowed compile, so
+factor 1 can only be met by a natural-width argument. Every scalar type
+`reversible_compile` supports is ≥ 8 bits wide, so today this predicate
+routes nothing and the `:auto` redirect in `reversible_compile` is inert; it
+stays wired (and stays correct) for when a narrow-enough argument type
+appears.
 """
 function _tabulate_auto_picks(parsed::ParsedIR, arg_types::Type{<:Tuple}, bit_width::Int)
     ok, _ = _tabulate_applicable(arg_types, bit_width)
@@ -256,4 +346,29 @@ function lower_tabulate(f, arg_types::Type{<:Tuple},
     return LoweringResult(gates, wire_count(wa), input_wires, output_wires,
                           copy(input_widths), [out_width],
                           gate_groups, auto_self_reversing)
+end
+
+"""
+    _tabulate_circuit(f, arg_types, bit_width, auto_self_reversing)
+        -> (LoweringResult, String) | (nothing, String)
+
+The ONE tabulate decision, shared by both exits in `reversible_compile`
+(explicit `strategy=:tabulate` and the `:auto` cost-model redirect).
+Returns `(lr, "")` when the compile may be tabulated, else
+`(nothing, reason)` — the caller turns that into an `ArgumentError`
+(explicit) or falls through to expression lowering (`:auto`).
+
+Before Bennett-iwj6 each exit recomputed `out_width` from the first
+argument and neither consulted the other's eligibility rules, so the two
+could disagree about what a table means.
+"""
+function _tabulate_circuit(f, arg_types::Type{<:Tuple}, bit_width::Int,
+                            auto_self_reversing::Bool)
+    ok, reason = _tabulate_applicable(arg_types, bit_width)
+    ok || return (nothing, reason)
+    out_width, why = _tabulate_out_width(f, arg_types, bit_width)
+    out_width > 0 || return (nothing, why)
+    widths = _tabulate_input_widths(arg_types, bit_width)
+    lr = lower_tabulate(f, arg_types, widths; out_width, auto_self_reversing)
+    return (lr, "")
 end

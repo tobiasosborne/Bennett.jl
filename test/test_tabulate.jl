@@ -1,14 +1,27 @@
 using Test
 using Bennett
-using Bennett: ToffoliGate
+using Bennett: ToffoliGate, lower_tabulate, bennett
 
+# Bennett-iwj6: the `bit_width=W` (narrowed) tabulate cases below used to
+# assert that `strategy=:tabulate` returns the NATURAL-WIDTH function masked
+# to W bits — which is not the function `bit_width=W` asks for, and not the one
+# `strategy=:expression` computes (that one does W-bit modular arithmetic, sign
+# bit at W-1, intermediates wrapping mod 2^W). Every one of them therefore
+# asserted the miscompiled value. The public entry point now refuses narrowed
+# tabulation (explicit `:tabulate` raises, `:auto` falls through to
+# expression), so those testsets now assert the refusal, and the QROM
+# acceptance spec for small W is pinned at the `lower_tabulate` level — the
+# layer that still takes an explicit narrow width.
 @testset "Tabulate strategy: QROM lookup for small-W pure functions" begin
 
     @testset "Acceptance: x^2 + 3x + 1 at W=2" begin
         f(x::Int8) = x*x + Int8(3)*x + Int8(1)
-        c = reversible_compile(f, Int8; bit_width=2, strategy=:tabulate)
+        # Spec: ≤10 wires, ≤15 Toffoli. Reached through `lower_tabulate`
+        # directly — `reversible_compile` no longer routes a narrowed compile
+        # here (Bennett-iwj6, see the header).
+        lr = lower_tabulate(f, Tuple{Int8}, [2]; out_width=2)
+        c = bennett(lr)
 
-        # Spec: ≤10 wires, ≤15 Toffoli
         @test c.n_wires <= 10
         @test count(g -> g isa ToffoliGate, c.gates) <= 15
 
@@ -24,73 +37,55 @@ using Bennett: ToffoliGate
                 "$(count(g->g isa ToffoliGate, c.gates)) Toffoli, $(c.n_wires) wires")
     end
 
-    @testset "x + 1 @ W=2" begin
+    # Bennett-iwj6: narrowed tabulation is a miscompile, not a strategy
+    # choice. `bit_width=W` with W ≠ the argument's natural width means W-bit
+    # modular arithmetic, which a table over the natural-width `f` cannot
+    # express; `:tabulate` refuses and `:auto` compiles the expression.
+    @testset "x + 1 @ W=2 is refused as narrowed" begin
         g(x::Int8) = x + Int8(1)
-        c = reversible_compile(g, Int8; bit_width=2, strategy=:tabulate)
-        for x in 0:3
-            @test simulate(c, Int8(x)) & Int8(0x3) == (x + 1) & 0x3
-        end
-        @test verify_reversibility(c)
+        @test_throws ArgumentError reversible_compile(g, Int8; bit_width=2, strategy=:tabulate)
+        @test_throws "Bennett-iwj6" reversible_compile(g, Int8; bit_width=2, strategy=:tabulate)
     end
 
-    @testset "x * x @ W=2" begin
+    @testset "x * x @ W=2 is refused as narrowed" begin
         h(x::Int8) = x * x
-        c = reversible_compile(h, Int8; bit_width=2, strategy=:tabulate)
-        for x in 0:3
-            @test simulate(c, Int8(x)) & Int8(0x3) == (x*x) & 0x3
-        end
-        @test verify_reversibility(c)
+        @test_throws ArgumentError reversible_compile(h, Int8; bit_width=2, strategy=:tabulate)
     end
 
-    @testset "3x + 1 @ W=2" begin
+    @testset "3x + 1 @ W=2 is refused as narrowed" begin
         p(x::Int8) = Int8(3)*x + Int8(1)
-        c = reversible_compile(p, Int8; bit_width=2, strategy=:tabulate)
-        for x in 0:3
-            @test simulate(c, Int8(x)) & Int8(0x3) == (3*x + 1) & 0x3
-        end
-        @test verify_reversibility(c)
+        @test_throws ArgumentError reversible_compile(p, Int8; bit_width=2, strategy=:tabulate)
     end
 
-    @testset "W=4, x^2 + 3 (exhaustive 16 inputs)" begin
+    @testset "W=4, x^2 + 3 is refused as narrowed" begin
         f(x::Int8) = x*x + Int8(3)
-        c = reversible_compile(f, Int8; bit_width=4, strategy=:tabulate)
-        for x in 0:15
-            expected = (x*x + 3) & 0xf
-            got = simulate(c, Int8(x)) & Int8(0xf)
-            @test got == expected
-        end
-        @test verify_reversibility(c)
+        @test_throws ArgumentError reversible_compile(f, Int8; bit_width=4, strategy=:tabulate)
     end
 
-    @testset "Two-arg: a + b @ W=2" begin
+    @testset "Two-arg: a + b @ W=2 is refused as narrowed" begin
         f(a::Int8, b::Int8) = a + b
-        c = reversible_compile(f, Int8, Int8; bit_width=2, strategy=:tabulate)
-        for a in 0:3, b in 0:3
-            @test simulate(c, (Int8(a), Int8(b))) & Int8(0x3) == (a + b) & 0x3
-        end
-        @test verify_reversibility(c)
+        @test_throws ArgumentError reversible_compile(f, Int8, Int8; bit_width=2, strategy=:tabulate)
     end
 
-    @testset "Two-arg: a * b @ W=2" begin
+    @testset "Two-arg: a * b @ W=2 is refused as narrowed" begin
         f(a::Int8, b::Int8) = a * b
-        c = reversible_compile(f, Int8, Int8; bit_width=2, strategy=:tabulate)
-        for a in 0:3, b in 0:3
-            @test simulate(c, (Int8(a), Int8(b))) & Int8(0x3) == (a*b) & 0x3
-        end
-        @test verify_reversibility(c)
+        @test_throws ArgumentError reversible_compile(f, Int8, Int8; bit_width=2, strategy=:tabulate)
     end
 
-    @testset ":auto picks tabulate at W=2 (cost-model win)" begin
+    @testset ":auto does not tabulate a narrowed compile (Bennett-iwj6)" begin
+        # The cost model used to divert W=2 here and hand back a table of the
+        # natural-width function — a different function from the one the
+        # narrowing asks for. `:auto` must now be the expression circuit.
         f(x::Int8) = x*x + Int8(3)*x + Int8(1)
         c_auto = reversible_compile(f, Int8; bit_width=2)  # default :auto
-        c_tab  = reversible_compile(f, Int8; bit_width=2, strategy=:tabulate)
-        # Auto should converge on tabulate → same wire/gate count.
-        @test c_auto.n_wires == c_tab.n_wires
-        @test length(c_auto.gates) == length(c_tab.gates)
-
-        # And must be much smaller than the expression-graph path.
-        c_force = reversible_compile(f, Int8; bit_width=2, strategy=:expression)
-        @test c_tab.n_wires < c_force.n_wires
+        c_expr = reversible_compile(f, Int8; bit_width=2, strategy=:expression)
+        @test gate_count(c_auto) == gate_count(c_expr)
+        @test c_auto.n_wires == c_expr.n_wires
+        @test verify_reversibility(c_auto)
+        for x in 0:3
+            @test simulate(c_auto, Int8(x)) == simulate(c_expr, Int8(x))
+        end
+        @test_throws ArgumentError reversible_compile(f, Int8; bit_width=2, strategy=:tabulate)
     end
 
     @testset ":auto falls through to expression path at W=8" begin
@@ -124,11 +119,15 @@ using Bennett: ToffoliGate
         @test_throws ArgumentError reversible_compile(f, Float64; strategy=:tabulate)
     end
 
-    @testset "identity at W=3 (8 inputs)" begin
+    @testset "identity at natural width (exhaustive 256 inputs)" begin
+        # Bennett-iwj6: `bit_width=3` no longer tabulates (narrowed). The
+        # natural-width table is still tabulated, with `out_width` taken from
+        # the return type (Int8 → 8).
         id(x::Int8) = x
-        c = reversible_compile(id, Int8; bit_width=3, strategy=:tabulate)
-        for x in 0:7
-            @test simulate(c, Int8(x)) & Int8(0x7) == x & 0x7
+        c = reversible_compile(id, Int8; strategy=:tabulate)
+        @test c.output_elem_widths == [8]
+        for x in Int8(-128):Int8(127)
+            @test simulate(c, x) == id(x)
         end
         @test verify_reversibility(c)
     end
