@@ -30,19 +30,17 @@ end
 """
     _tabulate_narrows(arg_types, bit_width) -> Bool
 
-Does `bit_width` ask for arithmetic at a width other than the argument types'
-own? (Bennett-iwj6 / F2)
+Does the compile ask for `_narrow_ir` semantics? (Bennett-iwj6 / F2)
 
-`bit_width=0` means natural width, so it never narrows. `bit_width=W` equals
-the natural width of every argument is also a no-op — `_narrow_ir` rewrites
-each width to the value it already has, so the narrowed semantics ARE the
-natural ones and a table of the natural-width function is a table of the
-narrowed function. Any other `W` changes the arithmetic, and that is what
-tabulation cannot express (see `_tabulate_applicable`).
+True for ANY explicit `bit_width > 0` — including `bit_width` equal to the
+arguments' natural width. `_narrow_ir` rewrites EVERY width in the IR, so a
+function that widens internally (`Int16(x)*Int16(x) > 200` on an `Int8`
+argument) is a different function at `bit_width=8` than at natural width:
+the table matched native Julia while `strategy=:expression` differed on
+191/256 inputs. Only `bit_width=0` leaves the function the table evaluates.
 """
 function _tabulate_narrows(arg_types::Type{<:Tuple}, bit_width::Int)
-    bit_width > 0 || return false
-    return any(T -> bit_width != sizeof(T) * 8, arg_types.parameters)
+    return bit_width > 0
 end
 
 """
@@ -70,7 +68,7 @@ function _tabulate_applicable(arg_types::Type{<:Tuple}, bit_width::Int)
     if _tabulate_narrows(arg_types, bit_width)
         natural = join([sizeof(T) * 8 for T in arg_types.parameters], ", ")
         return (false,
-            "bit_width=$bit_width narrows $(arg_types.parameters) (natural width(s): " *
+            "bit_width=$bit_width requests narrowed semantics for $(arg_types.parameters) (natural width(s): " *
             "$natural bits) and the QROM table evaluates f at its natural width, " *
             "so it cannot reproduce W-bit modular arithmetic — the sign bit at " *
             "bit W-1 and intermediate overflow mod 2^W before a comparison or a " *
@@ -124,10 +122,9 @@ function _tabulate_out_width(f, arg_types::Type{<:Tuple}, bit_width::Int)
         "$f returns $R on $arg_types; the QROM table needs a single " *
         "fixed-width scalar Integer return, one of " *
         "$([T for T in _SUPPORTED_SCALAR_ARGS if T <: Integer]) (Bennett-iwj6)")
-    # bit_width > 0 == a natural-width value (see `_tabulate_narrows`), so
-    # this is a no-op override, not a truncation: the expression path narrows
-    # the return to W in exactly the same way.
-    return (bit_width > 0 ? bit_width : 8 * sizeof(R), "")
+    # `_tabulate_applicable` has already refused every `bit_width > 0`
+    # (see `_tabulate_narrows`), so the width is always the return type's.
+    return (8 * sizeof(R), "")
 end
 
 """

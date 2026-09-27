@@ -244,24 +244,24 @@ iwj6_poly(x::Int8) = x * x + Int8(3) * x + Int8(1)
         end
     end
 
-    @testset "bit_width == natural width is not narrowing: tabulation allowed" begin
-        # bit_width=8 on an Int8 argument narrows nothing, so the table's
-        # natural-width semantics ARE the narrowed ones and both strategies
-        # must still agree.
-        c_tab = reversible_compile(iwj6_f2_signed, Int8; bit_width=8,
-                                   strategy=:tabulate)
-        c_exp = reversible_compile(iwj6_f2_signed, Int8; bit_width=8,
-                                   strategy=:expression)
-        c_aut = reversible_compile(iwj6_f2_signed, Int8; bit_width=8,
-                                   strategy=:auto)
-        for c in (c_tab, c_exp, c_aut)
-            @test c.output_elem_widths == [8]
-            @test verify_reversibility(c)
-        end
-        for x in Int8(-128):Int8(127)
-            @test simulate(c_tab, x) == iwj6_f2_signed(x)
-            @test simulate(c_exp, x) == iwj6_f2_signed(x)
-            @test simulate(c_aut, x) == iwj6_f2_signed(x)
+    @testset "bit_width == natural width is STILL narrowing: tabulation refused" begin
+        # `_narrow_ir` rewrites every width, so a function that widens
+        # internally differs at bit_width=8 from its natural-width self:
+        # pre-fix the table matched native while :expression differed on
+        # 191/256 inputs. Any explicit bit_width therefore disables the table.
+        widen_cmp(x::Int8) = (Int16(x) * Int16(x) > Int16(200)) ? Int8(1) : Int8(0)
+        for f in (iwj6_f2_signed, widen_cmp)
+            @test_throws ArgumentError reversible_compile(f, Int8; bit_width=8,
+                                                          strategy=:tabulate)
+            c_exp = reversible_compile(f, Int8; bit_width=8, strategy=:expression)
+            c_aut = reversible_compile(f, Int8; bit_width=8, strategy=:auto)
+            @test verify_reversibility(c_exp)
+            @test verify_reversibility(c_aut)
+            # :auto must be the expression circuit, whatever that computes
+            # (its own soundness at bit_width=8 is Bennett-mrhg).
+            for x in Int8(-128):Int8(127)
+                @test simulate(c_aut, x) == simulate(c_exp, x)
+            end
         end
     end
 
