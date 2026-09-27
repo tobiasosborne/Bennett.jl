@@ -33,11 +33,12 @@ end
 Does the compile ask for `_narrow_ir` semantics? (Bennett-iwj6 / F2)
 
 True for ANY explicit `bit_width > 0` — including `bit_width` equal to the
-arguments' natural width. `_narrow_ir` rewrites EVERY width in the IR, so a
-function that widens internally (`Int16(x)*Int16(x) > 200` on an `Int8`
-argument) is a different function at `bit_width=8` than at natural width:
-the table matched native Julia while `strategy=:expression` differed on
-191/256 inputs. Only `bit_width=0` leaves the function the table evaluates.
+arguments' natural width. `bit_width=W` asks the expression path for W-bit
+two's-complement modular semantics (`_narrow_ir`, Bennett-mrhg), so a function
+that widens internally (`Int16(x)*Int16(x) > 200` on an `Int8` argument) is a
+different function at `bit_width=8` than at natural width: the table matched
+native Julia while `strategy=:expression` differed on 191/256 inputs. Only
+`bit_width=0` leaves the function the table evaluates.
 """
 function _tabulate_narrows(arg_types::Type{<:Tuple}, bit_width::Int)
     return bit_width > 0
@@ -94,9 +95,8 @@ return: `f(x::Int8) = Int16(x)*Int16(x)` gave an 8-bit output (-112 at
 `x=20`) where `strategy=:expression` gives 400 in 16 bits. The width now
 comes from the function itself:
 
-  * `bit_width > 0` — the answer is `bit_width`, because `_narrow_ir` sets
-    EVERY width in the IR to W, the return value included, so W is the width
-    the expression path produces for the same compile.
+  * `bit_width > 0` — never reaches here: `_tabulate_applicable` refuses
+    every explicit `bit_width` (see `_tabulate_narrows`).
   * `bit_width == 0` (no narrowing) — the answer is `8*sizeof(R)` for the
     single concrete fixed-width Integer return type `R` that
     `Base.return_types` infers, which is the width the expression path reads

@@ -253,15 +253,33 @@ iwj6_poly(x::Int8) = x * x + Int8(3) * x + Int8(1)
         for f in (iwj6_f2_signed, widen_cmp)
             @test_throws ArgumentError reversible_compile(f, Int8; bit_width=8,
                                                           strategy=:tabulate)
-            c_exp = reversible_compile(f, Int8; bit_width=8, strategy=:expression)
-            c_aut = reversible_compile(f, Int8; bit_width=8, strategy=:auto)
-            @test verify_reversibility(c_exp)
-            @test verify_reversibility(c_aut)
-            # :auto must be the expression circuit, whatever that computes
-            # (its own soundness at bit_width=8 is Bennett-mrhg).
-            for x in Int8(-128):Int8(127)
-                @test simulate(c_aut, x) == simulate(c_exp, x)
+        end
+        c_exp = reversible_compile(iwj6_f2_signed, Int8; bit_width=8,
+                                  strategy=:expression)
+        c_aut = reversible_compile(iwj6_f2_signed, Int8; bit_width=8,
+                                  strategy=:auto)
+        @test verify_reversibility(c_exp)
+        @test verify_reversibility(c_aut)
+        # :auto must be the expression circuit, whatever that computes
+        # (its own soundness at bit_width=8 is Bennett-mrhg).
+        for x in Int8(-128):Int8(127)
+            @test simulate(c_aut, x) == simulate(c_exp, x)
+        end
+        # Bennett-mrhg: an Int16 data domain is NOT narrowable, so the
+        # expression and :auto paths now REFUSE it at bit_width=8 instead of
+        # re-typing the i16 multiply/compare to 8 bits.  The pre-fix circuit
+        # disagreed with itself across optimization modes (optimize=false
+        # returned 1 for x=1 where native returns 0), so the old
+        # "returns a circuit" expectation was pinning an unsound result.
+        for strategy in (:expression, :auto), f in (widen_cmp,)
+            err = try
+                reversible_compile(f, Int8; bit_width=8, strategy)
+                nothing
+            catch e
+                e
             end
+            @test err isa ArgumentError
+            @test err isa ArgumentError && occursin("Bennett-mrhg", err.msg)
         end
     end
 

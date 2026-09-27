@@ -265,6 +265,17 @@ end
 Compile a plain Julia function into a reversible circuit via LLVM IR.
 Uses LLVM.jl to walk the IR as typed objects (no regex parsing).
 
+**`bit_width = W`.** Re-types the function to W-bit two's-complement modular
+semantics (all arithmetic wraps mod 2^W). The re-typing is an ALLOWLIST
+(`src/narrow.jl`): `add`/`sub`/`mul`/`and`/`or`/`xor`, constant-amount shifts
+with `0 <= k <= W`, comparisons against a constant that still fits in `W`
+bits, selects, `trunc`/`sext`/`zext` between the argument's own width and
+`i1`, and phis / branches over those. Anything else — a runtime shift amount,
+division or remainder, a source-width limit guard such as `typemin(Int8)`, a
+cast into a second scalar width (`Int16(x)`), a bit count, an aggregate
+(tuple) return, memory, a call, or a loop — throws `ArgumentError` rather
+than returning a circuit that computes something else (Bennett-mrhg).
+
 # Example
 
 ```jldoctest; setup = :(using Bennett)
@@ -417,6 +428,10 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
         lr === nothing || return bennett(lr)
     end
 
+    # Bennett-mrhg: re-type the extracted IR to `bit_width` bits.  This is an
+    # ALLOWLIST pass — it either proves the rewrite preserves W-bit modular
+    # semantics, or it throws an ArgumentError naming the bead.  Never a
+    # plausible-looking wrong circuit.
     if bit_width > 0
         parsed = _narrow_ir(parsed, bit_width)
     end
@@ -624,7 +639,7 @@ function reversible_compile(parsed::ParsedIR, opts::CompileOptions)
 end
 
 # ---- Per-task implementations (Bennett-19g6 / U91 modular layout) ----
-include("narrow.jl")               # _narrow_ir + _narrow_inst per IR node type
+include("narrow.jl")               # _narrow_ir allowlist + _narrow_inst per IR node type
 include("callees.jl")              # _CALLEES_* groups + register_callee! loop
 include("softfloat_dispatch.jl")   # SoftFloat struct + Float64 reversible_compile
 include("precompile.jl")           # PrecompileTools.@compile_workload

@@ -300,6 +300,14 @@ runfile("test_soft_fround.jl")
 runfile("test_callee_bennett.jl")
 runfile("test_cuccaro_safety.jl")
 runfile("test_narrow.jl")
+# Bennett-mrhg — the bit_width narrowing SOUNDNESS contract: `_narrow_ir` is an
+# allowlist, so every (f, W) either yields a circuit that computes W-bit
+# two's-complement modular semantics (checked exhaustively against an
+# independent W-bit oracle, plus verify_reversibility) or throws an
+# ArgumentError naming the bead.  Covers the Astra F3 shift-amount guards and
+# the F13 tuple/aggregate layout, plus the rejection battery (memory, runtime
+# shifts, division, loops, widened domains, typemin guards).
+runfile("test_mrhg_narrow_soundness.jl")
 runfile("test_preprocessing.jl")
 runfile("test_t0_preprocessing.jl")
 runfile("test_ir_memory_types.jl")
@@ -591,11 +599,11 @@ runfile("test_6bu3_struct_aggregate.jl")
 # Bennett-fd1r — direct unit-test pin for _narrow_inst(::IRInsertValue) /
 # _narrow_inst(::IRExtractValue): src/narrow.jl once read a nonexistent
 # `inst.elem_count` field (real field is `n_elems`), latent-crashing if
-# narrow ever saw one of these nodes. Already repaired by Bennett-6bu3 (the
-# ctor rewrite that added field_widths), but no regression test pinned it —
-# the path is dead end-to-end (bit_width narrowing and the aggregate/
-# StructType path are mutually exclusive), so this drives `_narrow_inst`
-# directly rather than through `reversible_compile`.
+# narrow ever saw one of these nodes. Bennett-6bu3 repaired it, but no
+# regression test pinned it. Under the Bennett-mrhg contract these aggregate
+# nodes are a field LAYOUT, so `_narrow_inst` now REFUSES them; the file
+# drives `_narrow_inst` directly to pin that refusal (the end-to-end tuple
+# witnesses live in test_mrhg_narrow_soundness.jl).
 runfile("test_fd1r_narrow_insertvalue.jl")
 # Bennett-qmv7 — CW-D: `setindex!` heap-Memory value-store memcpy whose DST is a
 # RUNTIME-INDEXED `julia.gc_loaded` heap-Memory cell, under ptr_cells (the dual

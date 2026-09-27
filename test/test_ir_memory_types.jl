@@ -19,32 +19,40 @@ using Bennett: IRStore, IRAlloca, IROperand, ssa, iconst, _narrow_inst, _ssa_ope
         @test a.n_elems == iconst(4)
     end
 
-    @testset "IRStore _narrow_inst preserves i1 width" begin
-        # i8 store → narrowed to W
+    @testset "IRStore _narrow_inst refuses (Bennett-mrhg)" begin
+        # Bennett-mrhg: a store's width is a MEMORY LAYOUT (element width of
+        # the slot, byte stride, index range), not a wire width.  The pre-mrhg
+        # pass rewrote it to W and produced circuits whose layout no longer
+        # matched, so narrowing now refuses memory loudly.
         s8 = IRStore(ssa(:p), ssa(:v), 8)
-        s8w = _narrow_inst(s8, 3)
-        @test s8w.width == 3
-        @test s8w.ptr == s8.ptr
-        @test s8w.val == s8.val
-
-        # i1 store stays i1 (boolean predicate stored to flag slot)
-        s1 = IRStore(ssa(:p), ssa(:b), 1)
-        s1w = _narrow_inst(s1, 3)
-        @test s1w.width == 1
+        for s in (s8, IRStore(ssa(:p), ssa(:b), 1))
+            @test_throws ArgumentError _narrow_inst(s, 8, 3)
+        end
+        err = try
+            _narrow_inst(s8, 8, 3)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test err isa ArgumentError && occursin("Bennett-mrhg", err.msg)
+        @test err isa ArgumentError && occursin("IRStore", err.msg)
     end
 
-    @testset "IRAlloca _narrow_inst preserves i1 elem_width" begin
-        # i8 alloca → narrowed
-        a8 = IRAlloca(:p, 8, iconst(4))
-        a8w = _narrow_inst(a8, 3)
-        @test a8w.elem_width == 3
-        @test a8w.n_elems == iconst(4)   # count, NOT a width, pass through
-
-        # i1 alloca stays i1 (flag buffer)
-        a1 = IRAlloca(:flags, 1, iconst(8))
-        a1w = _narrow_inst(a1, 3)
-        @test a1w.elem_width == 1
-        @test a1w.n_elems == iconst(8)   # still 8 elements
+    @testset "IRAlloca _narrow_inst refuses (Bennett-mrhg)" begin
+        # An alloca's elem_width plus n_elems IS the allocated layout; a
+        # uniform width rewrite corrupts it (see the IRStore case above).
+        for a in (IRAlloca(:p, 8, iconst(4)), IRAlloca(:flags, 1, iconst(8)))
+            @test_throws ArgumentError _narrow_inst(a, 8, 3)
+        end
+        err = try
+            _narrow_inst(IRAlloca(:p, 8, iconst(4)), 8, 3)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test err isa ArgumentError && occursin("Bennett-mrhg", err.msg)
     end
 
     @testset "IRStore _ssa_operands reports ptr and val" begin
