@@ -24,14 +24,32 @@
 # pipeline those high bits are always zero (`_wires_to_u64!` zero-extends and
 # the result is sliced back to N·W wires), so the pass-through is unobservable
 # there; it costs gates only for shapes with N·W < 64.
+#
+# Index contract (Bennett-usly). A reversible circuit cannot throw, so these
+# callees do NOT bounds-check `idx`: the CALLER must guarantee `idx < N`
+# (`idx` is the full UInt64, so every one of its 64 bits counts). For
+# `idx ≥ N` the result is undefined-by-contract and is NOT part of the API.
+# What the branchless bodies happen to do today (verified 2026-10-03, every
+# shape, incl. idx = typemax(UInt64)):
+#   soft_mux_load_NxW            — the ifelse chain's default arm: slot N-1.
+#   soft_mux_store_NxW           — no slot matches: returns `arr` unchanged.
+#   soft_mux_store_guarded_NxW   — same as the unguarded store: `arr` unchanged.
+# Do not rely on either; a future cheaper MUX (e.g. decoding only the low
+# ceil(log2 N) idx bits) may alias idx ≥ N onto an in-range slot instead.
+# In the lowering a CONSTANT idx never reaches these callees:
+# `_pick_alloca_strategy` (src/lowering/memory.jl) routes it to the :shadow
+# path, which refuses a constant idx outside [0, n) loudly. Only a RUNTIME
+# idx reaches the MUX, and its range is the source program's responsibility.
 
 """
     soft_mux_store_4x8(arr, idx, val) -> UInt64
 
 Write `val & 0xff` into position `idx ∈ 0:3` of a 4-element, 8-bit-per-element
 array packed into the low 32 bits of `arr`. Returns the updated array.
-Other slots and the high 32 bits of `arr` are preserved; `idx ≥ 4` returns
-`arr` unchanged. Branchless.
+Other slots and the high 32 bits of `arr` are preserved. Caller must guarantee
+`idx < 4`; `idx ≥ 4` is undefined-by-contract (today it returns `arr`
+unchanged, but that is not API — see the index contract at the top of this
+file, Bennett-usly). Branchless.
 """
 @inline function soft_mux_store_4x8(arr::UInt64, idx::UInt64, val::UInt64)::UInt64
     m = UInt64(0xff)
@@ -48,7 +66,9 @@ end
 
 Read position `idx ∈ 0:3` of a 4-element, 8-bit-per-element array packed into
 the low 32 bits of `arr`. Returns the 8-bit slot value zero-extended to UInt64.
-Branchless.
+Caller must guarantee `idx < 4`; `idx ≥ 4` is undefined-by-contract (today it
+falls through the ifelse chain to slot 3, but that is not API — see the index
+contract at the top of this file, Bennett-usly). Branchless.
 """
 @inline function soft_mux_load_4x8(arr::UInt64, idx::UInt64)::UInt64
     m = UInt64(0xff)

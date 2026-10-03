@@ -374,6 +374,7 @@ runfile("test_t0_preprocessing.jl")
 runfile("test_ir_memory_types.jl")
 runfile("test_store_alloca_extract.jl")
 runfile("test_soft_mux_mem.jl")
+runfile("test_usly_mux_oob_contract.jl")
 runfile("test_soft_mux_mem_circuit.jl")
 runfile("test_soft_mux_mem_guarded.jl")
 # Bennett-brsg: stores pass through bits above N·W; pred=0 is exact identity.
