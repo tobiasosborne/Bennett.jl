@@ -746,12 +746,27 @@ end
 
 """Legacy direct load worker: CNOT-copy W bits from the wire array.
 Called only from `lower_load!(ctx, inst)` when no ptr_provenance entry exists
-(pointer parameters, NTuple input). Not a public dispatcher."""
+(pointer parameters, NTuple input). A pointer with no wire binding is an
+error (Bennett-sy9t), never a silent skip. Not a public dispatcher."""
 function _lower_load_legacy!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                              vw::Dict{Symbol,Vector{Int}}, inst::IRLoad)
+    # Bennett-sy9t: a load whose pointer has no wires (no ptr_provenance entry
+    # AND no vw binding) is refused — never skipped. The old silent `return`
+    # ("may be pgcstack safepoint load") left `vw[dest]` unbound, so a used
+    # result failed later as an unrelated undefined-SSA error and a dead one
+    # vanished. No allowlist: an empirical sweep (~50 test files incl. memory,
+    # sret/tuple, loop, soft-float, GC/heap) never reached this branch — the
+    # extractor already drops pgcstack/safepoint traffic before lowering.
+    inst.ptr isa SSAOperand ||
+        error("_lower_load_legacy!: load into %$(inst.dest) (width $(inst.width)) " *
+              "from non-SSA pointer operand $(inst.ptr) — no wires to read " *
+              "(Bennett-sy9t: unknown-pointer loads are refused, not skipped)")
     if !haskey(vw, inst.ptr.name)
-        # Load from unknown pointer — skip (may be pgcstack safepoint load)
-        return
+        error("_lower_load_legacy!: load into %$(inst.dest) (width $(inst.width)) " *
+              "from unknown pointer %$(inst.ptr.name) — the pointer has no " *
+              "ptr_provenance entry and no wire binding (not an alloca/GEP " *
+              "provenance, pointer parameter or NTuple input) " *
+              "(Bennett-sy9t: unknown-pointer loads are refused, not skipped)")
     end
     src_wires = vw[inst.ptr.name]
     W = inst.width

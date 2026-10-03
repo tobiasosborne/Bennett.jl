@@ -143,6 +143,7 @@ runfile("test_cklf_resolve_width_assert.jl")
 runfile("test_y56a_division_paths.jl")
 runfile("test_yys3_uint128_compiler_rt.jl")
 runfile("test_ntuple_input.jl")
+runfile("test_sy9t_unknown_ptr_load.jl")   # Bennett-sy9t: unknown-pointer load refused, not skipped
 runfile("test_ancilla_reuse.jl")
 runfile("test_dep_dag.jl")
 runfile("test_pebbling.jl")
