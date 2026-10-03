@@ -439,7 +439,8 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
                                # guard. (Nested while-loops are rejected by
                                # _collect_loop_body_blocks; this path is for
                                # a callee-with-loop inlined inside a loop body.)
-                               opts.loop_guards)
+                               opts.loop_guards,
+                               opts.persistent_writes)   # Bennett-9378
 
         # (a1) Lower header's non-phi instructions through the canonical
         # dispatcher. `header_body_insts` is in source order (collected at
@@ -557,7 +558,8 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
                            opts.globals, :ripple, opts.mul, opts.entry_label,
                            Ref(false),
                            opts.mem, opts.persistent_impl, opts.hashcons,
-                           opts.persistent_info, opts.loop_guards)
+                           opts.persistent_info, opts.loop_guards,
+                           opts.persistent_writes)
     for inst in header_body_insts
         _lower_inst!(conv_ctx, inst, hlabel)
     end

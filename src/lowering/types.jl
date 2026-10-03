@@ -191,6 +191,11 @@ struct LoweringCtx
     # callee loop guards here when inlining a callee with a data-dependent
     # loop, so an inner-function loop overflow is never silently dropped.
     loop_guards::Vector{LoopGuard}
+    # Bennett-9378: per-function count of `pmap_set` calls lowered into each
+    # persistent slab (keyed by alloca dest). Shared like `persistent_info`;
+    # `_count_persistent_write!` rejects a slab whose count exceeds
+    # `impl.max_n` (the impls' capacity counts writes, not live keys).
+    persistent_writes::Dict{Symbol, Int}
 end
 
 # Bennett-tbm6 (2026-04-27): the 11-arg / 12-arg / 13-arg backward-compat
@@ -242,6 +247,8 @@ Base.@kwdef struct BlockLoweringOpts
     # Per-function state: values are `Bennett.Persistent.PersistentMapImpl`
     # (typed `Any` because of include order — see types.jl LoweringCtx note).
     persistent_info::Dict{Symbol, Any}                   = Dict{Symbol, Any}()
+    # Bennett-9378: per-function persistent-slab write counter (see LoweringCtx).
+    persistent_writes::Dict{Symbol, Int}                 = Dict{Symbol, Int}()
 end
 
 # Dispatched instruction lowering — Julia selects the method by inst type

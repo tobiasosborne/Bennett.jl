@@ -1165,6 +1165,9 @@ runfile("test_6883_hamt_dispatch.jl")
 # through Bennett.cf_pmap_* and persistent_impl=:cf. Last of the four
 # persistent_impl candidates to be wired.
 runfile("test_6883_cf_dispatch.jl")
+# Bennett-9378 — persistent-slab write capacity: > impl.max_n lowered stores
+# into one dynamic alloca is rejected (was: silent history-buffer overwrite).
+runfile("test_9378_persistent_write_capacity.jl")
 
 # T5 corpora — multi-language RED tests (T5-P2a/b/c).  All currently RED
 # via @test_throws; safe to include unconditionally.  C and Rust corpora

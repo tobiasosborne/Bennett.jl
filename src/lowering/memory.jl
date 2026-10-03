@@ -321,6 +321,39 @@ _V_bits(impl)::Int = sizeof(impl.V) * 8
 # consensus §5's TDD-friendly slice boundary.
 
 """
+    _count_persistent_write!(ctx, alloca_dest, impl)
+
+Bennett-9378. Record one more `impl.pmap_set` lowered into slab
+`alloca_dest` and reject the compile once the slab's count exceeds
+`impl.max_n`.
+
+Every impl's capacity counts WRITES, not live keys: linear_scan appends
+each set (updates included) to a `max_n`-entry history and overwrites its
+last slot when full; cf's diff chain is `max_n` deep. A 5th write to a
+4-capacity slab therefore silently lost an earlier write (Astra F15:
+`a[1]` read 7 instead of 11 while `verify_reversibility` passed).
+
+The lowered count is a sound static bound on runtime writes: a guarded
+(non-entry-block) store lowers exactly one set whether or not its block
+runs, and each unrolled loop iteration lowers its own. Within `max_n`
+sets every impl keeps latest-value-per-key semantics. The bound is
+conservative across exclusive branches (both arms count) — refusing a
+program is preferred over importing map overflow as alloca semantics.
+"""
+function _count_persistent_write!(ctx::LoweringCtx, alloca_dest::Symbol, impl)
+    n = get(ctx.persistent_writes, alloca_dest, 0) + 1
+    ctx.persistent_writes[alloca_dest] = n
+    n <= impl.max_n || throw(ArgumentError(
+        "mem=:persistent: dynamic-size alloca :$alloca_dest receives $n lowered " *
+        "stores, more than the $(impl.name) persistent map's capacity of " *
+        "$(impl.max_n) writes (stores in every branch and every unrolled loop " *
+        "iteration count). Excess writes would silently overwrite earlier ones " *
+        "(Bennett-9378). Reduce the number of stores into the array, or use a " *
+        "persistent_impl with a larger max_n."))
+    return n
+end
+
+"""
     _lower_store_via_persistent!(ctx, inst::IRStore, alloca_dest, block_label)
 
 Bennett-z2dj / T5-P6 Step 5 (consensus §5). Map an LLVM `store v, ptr`
@@ -397,6 +430,7 @@ function _emit_persistent_set_unconditional!(ctx::LoweringCtx, inst::IRStore,
         throw(AssertionError("_emit_persistent_set_unconditional!: alloca :$alloca_dest has " *
               "no persistent_info entry; dispatcher routed a non-persistent alloca here"))
     impl = ctx.persistent_info[alloca_dest]
+    _count_persistent_write!(ctx, alloca_dest, impl)
     state_w = _state_len_bits(impl)
     k_w     = _K_bits(impl)
     v_w     = _V_bits(impl)
@@ -482,6 +516,7 @@ function _lower_store_via_persistent_guarded!(ctx::LoweringCtx, inst::IRStore,
         throw(AssertionError("_lower_store_via_persistent_guarded!: alloca :$alloca_dest has " *
               "no persistent_info entry; dispatcher routed a non-persistent alloca here"))
     impl = ctx.persistent_info[alloca_dest]
+    _count_persistent_write!(ctx, alloca_dest, impl)
     state_w = _state_len_bits(impl)
     k_w     = _K_bits(impl)
     v_w     = _V_bits(impl)

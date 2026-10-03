@@ -228,6 +228,8 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
     # the `:persistent_tree` strategy. Values are `PersistentMapImpl` (typed
     # `Any` because of include order — see types.jl LoweringCtx note).
     persistent_info = Dict{Symbol, Any}()
+    # Bennett-9378: per-slab pmap_set count, shared by every block/iteration.
+    persistent_writes = Dict{Symbol, Int}()
 
     for (name, width) in parsed.args
         wires = allocate!(wa, width)
@@ -357,6 +359,7 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
             persistent_impl = persistent_impl,
             hashcons       = hashcons,
             persistent_info = persistent_info,
+            persistent_writes = persistent_writes,
         )
 
         if label in loop_headers
@@ -611,7 +614,8 @@ function lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_orde
                       # Bennett-z2dj / T5-P6 (Step 2): persistent_tree dispatcher
                       opts.mem, opts.persistent_impl, opts.hashcons,
                       opts.persistent_info,
-                      opts.loop_guards)   # Bennett-s0tn loop-guard accumulator
+                      opts.loop_guards,   # Bennett-s0tn loop-guard accumulator
+                      opts.persistent_writes)   # Bennett-9378 slab write counter
     for inst in block.instructions
         _ws = wa.next_wire
         _gs = length(gates) + 1
