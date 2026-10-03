@@ -269,7 +269,10 @@ function lower_binop!(gates, wa, vw, inst::IRBinOp;
                 # (op2 preferred, else op1 by commutativity), else copy-in.
                 _lower_add_cuccaro_inplace!(gates, wa, vw, inst, a, b, W, inplace_targets)
             elseif strat == :qcla
-                lower_add_qcla!(gates, wa, a, b, W)[1:W]   # drop carry-out
+                # Bennett-retr: QCLA uses `b` as its in-place propagate
+                # register, so an aliased operand (`x + x`) gets copied in.
+                bq = isdisjoint(a, b) ? b : _emit_copy_out!(gates, wa, b, W)
+                lower_add_qcla!(gates, wa, a, bq, W)[1:W]   # drop carry-out
             else
                 lower_add!(gates, wa, a, b, W)
             end

@@ -43,6 +43,16 @@ function lower_add_qcla!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     W >= 1 || throw(ArgumentError("lower_add_qcla!: W must be >= 1, got $W"))
     length(a) == W || throw(DimensionMismatch("lower_add_qcla!: |a|=$(length(a)) != W=$W"))
     length(b) == W || throw(DimensionMismatch("lower_add_qcla!: |b|=$(length(b)) != W=$W"))
+    # Bennett-retr: phases 2/5 turn `b` into the propagate register in place
+    # (`CNOT(a[k], b[k])`), so overlapping operands (`add %x, %x`) would emit
+    # CNOT(w, w). The caller must pass a private copy of one operand.
+    isdisjoint(a, b) || throw(ArgumentError(
+        "lower_add_qcla!: operand registers alias (a ∩ b = " *
+        "$(sort!(collect(intersect(a, b))))) — the caller must pass a private " *
+        "copy of one operand (Bennett-retr)"))
+    (allunique(a) && allunique(b)) || throw(ArgumentError(
+        "lower_add_qcla!: an operand register repeats a wire (a=$a, b=$b) " *
+        "(Bennett-retr)"))
 
     T = W >= 2 ? floor(Int, log2(W)) : 0      # highest P level used = T - 1
     popW = count_ones(W)
