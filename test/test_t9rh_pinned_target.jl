@@ -104,7 +104,10 @@ end
         @test ok
 
         cf = reversible_compile(soft_fma, UInt64, UInt64, UInt64)
-        @test gate_count(cf).total == 247_398       # = BENCHMARKS / regression_baselines
+        # 247_398 (= BENCHMARKS) → 247_706 at fc6dfdc / Bennett-ytpe (funnel
+        # shifts reduce the amount mod W and select at zero; soft_fma is
+        # loop-free). Measured at fc6dfdc~1 vs fc6dfdc; re-pinned by i5zn.
+        @test gate_count(cf).total == 247_706
         rng = Random.MersenneTwister(0xfa)
         ok = true
         for a in _T9RH_F64_EDGES[1:6], b in _T9RH_F64_EDGES[9:14], e in _T9RH_F64_EDGES[[1, 3, 11, 12]]
@@ -187,8 +190,11 @@ end
                        gate_count(reversible_compile(soft_fsqrt, UInt64;
                                                      max_loop_iterations=4)).total)
             # Pinned under x86-64-v3: ls_demo_16 stays SLP-vectorised (cc0.7
-            # coverage).
-            @test in_proc == (3_944, 6_248, 70_487)
+            # coverage). Bennett-i5zn: soft_fsqrt 70_487 → 70_509 (+22) — the
+            # iteration-active predicate lower_loop! conjoins into the header
+            # predicate / phi MUX / check-only pass of its one self-loop (the
+            # header-value hold set of that pure loop is empty).
+            @test in_proc == (3_944, 6_248, 70_509)
 
             script = """
             using Bennett
