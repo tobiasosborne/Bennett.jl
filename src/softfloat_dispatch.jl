@@ -105,12 +105,53 @@ inlined at the gate level during lowering.
 
 The resulting circuit operates on UInt64 bit patterns (IEEE 754 encoding).
 The function must be generic (no ::Float64 type annotations on arguments).
+A Float64 result (computed or constant) is output as its UInt64 bit pattern;
+a Bool or Int8-Int64 / UInt8-UInt64 result is output as itself. Any other
+result type is rejected with an `ArgumentError` (Bennett-lgwa).
 
 Implementation: The user's function is called with SoftFloat arguments inside a
 `@force_inline`-d wrapper. This ensures Julia inlines through f → SoftFloat./ →
 soft_fdiv etc., eliminating struct-passing ABI and producing clean integer IR
 with direct `call @j_soft_fdiv` instructions that the callee registry recognizes.
 """
+# ---- Bennett-lgwa: adapt the wrapped function's result ----
+# The wrapper used to take `.bits` of whatever `f` returned, so a constant
+# Float64, Bool or integer result compiled to a throwing body and died with
+# "VoidType reached _type_width". Results are now adapted by type; the set of
+# accepted kinds is checked against `f`'s inferred return type before
+# extraction, so anything else is rejected with a message naming the cause.
+const _SF_INT_RESULTS = Union{Bool, Int8, Int16, Int32, Int64,
+                              UInt8, UInt16, UInt32, UInt64}
+@inline _softfloat_result(r::SoftFloat) = r.bits
+@inline _softfloat_result(r::Float64) = reinterpret(UInt64, r)
+@inline _softfloat_result(r::_SF_INT_RESULTS) = r
+
+# Circuit output type of one result kind (nothing = no encoding).
+_softfloat_result_type(::Type{<:Union{SoftFloat, Float64}}) = UInt64
+_softfloat_result_type(T::Type{<:_SF_INT_RESULTS}) = T
+_softfloat_result_type(::Type) = nothing
+
+function _check_softfloat_result(f, N::Int)
+    argT = Tuple{ntuple(_ -> SoftFloat, N)...}
+    hasmethod(f, argT) || throw(ArgumentError(
+        "reversible_compile(f, Float64...): $f has no method for $N SoftFloat " *
+        "argument(s). The Float64 overload calls f on SoftFloat values, so f " *
+        "must be generic: drop ::Float64 argument annotations (Bennett-lgwa)"))
+    R = Core.Compiler.return_type(f, argT)
+    R === Union{} && throw(ArgumentError(
+        "reversible_compile(f, Float64...): $f always throws on SoftFloat " *
+        "arguments — it uses a Float64 operation or conversion with no SoftFloat " *
+        "method (e.g. Int64(x); missing operators are tracked in Bennett-8aes). " *
+        "Call it natively on SoftFloat values to see the error (Bennett-lgwa)"))
+    outs = unique(map(_softfloat_result_type, Base.uniontypes(R)))
+    (length(outs) == 1 && outs[1] !== nothing) || throw(ArgumentError(
+        "reversible_compile(f, Float64...): unsupported result type $R for $f. " *
+        "Supported: Float64 (circuit output = IEEE bits as UInt64), Bool, and " *
+        "Int8-Int64 / UInt8-UInt64; a Union must map to one output type " *
+        "(Bennett-lgwa)"))
+    return nothing
+end
+
 const _FLOAT64_OVERLOAD_KWARGS = (:optimize, :max_loop_iterations,
                                   :compact_calls, :strategy, :add, :mul,
                                   :fold_constants, :target,
@@ -140,6 +181,8 @@ function reversible_compile(f::F, float_types::Type{Float64}...;
               "(2^64 table would be absurd); use :auto or :expression"))
     N = length(float_types)
     N >= 1 || throw(ArgumentError("Need at least one Float64 argument type"))
+    N <= 3 || throw(ArgumentError("Float64 compile supports up to 3 arguments (got $N)"))
+    _check_softfloat_result(f, N)
 
     # Use @inline at the call site to force Julia to inline f through the SoftFloat
     # dispatch chain. Without this, Julia emits struct-passing ABI (alloca + store +
@@ -147,19 +190,19 @@ function reversible_compile(f::F, float_types::Type{Float64}...;
     # Julia inline f → SoftFloat./ → soft_fdiv etc., producing clean integer IR
     # with direct soft_* calls that the callee registry recognizes.
     if N == 1
-        w = (x::UInt64) -> (@inline f(SoftFloat(x))).bits
+        w = (x::UInt64) -> _softfloat_result(@inline f(SoftFloat(x)))
         return reversible_compile(w, UInt64; optimize, max_loop_iterations,
                                   compact_calls, add, mul, fold_constants, target,
                                   auto_self_reversing,
                                   mem, persistent_impl, hashcons)
     elseif N == 2
-        w = (a::UInt64, b::UInt64) -> (@inline f(SoftFloat(a), SoftFloat(b))).bits
+        w = (a::UInt64, b::UInt64) -> _softfloat_result(@inline f(SoftFloat(a), SoftFloat(b)))
         return reversible_compile(w, UInt64, UInt64; optimize, max_loop_iterations,
                                   compact_calls, add, mul, fold_constants, target,
                                   auto_self_reversing,
                                   mem, persistent_impl, hashcons)
     elseif N == 3
-        w = (a::UInt64, b::UInt64, c::UInt64) -> (@inline f(SoftFloat(a), SoftFloat(b), SoftFloat(c))).bits
+        w = (a::UInt64, b::UInt64, c::UInt64) -> _softfloat_result(@inline f(SoftFloat(a), SoftFloat(b), SoftFloat(c)))
         return reversible_compile(w, UInt64, UInt64, UInt64; optimize, max_loop_iterations,
                                   compact_calls, add, mul, fold_constants, target,
                                   auto_self_reversing,

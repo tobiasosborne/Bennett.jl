@@ -192,6 +192,9 @@ runfile("test_l5v8_softfloat_sugar_transcendentals.jl")
 # Bennett-g6u9: mixed SoftFloat/Float64 and SoftFloat/Integer `==` (was Base's
 # generic `===` fallback → branch folded away, silent identity miscompile).
 runfile("test_g6u9_softfloat_mixed_eq.jl")
+# Bennett-lgwa: Float64 overload adapts constant / Bool / integer results and
+# rejects other result types (was an opaque VoidType error).
+runfile("test_lgwa_float64_result_kinds.jl")
 # Bennett-s1zl: direct llvm.tan dispatch (Tier C1 trig completion).
 runfile("test_s1zl_llvm_tan_dispatch.jl")
 # Bennett-qpke: direct llvm.atan dispatch (Tier C1.2 — atan, no rem_pio2).
