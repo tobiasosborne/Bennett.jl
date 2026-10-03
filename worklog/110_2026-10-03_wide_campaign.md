@@ -1,5 +1,79 @@
 # Worklog chunk 110 — 2026-10-03 — wide campaign over the Astra queue (4 concurrent workers)
 
+## Session log — 2026-10-03 — batch 2 landed: Bennett-iys2 (61e18a6), Bennett-3vji (d27a383), Bennett-4ddk (4f29c91), Bennett-retr (75f8969)
+
+**Bennett-iys2 — soft_pow(-1, y) returned +1 for every y** (61e18a6). The last step of `soft_pow`
+forced 1.0 when |x| == 1, but C99/POSIX make pow(x, y) = 1 unconditional only for x = +1.
+Fix (src/softfloat/fpow.jl only): test `x == +1`; new overrides before NaN propagation give
+pow(-1, odd) = -1, pow(-1, even or +-Inf) = +1 (set directly, not via the log/exp path, for
+|y| >= 2^63); non-integer y and NaN y already fell into the NaN overrides. Two tests had pinned
+the wrong values (test_softfpow.jl:85-89, test_emv_llvm_pow_dispatch.jl:56) and were fixed. New
+test_iys2_pow_negative_one.jl (36 exponents bit-exact vs Base, ULP sweep, llvm.pow circuit
+through verify_reversibility): red 32 failures before the fix; targeted run 1147/1147. No
+pinned gate-count baseline covers soft_pow; the circuit gains a few gates from the overrides.
+
+**Bennett-3vji — Eager dead-end cleanup replayed against changed controls** (d27a383).
+`_eager_bennett_impl` (src/pebble/eager.jl) replayed a dead-end wire's modification path right
+after its last write; a replayed gate only undoes itself if its controls still hold their
+forward-pass values. Witnesses: Astra F9 fixture `CNOT(1,3), NOT(1), CNOT(1,3)` and
+`(x+3)*(x+1)` with `add=:qcla, fold_constants=false` (wire 26, x=-128). Fix: new helper
+`_controls_stable` (searchsortedfirst on each control's sorted mod path); early cleanup fires
+only if no control of a path gate is targeted afterwards, else the wire is left to the Phase 3
+reverse (still sound, the wire is never a control). Old "always correct" comment corrected.
+New test_3vji_eager_control_stability.jl (265 pass; red: 3 + 129 errors, 18/300 random
+sequences bad); targeted run 6831/6831. Gate baselines unchanged. Trade-off: eager may now use
+Phase-3-ordered cleanup on some qcla wires, so its peak liveness can be slightly worse there.
+
+**Bennett-4ddk — compile/extraction caches unsound** (4f29c91). `_parsed_ir_cache` and
+`_compile_cache` keys do not change when a method or inlined callee is redefined (stale circuit
+reproduced); the helper was typed `f::Function` (callables, F15); `_narrow_ir` built a fresh
+ParsedIR each call so narrowed compiles never hit and were kept forever (F21); objectid keys can
+match a recycled id. Fix (src/extract/callees.jl, src/Bennett.jl, a comment in julia_set.jl):
+`_cache_world_gate!` empties a cache when the world counter changed; `_cache_insert_bounded!`
+skips inserts if the world moved mid-compute and evicts above caps (256 parsed-IR, 32 compile);
+untyped `f` plus a `bit_width` kwarg (5-tuple key) so narrowing is memoised; compile cache keys
+on `parsed` itself. New test_4ddk_compile_cache_soundness.jl (2626 assertions over the cache
+files); ej4n haskey assertions updated; targeted run 374036 pass / 1 broken / 0 fail. Gate
+counts unchanged.
+
+**Bennett-retr — add=:qcla with aliased operands (x+x)** (75f8969). `lower_add_qcla!`
+(src/qcla.jl) uses `b` as its in-place propagate register; the `:qcla` branch of `lower_binop!`
+(src/lowering/arith.jl) passed `a === b` through, and the Bennett-stwr alias guard covered only
+Cuccaro. Fix: the branch CNOT-copies `b` to fresh wires (`_emit_copy_out!`) when
+`!isdisjoint(a, b)`; `lower_add_qcla!` now throws a bead-named ArgumentError on overlapping or
+repeated-wire operands (same as `lower_add_cuccaro!`). New test_retr_qcla_alias.jl: 5366 pass;
+7-file filtered run 9589/9589. Ripple, cuccaro, shift_add, qcla_tree on x+x / x*x / z-z were
+already correct and are pinned in the test. Gate counts unchanged.
+
+**Gotchas.**
+- retr: the bead's filed symptom (dirty ancillae, 254/256 inputs) had changed by the time it
+  was fixed: Bennett-lcye landed in between, so x+x now throws `CNOTGate: control == target` at
+  compile time. A filed witness can go stale without the bug being fixed; with lcye in, every
+  "self-CNOT" bead fails at compile time, so re-run such witnesses before trusting the symptom.
+  `optimize=true` hides it (LLVM rewrites x+x as shl).
+- retr: `sext` lowering allocates fresh wires, so the `allunique` precondition is safe for
+  valid IR.
+- 4ddk: in Julia 1.12 the world counter moves on any method definition, on the first top-level
+  assignment of a new global, and on reaching a top-level closure literal (+3 per closure,
+  also inside a `@testset` body). Any of these empties both caches (sound, conservative; flush
+  about 80 ms on a two-callee Float64 compile, 0.23 s -> 0.31 s). A `===` assertion must come
+  before any closure literal in the same testset; a compile after an `@eval` redefinition must
+  go through `Base.invokelatest`.
+- 4ddk: `register_callee!` does not move the world; manual `_clear_*_cache!()` still needed.
+- iys2: Base.:^ throws DomainError for a negative base with non-integer exponent (tests need a
+  try/NaN reference); `Int64(reinterpret(UInt64, x))` throws InexactError, use
+  `reinterpret(Int64, x)` for ULP distance.
+- 3vji: `simulate` on a dirty circuit throws instead of returning, so random-sweep tests wrap
+  each trial in try/catch and count failures rather than one `@test` per trial.
+- 4ddk/iys2: a typed `f(x::Float64)` fails with the opaque VoidType message (SoftFloat wrapper
+  calls `f(::SoftFloat)`); (-1.5)^-3 is 1 ULP off Base (soft_pow is <=2 ULP, not rule-13 exact).
+
+**Filed:** Bennett-armp (P1) soft_pow within 2 ULP, not bit-exact, needs maintainer decision;
+Bennett-7q9z (P2) register_callee! should invalidate both caches; Bennett-f69x (P3) precise
+per-entry cache invalidation; Bennett-u1zi (P3) sign of underflowed negative odd power;
+Bennett-0g4p (P3) audit in-place adder/subtractor primitives for overlap checks.
+**Annotated:** Bennett-8aes — typed `f(x::Float64)` fails with the VoidType message.
+
 ## Session log — 2026-10-03 — batch 1 landed: Bennett-u91f (6665a60), Bennett-g6u9 (5b0ab97), Bennett-3wk7 (0cce5d9), Bennett-9k7n (9b04a87)
 
 **Bennett-u91f — controlled() simulate misdecoded unsigned outputs** (6665a60). `_simulate_ctrl`
