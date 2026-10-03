@@ -140,6 +140,8 @@ runfile("test_ancilla_reuse.jl")
 runfile("test_dep_dag.jl")
 runfile("test_pebbling.jl")
 runfile("test_eager_bennett.jl")
+# Bennett-3vji: Eager dead-end cleanup only under stable controls.
+runfile("test_3vji_eager_control_stability.jl")
 # Bennett-i2ca / U55: strategy dispatch parity tests.
 runfile("test_bennett_strategy.jl")
 # Bennett-kv7b / U65 (#05 F9): add × mul dispatcher kwarg cross-product.

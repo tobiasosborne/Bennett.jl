@@ -6,6 +6,11 @@ eagerly cleaned immediately after their last modification.
 
 Phase 2: CNOT copy outputs.
 
+A dead-end wire is cleaned early only when every gate on its modification
+path still sees the control values it saw in the forward pass (no control
+rewritten between that gate and the replay point); otherwise replaying the
+path is not an inverse and the wire is left to Phase 3 (Bennett-3vji).
+
 Phase 3: Reverse remaining forward gates in reverse gate-index order.
 Gates targeting eagerly-cleaned wires are skipped (those wires are
 already zero, and no remaining gate reads them as controls).
@@ -49,6 +54,29 @@ function compute_wire_liveness(gates::Vector{ReversibleGate},
 end
 
 """
+    _controls_stable(gates, mod_paths, mp, i) -> Bool
+
+True iff no control wire of any gate `gi ∈ mp` is targeted by a gate in
+`(gi, i]`. Then replaying `mp` right after gate `i` XORs into the target
+exactly what the forward gates XORed in, zeroing it. Bennett-3vji: a NOT on
+a control between two writes of a dead-end wire broke the old unconditional
+replay (Astra F9; also hit by real `add=:qcla` lowering).
+"""
+function _controls_stable(gates::Vector{ReversibleGate},
+                          mod_paths::Dict{Int, Vector{Int}},
+                          mp::Vector{Int}, i::Int)
+    for gi in mp
+        for c in _gate_controls(gates[gi])
+            cp = get(mod_paths, c, nothing)
+            cp === nothing && continue
+            k = searchsortedfirst(cp, gi + 1)
+            k <= length(cp) && cp[k] <= i && return false
+        end
+    end
+    return true
+end
+
+"""
     _eager_bennett_impl(lr::LoweringResult) -> ReversibleCircuit
 
 Bennett construction with EAGER cleanup. Reached via
@@ -83,8 +111,9 @@ function _eager_bennett_impl(lr::LoweringResult)
     last_use  = compute_wire_liveness(gates, lr.output_wires, lr.input_wires)
 
     # Phase 1: Forward gates + clean dead-end wires.
-    # A dead-end wire is never used as a control by ANY gate.
-    # Safe to clean: no gate reads it, so no reversal needs its value.
+    # A dead-end wire is never used as a control by ANY gate, so no reversal
+    # needs its value. Early replay of its mod path is only an inverse when
+    # the replayed gates' controls are unchanged since they ran (Bennett-3vji).
     result = ReversibleGate[]
     sizehint!(result, 2 * N)
     eagerly_cleaned = Set{Int}()
@@ -97,7 +126,7 @@ function _eager_bennett_impl(lr::LoweringResult)
         if !(t in output_set) && !(t in input_set) && !haskey(last_use, t)
             # Dead-end: never used as control. Check if this is the last mod.
             mp = get(mod_paths, t, Int[])
-            if !isempty(mp) && mp[end] == i
+            if !isempty(mp) && mp[end] == i && _controls_stable(gates, mod_paths, mp, i)
                 # Reverse the full mod path to zero wire t
                 for gi in Iterators.reverse(mp)
                     push!(result, gates[gi])
@@ -126,8 +155,8 @@ end
 # NOTE: Wire-level EAGER (cleaning wires after last use as control) was
 # attempted but FAILS: cleaned wires appear as zero to Phase 3 reverse
 # gates that use them as controls, producing incorrect reversal. The
-# existing dead-END cleanup (above) is correct because dead-end wires
-# are never used as controls by ANY gate, so the Phase 3 reverse is
-# unaffected. PRS15's EAGER works at the MDD level where operations are
+# existing dead-END cleanup (above) does not disturb Phase 3 because
+# dead-end wires are never used as controls by ANY gate; it is itself
+# correct only under the `_controls_stable` guard (Bennett-3vji). PRS15's EAGER works at the MDD level where operations are
 # atomic — our gate-level representation breaks this atomicity.
 # See WORKLOG for detailed analysis.
