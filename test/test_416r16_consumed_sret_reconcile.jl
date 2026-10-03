@@ -210,16 +210,22 @@ leafZ416r16(k::Int8) = (Int64(k) + 3, k)
     # (E) Natural pin: the fdict_d1b closed-world set. setindex!'s consumed
     #     ht_keyindex2_shorthash! call must be value-ABI (rw 72, [h,key]), the
     #     box alloca gone, and the 5 former box loads all IRExtractValue with
-    #     field indices {0,0,0,0,1}. Guarded by findfirst-presence (a deeper
-    #     wall under some bounds modes may :skip setindex!, mirroring test_59zi /
-    #     test_416r17).
+    #     field indices {0,0,0,0,1}. The exact member set is pinned first, so a
+    #     setindex! lost to an extraction wall turns the test red (Bennett-z1o8).
     # =====================================================================
     @testset "natural pin: fdict_d1b setindex! consumed call reconciled" begin
         fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
         set = extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
                   ptr_cells=true, on_extract_error=:skip)
 
-        si_i = findfirst(p -> startswith(string(p.first), "setindex!"), set)
+        # Bennett-z1o8: the old `else @test true` fallback went green when
+        # setindex! vanished from the set. Pin the exact member set first (same
+        # fixture and expectation as test_416r17's natural pin).
+        _bare(k) = rsplit(String(k), "#"; limit=2)[1]
+        @test sort([_bare(p.first) for p in set]) ==
+              ["fdict_d1b", "ht_keyindex2_shorthash!", "rehash!", "setindex!"]
+        si_i = findfirst(p -> _bare(p.first) == "setindex!", set)
+        @test si_i !== nothing
         if si_i !== nothing
             pir = set[si_i].second
             allinsts = [i for b in pir.blocks for i in b.instructions]
@@ -249,9 +255,6 @@ leafZ416r16(k::Int8) = (Int64(k) + 3, k)
                             occursin("sret_box", string(i.ptr.name)), allinsts)
             @test !any(i -> i isa IRPtrOffset &&
                             occursin("sret_box", string(i.dest)), allinsts)
-        else
-            @info "setindex! absent from fdict set (deeper wall) — natural pin skipped"
-            @test true
         end
     end
 end

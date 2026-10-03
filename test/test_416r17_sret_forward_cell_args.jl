@@ -130,15 +130,35 @@ leafY416r17(k::Int8) = (Int64(k) + 7, k)
     # =====================================================================
     @testset "natural pin: fdict_d1b recursive + consumed calls" begin
         fdict_d1b(a::Int8, b::Int8) = (d = Dict{Int8,Int8}(); d[a] = b; d[a])
-        # on_extract_error=:skip: some deeper callees (or a check-bounds=yes
-        # U114 struct-store wall on ht_keyindex2 itself, Bennett-583s successor)
-        # may fail; :skip keeps the members that DID extract so the pin is
-        # robust across bounds modes (mirrors test_59zi's check-bounds guard).
+        # on_extract_error=:skip keeps the members that DID extract, so a
+        # member lost to a new extraction wall shows up as a named difference in
+        # the exact-set pin below rather than as an opaque throw (Bennett-z1o8).
         set = extract_parsed_ir_set_from_julia(fdict_d1b, Tuple{Int8,Int8};
                   ptr_cells=true, on_extract_error=:skip)
 
-        htk_i = findfirst(p -> startswith(string(p.first),
-                                          "ht_keyindex2_shorthash!"), set)
+        # Bennett-z1o8: pin the EXACT closed-world set BEFORE the ABI pins. The
+        # old `findfirst ... else @test true` fallbacks went green when either
+        # pinned member vanished (an empty set passed 2/2). fdict_d1b's source
+        # call graph (Julia 1.12, getindex inlined): the entry calls setindex!;
+        # setindex! calls ht_keyindex2_shorthash! and rehash!; the shorthash
+        # recurses once and calls rehash! twice; rehash! calls only runtime
+        # intrinsics. Members are keyed `<barename>#<digest>`.
+        _bare(k) = rsplit(String(k), "#"; limit=2)[1]
+        @test sort([_bare(p.first) for p in set]) ==
+              ["fdict_d1b", "ht_keyindex2_shorthash!", "rehash!", "setindex!"]
+        # Julia-function call edges of each member (runtime intrinsics such as
+        # julia.gc_loaded carry Symbol callees and are not edges).
+        _edges(pir) = sort([string(nameof(i.callee)) for b in pir.blocks
+                            for i in b.instructions
+                            if i isa IRCall && i.callee isa Function])
+        @test Dict(_bare(p.first) => _edges(p.second) for p in set) == Dict(
+            "fdict_d1b"               => ["setindex!"],
+            "setindex!"               => ["ht_keyindex2_shorthash!", "rehash!"],
+            "ht_keyindex2_shorthash!" => ["ht_keyindex2_shorthash!", "rehash!", "rehash!"],
+            "rehash!"                 => String[])
+
+        htk_i = findfirst(p -> _bare(p.first) == "ht_keyindex2_shorthash!", set)
+        @test htk_i !== nothing
         if htk_i !== nothing
             pir = set[htk_i].second
             rec = [i for b in pir.blocks for i in b.instructions
@@ -149,12 +169,10 @@ leafY416r17(k::Int8) = (Int64(k) + 7, k)
             @test rec[1].ret_width == 72               # PARENT sret packed width
             @test rec[1].args[1] isa SSAOperand        # the h::Dict cell operand
             @test rec[1].arg_widths[1] == 64           # h carried as a cell
-        else
-            @info "ht_keyindex2 absent from set (deeper wall) — recursive pin skipped"
-            @test true
         end
 
-        si_i = findfirst(p -> startswith(string(p.first), "setindex!"), set)
+        si_i = findfirst(p -> _bare(p.first) == "setindex!", set)
+        @test si_i !== nothing
         if si_i !== nothing
             pir = set[si_i].second
             cons = [i for b in pir.blocks for i in b.instructions
@@ -163,9 +181,6 @@ leafY416r17(k::Int8) = (Int64(k) + 7, k)
             # Consumed-call path — RECONCILED by bennettvm-416r.16 to value ABI:
             @test cons[1].arg_widths == [64, 8]        # [h, key] (sret_box dropped)
             @test cons[1].ret_width == 72              # value ABI (was 64)
-        else
-            @info "setindex! absent from set (deeper wall) — consumed pin skipped"
-            @test true
         end
     end
 end
