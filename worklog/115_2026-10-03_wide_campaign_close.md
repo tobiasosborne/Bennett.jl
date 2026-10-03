@@ -9,7 +9,7 @@ Detail lives in chunks 110 (setup, batches 1–3), 111 (batches 4–6), 112 (bat
 detached snapshot for the suite), Opus workers, one bead each, `gpt-6.1-sol` high for review. The
 session was time-boxed by the maintainer, so there was one wave plus two refills.
 
-**Landed (five beads, all closed; each with a new test file, gate-count baselines unmoved):**
+**Landed (all closed; each with a new test file, gate-count baselines unmoved):**
 - **Bennett-73gr** (06ee828, P1, core `cfg.jl`/`driver.jl`): every DFS back edge must have its header
   dominate its tail and loop bodies must be single-entry; irreducible CFGs are refused loud.
 - **Bennett-2glq** (009e606): vector loads with a sub-byte lane width (`<N x i1>`) are refused.
@@ -24,27 +24,48 @@ session was time-boxed by the maintainer, so there was one wave plus two refills
   recorded type** (an `Int8 -> UInt8` function returns `UInt8`). BennettVM has not been run against
   it. Mixed-width tuple returns still fail extraction (Bennett-qmk6).
 
-**Still in flight when this entry was written** (claimed, branch committed in its slot, queued on the
-landing lock or coding): Bennett-9fke (s1), Bennett-sy9t (s4), Bennett-0ysp (s6). If `git log` shows
-them on main, they landed after the suite snapshot with targeted tests only and their beads still
-need closing; if not, the branches `work/9fke`, `work/sy9t`, `work/0ysp` hold the work.
+- **Bennett-9fke** (18c2339, P1, `module_walk.jl`/`jlglobal_cert.jl`): the cc0.3 catch skips a
+  PointerType-`MethodError` instruction only under `_dead_pure_value_certified` (side-effect-free and
+  every transitive user dead and pure); otherwise `_ir_error`. Root cause confirmed: LLVM.jl has no
+  `width(::PointerType)`, so `extractvalue`/`insertvalue` on `[N x ptr]` were dropped and a live
+  load/store through the result left an undefined SSA name. The arm never fired on the T5 corpus,
+  memory corpus or extraction tests — only hand-written `[N x ptr]` IR reaches it. This is also
+  review-1 finding 3.
+- **Bennett-0ysp** (9f603d1, P1, review-1 finding 2): `strategy=:tabulate` refuses a callable whose
+  state could change after compilation (mutable, or immutable but not isbits). The worker correctly
+  did NOT make `:expression` refuse: there the field is a circuit input ([8,8]), nothing is frozen,
+  and u9cc's own test pins it. The `:auto`→tabulate redirect cannot fire today (needs ≤4 input bits).
+- **Bennett-sy9t** (s4, branch `work/sy9t`, P2, `aggregate.jl`: a load from a pointer with no wires
+  is refused at the load) was committed and in its landing re-test when this entry was written. If
+  `git log` shows it on main, it landed with targeted tests only and the bead still needs closing;
+  if not, the branch in slot s4 holds the work.
+- **Cross-file pin regression caught at landing, not by the worker:** 9fke turned
+  `test_p06b_aggregate_store.jl` (i) red on main (6 failures) — the `[2 x ptr]` fixture's live
+  `insertvalue` is now refused before the ArrayType store refusal (lgzx / U114) the test pinned.
+  It surfaced only because sy9t's landing re-test happened to include that file. Re-pinned in
+  c90185b (622/622); the lost lgzx coverage is Bennett-v7yv. Same class as 6atf: a refusal that
+  now fires EARLIER than the one a neighbouring test pins. After any new extraction-time refusal,
+  grep test/ for fixtures containing the refused construct, not just for users of the function.
 
 **Filed:** blnv, 0ysp, qu9m, 2hx3, e7l8, 6c9j (review 1); 6atf (suite failure); omnl (signedness on
-the narrowed path); rrwj (runtime-index range proof for MUX); 6rx3 (full suite on the final tree).
+the narrowed path); rrwj (runtime-index range proof for MUX); 6rx3 (full suite on the final tree);
+mpxu (`_entry_predicate_wire` assertion reachable from raw ParsedIR); uwo5 (pointer aggregates);
+gft0 (callable-struct interface differs by strategy — resolve with 2op8).
 
 **Full suite — sharded, and what it covers.** One run, ten shards, on a detached snapshot of main at
 **009e606** (so it covers the twelve source commits the day campaign left unverified, plus 73gr and
-2glq). Eight shards finished in 7 to 13 minutes of wall time with 1,682,068 passes; two shards
-(1 and 2, the `llvm_*_dispatch` soft-float files) were still running, with no failure so far, when
-this entry was written — their logs are `~/Projects/Bennett-slots/logs/suite/shard_{1,2}.log`.
+2glq). **Result: 1,790,974 pass / 0 fail / 2 error / 5 broken in 19.5 minutes of
+wall time** (the serial run took 61), alongside six compiling workers. Per-shard wall 7 to 19 min.
 - **One real failure: Bennett-6atf (P1).** `test_mrhg_narrow_soundness.jl:621` — the global-store
   rejection case now dies in extraction with the gq1z `jl_global#N.jit` alias refusal (3a036b2)
   instead of the expected `ArgumentError`. It is exactly the cross-file pin class the day campaign
   warned about, and it sits in the catch block 9fke is changing.
 - The hygiene file errors in direct mode (no Aqua in the project env) and passed through
   `Pkg.test(test_args=["hygiene_aqua"])`.
-- **Not covered by the run:** usly 880b7a1, okcg 478fc76, 13xy fe3c3aa and anything later. 13xy is
-  the one that matters (core, and it changes untyped `simulate`'s return type). Bennett-6rx3 tracks
+- **Not covered by the run:** usly 880b7a1, okcg 478fc76, 13xy fe3c3aa, 9fke 18c2339, 0ysp 9f603d1
+  and sy9t. 13xy is the one that matters (core, and it changes untyped `simulate`'s return type);
+  the three other test files that pin `simulate` result types (iwj6, koi8, qa2g) were run against
+  it afterwards and pass. Bennett-6rx3 tracks
   the full run on the final tree; do it first next session, then the BennettVM suite.
 
 **Review 1 (Sol, high) over `c443621..3a036b2 -- src`** — the five final-wave refusal commits of the
@@ -80,6 +101,10 @@ was blocked by the permission classifier — the maintainer has to run it.
 - Round-robin sharding is unbalanced: the `llvm_*_dispatch` soft-float files are registered at
   the same stride, so with ten shards several got one heavy file each at the same time. Shard by
   measured per-file time next time (the `✓ file  12.3s` lines in the shard logs give the weights).
+- `git stash` is shared across worktrees: the 9fke worker's `stash pop` popped the sy9t worker's
+  stash (recovered by SHA, no harm). Workers must never stash in slots — commit WIP or
+  `git diff > file` — and scratch files need bead-prefixed names (two workers shared a scratchpad
+  and one overwrote the other's probe).
 - Six slots pre-warm in two minutes (one serially, five in parallel) and six concurrent workers
   plus a ten-shard suite stayed under 12 GB used on this box.
 - The landing lock is the bottleneck at the end of a wave: every landing after the first one
