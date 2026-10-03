@@ -432,6 +432,28 @@ function _with_julia_return_type(c::ReversibleCircuit, @nospecialize(R))
                              c.loop_check_wires; output_elem_unsigned=uns)
 end
 
+# Bennett-0ysp: tabulate evaluates `f` natively and stores the results, so it
+# freezes all of `f`'s state. Sound only when that state cannot change: a
+# Type, or an immutable callable whose state is plain bits (or closure captures
+# `_capture_ok` accepts). A mutable callable, or one holding a Ref / array /
+# mutable field, keeps the expression path, where fields stay circuit inputs.
+function _tabulate_state_ok(f)
+    f isa Type && return true
+    T = typeof(f)
+    ismutabletype(T) && return false
+    return (isbitstype(T) && !_has_ptr_leaf(T)) || _capture_ok(T)
+end
+
+function _check_tabulate_state(f)
+    _tabulate_state_ok(f) || throw(ArgumentError(
+        "reversible_compile: strategy=:tabulate cannot compile $(typeof(f)): " *
+        "its state is mutable or not an immutable plain-bits value, and a " *
+        "table would freeze it at compile time (it can change afterwards). " *
+        "Use strategy=:expression, where the fields stay circuit inputs, or " *
+        "pass the state as an explicit argument (Bennett-0ysp, Bennett-u9cc)"))
+    return nothing
+end
+
 const _TUPLE_OVERLOAD_KWARGS = (:optimize, :max_loop_iterations,
                                :compact_calls, :bit_width, :add, :mul,
                                :strategy, :fold_constants, :target,
@@ -580,6 +602,7 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     # output signedness (see `_with_julia_return_type`).
     ret_type = Core.Compiler.return_type(f, arg_types)
     if strategy === :tabulate && target !== :reversible_vm
+        _check_tabulate_state(f)   # Bennett-0ysp
         lr, reason = _tabulate_circuit(f, arg_types, bit_width, auto_self_reversing)
         lr === nothing && throw(ArgumentError(
             "reversible_compile: strategy=:tabulate not applicable — $reason"))
@@ -602,7 +625,8 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
 
     # Bennett-33zr: same `:reversible_vm` carve-out as the explicit-tabulate
     # branch above — the :auto cost model must not divert a VM compile to QROM.
-    if strategy === :auto && target !== :reversible_vm &&
+    # Bennett-0ysp: never divert a mutable-state callable to a table.
+    if strategy === :auto && target !== :reversible_vm && _tabulate_state_ok(f) &&
        _tabulate_auto_picks(parsed, arg_types, bit_width)
         lr, _ = _tabulate_circuit(f, arg_types, bit_width, auto_self_reversing)
         # Bennett-iwj6: `nothing` means the cost model picked a shape the

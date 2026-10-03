@@ -130,6 +130,7 @@ runfile("test_4ddk_compile_cache_soundness.jl")
 runfile("test_7q9z_registry_cache_invalidation.jl")
 # Bennett-o9sv: closure captures bind as constants (isbits) or are rejected loudly.
 runfile("test_o9sv_closure_captures.jl")
+runfile("test_0ysp_tabulate_mutable_callable.jl")
 runfile("test_y986_loop_header_dispatch.jl")
 runfile("test_gboa_dirty_bit_hygiene.jl")
 runfile("test_d77b_fcmp_predicates.jl")
