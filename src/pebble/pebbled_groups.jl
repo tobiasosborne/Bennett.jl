@@ -277,15 +277,13 @@ is bounded and groups permit.
 """
 function _pebbled_group_bennett_impl(lr::LoweringResult; max_pebbles::Int=0)
     # Bennett-rjk7: honor the self_reversing fast-path universally — mirrors
-    # `_bennett_default` (src/bennett_transform.jl:286-294). Skipping the wrap
+    # `_bennett_default` via the shared `_self_reversing_circuit` (src/
+    # bennett_transform.jl; Bennett-ui55: it also rejects loop guards — the
+    # five former inlined copies skipped that check). Skipping the wrap
     # halves gate count for QROM / Sun-Borissov primitives, and the U03 probe
     # (`_validate_self_reversing!`, Bennett-egu6) catches forged tags loud per
     # CLAUDE.md §1 regardless of strategy choice.
-    if lr.self_reversing
-        _validate_self_reversing!(lr)
-        return _build_circuit(lr.gates, lr.n_wires, lr.input_wires,
-                              lr.output_wires, lr)
-    end
+    lr.self_reversing && return _self_reversing_circuit(lr)
 
     # Bennett-s0tn: loop-guard copy-out lives only in `_bennett_default`.
     isempty(lr.loop_guards) || return _bennett_default(lr)
@@ -382,15 +380,13 @@ Requires lr.gate_groups with wire_start/wire_end populated (from lower()).
 """
 function _checkpoint_bennett_impl(lr::LoweringResult)
     # Bennett-rjk7: honor the self_reversing fast-path universally — mirrors
-    # `_bennett_default` (src/bennett_transform.jl:286-294). Skipping the wrap
+    # `_bennett_default` via the shared `_self_reversing_circuit` (src/
+    # bennett_transform.jl; Bennett-ui55: it also rejects loop guards — the
+    # five former inlined copies skipped that check). Skipping the wrap
     # halves gate count for QROM / Sun-Borissov primitives, and the U03 probe
     # (`_validate_self_reversing!`, Bennett-egu6) catches forged tags loud per
     # CLAUDE.md §1 regardless of strategy choice.
-    if lr.self_reversing
-        _validate_self_reversing!(lr)
-        return _build_circuit(lr.gates, lr.n_wires, lr.input_wires,
-                              lr.output_wires, lr)
-    end
+    lr.self_reversing && return _self_reversing_circuit(lr)
 
     # Bennett-s0tn: loop-guard copy-out lives only in `_bennett_default`.
     isempty(lr.loop_guards) || return _bennett_default(lr)

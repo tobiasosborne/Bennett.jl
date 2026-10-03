@@ -231,6 +231,43 @@ function _infer_self_reversing(lr::LoweringResult,
 end
 
 """
+    _self_reversing_circuit(lr::LoweringResult) -> ReversibleCircuit
+
+The `lr.self_reversing=true` fast path shared by EVERY Bennett strategy
+(Bennett-rjk7; single site per Bennett-ui55): emit the forward gates only,
+no copy-out and no reverse pass. Before trusting the tag it
+
+1. rejects a non-empty `lr.loop_guards` (Bennett-s0tn) — a self-reversing
+   primitive is a closed self-cleaning gate sequence and cannot contain an
+   unrolled data-dependent loop (a loop LR always branches, and
+   `_infer_self_reversing` rejects branching LRs). Dropping the guard here
+   would let a non-converged loop pass as a clean result: the U03 probe
+   accepts the 0-valued convergence wire as a clean ancilla;
+2. runs the U03 contract probe (`_validate_self_reversing!`, Bennett-egu6).
+
+Every strategy entry point must route its self_reversing branch through
+this helper — never inline a copy (Bennett-ui55: five inlined copies
+skipped step 1).
+"""
+function _self_reversing_circuit(lr::LoweringResult)
+    lr.self_reversing || error(
+        "_self_reversing_circuit: lr.self_reversing is false (Bennett-ui55)")
+    isempty(lr.loop_guards) || error(
+        "bennett: lr.self_reversing=true but lr.loop_guards is non-empty " *
+        "($(length(lr.loop_guards)) guard(s)) — a self-reversing primitive " *
+        "cannot contain a data-dependent loop. The lowering is inconsistent " *
+        "(Bennett-s0tn).")
+    _validate_self_reversing!(lr)
+    # Bennett-nj5r / U200: pass lr.gates directly. ReversibleCircuit
+    # stores the array but does not mutate it; no caller mutates
+    # lr.gates after bennett() returns (verified across src/pebble/*).
+    # Skipping the defensive copy saves O(n_gates) allocation on every
+    # self_reversing circuit (lower_tabulate, mul_qcla_tree).
+    return _build_circuit(lr.gates, lr.n_wires, lr.input_wires,
+                          lr.output_wires, lr)
+end
+
+"""
     bennett(lr::LoweringResult; strategy::BennettStrategy=DefaultStrategy())
     bennett(lr::LoweringResult, strategy::BennettStrategy)
 
@@ -304,25 +341,7 @@ function _bennett_default(lr::LoweringResult)
     # double the gate count. Bennett-egu6 / U03: validate the primitive's
     # contract before trusting it; silent acceptance of a broken
     # self_reversing primitive would poison every downstream circuit.
-    if lr.self_reversing
-        # Bennett-s0tn: a self-reversing primitive is a closed self-cleaning
-        # gate sequence — it cannot contain an unrolled data-dependent loop
-        # (a loop LR always branches, and `_infer_self_reversing` rejects
-        # branching LRs). A non-empty loop_guards here is a contradiction.
-        isempty(lr.loop_guards) || error(
-            "bennett: lr.self_reversing=true but lr.loop_guards is non-empty " *
-            "($(length(lr.loop_guards)) guard(s)) — a self-reversing primitive " *
-            "cannot contain a data-dependent loop. The lowering is inconsistent " *
-            "(Bennett-s0tn).")
-        _validate_self_reversing!(lr)
-        # Bennett-nj5r / U200: pass lr.gates directly. ReversibleCircuit
-        # stores the array but does not mutate it; no caller mutates
-        # lr.gates after bennett() returns (verified across src/pebble/*).
-        # Skipping the defensive copy saves O(n_gates) allocation on every
-        # self_reversing circuit (lower_tabulate, mul_qcla_tree).
-        return _build_circuit(lr.gates, lr.n_wires, lr.input_wires,
-                              lr.output_wires, lr)
-    end
+    lr.self_reversing && return _self_reversing_circuit(lr)
 
     copy_wires, total = _allocate_copy_wires(lr)
 
