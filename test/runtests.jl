@@ -305,6 +305,8 @@ runfile("test_dm9r_const_index_var_gep.jl")
 # Bennett-gw0r — GEP index composition in alloca-element units at full index width.
 runfile("test_gw0r_gep_index_units_and_width.jl")
 runfile("test_rrop_gep_chain_index_residue.jl")
+# Bennett-xjt9 / 6r3e — persistent-slab keys must provably fit the pmap key width.
+runfile("test_xjt9_persistent_key_range.jl")
 runfile("test_gate_count_regression.jl")
 runfile("test_negative.jl")
 runfile("test_soft_sitofp.jl")

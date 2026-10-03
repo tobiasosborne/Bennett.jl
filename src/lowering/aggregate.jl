@@ -202,6 +202,32 @@ _gep_index_bits(n::Int) = max(1, 64 - leading_zeros(UInt64(max(n - 1, 0))))
 # pmap key width `_K_bits(impl)` instead (the key the pmap callee reads).
 _gep_compose_width(n::Int) = _gep_index_bits(n) + 1
 
+# Bennett-dx9w / Bennett-xjt9: facts about a persistent slab kept in the
+# per-function `persistent_info` dict under synthetic keys no IR name takes
+# (IR pointer names map to the impl; these map to Ints): the slab's element
+# width, and the upper bound of each composed key.
+_pslab_ew_key(slab::Symbol) = Symbol("__pslab_ew_", slab)
+_pkey_max_key(tag::Symbol) = Symbol("__pkey_max_", tag)
+
+"""
+    _pkey_max(persistent_info, vw, op) -> Int128
+
+Bennett-xjt9: upper bound on the signed element address `op` holds on a
+persistent slab — a constant's value; a composed key's recorded bound (the sum
+of its parts' bounds); a raw IR index's `2^(w-1) - 1` (LLVM sign-extends GEP
+indices). A key is the address mod 2^k (k = pmap key width), so it names one
+slot exactly when every in-bounds address it can hold is below 2^k.
+"""
+function _pkey_max(persistent_info, vw::Dict{Symbol,Vector{Int}}, op::IROperand)::Int128
+    op isa ConstOperand && return Int128(op.value)
+    op isa SSAOperand ||
+        throw(ArgumentError("persistent GEP index: unsupported operand kind $(typeof(op)) " *
+                            "(Bennett-xjt9)"))
+    hi = get(persistent_info, _pkey_max_key(op.name), nothing)
+    hi === nothing || return hi
+    return (Int128(1) << (length(vw[op.name]) - 1)) - 1
+end
+
 """
     _gep_runtime_shift(gep_ew, ew, dest) -> Int
 
@@ -467,9 +493,15 @@ function lower_var_gep!(gates::Vector{ReversibleGate}, wa::WireAllocator,
             # base's idx + the GEP's index (Bennett-jkf0: pre-fix it overwrote
             # the base idx, so `&p1[0]` read slot 0); predicate_wire inherited.
             # Bennett-rrop: a composed key is a residue at the pmap key width.
-            new_idx = _compose_gep_index!(gates, wa, vw, o.idx_op, inst.index, nothing,
-                                          Symbol("__jkf0_idx_", inst.dest, "_", k);
+            # Bennett-xjt9: that residue is the address only while the address
+            # is < 2^k — record the composed key's upper bound; the load/store
+            # (`_check_persistent_key`) refuses a key whose bound reaches 2^k.
+            tag = Symbol("__jkf0_idx_", inst.dest, "_", k)
+            hi = _pkey_max(persistent_info, vw, o.idx_op) + _pkey_max(persistent_info, vw, inst.index)
+            new_idx = _compose_gep_index!(gates, wa, vw, o.idx_op, inst.index, nothing, tag;
                                           W=_K_bits(persistent_info[inst.base.name]))
+            new_idx isa SSAOperand && new_idx.name === tag &&
+                (persistent_info[_pkey_max_key(tag)] = hi)
             push!(new_origins, PtrOrigin(o.alloca_dest, new_idx, o.predicate_wire))
         end
         ptr_provenance[inst.dest] = new_origins

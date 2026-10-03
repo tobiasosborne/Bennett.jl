@@ -89,6 +89,10 @@ function _lower_alloca_dynamic_n!(ctx::LoweringCtx, inst::IRAlloca)
     # Record impl mapping so store/load helpers (Step 5) and GEP/PtrOffset
     # guards (Step 8) can dispatch on it.
     ctx.persistent_info[inst.dest] = impl
+    # Bennett-xjt9: the slab SIZE is not refused here even when it can exceed
+    # 2^k elements (k = pmap key width) — every real dynamic alloca carries an
+    # i32/i64 size. Soundness rests on `_check_persistent_key` instead: each
+    # load/store key's in-bounds addresses are provably < 2^k.
     # GEP walkers crash on missing provenance; install a single-origin entry-
     # predicate provenance so GEP-of-this-alloca passes the existing
     # multi-origin checks (consensus §5 Step 4 last bullet).
@@ -304,6 +308,36 @@ value type. For `LINEAR_SCAN_IMPL` this is `sizeof(Int8) * 8 = 8`.
 """
 _V_bits(impl)::Int = sizeof(impl.V) * 8
 
+"""
+    _check_persistent_key(ctx, idx_op, k_w, slab, ptr)
+
+Bennett-xjt9 / Bennett-6r3e: the pmap call reads `idx_op` as a `k_w`-bit key,
+i.e. the element address mod 2^k_w (a constant is masked by `resolve!`, a
+composed index is a residue at that width). Distinct slots get distinct keys
+iff every in-bounds address the key can hold is < 2^k_w (negative addresses
+are out of bounds). Refuse a constant outside [0, 2^k_w) and a runtime key
+whose upper bound (`_pkey_max`) reaches 2^k_w — pre-fix `&a[256]` and a
+composed `1 + (x + 255)` both landed on key 0 and aliased slot 0.
+"""
+function _check_persistent_key(ctx::LoweringCtx, idx_op::IROperand, k_w::Int,
+                               slab::Symbol, ptr::Symbol)
+    lim = Int128(1) << k_w
+    if idx_op isa ConstOperand
+        0 <= idx_op.value < lim ||
+            throw(ArgumentError("persistent slab %$slab: access through %$ptr at constant " *
+                "element $(idx_op.value), outside the pmap's $(k_w)-bit key range " *
+                "[0, $lim) (it would alias key $(mod(idx_op.value, lim))) (Bennett-xjt9)"))
+    else
+        hi = _pkey_max(ctx.persistent_info, ctx.vw, idx_op)
+        hi < lim ||
+            throw(ArgumentError("persistent slab %$slab: access through %$ptr at a runtime " *
+                "element index that can reach $hi, not provably below the pmap's " *
+                "$(k_w)-bit key range [0, $lim); a larger in-bounds address would alias a " *
+                "smaller key (Bennett-xjt9)"))
+    end
+    return nothing
+end
+
 # ---- Bennett-z2dj / T5-P6 Step 5: persistent store/load helpers ----
 #
 # Per `docs/design/p6_consensus.md` §5 Step 5: emit one IRCall to the
@@ -434,6 +468,7 @@ function _emit_persistent_set_unconditional!(ctx::LoweringCtx, inst::IRStore,
     state_w = _state_len_bits(impl)
     k_w     = _K_bits(impl)
     v_w     = _V_bits(impl)
+    _check_persistent_key(ctx, origin.idx_op, k_w, alloca_dest, inst.ptr.name)
 
     # Width sanity: the value being stored must match impl.V's width.
     inst.width == v_w ||
@@ -520,6 +555,7 @@ function _lower_store_via_persistent_guarded!(ctx::LoweringCtx, inst::IRStore,
     state_w = _state_len_bits(impl)
     k_w     = _K_bits(impl)
     v_w     = _V_bits(impl)
+    _check_persistent_key(ctx, origin.idx_op, k_w, alloca_dest, inst.ptr.name)
 
     inst.width == v_w ||
         throw(DimensionMismatch("_lower_store_via_persistent_guarded!: store width=$(inst.width) " *
@@ -591,6 +627,7 @@ function _lower_load_via_persistent!(ctx::LoweringCtx, inst::IRLoad,
     state_w = _state_len_bits(impl)
     k_w     = _K_bits(impl)
     v_w     = _V_bits(impl)
+    _check_persistent_key(ctx, origin.idx_op, k_w, alloca_dest, inst.ptr.name)
 
     # Width sanity: the load width must match impl.V's width.
     inst.width == v_w ||
