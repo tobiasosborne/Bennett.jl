@@ -192,35 +192,84 @@ end
 
 _is_zero_operand(op::IROperand) = op isa ConstOperand && op.value == 0
 
-"""
-    _compose_gep_index!(gates, wa, vw, base_idx, delta, tag) -> IROperand
+# Index bits the alloca dispatchers read for an n-element allocation
+# (`max(1, ceil(log2 n))`, cf. `_lower_load_via_shadow_checkpoint!`).
+_gep_index_bits(n::Int) = max(1, 64 - leading_zeros(UInt64(max(n - 1, 0))))
 
-Bennett-jkf0: element index of a GEP whose base is itself a GEP result —
-`base_idx + delta`. Constant/zero cases fold with no gates (an alloca-direct
-origin has `base_idx == 0`, so its GEPs keep their pre-jkf0 index operand
-unchanged). A runtime sum is emitted as a ripple adder into fresh wires,
-recorded in `vw` under the synthetic name `tag`; the sum is modular in the
-runtime operand's width, which is exact for every in-range element index
-(including negative constant deltas, two's complement).
+"""
+    _gep_runtime_shift(gep_ew, ew, dest) -> Int
+
+Bennett-gw0r: a runtime GEP index counts `gep_ew`-bit elements; the origin
+alloca counts `ew`-bit elements. The index converts exactly iff `gep_ew` is a
+power-of-two multiple of `ew` (shift left by log2 of the ratio). A narrower
+GEP element (e.g. a byte GEP on an i16 alloca) would need the runtime index to
+be a whole number of alloca elements, which nothing proves — refuse loudly.
+"""
+function _gep_runtime_shift(gep_ew::Int, ew::Int, dest::Symbol)
+    (gep_ew >= ew && gep_ew % ew == 0 && ispow2(gep_ew ÷ ew)) ||
+        throw(ArgumentError("GEP %$dest: runtime index over $(gep_ew)-bit elements into an " *
+            "alloca of $(ew)-bit elements is not a whole (power-of-two) number of alloca " *
+            "elements; the displacement is not representable (Bennett-gw0r)"))
+    return trailing_zeros(gep_ew ÷ ew)
+end
+
+# Bennett-gw0r: `sext(op) << shift` truncated to W bits. A runtime operand
+# already W bits wide with no shift is used as-is (lower_add! only reads it);
+# otherwise fresh wires take CNOT copies (sign bit replicated upwards).
+function _gep_index_wires!(gates::Vector{ReversibleGate}, wa::WireAllocator,
+                           vw::Dict{Symbol,Vector{Int}}, op::IROperand, W::Int, shift::Int)
+    op isa ConstOperand && return resolve!(gates, wa, vw, iconst(op.value << shift), W)
+    src = vw[op.name]
+    w = length(src)
+    shift == 0 && w == W && return src
+    dst = allocate!(wa, W)
+    for k in (shift + 1):W
+        push!(gates, CNOTGate(src[min(k - shift, w)], dst[k]))
+    end
+    return dst
+end
+
+"""
+    _compose_gep_index!(gates, wa, vw, base_idx, delta, n, tag; shift=0) -> IROperand
+
+Bennett-jkf0 / Bennett-gw0r: element index of a GEP whose base carries
+provenance — `base_idx + (delta << shift)`, both in the origin alloca's
+element units (`shift` converts a runtime GEP index whose element is wider
+than the alloca's; a constant `delta` is converted by the caller). Every index
+operand is a signed two's-complement value (LLVM sign-extends GEP indices).
+
+Constant/zero cases fold with no gates; a zero-base, unshifted runtime index
+that already has the `_gep_index_bits(n)` the dispatchers read is passed
+through unchanged (alloca-direct GEPs keep their pre-jkf0 operand and gate
+count). Otherwise the operands are sign-extended to
+`W = max(_gep_index_bits(n) + 1, runtime widths)` and summed by a ripple adder
+under the synthetic name `tag`: every in-range index fits in W bits with a
+clear sign bit, so the sum is exact and composes again. Pre-gw0r W was the
+runtime operand's width, truncating `255 + i` into a 257-element alloca (R3).
+`n === nothing` (persistent slab, unbounded key) uses the runtime widths only.
 """
 function _compose_gep_index!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                              vw::Dict{Symbol,Vector{Int}},
-                             base_idx::IROperand, delta::IROperand, tag::Symbol)
-    base_idx isa ConstOperand && delta isa ConstOperand &&
-        return iconst(base_idx.value + delta.value)
-    _is_zero_operand(base_idx) && return delta
-    _is_zero_operand(delta) && return base_idx
+                             base_idx::IROperand, delta::IROperand,
+                             n::Union{Nothing,Int}, tag::Symbol; shift::Int=0)
     (base_idx isa Union{SSAOperand,ConstOperand} && delta isa Union{SSAOperand,ConstOperand}) ||
         throw(ArgumentError("GEP-on-GEP index composition: unsupported operand kinds " *
                             "($(typeof(base_idx)), $(typeof(delta))) (Bennett-jkf0)"))
+    if delta isa ConstOperand
+        delta = iconst(delta.value << shift)
+        shift = 0
+    end
+    base_idx isa ConstOperand && delta isa ConstOperand &&
+        return iconst(base_idx.value + delta.value)
+    need = n === nothing ? 0 : _gep_index_bits(n)
+    _is_zero_operand(base_idx) && shift == 0 && length(vw[delta.name]) >= need &&
+        return delta
+    _is_zero_operand(delta) && return base_idx
     widths = [length(vw[op.name]) for op in (base_idx, delta) if op isa SSAOperand]
-    all(==(widths[1]), widths) ||
-        throw(DimensionMismatch("GEP-on-GEP index composition: runtime index widths " *
-                                "$(widths) differ; mixed-width index sums are NYI (Bennett-jkf0)"))
-    W = widths[1]
-    a = resolve!(gates, wa, vw, base_idx, W)
-    b = resolve!(gates, wa, vw, delta, W)
-    vw[tag] = lower_add!(gates, wa, a, b, W)
+    W = max(n === nothing ? 0 : need + 1, widths...)
+    b = _gep_index_wires!(gates, wa, vw, delta, W, shift)
+    vw[tag] = _is_zero_operand(base_idx) ? b :
+        lower_add!(gates, wa, _gep_index_wires!(gates, wa, vw, base_idx, W, 0), b, W)
     return ssa(tag)
 end
 
@@ -315,7 +364,7 @@ function _ptr_offset_provenance!(gates::Vector{ReversibleGate}, wa::WireAllocato
             info === nothing &&
                 throw(AssertionError("lower_ptr_offset!: origin of %$(inst.base.name) points " *
                     "at unknown alloca %$(o.alloca_dest) (Bennett-jkf0)"))
-            ew = first(info)
+            ew, n = info
             # Bennett-ixiz sub-element guard: a byte offset that doesn't
             # divide the element width cleanly cannot be represented as
             # an element-count bump.
@@ -325,7 +374,7 @@ function _ptr_offset_provenance!(gates::Vector{ReversibleGate}, wa::WireAllocato
                     "intra-slot offsets are not representable in the shadow-tape " *
                     "model. Bennett-ixiz."))
             new_idx = _compose_gep_index!(gates, wa, vw, o.idx_op,
-                                          iconst(div(inst.offset_bytes * 8, ew)),
+                                          iconst(div(inst.offset_bytes * 8, ew)), n,
                                           Symbol("__jkf0_idx_", inst.dest, "_", k))
             push!(new_origins, PtrOrigin(o.alloca_dest, new_idx, o.predicate_wire))
         end
@@ -387,7 +436,7 @@ function lower_var_gep!(gates::Vector{ReversibleGate}, wa::WireAllocator,
             # The slab's "alloca_dest" is itself; the new origin's idx is the
             # base's idx + the GEP's index (Bennett-jkf0: pre-fix it overwrote
             # the base idx, so `&p1[0]` read slot 0); predicate_wire inherited.
-            new_idx = _compose_gep_index!(gates, wa, vw, o.idx_op, inst.index,
+            new_idx = _compose_gep_index!(gates, wa, vw, o.idx_op, inst.index, nothing,
                                           Symbol("__jkf0_idx_", inst.dest, "_", k))
             push!(new_origins, PtrOrigin(o.alloca_dest, new_idx, o.predicate_wire))
         end
@@ -425,15 +474,14 @@ function lower_var_gep!(gates::Vector{ReversibleGate}, wa::WireAllocator,
             info === nothing &&
                 throw(AssertionError("lower_var_gep!: origin of %$(inst.base.name) points " *
                     "at unknown alloca %$(o.alloca_dest) (Bennett-jkf0)"))
-            # A non-zero base idx is in alloca elements; adding a non-zero GEP
-            # index in a different unit would silently mis-address.
-            _is_zero_operand(o.idx_op) || _is_zero_operand(inst.index) ||
-                inst.elem_width == first(info) ||
-                throw(DimensionMismatch("lower_var_gep!: GEP elem_width=$(inst.elem_width) on " *
-                    "%$(inst.base.name) differs from alloca %$(o.alloca_dest) elem_width=" *
-                    "$(first(info)); cannot compose indices (Bennett-jkf0)"))
-            new_idx = _compose_gep_index!(gates, wa, vw, o.idx_op, inst.index,
-                                          Symbol("__jkf0_idx_", inst.dest, "_", k))
+            # Bennett-gw0r: the base idx counts alloca elements, `inst.index`
+            # counts GEP elements — convert before composing, also when the
+            # base idx is zero (pre-fix that path recorded the GEP index
+            # unconverted: `gep i16, %p0, 1` on an i8 alloca moved one byte).
+            ew, n = info
+            new_idx = _compose_gep_index!(gates, wa, vw, o.idx_op, inst.index, n,
+                                          Symbol("__jkf0_idx_", inst.dest, "_", k);
+                                          shift=_gep_runtime_shift(inst.elem_width, ew, inst.dest))
             push!(new_origins, PtrOrigin(o.alloca_dest, new_idx, o.predicate_wire))
         end
         ptr_provenance[inst.dest] = new_origins
@@ -453,6 +501,12 @@ function lower_var_gep!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     # Resolve index — may be wider than needed (e.g., i64 for a 4-element array)
     idx_wires = resolve!(gates, wa, vw, inst.index, 0)
     idx_bits = max(1, ceil(Int, log2(N)))
+    # Bennett-gw0r: an index narrower than the view's MUX levels cannot drive
+    # this tree; a provenance-carrying pointer never reads it, so skip it.
+    if length(idx_wires) < idx_bits && ptr_provenance !== nothing &&
+       haskey(ptr_provenance, inst.dest)
+        return nothing
+    end
 
     # Extract element slices
     candidates = [base_wires[((k-1)*W+1):(k*W)] for k in 1:N]

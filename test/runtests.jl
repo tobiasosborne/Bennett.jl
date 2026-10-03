@@ -294,6 +294,8 @@ runfile("test_37w3_selected_pointer_store_predicate.jl")
 runfile("test_jkf0_gep_provenance_composition.jl")
 # Bennett-dm9r — constant-index VarGEP on a plain alloca lowers as a PtrOffset.
 runfile("test_dm9r_const_index_var_gep.jl")
+# Bennett-gw0r — GEP index composition in alloca-element units at full index width.
+runfile("test_gw0r_gep_index_units_and_width.jl")
 runfile("test_gate_count_regression.jl")
 runfile("test_negative.jl")
 runfile("test_soft_sitofp.jl")
