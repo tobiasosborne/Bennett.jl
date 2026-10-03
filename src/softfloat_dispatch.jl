@@ -94,6 +94,140 @@ Base.:(==)(a::Real, b::SoftFloat) = _softfloat_mixed_eq_reject(a)
 @inline Base.log1p(x::SoftFloat) = SoftFloat(soft_log1p(x.bits))
 @inline Base.expm1(x::SoftFloat) = SoftFloat(soft_expm1(x.bits))
 
+# ---- Bennett-8aes: the rest of the Float64 surface ordinary code uses ----
+# Without these, mixed `<`, `isnan`, `fma`, `x^2`, mixed `min`, ... threw on
+# the host and died at the VoidType wall when compiled; `isequal` silently
+# fell to Base's generic `x == y` (wrong for NaN and ±0). Operand rules follow
+# Bennett-g6u9: Float64 and Integer operands behave exactly as Base's Float64
+# methods; other Reals are rejected loudly.
+const _SF_ABS  = UInt64(0x7fffffffffffffff)
+const _SF_INF  = UInt64(0x7ff0000000000000)
+const _SF_MINN = UInt64(0x0010000000000000)   # floatmin(Float64)
+const _SFOther = Union{Float64, Integer}       # operands handled exactly
+
+@noinline _softfloat_mixed_reject(op, y) =
+    throw(ArgumentError("SoftFloat $op $(typeof(y)) is not supported (Bennett-8aes): " *
+                        "only Float64 and Integer operands mix with a SoftFloat; " *
+                        "convert the operand to Float64 explicitly"))
+@inline _to_softfloat(x::SoftFloat) = x
+@inline _to_softfloat(x::_SFOther) = SoftFloat(Float64(x))
+_to_softfloat(x::Real) = _softfloat_mixed_reject("arithmetic with", x)
+
+Base.zero(::Type{SoftFloat}) = SoftFloat(UInt64(0))
+Base.one(::Type{SoftFloat}) = SoftFloat(1.0)
+Base.zero(::SoftFloat) = zero(SoftFloat)
+Base.one(::SoftFloat) = one(SoftFloat)
+@inline Base.isnan(x::SoftFloat) = (x.bits & _SF_ABS) > _SF_INF
+@inline Base.isinf(x::SoftFloat) = (x.bits & _SF_ABS) == _SF_INF
+@inline Base.isfinite(x::SoftFloat) = (x.bits & _SF_ABS) < _SF_INF
+@inline Base.signbit(x::SoftFloat) = (x.bits >> 63) != UInt64(0)
+@inline Base.iszero(x::SoftFloat) = (x.bits & _SF_ABS) == UInt64(0)
+@inline function Base.issubnormal(x::SoftFloat)
+    a = x.bits & _SF_ABS
+    return (a != UInt64(0)) & (a < _SF_MINN)
+end
+@inline Base.inv(x::SoftFloat) = one(SoftFloat) / x
+@inline Base.abs2(x::SoftFloat) = x * x
+
+# Ordered comparisons. `<=`, `>`, `>=` follow from Base's generic
+# `(x < y) | (x == y)` / argument swap. Integer operands compare exactly like
+# Base's Float64/Integer `<`: `fb = Float64(b)` (constant-folded for
+# literals) is the nearest Float64, so no Float64 lies strictly between `b`
+# and `fb`, and a tie with `fb` is decided by Base's exact `fb < b`.
+@inline Base.:(<)(a::SoftFloat, b::Float64) = a < SoftFloat(b)
+@inline Base.:(<)(a::Float64, b::SoftFloat) = SoftFloat(a) < b
+@inline function Base.:(<)(a::SoftFloat, b::Integer)
+    fb = SoftFloat(Float64(b))
+    return (a < fb) | ((a == fb) & (Float64(b) < b))
+end
+@inline function Base.:(<)(a::Integer, b::SoftFloat)
+    fa = SoftFloat(Float64(a))
+    return (fa < b) | ((fa == b) & (a < Float64(a)))
+end
+Base.:(<)(a::SoftFloat, b::Real) = _softfloat_mixed_reject("<", b)
+Base.:(<)(a::Real, b::SoftFloat) = _softfloat_mixed_reject("<", a)
+
+# Total order (`isequal` / `isless`), ported from Base's AbstractFloat
+# methods (operators.jl). `cmp` and `sort` use Base's isless-based generics.
+@inline Base.isequal(a::SoftFloat, b::SoftFloat) = (isnan(a) & isnan(b)) | (a.bits == b.bits)
+@inline Base.isequal(a::SoftFloat, b::_SFOther) =
+    (isnan(a) & isnan(b)) | ((signbit(a) == signbit(b)) & (a == b))
+@inline Base.isequal(a::_SFOther, b::SoftFloat) = isequal(b, a)
+Base.isequal(a::SoftFloat, b::Real) = _softfloat_mixed_reject("isequal", b)
+Base.isequal(a::Real, b::SoftFloat) = _softfloat_mixed_reject("isequal", a)
+@inline _softfloat_isless(x, y) =
+    (!isnan(x) & (isnan(y) | (signbit(x) & !signbit(y)))) | (x < y)
+@inline Base.isless(a::SoftFloat, b::SoftFloat) = _softfloat_isless(a, b)
+@inline Base.isless(a::SoftFloat, b::_SFOther) = _softfloat_isless(a, b)
+@inline Base.isless(a::_SFOther, b::SoftFloat) = _softfloat_isless(a, b)
+Base.isless(a::SoftFloat, b::Real) = _softfloat_mixed_reject("isless", b)
+Base.isless(a::Real, b::SoftFloat) = _softfloat_mixed_reject("isless", a)
+# NaN is unordered: Base's `isgreater` (findmin / findmax / argmin / argmax)
+# would otherwise rank it like the generic non-float fallback.
+@inline Base.isunordered(x::SoftFloat) = isnan(x)
+# Base's generic clamp converts the bounds to promote_type(...), which is Any
+# for a SoftFloat, so an Integer bound came back as an Integer. Same tests as
+# Base's, as a branchless select, with the bounds converted like Base.
+@inline Base.clamp(x::SoftFloat, lo::Union{SoftFloat, Real}, hi::Union{SoftFloat, Real}) =
+    ifelse(x > hi, _to_softfloat(hi), ifelse(x < lo, _to_softfloat(lo), x))
+# A SoftFloat is not hashable consistently with `isequal` (all NaNs equal);
+# hashing a traced value has no circuit meaning, so refuse instead.
+Base.hash(::SoftFloat, ::UInt) =
+    throw(ArgumentError("hash(::SoftFloat) is not supported (Bennett-8aes)"))
+
+# Mixed min / max: Base promotes Float64/Integer to Float64 (round to nearest).
+# Base's generic minmax is isless-based (NaN-absorbing); Float64's is min, max.
+@inline Base.minmax(a::SoftFloat, b::SoftFloat) = (min(a, b), max(a, b))
+for op in (:min, :max, :minmax)
+    @eval begin
+        @inline Base.$op(a::SoftFloat, b::_SFOther) = $op(a, _to_softfloat(b))
+        @inline Base.$op(a::_SFOther, b::SoftFloat) = $op(_to_softfloat(a), b)
+        Base.$op(a::SoftFloat, b::Real) = _softfloat_mixed_reject($(string(op)), b)
+        Base.$op(a::Real, b::SoftFloat) = _softfloat_mixed_reject($(string(op)), a)
+    end
+end
+
+# fma / muladd → soft_fma (one rounding). `muladd` may fuse per Julia's docs;
+# fusing matches the `llvm.fmuladd` ingest path (Bennett-h6f), so traced and
+# raw-IR Float64 code agree. Any operand position may hold the SoftFloat.
+@inline _softfloat_fma(a::SoftFloat, b::SoftFloat, c::SoftFloat) =
+    SoftFloat(soft_fma(a.bits, b.bits, c.bits))
+for op in (:fma, :muladd)
+    @eval begin
+        @inline Base.$op(a::SoftFloat, b::Union{SoftFloat, Real}, c::Union{SoftFloat, Real}) =
+            _softfloat_fma(a, _to_softfloat(b), _to_softfloat(c))
+        @inline Base.$op(a::Real, b::SoftFloat, c::Union{SoftFloat, Real}) =
+            _softfloat_fma(_to_softfloat(a), b, _to_softfloat(c))
+        @inline Base.$op(a::Real, b::Real, c::SoftFloat) =
+            _softfloat_fma(_to_softfloat(a), _to_softfloat(b), c)
+    end
+end
+
+# Powers. Literal exponents mirror Base's Float64 `literal_pow` (intfuncs.jl):
+# 0..3, -1, -2 expand to `*` / `inv` and compile today. Every other power goes
+# through `^(SoftFloat, SoftFloat)` = soft_pow_julia, bit-exact vs Base.:^ on
+# the host; compiling it waits on Bennett-bie9 (unregistered pow_body helper).
+@inline Base.literal_pow(::typeof(^), x::SoftFloat, ::Val{0}) = one(x)
+@inline Base.literal_pow(::typeof(^), x::SoftFloat, ::Val{1}) = x
+@inline Base.literal_pow(::typeof(^), x::SoftFloat, ::Val{2}) = x * x
+@inline Base.literal_pow(::typeof(^), x::SoftFloat, ::Val{3}) = x * x * x
+@inline Base.literal_pow(::typeof(^), x::SoftFloat, ::Val{-1}) = inv(x)
+@inline Base.literal_pow(::typeof(^), x::SoftFloat, ::Val{-2}) = (i = inv(x); i * i)
+@inline Base.literal_pow(::typeof(^), x::SoftFloat, ::Val{p}) where {p} = x^p
+# Base's `x^n` and `x^Float64(n)` both reach `pow_body(x, n)` exactly when
+# `n` is in Base's power-by-squaring range; outside it Base takes a split
+# path soft_pow_julia does not reproduce, so reject.
+@inline function Base.:^(a::SoftFloat, n::Integer)
+    -2^12 <= n <= 3 * 2^13 || throw(ArgumentError(
+        "SoftFloat ^ $n: integer exponents outside [-4096, 24576] are not " *
+        "supported (Bennett-8aes); pass a Float64 exponent"))
+    return a ^ SoftFloat(Float64(n))
+end
+@inline Base.:^(a::SoftFloat, b::Float64) = a ^ SoftFloat(b)
+@inline Base.:^(a::_SFOther, b::SoftFloat) = _to_softfloat(a) ^ b
+Base.:^(a::SoftFloat, b::Real) = _softfloat_mixed_reject("^", b)
+Base.:^(a::Real, b::SoftFloat) = _softfloat_mixed_reject("^", a)
+
 """
     reversible_compile(f, ::Type{Float64}; ...) -> ReversibleCircuit
     reversible_compile(f, ::Type{Float64}, ::Type{Float64}, ...; ...) -> ReversibleCircuit

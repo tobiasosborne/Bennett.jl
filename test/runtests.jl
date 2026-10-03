@@ -197,6 +197,9 @@ runfile("test_g6u9_softfloat_mixed_eq.jl")
 # Bennett-lgwa: Float64 overload adapts constant / Bool / integer results and
 # rejects other result types (was an opaque VoidType error).
 runfile("test_lgwa_float64_result_kinds.jl")
+# Bennett-8aes: SoftFloat methods ordinary Float64 code uses (mixed ordered
+# comparisons, isnan & co, isequal/isless, mixed min/max, fma/muladd, x^n).
+runfile("test_8aes_softfloat_missing_methods.jl")
 # Bennett-s1zl: direct llvm.tan dispatch (Tier C1 trig completion).
 runfile("test_s1zl_llvm_tan_dispatch.jl")
 # Bennett-qpke: direct llvm.atan dispatch (Tier C1.2 — atan, no rem_pio2).
