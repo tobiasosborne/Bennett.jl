@@ -412,6 +412,8 @@ runfile("test_tabulate.jl")
 # shufflevector + vector arithmetic/icmp/select/cast).
 runfile("test_cc07_repro.jl")
 runfile("test_vector_ir.jl")
+# Bennett-2glq — sub-byte (<N x i1>) vector loads rejected; byte lanes unchanged.
+runfile("test_2glq_subbyte_vector_load.jl")
 # Bennett-ao66 — vector-form LLVM intrinsic calls scalarised lane-wise.
 runfile("test_ao66_vector_intrinsic_rescalarise.jl")
 # Bennett-t9rh (commit 1) — sound poison-lane propagation in the cc0.7

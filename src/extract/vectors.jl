@@ -835,6 +835,14 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
         shape === nothing &&
             _ir_error(inst, "vector load return type is not a vector")
         n, w = shape
+        # Bennett-2glq: lanes are placed at whole-byte offsets `(i-1)*(w÷8)`.
+        # A sub-byte element width (`<N x i1>`, a packed bit vector) makes
+        # that stride 0, so every lane would alias bit 0 — reject loudly
+        # until packed storage + bit-range extraction is implemented.
+        w % 8 == 0 || _ir_error(inst,
+            "vector load has sub-byte element width i$w (not a whole " *
+            "number of bytes) in vector type <$n x i$w>; packed bit-vector " *
+            "loads are not supported (Bennett-2glq)")
         ptr = LLVM.operands(inst)[1]
         eb = w ÷ 8
         insts = IRInst[]
