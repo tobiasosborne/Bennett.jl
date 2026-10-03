@@ -19,6 +19,13 @@ mutable struct Mut_o9sv
     k::Int8
 end
 
+# Bennett-u9cc: a user type that merely LOOKS like a closure (name starts with
+# `#`) but is mutable.
+mutable struct var"#MutableCapture_u9cc" <: Function
+    k::Int8
+end
+(f::var"#MutableCapture_u9cc")(x::Int8) = x + f.k
+
 _sub_closure_o9sv(k::Int8) = x -> x - k
 _add2_closure_o9sv(k::Int8) = (x, y) -> x - k + y
 
@@ -162,6 +169,32 @@ end
                                                       strategy=:expression)
         @test_throws ArgumentError reversible_compile(f, Int8;
                                                       target=:reversible_vm)
+    end
+
+    @testset "Bennett-u9cc: a mutable #-named Function is not a closure" begin
+        f = var"#MutableCapture_u9cc"(Int8(3))
+        @test !Bennett._is_closure_type(typeof(f))
+        @test !Bennett._capture_ok(typeof(f))
+        # callable-struct path: the field stays an explicit circuit input
+        c = reversible_compile(f, Int8; strategy=:expression)
+        @test c.input_widths == [8, 8]
+        @test verify_reversibility(c)
+        bad = [(x, k) for x in typemin(Int8):typemax(Int8), k in Int8[-128, -1, 0, 3, 7, 127]
+               if simulate(c, (k, x)) != var"#MutableCapture_u9cc"(k)(x)]
+        @test isempty(bad)
+        # nested inside an otherwise-immutable real closure: rejected
+        r = var"#MutableCapture_u9cc"(Int8(3))
+        g = x -> r(x)
+        for strategy in (:auto, :expression, :tabulate)
+            err = try
+                reversible_compile(g, Int8; strategy)
+                nothing
+            catch e
+                e
+            end
+            @test err isa ArgumentError
+            @test err !== nothing && occursin("Bennett-o9sv", sprint(showerror, err))
+        end
     end
 
     @testset "capture-free closures are unchanged" begin

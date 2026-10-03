@@ -303,8 +303,11 @@ true
 # fields stay circuit inputs (Bennett-4ddk, test_4ddk_compile_cache_soundness).
 
 "True for a compiler-generated closure type (anonymous function, do-block or
-local named function): a `Function` subtype whose name starts with `#`."
-_is_closure_type(T::DataType) = T <: Function && startswith(String(nameof(T)), "#")
+local named function): an IMMUTABLE `Function` subtype whose name starts with `#`.
+A user `mutable struct var\"#X\" <: Function` is a callable struct, not a closure
+(Bennett-u9cc): its fields stay circuit inputs and are never bound."
+_is_closure_type(T::DataType) = T <: Function && !ismutabletype(T) &&
+    startswith(String(nameof(T)), "#")
 _is_closure_type(::Any) = false
 
 # Bennett-o9sv follow-up: a closure created inside a function that takes a type
