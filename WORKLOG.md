@@ -1,5 +1,7 @@
 # Bennett.jl Work Log
 
+> **2026-10-03 SESSION CLOSE — wide campaign: 50 beads landed (4 concurrent workers), 3 independent reviews (20 findings, 19 fixed same day), one full suite at d3d7ba1 (1789592 pass / 2 fail / 4 error / 7 broken; both failures fixed). TWELVE source commits landed after that run and the last five are unreviewed — full suite on the final tree is the next session's first job. Maintainer decisions pending: sl4h (narrowing), armp/vke7 (rule 13), 2op8, usly, D0.** Handoff: [`worklog/115`](worklog/115_2026-10-03_wide_campaign_close.md); detail: chunks 110–114.
+
 > **2026-10-03 — WIDE CAMPAIGN over the Astra queue: four concurrent workers in fixed worktree slots, serialised landing, batched review at the orchestrator's discretion (CLAUDE.md rule 2 reworded), one full-suite run per session. Setup facts (untracked Manifest, per-worktree precompile cost, cache-file limit) and per-bead landings.** Detail: [`worklog/110`](worklog/110_2026-10-03_wide_campaign.md).
 
 > **2026-09-27 SESSION CLOSE — Bennett-mrhg landed (12a3f96): `bit_width` narrowing is a validating allowlist (runtime shifts, second widths, tuples, memory, loops REFUSED); full suite 1766536/4 broken/0 fail. Four beads closed today (q7yd, lcye, iwj6, mrhg) + bennettvm-tghl on BennettVM master. i5zn parked on `wip/i5zn-loop-header-effects` (core CFG, no full suite yet). `pi -p` text mode silently stalls — use `--mode json`. Independent codex review NOT yet run.** Detail: [`worklog/109`](worklog/109_2026-09-26_astra_verdict.md).
