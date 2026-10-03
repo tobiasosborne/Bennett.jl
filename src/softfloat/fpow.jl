@@ -19,7 +19,8 @@
 #      lookup index of the exp) for negative-x odd-integer-y (sign rule).
 #   3. Special-case override chain (last-write-wins):
 #        - pow(x, ±0)  = 1.0 always
-#        - pow(±1, y)  = 1.0 (POSIX/C99 — distinct from IEEE 754-2008 powr)
+#        - pow(+1, y)  = 1.0 (POSIX/C99 — distinct from IEEE 754-2008 powr)
+#        - pow(-1, y)  = ±1 for even/odd int y, NaN for non-int or NaN y
 #        - pow(NaN, ·) or pow(·, NaN) = NaN propagated via x+y
 #        - pow(±0, y<0, odd-int y) = ±Inf (DivByZero raised in C; we just return)
 #        - pow(±0, y<0, else) = +Inf
@@ -693,7 +694,8 @@ target absorbs the soft_f* rounding into a ≤2 ULP window.
 
 Special cases (POSIX/C99-compliant — distinct from IEEE 754-2008 powr):
 - pow(x, ±0)         = 1.0  (always, even for x = NaN per C99)
-- pow(±1, y)         = 1.0  (always)
+- pow(+1, y)         = 1.0  (always, even y = NaN)
+- pow(-1, y)         = +1 / -1 for even / odd integer y; NaN otherwise
 - pow(NaN, y)        = NaN  for y ≠ 0
 - pow(x, NaN)        = NaN
 - pow(±0, y<0)       = +Inf (or -Inf if y is odd integer, sign rule)
@@ -741,7 +743,7 @@ index of `_pow_exp_inline`, flipping the sign of the result.
     x_is_zero = abs_ix == UInt64(0)
     x_is_inf  = (topx == UInt64(0x7FF)) & ((ix & FRAC_MASK) == UInt64(0))
     x_is_one  = ix == _POW_LOG_ONE_BITS                       # +1 only
-    abs_x_is_one = abs_ix == _POW_LOG_ONE_BITS                 # ±1
+    x_is_neg_one = ix == _POW_LOG_NEG_ONE                    # -1 only
     x_negative = (sx != UInt64(0)) & ~x_is_zero               # x < 0 (excl. -0)
 
     # checkint(iy) for negative-x sign rule
@@ -838,7 +840,7 @@ index of `_pow_exp_inline`, flipping the sign of the result.
     # ── Special-case overrides (last-write-wins; order is the inverse
     # priority — earlier overrides are clobbered by later ones if both
     # conditions hold). Order chosen to match the Arm priority where
-    # `pow(±1, y) = 1` overrides everything except NaN propagation.
+    # `pow(+1, y) = 1` overrides everything, NaN propagation included.
 
     # Default fallback for "weird" (x_special OR y_special) inputs that
     # don't get caught by the targeted overrides below: use Arm's
@@ -912,15 +914,23 @@ index of `_pow_exp_inline`, flipping the sign of the result.
     result = ifelse(x0_ypos_other,    UInt64(0),                  result)
     # Tier 2: x<0, non-int y → NaN
     result = ifelse(x_neg_y_not_int,  QNAN,                       result)
+    # Tier 2: pow(-1, y) — exact ±1 for integer y (parity sign rule) and +1
+    # for y = ±Inf; set explicitly rather than trusting the main path for
+    # |y| ≥ 2^63 (Bennett-iys2). Non-int y → NaN via the line above; NaN y
+    # via the propagation below. Only x = +1 is in the Tier-0 override.
+    result = ifelse(x_is_neg_one & y_is_odd_int, _POW_LOG_NEG_ONE, result)
+    result = ifelse(x_is_neg_one & (y_is_even_int | y_is_inf),
+                    _POW_LOG_ONE_BITS, result)
     # Tier 1: NaN propagation — pow(NaN, ·) or pow(·, NaN) → NaN.
-    # Applied BEFORE abs_x_is_one and y_is_zero overrides so those win
-    # for `pow(±1, NaN)` and `pow(NaN, 0)` per POSIX / C99 / Arm pow.c.
+    # Applied BEFORE the x_is_one and y_is_zero overrides so those win
+    # for `pow(+1, NaN)` and `pow(NaN, 0)` per POSIX / C99 / Arm pow.c.
     nan_propagated = ifelse(x_is_nan, ix | QUIET_BIT,
                      ifelse(y_is_nan, iy | QUIET_BIT, QNAN))
     result = ifelse(x_is_nan | y_is_nan, nan_propagated, result)
-    # Tier 0 (highest): pow(±1, y) = 1.0 even for y = NaN; pow(x, ±0) = 1.0
+    # Tier 0 (highest): pow(+1, y) = 1.0 even for y = NaN; pow(x, ±0) = 1.0
     # even for x = NaN. Last in the chain so they override NaN propagation.
-    result = ifelse(abs_x_is_one,     _POW_LOG_ONE_BITS,          result)
+    # NOT ±1: pow(-1, y) is -1 / NaN for odd / non-int / NaN y (Bennett-iys2).
+    result = ifelse(x_is_one,         _POW_LOG_ONE_BITS,          result)
     result = ifelse(y_is_zero,        _POW_LOG_ONE_BITS,          result)
     return result
 end

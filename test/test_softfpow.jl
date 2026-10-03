@@ -82,10 +82,23 @@ end
         end
     end
 
-    @testset "pow(±1, y) = 1.0 (always)" begin
+    @testset "pow(+1, y) = 1.0 (always)" begin
         for y in (0.0, 1.0, -1.0, 0.5, 100.0, -100.0, Inf, -Inf, NaN)
             @test soft_pow(reinterpret(UInt64, 1.0), reinterpret(UInt64, y)) == reinterpret(UInt64, 1.0)
-            @test soft_pow(reinterpret(UInt64, -1.0), reinterpret(UInt64, y)) == reinterpret(UInt64, 1.0)
+        end
+    end
+
+    # Bennett-iys2: pow(-1, y) is NOT unconditionally 1 — this testset used
+    # to pin the wrong value. ±1 by integer parity, +1 for ±Inf, NaN for
+    # non-integer or NaN y. Full sweep in test_iys2_pow_negative_one.jl.
+    @testset "pow(-1, y): ±1 by parity, +1 for ±Inf, NaN otherwise" begin
+        for (y, r) in ((0.0, 1.0), (1.0, -1.0), (-1.0, -1.0), (100.0, 1.0),
+                       (-100.0, 1.0), (3.0, -1.0), (Inf, 1.0), (-Inf, 1.0))
+            @test soft_pow(reinterpret(UInt64, -1.0), reinterpret(UInt64, y)) == reinterpret(UInt64, r)
+        end
+        for y in (0.5, -2.5, NaN)
+            @test isnan(reinterpret(Float64,
+                soft_pow(reinterpret(UInt64, -1.0), reinterpret(UInt64, y))))
         end
     end
 

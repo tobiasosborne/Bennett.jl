@@ -53,7 +53,9 @@
             reinterpret(Float64, UInt64(r))
         end
         @test call_pow(1.0, 100.0) === 1.0
-        @test call_pow(-1.0, NaN)  === 1.0
+        @test isnan(call_pow(-1.0, NaN))   # Bennett-iys2: was pinned to 1.0
+        @test call_pow(-1.0, 3.0)  === -1.0
+        @test call_pow(1.0, NaN)   === 1.0
         @test call_pow(2.0, 0.0)   === 1.0
         @test call_pow(NaN, 0.0)   === 1.0
         @test isnan(call_pow(NaN, 2.0))
