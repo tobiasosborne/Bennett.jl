@@ -307,6 +307,8 @@ runfile("test_gw0r_gep_index_units_and_width.jl")
 runfile("test_rrop_gep_chain_index_residue.jl")
 # Bennett-xjt9 / 6r3e — persistent-slab keys must provably fit the pmap key width.
 runfile("test_xjt9_persistent_key_range.jl")
+# Bennett-dx9w — persistent-slab GEP stride must equal the slab element width.
+runfile("test_dx9w_persistent_gep_stride.jl")
 runfile("test_gate_count_regression.jl")
 runfile("test_negative.jl")
 runfile("test_soft_sitofp.jl")

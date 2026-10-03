@@ -489,6 +489,17 @@ function lower_var_gep!(gates::Vector{ReversibleGate}, wa::WireAllocator,
         end
         new_origins = PtrOrigin[]
         for (k, o) in enumerate(base_origins)
+            # Bennett-dx9w: the persistent path does no element-unit
+            # conversion, so the GEP must step in the slab's own elements
+            # (pre-fix an i16 GEP off an i8 slab used key i for byte 2i).
+            ew = get(persistent_info, _pslab_ew_key(o.alloca_dest), nothing)
+            ew === nothing &&
+                throw(AssertionError("lower_var_gep!: persistent slab %$(o.alloca_dest) has no " *
+                    "recorded element width (Bennett-dx9w)"))
+            inst.elem_width == ew ||
+                throw(ArgumentError("GEP %$(inst.dest): $(inst.elem_width)-bit elements into " *
+                    "persistent slab %$(o.alloca_dest) of $(ew)-bit elements; the persistent " *
+                    "path keys the map by slab element and converts no stride (Bennett-dx9w)"))
             # The slab's "alloca_dest" is itself; the new origin's idx is the
             # base's idx + the GEP's index (Bennett-jkf0: pre-fix it overwrote
             # the base idx, so `&p1[0]` read slot 0); predicate_wire inherited.

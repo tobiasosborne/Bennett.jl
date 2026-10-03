@@ -89,6 +89,8 @@ function _lower_alloca_dynamic_n!(ctx::LoweringCtx, inst::IRAlloca)
     # Record impl mapping so store/load helpers (Step 5) and GEP/PtrOffset
     # guards (Step 8) can dispatch on it.
     ctx.persistent_info[inst.dest] = impl
+    # Bennett-dx9w: the slab's element width, for the persistent GEP stride check.
+    ctx.persistent_info[_pslab_ew_key(inst.dest)] = inst.elem_width
     # Bennett-xjt9: the slab SIZE is not refused here even when it can exceed
     # 2^k elements (k = pmap key width) — every real dynamic alloca carries an
     # i32/i64 size. Soundness rests on `_check_persistent_key` instead: each
