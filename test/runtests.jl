@@ -274,6 +274,9 @@ runfile("test_h6f_llvm_fma_dispatch.jl")
 runfile("test_4eu_indirectbr_reject.jl")
 # Bennett-nj6c (Bennett-dnh phase 1a): runtime-idx MUX-EXCH on extended shapes.
 runfile("test_nj6c_extended_mux_shapes.jl")
+# Bennett-ovzp — negative constant stores into packed allocas (MUX-EXCH
+# InexactError; Astra B-lowering F4).
+runfile("test_ovzp_negative_const_store.jl")
 # Bennett-cb9y (Bennett-dnh phase 1b): multi-origin ptr × runtime idx.
 runfile("test_cb9y_multi_origin_runtime_idx.jl")
 # Bennett-37w3 — multi-origin (selected-pointer) stores guarded by block ∧ origin

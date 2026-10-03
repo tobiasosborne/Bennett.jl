@@ -1111,7 +1111,9 @@ for (N, W) in _MUX_SHAPES_NW
             tmp_sym = Symbol("__mux_load_u64_", tag)
 
             ctx.vw[arr_sym] = _wires_to_u64!(ctx, arr_wires)
-            ctx.vw[idx_sym] = _operand_to_u64!(ctx, idx_op)
+            # idx_op is always SSA here (`_pick_alloca_strategy` routes a
+            # constant idx to :shadow), so the width only bounds the copy.
+            ctx.vw[idx_sym] = _operand_to_u64!(ctx, idx_op, 64)
 
             call = IRCall(tmp_sym, $soft_load,
                           [ssa(arr_sym), ssa(idx_sym)], [64, 64], 64)
@@ -1157,8 +1159,8 @@ for (N, W) in _MUX_SHAPES_NW
             res_sym = Symbol("__mux_store_res_", tag)
 
             ctx.vw[arr_sym] = _wires_to_u64!(ctx, arr_wires)
-            ctx.vw[idx_sym] = _operand_to_u64!(ctx, idx_op)
-            ctx.vw[val_sym] = _operand_to_u64!(ctx, inst.val)
+            ctx.vw[idx_sym] = _operand_to_u64!(ctx, idx_op, 64)
+            ctx.vw[val_sym] = _operand_to_u64!(ctx, inst.val, $W)
 
             if effective_pred_wire !== nothing
                 pred_sym = _mux_store_pred_sym_from_wire!(ctx, effective_pred_wire, tag)
@@ -1260,11 +1262,21 @@ function _wires_to_u64!(ctx::LoweringCtx, src::Vector{Int})
 end
 
 # Resolve an IROperand to exactly 64 wires. For ConstOperand, materialize the
-# value with NOT gates. For SSAOperand, zero-extend via CNOT-copy.
-function _operand_to_u64!(ctx::LoweringCtx, op::IROperand)
+# value's low `width` bits with NOT gates. For SSAOperand, zero-extend via
+# CNOT-copy.
+#
+# Bennett-ovzp (Astra B-lowering F4): the constant arm used the value-checked
+# `UInt64(op.value)`, which threw `InexactError` for any negative constant
+# (`store i8 -1` through a runtime-indexed pointer). It now takes the
+# two's-complement bit pattern masked to `width` (`_const_value_mod`, the same
+# conversion as `resolve!(::ConstOperand)`), so a constant iW operand gets
+# exactly the bits the SSA arm's zero-extension of an iW value would give.
+function _operand_to_u64!(ctx::LoweringCtx, op::IROperand, width::Int)
+    1 <= width <= 64 ||
+        throw(ArgumentError("_operand_to_u64!: width=$width out of range [1, 64]"))
     if op isa ConstOperand
         dst = allocate!(ctx.wa, 64)
-        v = UInt64(op.value)  # narrow to 64 bits
+        v = _const_value_mod(op, width)
         for i in 1:64
             if ((v >> (i - 1)) & UInt64(1)) == UInt64(1)
                 push!(ctx.gates, NOTGate(dst[i]))
