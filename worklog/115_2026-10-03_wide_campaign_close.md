@@ -35,10 +35,11 @@ session was time-boxed by the maintainer, so there was one wave plus two refills
   state could change after compilation (mutable, or immutable but not isbits). The worker correctly
   did NOT make `:expression` refuse: there the field is a circuit input ([8,8]), nothing is frozen,
   and u9cc's own test pins it. The `:auto`→tabulate redirect cannot fire today (needs ≤4 input bits).
-- **Bennett-sy9t** (s4, branch `work/sy9t`, P2, `aggregate.jl`: a load from a pointer with no wires
-  is refused at the load) was committed and in its landing re-test when this entry was written. If
-  `git log` shows it on main, it landed with targeted tests only and the bead still needs closing;
-  if not, the branch in slot s4 holds the work.
+- **Bennett-sy9t** (f53c1b9, P2, `aggregate.jl`, landed after the close commit): a load whose
+  pointer has no wires is refused at the load (dest, pointer and width named), used or dead; a
+  constant pointer is refused too (it used to hit a FieldError). A probe error in that branch was
+  hit by none of about fifty existing test files, so there is no dead-load allowlist. Caveat from
+  the worker: a bare `@test_throws ErrorException` would hide a probe hit.
 - **Cross-file pin regression caught at landing, not by the worker:** 9fke turned
   `test_p06b_aggregate_store.jl` (i) red on main (6 failures) — the `[2 x ptr]` fixture's live
   `insertvalue` is now refused before the ArrayType store refusal (lgzx / U114) the test pinned.
@@ -50,7 +51,8 @@ session was time-boxed by the maintainer, so there was one wave plus two refills
 **Filed:** blnv, 0ysp, qu9m, 2hx3, e7l8, 6c9j (review 1); 6atf (suite failure); omnl (signedness on
 the narrowed path); rrwj (runtime-index range proof for MUX); 6rx3 (full suite on the final tree);
 mpxu (`_entry_predicate_wire` assertion reachable from raw ParsedIR); uwo5 (pointer aggregates);
-gft0 (callable-struct interface differs by strategy — resolve with 2op8).
+gft0 (callable-struct interface differs by strategy — resolve with 2op8); v7yv (lgzx ArrayType-store
+coverage); guj0 (test files without `using Test, Bennett` fail standalone and in the landing re-test).
 
 **Full suite — sharded, and what it covers.** One run, ten shards, on a detached snapshot of main at
 **009e606** (so it covers the twelve source commits the day campaign left unverified, plus 73gr and
@@ -63,7 +65,7 @@ wall time** (the serial run took 61), alongside six compiling workers. Per-shard
 - The hygiene file errors in direct mode (no Aqua in the project env) and passed through
   `Pkg.test(test_args=["hygiene_aqua"])`.
 - **Not covered by the run:** usly 880b7a1, okcg 478fc76, 13xy fe3c3aa, 9fke 18c2339, 0ysp 9f603d1
-  and sy9t. 13xy is the one that matters (core, and it changes untyped `simulate`'s return type);
+  and sy9t f53c1b9. 13xy is the one that matters (core, and it changes untyped `simulate`'s return type);
   the three other test files that pin `simulate` result types (iwj6, koi8, qa2g) were run against
   it afterwards and pass. Bennett-6rx3 tracks
   the full run on the final tree; do it first next session, then the BennettVM suite.
