@@ -246,6 +246,11 @@ result type is rejected with an `ArgumentError` (Bennett-lgwa).
 `reversible_compile(f, Tuple{Float64,...})` delegates here whenever `f` has a
 SoftFloat method, so both spellings build the same circuit (Bennett-19jw).
 
+`f` is rejected with an `ArgumentError` when the SoftFloat trace would take a
+different user method or type-test branch than `f(::Float64...)` does — e.g.
+`f(x::Float64)` next to a generic `f(x)`, or a helper with such a pair
+(Bennett-czox); the Tuple spelling then takes the native-IR route instead.
+
 Implementation: The user's function is called with SoftFloat arguments inside a
 `@force_inline`-d wrapper. This ensures Julia inlines through f → SoftFloat./ →
 soft_fdiv etc., eliminating struct-passing ABI and producing clean integer IR
@@ -289,7 +294,152 @@ function _check_softfloat_result(f, N::Int)
     return nothing
 end
 
-const _FLOAT64_OVERLOAD_KWARGS = (:optimize, :max_loop_iterations,
+# ---- Bennett-czox: the SoftFloat trace must take f's native dispatch path ----
+# The Float64 overload compiles `f(::SoftFloat...)`, not `f(::Float64...)`.
+# The two select different user code whenever a method, a helper method, or a
+# type test is specific to Float64/AbstractFloat/Real/Number (SoftFloat
+# subtypes none of them): `f(x::Float64) = 1; f(x) = 2` compiled to 2.
+# Detection walks f's *unoptimized* typed code under both typings in
+# parallel: one Method's lowered code typed two ways has the same statement
+# list (inference wraps unreachable statements as `Core.Const(stmt)::Union{}`),
+# so call site i on one side is call site i on the other. A divergence is a
+# call that selects different methods where either is user code (defined
+# outside Base/Core/Bennett — Base float primitives and soft_* differ by
+# design), a user statement reachable natively but not on the trace, or a
+# user Bool constant (`x isa Float64`) that differs. Same-method calls with
+# different argument types are walked recursively (this reaches user code
+# called through Base, e.g. `map(g, (x,))`); identical signatures are pruned.
+# Calls the walk cannot resolve (splats via Core._apply_iterate, non-unique
+# matches on abstract types) are not descended into.
+_sfd_is_user(m::Method) = !(Base.moduleroot(m.module) in (Base, Core, Bennett))
+
+_sfd_dead(ci, i) = ci.code[i] isa Core.Const && ci.ssavaluetypes[i] === Union{}
+
+function _sfd_argtype(ci, @nospecialize(a))
+    t = if a isa Core.SSAValue
+        ci.ssavaluetypes[a.id]
+    elseif a isa Core.SlotNumber
+        ci.slottypes === nothing ? Any : ci.slottypes[a.id]
+    elseif a isa Core.Argument
+        ci.slottypes === nothing ? Any : ci.slottypes[a.n]
+    elseif a isa GlobalRef
+        isdefined(a.mod, a.name) && isconst(a.mod, a.name) ?
+            Core.Typeof(getglobal(a.mod, a.name)) : Any
+    elseif a isa QuoteNode
+        Core.Typeof(a.value)
+    elseif a isa Expr
+        Any
+    else
+        Core.Typeof(a)
+    end
+    return Core.Compiler.widenconst(t)
+end
+
+# Every method a call signature can select (one for a concrete signature);
+# `nothing` when none matches (that call throws a MethodError).
+function _sfd_methods(@nospecialize(sig))
+    ms = Base._methods_by_ftype(sig, -1, Base.get_world_counter())
+    (ms === nothing || ms === false || isempty(ms)) && return nothing
+    return Method[mm.method for mm in ms]
+end
+
+_sfd_call(@nospecialize(s)) =
+    s isa Expr && s.head === :call ? s :
+    s isa Expr && s.head === :(=) && s.args[2] isa Expr &&
+        s.args[2].head === :call ? s.args[2] : nothing
+
+_sfd_show(ms::Vector{Method}) = join((sprint(show, m) for m in ms), " | ")
+
+const _SFD_MAX_NODES = 5_000
+
+function _sfd_walk(@nospecialize(sigF), @nospecialize(sigS), m::Method, visited)
+    (sigF, sigS) in visited && return nothing
+    push!(visited, (sigF, sigS))
+    length(visited) > _SFD_MAX_NODES && error(
+        "reversible_compile(f, Float64...): dispatch-divergence walk exceeded " *
+        "$_SFD_MAX_NODES nodes at $m (Bennett-czox)")
+    rF = Base.code_typed_by_type(sigF; optimize=false)
+    rS = Base.code_typed_by_type(sigS; optimize=false)
+    (length(rF) == 1 && length(rS) == 1) || return nothing
+    ciF = rF[1][1]; ciS = rS[1][1]
+    length(ciF.code) == length(ciS.code) || error(
+        "reversible_compile(f, Float64...): typed code of $m has " *
+        "$(length(ciF.code)) statements for $sigF but $(length(ciS.code)) for " *
+        "$sigS — Julia introspection internals changed (Bennett-czox)")
+    user = _sfd_is_user(m)
+    for i in eachindex(ciF.code)
+        _sfd_dead(ciF, i) && continue
+        if _sfd_dead(ciS, i)
+            user && return "statement $i of $m runs natively but is " *
+                           "unreachable on the SoftFloat trace"
+            continue
+        end
+        if user
+            tF = ciF.ssavaluetypes[i]; tS = ciS.ssavaluetypes[i]
+            tF isa Core.Const && tS isa Core.Const && tF.val isa Bool &&
+                tS.val isa Bool && tF.val !== tS.val &&
+                return "statement $i of $m is the constant $(tF.val) natively " *
+                       "but $(tS.val) on the SoftFloat trace (a type test)"
+        end
+        cF = _sfd_call(ciF.code[i]); cF === nothing && continue
+        cS = _sfd_call(ciS.code[i])
+        cS === nothing && error(
+            "reversible_compile(f, Float64...): statement $i of $m is a call " *
+            "for $sigF but not for $sigS (Bennett-czox)")
+        aF = Any[_sfd_argtype(ciF, a) for a in cF.args]
+        aS = Any[_sfd_argtype(ciS, a) for a in cS.args]
+        (aF[1] === Union{} || aF[1] <: Core.Builtin) && continue
+        stF = Tuple{aF...}; stS = Tuple{aS...}
+        mF = _sfd_methods(stF); mF === nothing && continue
+        mS = _sfd_methods(stS); mS === nothing && continue
+        if mF != mS
+            (any(_sfd_is_user, mF) || any(_sfd_is_user, mS)) &&
+                return "call $i in $m selects $(_sfd_show(mF)) natively but " *
+                       "$(_sfd_show(mS)) on the SoftFloat trace"
+            continue
+        end
+        (stF == stS || length(mF) != 1) && continue
+        r = _sfd_walk(stF, stS, mF[1], visited)
+        r === nothing || return r
+    end
+    return nothing
+end
+
+"""
+    _softfloat_dispatch_divergence(f, N) -> Union{Nothing, String}
+
+`nothing` when calling `f` on `N` SoftFloat values selects the same user
+methods and type-test outcomes as calling it on `N` Float64 values; otherwise
+a description of the first divergence found (Bennett-czox).
+"""
+function _softfloat_dispatch_divergence(f, N::Int)
+    sigF = Tuple{Core.Typeof(f), ntuple(_ -> Float64, N)...}
+    sigS = Tuple{Core.Typeof(f), ntuple(_ -> SoftFloat, N)...}
+    mF = _sfd_methods(sigF); mS = _sfd_methods(sigS)
+    (mF === nothing || mS === nothing) && return nothing
+    if mF != mS
+        (any(_sfd_is_user, mF) || any(_sfd_is_user, mS)) &&
+            return "$f selects $(_sfd_show(mF)) for Float64 arguments but " *
+                   "$(_sfd_show(mS)) for SoftFloat arguments"
+        return nothing
+    end
+    length(mF) == 1 || return nothing
+    return _sfd_walk(sigF, sigS, mF[1], Set{Any}())
+end
+
+function _check_softfloat_dispatch(f, N::Int)
+    d = _softfloat_dispatch_divergence(f, N)
+    d === nothing || throw(ArgumentError(
+        "reversible_compile(f, Float64...): $d. The Float64 overload traces f " *
+        "on SoftFloat values, and SoftFloat is not a Float64 / AbstractFloat / " *
+        "Real / Number, so that trace would bypass a Float64-specific method " *
+        "or branch and compile a different function than f(::Float64...). " *
+        "Make the method generic or call it through a generic wrapper " *
+        "(Bennett-czox)"))
+    return nothing
+end
+
+const _FLOAT64_OVERLOAD_KWARGS =(:optimize, :max_loop_iterations,
                                   :compact_calls, :strategy, :add, :mul,
                                   :fold_constants, :target,
                                   :auto_self_reversing,
@@ -320,6 +470,7 @@ function reversible_compile(f::F, float_types::Type{Float64}...;
     N >= 1 || throw(ArgumentError("Need at least one Float64 argument type"))
     N <= 3 || throw(ArgumentError("Float64 compile supports up to 3 arguments (got $N)"))
     _check_softfloat_result(f, N)
+    _check_softfloat_dispatch(f, N)
 
     # Use @inline at the call site to force Julia to inline f through the SoftFloat
     # dispatch chain. Without this, Julia emits struct-passing ABI (alloca + store +

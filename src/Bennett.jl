@@ -442,9 +442,16 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     # the same circuit; a `::Float64`-annotated `f` and mixed Float64/integer
     # signatures stay on the native route below, which lowers float compares
     # and conversions via soft_* callees and rejects float arithmetic loudly.
+    # Bennett-czox: a SoftFloat method existing is not enough — when the
+    # SoftFloat trace would select a different user method or type-test
+    # branch than the requested Float64 signature (`f(x::Float64)` beside a
+    # generic `f(x)`, or such a pair in a helper), delegating compiled the
+    # other method. Such an `f` takes the native route, which compiles the
+    # natively selected code or rejects it loudly.
     Ps = arg_types.parameters
     if !isempty(Ps) && all(T -> T === Float64, Ps) &&
-       hasmethod(f, Tuple{ntuple(_ -> SoftFloat, length(Ps))...})
+       hasmethod(f, Tuple{ntuple(_ -> SoftFloat, length(Ps))...}) &&
+       _softfloat_dispatch_divergence(f, length(Ps)) === nothing
         return reversible_compile(f, Ps...; optimize, max_loop_iterations,
                                   compact_calls, strategy, add, mul,
                                   fold_constants, target, auto_self_reversing,

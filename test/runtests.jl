@@ -202,6 +202,9 @@ runfile("test_lgwa_float64_result_kinds.jl")
 # Bennett-19jw: `Tuple{Float64...}` delegates to the Float64 overload (same
 # circuit); native float arithmetic and Float64 tuple-typed args reject loudly.
 runfile("test_19jw_float64_tuple_route.jl")
+# Bennett-czox: SoftFloat trace must select the same user methods / type-test
+# branches as the native Float64 call; divergent f rejected / not delegated.
+runfile("test_czox_softfloat_dispatch_divergence.jl")
 # Bennett-8aes: SoftFloat methods ordinary Float64 code uses (mixed ordered
 # comparisons, isnan & co, isequal/isless, mixed min/max, fma/muladd, x^n).
 runfile("test_8aes_softfloat_missing_methods.jl")
