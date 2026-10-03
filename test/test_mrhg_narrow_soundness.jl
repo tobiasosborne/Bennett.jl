@@ -367,6 +367,8 @@ end
     refused = String[]
     accepted_cells = Set{Tuple{String,Int,Bool}}()
     missing_cells = String[]
+    wrong_cells = String[]
+    n_verified = 0
     for (name, f, T, oracle, needW, needopt) in corpus, W in 2:7,
         optimize in (false, true)
         c, err = mrhg_compile(f, T; bit_width=W, optimize)
@@ -381,23 +383,34 @@ end
         end
         n_accepted += 1
         push!(accepted_cells, (name, W, optimize))
-        if optimize in needopt && W in needW
-            # CLAUDE.md §4: output vs a known-correct answer on EVERY input,
-            # plus the reversibility invariant.
-            @test c.output_elem_widths == [W]
-            @test verify_reversibility(c)
-            for p in 0:wmask(W)
-                @test (simulate(c, T, srcin(T, p)) & wmask(W)) == oracle(p, W)
-            end
+        # CLAUDE.md §4: EVERY accepted cell — required or not — is checked
+        # against the oracle on every W-bit input, plus the reversibility
+        # invariant.  The required matrix only decides which cells MUST
+        # compile; an optional cell that compiles is a claim of correctness
+        # like any other (Bennett-m11m: it used to be counted as accepted
+        # with no check at all).
+        @test c.output_elem_widths == [W]
+        @test verify_reversibility(c)
+        bad = Int[]
+        for p in 0:wmask(W)
+            want = oracle(p, W)
+            want === nothing && continue
+            (simulate(c, T, srcin(T, p)) & wmask(W)) == want || push!(bad, p)
         end
+        isempty(bad) || push!(wrong_cells,
+                              "$name@W=$W,opt=$optimize inputs $(first(bad, 6))")
+        @test isempty(bad)
+        n_verified += 1
     end
     println("  mrhg narrowing cells: $n_accepted accepted, $n_rejected refused " *
-            "(must-accept cells missing: $missing_cells)")
+            "(must-accept cells missing: $missing_cells; WRONG: $wrong_cells)")
     println("  mrhg refused cells: $(join(refused, " "))")
 
     # The allowlist must be a real allowlist, not "reject everything": pin the
     # (kind, cell) pairs that must have been accepted AND verified above.
     @test isempty(missing_cells)
+    @test isempty(wrong_cells)
+    @test n_verified == n_accepted          # Bennett-m11m: no unchecked acceptance
     @test n_accepted >= 100
     @test n_rejected > 0
     for cell in (("add1", 4, false), ("sub5", 2, true), ("sq", 4, true),
