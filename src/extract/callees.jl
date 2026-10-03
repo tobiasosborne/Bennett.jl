@@ -60,19 +60,37 @@ demangled callee hits (Bennett-p9a0)."""
 _with_callee_root(body, sig::Type) =
     Base.ScopedValues.with(body, _CALLEE_ROOT => _CalleeRoot(sig))
 
-# The distinct function types named `fname` among the callee specTypes `sts`.
+# The distinct callee identities whose LLVM bare name is `fname` among the
+# callee specTypes `sts`. A singleton `Function` is identified by its type and
+# named by `nameof`; an INSTANCE-LESS callable (closure / functor, Bennett-40ys
+# / Bennett-m5q9) by its `TypeName` — every specialisation and call method of
+# one callable type mangles to the same bare name — and named by the method
+# name codegen mangles (`mi.def.name`, see `_callee_barename`).
 function _callee_types_named(sts, fname::AbstractString)
-    out = DataType[]
+    out = Any[]
     for st in sts
         fT = st.parameters[1]
-        (fT isa DataType && isdefined(fT, :instance) && fT.instance isa Function) || continue
-        string(nameof(fT.instance)) == fname && !(fT in out) && push!(out, fT)
+        fT isa DataType || continue
+        id = if isdefined(fT, :instance)
+            (fT.instance isa Function && string(nameof(fT.instance)) == fname) || continue
+            fT
+        else
+            (isstructtype(fT) && !(fT <: Core.OpaqueClosure)) || continue
+            string(_method_instance_of_sig(st).def.name) == fname || continue
+            fT.name
+        end
+        id in out || push!(out, id)
     end
     return out
 end
 
+_callee_identity_qual(fT::DataType) = "$(parentmodule(fT.instance)).$(nameof(fT.instance))"
+_callee_identity_qual(tn::Core.TypeName) = "$(tn.module).$(tn.name)"
+
+# `id` is the registered identity: `typeof(f)` for `register_callee!`, the
+# `TypeName` for `register_callee_name!`; `bead` names the registry's guard.
 function _check_callee_identity(root::_CalleeRoot, llvm_name::String,
-                                fname::String, hit::Function)
+                                fname::String, id, bead::String)
     # Direct edges first (the case for every call in the root's own body); the
     # transitive closure covers a call that reached the root's LLVM body from a
     # co-emitted callee. Both are computed at most once per extraction.
@@ -82,15 +100,15 @@ function _check_callee_identity(root::_CalleeRoot, llvm_name::String,
         root.closure === nothing && (root.closure = _transitive_callee_specTypes(root.sig))
         cands = _callee_types_named(root.closure, fname)
     end
-    length(cands) == 1 && only(cands) === typeof(hit) && return nothing
-    _qual(fT) = "$(parentmodule(fT.instance)).$(nameof(fT.instance))"
+    length(cands) == 1 && only(cands) === id && return nothing
     why = isempty(cands) ?
         "no function named `$fname` is invoked beneath $(root.sig), so the call's target is unknown" :
         length(cands) > 1 ?
         "several functions named `$fname` are invoked beneath $(root.sig) " *
-        "($(join(_qual.(cands), ", "))) and the symbol does not say which" :
-        "it targets $(_qual(only(cands))), not the registered $(parentmodule(hit)).$fname"
-    error("Bennett-p9a0: LLVM call `$llvm_name` demangles to the registered callee " *
+        "($(join(_callee_identity_qual.(cands), ", "))) and the symbol does not say which" :
+        "it targets $(_callee_identity_qual(only(cands))), not the registered " *
+        "$(_callee_identity_qual(id))"
+    error("$bead: LLVM call `$llvm_name` demangles to the registered callee " *
           "name `$fname`, but $why. Refusing to inline a body that may be the wrong " *
           "function; give the callees distinct names.")
 end
@@ -233,7 +251,7 @@ function _lookup_callee(llvm_name::String)
     # function the call targets (outside the registry lock: this may infer).
     root = _CALLEE_ROOT[]
     fname === nothing || root === nothing ||
-        _check_callee_identity(root, llvm_name, fname, hit)
+        _check_callee_identity(root, llvm_name, fname, typeof(hit), "Bennett-p9a0")
     return hit
 end
 
@@ -264,20 +282,43 @@ end
 # after its TYPE, so capitalisation is the common case, not the exception.
 # (Bennett-wh1p later moved `_lookup_callee` onto the same shared demangler,
 # `_demangle_llvm_callee`; it used to lowercase the capture.)
-const _known_callee_names = Dict{String, Symbol}()   # guarded by _known_callees_lock
+#
+# Bennett-m5q9: each entry also carries the callable's IDENTITY — its
+# `TypeName` — so a demangled hit gets the same root-edge module check as
+# `_lookup_callee` (Bennett-p9a0): the bare name alone let a call to an
+# unrelated same-named functor in another module emit the registered callee's
+# canonical name.
+const _known_callee_names = Dict{String, Tuple{Symbol, Core.TypeName}}()   # guarded by _known_callees_lock
 
 """
-    register_callee_name!(llvm_bare::AbstractString, canonical::Symbol) -> Nothing
+    register_callee_name!(llvm_bare::AbstractString, canonical::Symbol, callable_type::Type) -> Nothing
 
 Register an instance-less callable (closure / functor) by NAME. `llvm_bare` is
 the bare name Julia's codegen mangles into the LLVM symbol (i.e. `mi.def.name`,
 NOT `nameof(type)`); `canonical` is the bare Symbol the emitted `IRCall` should
-carry. See this file's Bennett-40ys section for why a name-only registry is
-needed and why it is separate from `_known_callees`.
+carry; `callable_type` is the callable's type (any specialisation, or the
+`UnionAll`), whose `TypeName` is the identity checked against the root's
+`:invoke` edges on lookup. Re-registering the same callable is a no-op; a
+different callable or canonical under an already-registered name throws
+(Bennett-m5q9). See this file's Bennett-40ys section for why a name-only
+registry is needed and why it is separate from `_known_callees`.
 """
-function register_callee_name!(llvm_bare::AbstractString, canonical::Symbol)
+function register_callee_name!(llvm_bare::AbstractString, canonical::Symbol,
+                               callable_type::Type)
+    name = String(llvm_bare)
+    callable_type isa DataType && isdefined(callable_type, :instance) && throw(ArgumentError(
+        "register_callee_name!: $callable_type has an instance; register the callable " *
+        "with `register_callee!` instead (Bennett-m5q9)."))
+    entry = (canonical, Base.typename(callable_type))
     lock(_known_callees_lock) do
-        _known_callee_names[String(llvm_bare)] = canonical
+        prev = get(_known_callee_names, name, nothing)
+        prev === nothing || prev == entry || throw(ArgumentError(
+            "register_callee_name!: cannot register $(_callee_identity_qual(entry[2])) as " *
+            "`$name` => :$canonical — the name is already registered to " *
+            "$(_callee_identity_qual(prev[2])) => :$(prev[1]). LLVM call symbols " *
+            "(`j_$(name)_<NNN>`) carry no module, so two callables cannot share the " *
+            "name (Bennett-m5q9); rename one of them."))
+        _known_callee_names[name] = entry
     end
     return nothing
 end
@@ -288,17 +329,25 @@ end
 Name-registry counterpart of [`_lookup_callee`](@ref): exact match first, then
 the `julia_<name>_<NNN>` / `j_<name>_<NNN>` demangle. CASE-PRESERVING (see the
 section comment above). Returns the canonical bare callee Symbol, or `nothing`.
+Under a Julia root, a demangled hit must be the callable the root's `:invoke`
+edges name (Bennett-m5q9, the same check as `_lookup_callee`'s Bennett-p9a0).
 """
 function _lookup_callee_name(llvm_name::String)
-    lock(_known_callees_lock) do
-        haskey(_known_callee_names, llvm_name) && return _known_callee_names[llvm_name]
+    entry, fname = lock(_known_callees_lock) do
+        haskey(_known_callee_names, llvm_name) &&
+            return (_known_callee_names[llvm_name], nothing)
         # Case-INSENSITIVE on the `julia_`/`j_` prefix only; the capture keeps
         # the original casing (Bennett-40ys — a functor is named after its type).
         fname = _demangle_llvm_callee(llvm_name)
         fname !== nothing && haskey(_known_callee_names, fname) &&
-            return _known_callee_names[fname]
-        return nothing
+            return (_known_callee_names[fname], fname)
+        return (nothing, nothing)
     end
+    entry === nothing && return nothing
+    root = _CALLEE_ROOT[]
+    fname === nothing || root === nothing ||
+        _check_callee_identity(root, llvm_name, fname, entry[2], "Bennett-m5q9")
+    return entry[1]
 end
 
 # ---- value identity via C pointer ----

@@ -439,7 +439,7 @@ function extract_parsed_ir_set_from_julia(f, argtypes::Type{<:Tuple};
         for (k, at) in live_callees
             if _callee_key_kind(k) === :instanceless
                 bare = _callee_barename(k, at)
-                register_callee_name!(string(bare), bare)
+                register_callee_name!(string(bare), bare, k)
                 push!(_my_registered_names, string(bare))
             else
                 callable = _callable_of_key(k)

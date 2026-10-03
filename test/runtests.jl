@@ -500,6 +500,9 @@ runfile("test_wh1p_callee_case_folding.jl")
 # Bennett-p9a0 — a registered callee must be the very function the LLVM call
 # targets (module identity), not merely a namesake.
 runfile("test_p9a0_callee_module_identity.jl")
+# Bennett-m5q9 — the same module-identity check for NAME-registered
+# (instance-less) callees; registration carries the callable's type.
+runfile("test_m5q9_callee_name_identity.jl")
 # Bennett-qal5 / U16 — multi-index GEPs and GEPs on unsupported bases
 # reject loud (was silent drop, leaving dest SSA undefined). Full
 # type-walking byte-offset accumulation deferred.

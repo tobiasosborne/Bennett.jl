@@ -369,7 +369,7 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
 
         # Case preservation: the demangler used by the NAME registry must not
         # lowercase its capture (an `Adder40ys` callee would never resolve).
-        _B40.register_callee_name!("Adder40ys", :Adder40ys)
+        _B40.register_callee_name!("Adder40ys", :Adder40ys, Adder40ys)
         try
             @test _B40._lookup_callee_name("j_Adder40ys_123") === :Adder40ys
             @test _B40._lookup_callee_name("julia_Adder40ys_9") === :Adder40ys
@@ -391,7 +391,7 @@ _norm40ys(s) = replace(s, r"_\d+\b" => "_N", r"#\d+" => "#N")
     #      "register via `register_callee!`" advice.
     # ------------------------------------------------------------------
     @testset "(H2) circuit path (ptr_cells=false) rejects with the right reason" begin
-        _B40.register_callee_name!("Adder40ys", :Adder40ys)
+        _B40.register_callee_name!("Adder40ys", :Adder40ys, Adder40ys)
         try
             e = try
                 _B40.extract_parsed_ir(_root40ys, Tuple{Int64};
