@@ -664,9 +664,11 @@ function _module_to_parsed_ir_on_func_walk(mod::LLVM.Module, func::LLVM.Function
                 # (from_ll / clang `alias`, e.g. `@a = alias i8, ptr @g`) went
                 # down the same skip, and a store or call through it was
                 # ERASED — no SSA consumer is left to trip a later error
-                # (Astra F17). Admit the skip only when the instruction touches
-                # at least one alias and every alias it touches is a jl_global
-                # JIT alias; otherwise fail loud here, at the instruction.
+                # (Astra F17). Fail loud here only when the instruction touches
+                # at least one non-jl_global alias. An unwrappable operand that
+                # is NOT an alias (e.g. a `blockaddress` constant) keeps the
+                # skip, so later terminators (indirectbr, Bennett-4eu) still
+                # reject precisely; the residual skip is Bennett-gq1z.
                 if benign && e isa ErrorException
                     aliases = _global_alias_operands(inst)
                     bad = filter(p -> !_is_jl_global_jit_alias_name(p[1]), aliases)
@@ -677,11 +679,6 @@ function _module_to_parsed_ir_on_func_walk(mod::LLVM.Module, func::LLVM.Function
                         "`jl_global#N.jit` runtime aliases are skipped. Dropping " *
                         "this instruction would silently erase its effect " *
                         "(CLAUDE.md §1). Reference the aliasee directly.")
-                    isempty(aliases) && _ir_error(inst,
-                        "Bennett-n4di: LLVM.jl could not wrap an operand of this " *
-                        "instruction ($(first(msg, 200))) and no `jl_global#N.jit` " *
-                        "GlobalAlias operand explains it; refusing to drop the " *
-                        "instruction silently (CLAUDE.md §1).")
                 end
                 benign ? nothing : rethrow()
             end

@@ -129,6 +129,24 @@ entry:
         @test insts[1].dest == :r
     end
 
+    # Scope pin: an unwrappable operand that is NOT an alias (blockaddress in
+    # a select) is not an n4di error; the indirectbr hard stop (Bennett-4eu)
+    # is what rejects the module.
+    @testset "blockaddress operand without alias is not an n4di error" begin
+        path = joinpath(@__DIR__, "fixtures", "ll", "4eu_indirectbr_reject.ll")
+        e = try
+            Bennett.extract_parsed_ir_from_ll(path; entry_function="julia_f_1")
+            nothing
+        catch ex
+            ex
+        end
+        msg = e === nothing ? "" : sprint(showerror, e)
+        @test e !== nothing
+        @test !occursin("Bennett-n4di", msg)
+        @test occursin("indirectbr", msg)
+        @test occursin("Bennett-4eu", msg)
+    end
+
     # Plain Julia is unaffected: end-to-end, exhaustive Int8.
     @testset "plain Julia compile unchanged" begin
         f(x::Int8) = x * Int8(3) + Int8(1)
