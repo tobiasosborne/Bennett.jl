@@ -291,6 +291,92 @@ julia> verify_reversibility(c)
 true
 ```
 """
+# ---- Bennett-o9sv: closure captures ----------------------------------------
+# Julia passes a capturing closure's own object as a hidden leading `#self#`
+# pointer parameter; the IR walker turns it into an extra circuit input
+# (`x -> x - k` compiled to input widths [8, 8]). A closure's captures are
+# invisible at the call site, so they are bound into the circuit instead:
+# an isbits closure is immutable and holds its captured values inline, so
+# binding them at compile time is exact. Anything that can change after
+# compilation (Ref, mutable struct, array, a reassigned variable boxed as
+# `Core.Box`) is rejected loudly. Callable structs are NOT closures: their
+# fields stay circuit inputs (Bennett-4ddk, test_4ddk_compile_cache_soundness).
+
+"True for a compiler-generated closure type (anonymous function, do-block or
+local named function): a `Function` subtype whose name starts with `#`."
+_is_closure_type(T::DataType) = T <: Function && startswith(String(nameof(T)), "#")
+_is_closure_type(::Any) = false
+
+_has_ptr_leaf(T::Type) = T <: Ptr || T <: Core.LLVMPtr ||
+    (!isprimitivetype(T) && any(_has_ptr_leaf, fieldtypes(T)))
+
+# Write the in-memory bytes of the isbits value `x` into `buf` at byte offset
+# `off`, leaf by leaf (padding stays zero, so the bound circuit is a function
+# of the captured values only).
+function _capture_bytes!(buf::Vector{UInt8}, x, off::Int)
+    T = typeof(x)
+    if isprimitivetype(T)
+        U = Dict(1 => UInt8, 2 => UInt16, 4 => UInt32, 8 => UInt64,
+                 16 => UInt128)[sizeof(T)]
+        u = reinterpret(U, x)
+        for i in 0:sizeof(T)-1
+            buf[off + i + 1] = (u >> (8i)) % UInt8
+        end
+    else
+        for i in 1:fieldcount(T)
+            _capture_bytes!(buf, getfield(x, i), off + Int(fieldoffset(T, i)))
+        end
+    end
+    return buf
+end
+
+"""
+    _closure_capture_bytes(f) -> Union{Nothing, Vector{UInt8}}
+
+Bennett-o9sv: `nothing` unless `f` is a closure with captured state; then the
+closure object's bytes (the value of the hidden `#self#` input). Throws an
+`ArgumentError` for a capture that is not an immutable plain-bits value.
+"""
+function _closure_capture_bytes(f)
+    T = typeof(f)
+    (_is_closure_type(T) && sizeof(T) > 0) || return nothing
+    caps = join(("$n::$(fieldtype(T, n))" for n in fieldnames(T)), ", ")
+    (isbitstype(T) && !_has_ptr_leaf(T)) || throw(ArgumentError(
+        "reversible_compile: closure $f captures state that is not an " *
+        "immutable plain-bits value ($caps). A Ref, mutable struct, array, or " *
+        "variable reassigned after capture (Core.Box) can change after " *
+        "compilation, so it cannot be bound into the circuit; pass it as an " *
+        "explicit argument instead (Bennett-o9sv)"))
+    return _capture_bytes!(zeros(UInt8, sizeof(T)), f, 0)
+end
+
+"""
+    _bind_closure_capture(c, bytes, n_args) -> ReversibleCircuit
+
+Bennett-o9sv: turn the leading `#self#` input of `c` (the closure object,
+`8 * length(bytes)` wires, LSB-first per byte as `simulate` loads it) into
+ancillae preset to `bytes` by NOT gates and cleared by the same NOT gates at
+the end — exact, because every input wire is preserved by the circuit.
+"""
+function _bind_closure_capture(c::ReversibleCircuit, bytes::Vector{UInt8},
+                               n_args::Int)
+    nb = 8 * length(bytes)
+    (length(c.input_widths) == n_args + 1 && c.input_widths[1] == nb) || error(
+        "reversible_compile: capturing closure compiled to input widths " *
+        "$(c.input_widths); expected a leading $nb-bit closure input then " *
+        "$n_args argument(s) (Bennett-o9sv)")
+    self_w = c.input_wires[1:nb]
+    isempty(intersect(self_w, c.output_wires)) || error(
+        "reversible_compile: closure input wires overlap the outputs; cannot " *
+        "bind the captured values (Bennett-o9sv)")
+    nots = ReversibleGate[NOTGate(self_w[i]) for i in 1:nb
+                          if (bytes[(i - 1) >> 3 + 1] >> ((i - 1) & 7)) & 0x01 == 0x01]
+    return ReversibleCircuit(c.n_wires, vcat(nots, c.gates, nots),
+                             c.input_wires[nb+1:end], c.output_wires,
+                             vcat(c.ancilla_wires, self_w), c.input_widths[2:end],
+                             c.output_elem_widths, c.loop_check_wires)
+end
+
 const _TUPLE_OVERLOAD_KWARGS = (:optimize, :max_loop_iterations,
                                :compact_calls, :bit_width, :add, :mul,
                                :strategy, :fold_constants, :target,
@@ -383,6 +469,17 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
         throw(ArgumentError("reversible_compile: unknown strategy :$strategy; " *
               "supported: :auto, :tabulate, :expression"))
 
+    # Bennett-o9sv: validated before either tabulate exit, so a mutable
+    # capture is never frozen into a QROM table either.
+    capture = _closure_capture_bytes(f)
+    if capture !== nothing && (bit_width > 0 || target === :reversible_vm)
+        throw(ArgumentError(
+            "reversible_compile: a closure with captured values is not " *
+            "supported with " *
+            (bit_width > 0 ? "bit_width=$bit_width" : "target=:reversible_vm") *
+            " (Bennett-o9sv); pass the captured values as explicit arguments"))
+    end
+
     # Explicit tabulate: evaluate f classically on all 2^W inputs and emit as
     # a QROM lookup. Skip IR extraction entirely.
     # Bennett-33zr: a `target=:reversible_vm` compile MUST NOT be captured by
@@ -443,10 +540,16 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     # (f, arg_types, optimize, mem, bit_width) tuple in one world, so
     # back-to-back `reversible_compile(g, Int8)` calls produce
     # `===`-identical `ReversibleCircuit` results.
-    return reversible_compile(parsed;
+    c = reversible_compile(parsed;
         max_loop_iterations, compact_calls, add, mul,
         fold_constants, target, auto_self_reversing,
         mem=lower_mem, persistent_impl, hashcons)
+    # Bennett-o9sv: the (cached) circuit takes the closure object as its
+    # leading input; bind it to this closure's captured values. Bound outside
+    # the compile cache, so same-type closures never share a bound circuit.
+    # (The tabulate exits above evaluate `f` natively and need no binding.)
+    capture === nothing && return c
+    return _bind_closure_capture(c, capture, length(arg_types.parameters))
 end
 
 const _PARSED_OVERLOAD_KWARGS = (:max_loop_iterations, :compact_calls,

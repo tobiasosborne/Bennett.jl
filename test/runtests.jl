@@ -126,6 +126,8 @@ runfile("test_sr8v_compile_cache.jl")
 runfile("test_uiaq_compile_cache_transparent.jl")
 # Bennett-4ddk: compile caches invalidate on world change, accept callables, stay bounded.
 runfile("test_4ddk_compile_cache_soundness.jl")
+# Bennett-o9sv: closure captures bind as constants (isbits) or are rejected loudly.
+runfile("test_o9sv_closure_captures.jl")
 runfile("test_y986_loop_header_dispatch.jl")
 runfile("test_gboa_dirty_bit_hygiene.jl")
 runfile("test_d77b_fcmp_predicates.jl")
