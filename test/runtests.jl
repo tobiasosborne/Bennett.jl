@@ -350,6 +350,9 @@ runfile("test_qrom_dispatch.jl")
 runfile("test_memssa.jl")
 runfile("test_memssa_integration.jl")
 runfile("test_feistel.jl")
+# Bennett-z3j3 — emit_feistel! checked against an integer reference on every
+# input (logical output order, odd-W mixing, avalanche floor).
+runfile("test_z3j3_feistel_contract.jl")
 runfile("test_shadow_memory.jl")
 runfile("test_universal_dispatch.jl")
 runfile("test_memory_corpus.jl")

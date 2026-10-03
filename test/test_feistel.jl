@@ -10,14 +10,13 @@ using Bennett: emit_feistel!, WireAllocator, allocate!, wire_count,
 # is a bijection REGARDLESS of F's invertibility — that's the point.
 #
 # Gate-cost target (survey §D): ~12·W Toffoli per 4-round hash. For W=32:
-# ~400 gates, 10-20× smaller than a 3-node Okasaki insert. This test suite
-# verifies correctness, bijectivity, and cost.
+# ~400 gates, 10-20× smaller than a 3-node Okasaki insert. This file checks
+# reversibility, bijectivity and cost only; the permutation itself (every
+# output vs an integer reference, odd-W mixing, avalanche floor) is pinned in
+# test_z3j3_feistel_contract.jl (Bennett-z3j3).
 #
-# Round function F(R) = R + rotate(R, 7): nonlinear (modular add gives
-# carries), bijective (undoable by subtracting rotate(R, 7) from R), cheap
-# (one adder + zero-cost wire permutation for rotate). This choice follows
-# the survey's "XOR-rotation composition" pattern modified to use ADD for
-# nonlinearity.
+# Round function F(R)[i] = R[i] AND R[(i + rot) mod |R|] (Simon-style
+# AND-with-rotation; see src/feistel.jl).
 
 """
 Helper: build a standalone reversible circuit that applies emit_feistel!
@@ -74,7 +73,10 @@ end
         o1 = simulate(c, UInt32(0x12345678))
         o2 = simulate(c, UInt32(0x12345678))
         @test o1 == o2
-        # Avalanche: flipping one bit of the input changes ≥1 bit of output
+        # Not the identity (Bennett-z3j3: the old "avalanche" check below
+        # passed for an identity circuit). Real avalanche is measured in
+        # test_z3j3_feistel_contract.jl.
+        @test o1 != UInt32(0x12345678)
         o3 = simulate(c, UInt32(0x12345679))
         @test o1 != o3
     end
@@ -98,10 +100,12 @@ end
         @test gate_count(c1).Toffoli < gate_count(c4).Toffoli < gate_count(c8).Toffoli
     end
 
-    @testset "odd W: half-width split is floor(W/2)" begin
+    @testset "odd W: halves cld/fld(W, 2), alternating widths" begin
         # W=9 (Julia's i9 for sum_to) — tests we don't divide by zero or error
         c = _compile_feistel(9; rounds=4)
         @test verify_reversibility(c)
+        # Bijective on all 512 inputs.
+        @test length(Set(Int(simulate(c, UInt16(k))) & 0x1ff for k in 0:511)) == 512
         # Reasonable gate count (shouldn't explode)
         @test gate_count(c).total < 2000
     end
