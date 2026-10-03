@@ -705,6 +705,26 @@ function _module_to_parsed_ir_on_func_walk(mod::LLVM.Module, func::LLVM.Function
                         "value instruction whose sole unrepresentable operands " *
                         "are Julia `jl_global#N.jit` runtime aliases (CLAUDE.md §1).")
                 end
+                # Bennett-9fke: the MethodError-"PointerType" arm (LLVM.jl has
+                # no `width(::PointerType)`, e.g. `extractvalue [2 x ptr]`,
+                # `insertvalue [2 x ptr]`) skipped ANY such instruction with no
+                # certificate. A skipped value that is still read leaves an
+                # undefined SSA name whose consumer may be accepted (a load /
+                # store through it extracted fine) or fail far from the cause.
+                # The skip now requires `_dead_pure_value_certified`: the
+                # instruction is side-effect-free AND transitively dead (every
+                # user is itself a dead side-effect-free value), so omitting it
+                # provably changes nothing. Everything else fails loud here.
+                if benign && e isa MethodError
+                    _dead_pure_value_certified(inst) || _ir_error(inst,
+                        "Bennett-9fke: LLVM.jl cannot query this instruction's " *
+                        "pointer-typed component ($(first(split(msg, '\n')))). " *
+                        "Pointer aggregates (e.g. `[N x ptr]`) are not modelled, " *
+                        "and skipping the instruction would silently erase it or " *
+                        "leave its result undefined for a live consumer. The only " *
+                        "certified skip is a side-effect-free value whose result " *
+                        "is transitively unused (CLAUDE.md §1).")
+                end
                 benign ? nothing : rethrow()
             end
             ir_inst === nothing && continue

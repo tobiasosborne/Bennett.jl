@@ -568,12 +568,45 @@ function _jl_global_skip_certified(inst::LLVM.Instruction,
     isempty(unw) && return false
     all(u -> u[1] == string(LLVM.API.LLVMGlobalAliasValueKind) &&
              _is_jl_global_jit_alias_name(u[2]), unw) || return false
-    opc = LLVM.opcode(inst)
+    return _is_pure_value_ref(inst.ref)
+end
+
+# Bennett-gq1z / 9fke: `ref` is an instruction whose omission can only lose a
+# VALUE (pure-opcode allowlist; a load must be non-volatile and non-atomic).
+# Raw C API, so it also works on users LLVM.jl could not wrap.
+function _is_pure_value_ref(ref)::Bool
+    LLVM.API.LLVMIsAInstruction(ref) == C_NULL && return false
+    opc = LLVM.API.LLVMGetInstructionOpcode(ref)
     opc in _GQ1Z_PURE_VALUE_OPCODES || return false
     if opc == LLVM.API.LLVMLoad
-        LLVM.API.LLVMGetVolatile(inst.ref) == 0 || return false
-        LLVM.API.LLVMGetOrdering(inst.ref) == LLVM.API.LLVMAtomicOrderingNotAtomic ||
+        LLVM.API.LLVMGetVolatile(ref) == 0 || return false
+        LLVM.API.LLVMGetOrdering(ref) == LLVM.API.LLVMAtomicOrderingNotAtomic ||
             return false
     end
     return true
+end
+
+# Bennett-9fke: the ONLY certificate under which the module walk may skip an
+# instruction whose conversion hit LLVM.jl's pointer-type dispatch gap
+# (MethodError mentioning `PointerType`, e.g. `width(::PointerType)` on
+# `extractvalue [2 x ptr]`): it is a side-effect-free value AND transitively
+# dead — every user is itself a side-effect-free value whose users are, in
+# turn, dead (a phi cycle counts as dead: nothing outside it reads it).
+# Omitting such an instruction provably changes no output and no effect. A
+# live result (read by a load / store / ret / call / ...) is NOT covered:
+# skipping it leaves an undefined SSA name for a live consumer.
+function _dead_pure_value_certified(inst::LLVM.Instruction)::Bool
+    seen = Set{LLVM.API.LLVMValueRef}()
+    function dead(ref)
+        ref in seen && return true
+        push!(seen, ref)
+        _is_pure_value_ref(ref) || return false
+        u = LLVM.API.LLVMGetFirstUse(ref)
+        while u != C_NULL
+            dead(LLVM.API.LLVMGetUser(u)) || return false
+            u = LLVM.API.LLVMGetNextUse(u)
+        end
+        return true
+    end
+    return dead(inst.ref)
 end

@@ -914,6 +914,9 @@ runfile("test_n4di_global_alias_fail_loud.jl")
 # Bennett-gq1z — unwrappable operands (blockaddress, store/call through a
 # jl_global alias) are rejected, never skipped; indirectbr keeps 4eu.
 runfile("test_gq1z_unwrappable_operand_reject.jl")
+# Bennett-9fke — the same catch's MethodError-"PointerType" arm skips only a
+# side-effect-free, transitively dead value; a live one is refused loudly.
+runfile("test_9fke_ptrtype_methoderror_certified_skip.jl")
 # Bennett-6fg9 / U19 — simulate arity + per-input bit-width guard (was:
 # silent drop of extra tuple elements, silent wrap of over-wide values).
 runfile("test_6fg9_simulate_arity.jl")
