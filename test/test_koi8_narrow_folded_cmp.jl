@@ -138,10 +138,20 @@ end
     oracle(p) = mod(16 * k8_wsign(p, 6), 64) == 0 ? 1 : 0
     for optimize in (false, true)
         c, err = k8_compile(k8_mul16, Int8; W=6, optimize)
-        @test err === nothing
-        ok = c !== nothing && verify_reversibility(c) &&
-             all((Int(simulate(c, Int8, k8_in(Int8, p))) & 63) == oracle(p) for p in 0:63)
-        optimize ? (@test_broken ok) : (@test ok)
+        if err !== nothing
+            # the narrowing contract allows refusing this program: it must be a
+            # loud narrowing refusal, and then there is nothing wrong to pin
+            @test err isa ArgumentError
+            @test err isa ArgumentError && k8_is_refusal(err)
+            @test optimize      # unoptimised IR narrows correctly: never refused
+            continue
+        end
+        @test c !== nothing && verify_reversibility(c)
+        nbad = c === nothing ? -1 :
+            count(p -> (Int(simulate(c, Int8, k8_in(Int8, p))) & 63) != oracle(p), 0:63)
+        # Bennett-sl4h: with optimize=true the accepted circuit is wrong; only
+        # that single aggregated correctness assertion is pinned broken
+        optimize ? (@test_broken nbad == 0) : (@test nbad == 0)
     end
 end
 
