@@ -196,6 +196,12 @@ _is_zero_operand(op::IROperand) = op isa ConstOperand && op.value == 0
 # (`max(1, ceil(log2 n))`, cf. `_lower_load_via_shadow_checkpoint!`).
 _gep_index_bits(n::Int) = max(1, 64 - leading_zeros(UInt64(max(n - 1, 0))))
 
+# Bennett-rrop: width of every composed (runtime) GEP index — a residue mod
+# 2^W (see the invariant in `_compose_gep_index!`): one spare bit above the
+# dispatchers' index bits. A persistent slab has no `n`; its caller passes the
+# pmap key width `_K_bits(impl)` instead (the key the pmap callee reads).
+_gep_compose_width(n::Int) = _gep_index_bits(n) + 1
+
 """
     _gep_runtime_shift(gep_ew, ew, dest) -> Int
 
@@ -213,9 +219,13 @@ function _gep_runtime_shift(gep_ew::Int, ew::Int, dest::Symbol)
     return trailing_zeros(gep_ew ÷ ew)
 end
 
-# Bennett-gw0r: `sext(op) << shift` truncated to W bits. A runtime operand
+# Bennett-gw0r / Bennett-rrop: `sext(op) << shift` reduced mod 2^W — the
+# operand is sign-extended FIRST (bit k of the result is source bit k-shift,
+# clamped to the sign bit), then shifted, then cut to W bits; that is the exact
+# residue of LLVM's sign-extended, scaled index for any operand width (wider
+# operands are truncated, which is also exact mod 2^W). A runtime operand
 # already W bits wide with no shift is used as-is (lower_add! only reads it);
-# otherwise fresh wires take CNOT copies (sign bit replicated upwards).
+# otherwise fresh wires take CNOT copies.
 function _gep_index_wires!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                            vw::Dict{Symbol,Vector{Int}}, op::IROperand, W::Int, shift::Int)
     op isa ConstOperand && return resolve!(gates, wa, vw, iconst(op.value << shift), W)
@@ -230,7 +240,7 @@ function _gep_index_wires!(gates::Vector{ReversibleGate}, wa::WireAllocator,
 end
 
 """
-    _compose_gep_index!(gates, wa, vw, base_idx, delta, n, tag; shift=0) -> IROperand
+    _compose_gep_index!(gates, wa, vw, base_idx, delta, n, tag; shift=0, W) -> IROperand
 
 Bennett-jkf0 / Bennett-gw0r: element index of a GEP whose base carries
 provenance — `base_idx + (delta << shift)`, both in the origin alloca's
@@ -241,17 +251,19 @@ operand is a signed two's-complement value (LLVM sign-extends GEP indices).
 Constant/zero cases fold with no gates; a zero-base, unshifted runtime index
 that already has the `_gep_index_bits(n)` the dispatchers read is passed
 through unchanged (alloca-direct GEPs keep their pre-jkf0 operand and gate
-count). Otherwise the operands are sign-extended to
-`W = max(_gep_index_bits(n) + 1, runtime widths)` and summed by a ripple adder
-under the synthetic name `tag`: every in-range index fits in W bits with a
-clear sign bit, so the sum is exact and composes again. Pre-gw0r W was the
-runtime operand's width, truncating `255 + i` into a 257-element alloca (R3).
-`n === nothing` (persistent slab, unbounded key) uses the runtime widths only.
+count). Otherwise the sum is computed modulo `2^_gep_compose_width(n)` by a
+ripple adder under the synthetic name `tag` (invariant and proof at the
+width rule below). Pre-gw0r W was the runtime operand's width, truncating
+`255 + i` into a 257-element alloca (R3); gw0r's `max(index_bits+1, operand
+widths)` re-sign-extended a composed value, which is wrong once a shifted or
+summed intermediate leaves the signed range of its width (Bennett-rrop: i4
+index 6 scaled ×2 is 12, read back as -4, so `+ (-12)` gave -16, not 0).
 """
 function _compose_gep_index!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                              vw::Dict{Symbol,Vector{Int}},
                              base_idx::IROperand, delta::IROperand,
-                             n::Union{Nothing,Int}, tag::Symbol; shift::Int=0)
+                             n::Union{Nothing,Int}, tag::Symbol; shift::Int=0,
+                             W::Int=_gep_compose_width(n))
     (base_idx isa Union{SSAOperand,ConstOperand} && delta isa Union{SSAOperand,ConstOperand}) ||
         throw(ArgumentError("GEP-on-GEP index composition: unsupported operand kinds " *
                             "($(typeof(base_idx)), $(typeof(delta))) (Bennett-jkf0)"))
@@ -265,8 +277,26 @@ function _compose_gep_index!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     _is_zero_operand(base_idx) && shift == 0 && length(vw[delta.name]) >= need &&
         return delta
     _is_zero_operand(delta) && return base_idx
-    widths = [length(vw[op.name]) for op in (base_idx, delta) if op isa SSAOperand]
-    W = max(n === nothing ? 0 : need + 1, widths...)
+    # Bennett-rrop — INVARIANT. Let D be the exact element displacement LLVM
+    # computes for an origin (B + sum of sext(index_j) * gep_ew_j/ew over the
+    # chain; LLVM's own pointer arithmetic is this mod 2^64). Every origin
+    # index is one of: (a) a constant equal to D; (b) a raw IR index operand
+    # (the passthrough above, or a base kept by a zero delta) whose SIGNED
+    # value is D; (c) a composed value of exactly W wires (W fixed per
+    # alloca: `_gep_compose_width(n)`, or the pmap key width) holding D mod 2^W. Raw operands narrower than W are only kind (b).
+    # PROOF (induction over the chain, any length): constants fold exactly in
+    # Int64. Otherwise `_gep_index_wires!` maps each operand to its residue
+    # mod 2^W — kind (b): sext/truncate of its signed value; kind (c): already
+    # W wires, identity (never re-sign-extended, which was the bug); constant:
+    # resolve! masks mod 2^W — and the shift and the W-bit ripple add are ring
+    # operations mod 2^W, so the result holds (D_base + D_delta) mod 2^W: kind
+    # (c) again, however far an intermediate address strayed. USE: a final
+    # D in [0, n) reads as unsigned D from every kind — (b) has a clear sign
+    # bit; (c) since D < n <= 2^(W-1) — so the MUX path's zero-extension and
+    # the shadow path's low-index_bits read both see D. A constant final stays
+    # exact, so the consumers' `0 <= idx < n` check still rejects it. The spare
+    # bit keeps every out-of-range (c) final D in [-n, 2n) distinct from all
+    # valid slots, so a bounds check on these wires (Bennett-usly) can see it.
     b = _gep_index_wires!(gates, wa, vw, delta, W, shift)
     vw[tag] = _is_zero_operand(base_idx) ? b :
         lower_add!(gates, wa, _gep_index_wires!(gates, wa, vw, base_idx, W, 0), b, W)
@@ -436,8 +466,10 @@ function lower_var_gep!(gates::Vector{ReversibleGate}, wa::WireAllocator,
             # The slab's "alloca_dest" is itself; the new origin's idx is the
             # base's idx + the GEP's index (Bennett-jkf0: pre-fix it overwrote
             # the base idx, so `&p1[0]` read slot 0); predicate_wire inherited.
+            # Bennett-rrop: a composed key is a residue at the pmap key width.
             new_idx = _compose_gep_index!(gates, wa, vw, o.idx_op, inst.index, nothing,
-                                          Symbol("__jkf0_idx_", inst.dest, "_", k))
+                                          Symbol("__jkf0_idx_", inst.dest, "_", k);
+                                          W=_K_bits(persistent_info[inst.base.name]))
             push!(new_origins, PtrOrigin(o.alloca_dest, new_idx, o.predicate_wire))
         end
         ptr_provenance[inst.dest] = new_origins
