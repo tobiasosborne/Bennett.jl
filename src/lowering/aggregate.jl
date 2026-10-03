@@ -395,6 +395,22 @@ function lower_var_gep!(gates::Vector{ReversibleGate}, wa::WireAllocator,
         return
     end
 
+    # Bennett-dm9r: a constant index is the constant byte offset
+    # `index * elem_width/8` — lower it as that `IRPtrOffset` (provenance in
+    # alloca-element units, with the sub-element guard, plus the legacy
+    # slice). Pre-fix the MUX tree below resolved the constant at width 0 and
+    # crashed ("resolve!: width=0"); the extractor emits this node for the
+    # two-index array GEP `gep [N x iM], ptr %a, i64 0, i64 K`.
+    if inst.index isa ConstOperand
+        inst.elem_width % 8 == 0 ||
+            throw(ArgumentError("lower_var_gep!: constant-index GEP %$(inst.dest) with " *
+                "sub-byte elem_width=$(inst.elem_width) has no byte offset (Bennett-dm9r)"))
+        return lower_ptr_offset!(gates, wa, vw,
+            IRPtrOffset(inst.dest, inst.base, inst.index.value * (inst.elem_width ÷ 8),
+                        inst.elem_width);
+            ptr_provenance, alloca_info, persistent_info)
+    end
+
     # Bennett-cc0 M2b: if the base carries provenance, record it per-origin so
     # lower_store!/lower_load! can route through the right callee. Each origin
     # keeps its `predicate_wire`; its index becomes base idx + `inst.index`.

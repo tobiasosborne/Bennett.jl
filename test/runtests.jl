@@ -287,6 +287,8 @@ runfile("test_cb9y_multi_origin_runtime_idx.jl")
 runfile("test_37w3_selected_pointer_store_predicate.jl")
 # Bennett-jkf0 — GEP-on-GEP keeps/composes pointer provenance (Astra B-lowering F2).
 runfile("test_jkf0_gep_provenance_composition.jl")
+# Bennett-dm9r — constant-index VarGEP on a plain alloca lowers as a PtrOffset.
+runfile("test_dm9r_const_index_var_gep.jl")
 runfile("test_gate_count_regression.jl")
 runfile("test_negative.jl")
 runfile("test_soft_sitofp.jl")
