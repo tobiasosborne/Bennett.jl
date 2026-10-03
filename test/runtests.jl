@@ -485,6 +485,7 @@ runfile("test_s0tn_loop_overflow.jl")
 # on all 256 Int8 inputs against independent oracles, plus the loud rejection
 # of nested loops and the K-below-trip-count overflow guard.
 runfile("test_i5zn_loop_header_effects.jl")
+runfile("test_cohv_loop_held_ptr.jl")
 # Bennett-k286 / U07 — soft_fpext force-quiets signalling-NaN inputs per
 # IEEE 754-2019 §5.4.1 (bit 51 of the Float64 result).
 runfile("test_k286_fpext_snan_quiet.jl")

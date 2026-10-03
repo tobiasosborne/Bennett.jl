@@ -371,15 +371,28 @@ function _loop_header_hold_set(header::IRBasicBlock, body_labels::Vector{Symbol}
 end
 
 """
-    _loop_hold!(gates, wa, vw, held, hold_set, active, hlabel)
+    _loop_hold!(gates, wa, vw, held, hold_set, active, hlabel; ptr_provenance, held_ptr)
 
 Bennett-i5zn: fold the header values just (re-)lowered into `held` iff this
 header visit really happened: `held[d] = active ? vw[d] : held[d]`. `active ===
 nothing` is iteration 1 (always active), which seeds `held` with no gate.
+
+Bennett-cohv: a held name that carries pointer provenance is held through
+`_loop_hold_ptr!` into `held_ptr` instead — its value wires are not what a
+load / store through it reads.
 """
 function _loop_hold!(gates, wa, vw, held::Dict{Symbol,Vector{Int}},
-                     hold_set::Vector{Symbol}, active::Union{Nothing,Int}, hlabel::Symbol)
+                     hold_set::Vector{Symbol}, active::Union{Nothing,Int}, hlabel::Symbol;
+                     ptr_provenance::Dict{Symbol,Vector{PtrOrigin}},
+                     held_ptr::Dict{Symbol,Vector{Tuple{Symbol,Union{ConstOperand,Vector{Int}},Int}}})
     for d in hold_set
+        if haskey(ptr_provenance, d)
+            _loop_hold_ptr!(gates, wa, vw, held_ptr, d, ptr_provenance[d], active, hlabel)
+            continue
+        end
+        haskey(held_ptr, d) && throw(AssertionError(
+            "lower_loop!: header pointer %$d of loop $hlabel lost its provenance on a " *
+            "later unrolled iteration (Bennett-cohv)"))
         haskey(vw, d) || throw(AssertionError(
             "lower_loop!: header value %$d of loop $hlabel is used after the loop and " *
             "depends on a load, but has no wires (a pointer-typed value?) — it cannot " *
@@ -394,6 +407,94 @@ function _loop_hold!(gates, wa, vw, held::Dict{Symbol,Vector{Int}},
             held[d] = lower_mux!(gates, wa, [active], fresh, held[d], length(fresh))
         end
     end
+    return nothing
+end
+
+"""
+    _loop_hold_ptr!(gates, wa, vw, held_ptr, d, origins, active, hlabel)
+
+Bennett-cohv: hold a load-tainted header POINTER `d` that is used after the
+loop. A load / store through a provenance-carrying pointer never reads
+`vw[d]`; it follows `ptr_provenance[d]`, per origin an alloca, an element
+index OPERAND (resolved lazily against `vw` at the use) and a selection
+predicate WIRE. After the loop both are the last replay's — the post-exit
+address (review 2 S2: the exit-block load used the index the exit visit had
+already advanced). So hold, per origin, the index WIRES the operand names now
+(`vw[name]` at this header visit; a constant index is fixed) and the predicate
+wire, each as `active ? fresh : held`. A wire that is the same on every visit
+(a loop-invariant index, an alloca's own predicate) costs no gate. The origin
+list itself — count, allocas, constant-vs-runtime index — is fixed by the
+header's static instructions, so a replay that changes it is an internal
+error. `_loop_publish_ptr!` installs the held provenance after the loop.
+"""
+function _loop_hold_ptr!(gates, wa, vw, held_ptr, d::Symbol,
+                         origins::Vector{PtrOrigin}, active::Union{Nothing,Int},
+                         hlabel::Symbol)
+    fresh = Tuple{Symbol,Union{ConstOperand,Vector{Int}},Int}[]
+    for o in origins
+        idx = if o.idx_op isa ConstOperand
+            o.idx_op
+        elseif o.idx_op isa SSAOperand && haskey(vw, o.idx_op.name)
+            vw[o.idx_op.name]
+        else
+            throw(AssertionError("lower_loop!: header pointer %$d of loop $hlabel has an " *
+                "origin in %$(o.alloca_dest) whose index $(o.idx_op) has no wires — it " *
+                "cannot be held at its exit-visit address (Bennett-cohv)"))
+        end
+        push!(fresh, (o.alloca_dest, idx, o.predicate_wire))
+    end
+    if active === nothing || !haskey(held_ptr, d)
+        active === nothing || throw(AssertionError(
+            "lower_loop!: header pointer %$d of loop $hlabel gained provenance after " *
+            "the first unrolled iteration (Bennett-cohv)"))
+        held_ptr[d] = fresh
+        return nothing
+    end
+    old = held_ptr[d]
+    length(old) == length(fresh) || throw(AssertionError(
+        "lower_loop!: header pointer %$d of loop $hlabel changed its origin count across " *
+        "unrolled iterations ($(length(old)) → $(length(fresh))) (Bennett-cohv)"))
+    for k in eachindex(fresh)
+        (a0, i0, p0) = old[k]
+        (a1, i1, p1) = fresh[k]
+        same_kind = i0 isa ConstOperand ? (i1 isa ConstOperand && i1.value == i0.value) :
+                    (i1 isa Vector{Int} && length(i1) == length(i0))
+        (a0 == a1 && same_kind) || throw(AssertionError(
+            "lower_loop!: origin $k of header pointer %$d of loop $hlabel changed across " *
+            "unrolled iterations (%$a0[$(i0 isa ConstOperand ? i0.value : "$(length(i0)) wires")] → " *
+            "%$a1[$(i1 isa ConstOperand ? i1.value : "$(length(i1)) wires")]) (Bennett-cohv)"))
+        idx = (i0 isa ConstOperand || i1 == i0) ? i0 :
+              lower_mux!(gates, wa, [active], i1, i0, length(i1))
+        pred = p1 == p0 ? p0 : lower_mux!(gates, wa, [active], [p1], [p0], 1)[1]
+        old[k] = (a0, idx, pred)
+    end
+    return nothing
+end
+
+"""
+    _loop_publish_ptr!(vw, ptr_provenance, held_ptr, d)
+
+Bennett-cohv: after the loop, make `ptr_provenance[d]` name the held index
+wires (under fresh `__cohv_idx_<d>_<k>` names, so no later re-definition of
+the original index name can move the address) and the held predicate wires.
+`vw[d]` — at most a legacy MUX snapshot of the element, which no
+provenance-routed load or store reads — is the last replay's, so it is
+dropped rather than left behind stale: any reader of it now fails loud.
+"""
+function _loop_publish_ptr!(vw, ptr_provenance::Dict{Symbol,Vector{PtrOrigin}},
+                            held_ptr, d::Symbol)
+    published = PtrOrigin[]
+    for (k, (a, idx, pred)) in enumerate(held_ptr[d])
+        if idx isa ConstOperand
+            push!(published, PtrOrigin(a, idx, pred))
+        else
+            tag = Symbol("__cohv_idx_", d, "_", k)
+            vw[tag] = idx
+            push!(published, PtrOrigin(a, ssa(tag), pred))
+        end
+    end
+    ptr_provenance[d] = published
+    delete!(vw, d)
     return nothing
 end
 
@@ -509,6 +610,8 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
     # (live after the loop AND load-tainted) — see `_loop_header_hold_set`.
     hold_set = _loop_header_hold_set(header, body_block_order, block_map)
     held = Dict{Symbol,Vector{Int}}()
+    # Bennett-cohv: held pointers — per origin (alloca, index, predicate wire).
+    held_ptr = Dict{Symbol,Vector{Tuple{Symbol,Union{ConstOperand,Vector{Int}},Int}}}()
 
     # Bennett-jepw: the function-level pass (src/lower.jl ~437) populates
     # block_pred[hlabel] before calling lower_loop!. We rely on this for
@@ -627,7 +730,8 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
         for inst in header_body_insts
             _lower_inst!(iter_ctx, inst, hlabel)
         end
-        _loop_hold!(gates, wa, vw, held, hold_set, iter_active, hlabel)   # Bennett-i5zn
+        _loop_hold!(gates, wa, vw, held, hold_set, iter_active, hlabel;   # Bennett-i5zn
+                    ptr_provenance=opts.ptr_provenance, held_ptr)            # Bennett-cohv
 
         # (a2) Resolve the header's exit condition ONCE — reused at (c).
         # Lives between (a1) and (b) so any header-body inst that produces
@@ -773,10 +877,15 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
     # loop may exit exactly there (trip count K), and then ITS header values
     # are the ones the exit block reads. Fold them in under that predicate,
     # then publish the held values in place of the last replay's.
-    _loop_hold!(gates, wa, vw, held, hold_set, iter_active, hlabel)
+    _loop_hold!(gates, wa, vw, held, hold_set, iter_active, hlabel;
+                ptr_provenance=opts.ptr_provenance, held_ptr)
     postk_cond = resolve!(gates, wa, vw, term.cond, 1)
     for d in hold_set
-        vw[d] = held[d]
+        if haskey(held_ptr, d)
+            _loop_publish_ptr!(vw, opts.ptr_provenance, held_ptr, d)   # Bennett-cohv
+        else
+            vw[d] = held[d]
+        end
     end
     # `postk_cond[1]==1` ⇔ header branch would take the body again.
     # Convergence ⇔ branch would take the EXIT instead.
