@@ -258,7 +258,8 @@ end
 # Bennett-08xz: a class-(2) name counts only when the call cannot return
 # (`_is_noreturn_call`, as in `_is_runtime_throw_call`) — a user function
 # `throw_foo` mangles to `j_throw_foo_NNN`, and treating its call as skeleton
-# would drop it.
+# would drop it. `_is_noreturn_call` scans past harmless intrinsics to the
+# block's `unreachable` (Bennett-0gm7) — the same shared rule as the main path.
 function _vec_vm_is_skel_callee(inst::LLVM.Instruction, cn::AbstractString)
     cn in (_VEC_VM_MEM_ALLOC, _VEC_VM_GC_LOADED, _VEC_VM_GC_ALLOC_OBJ,
            _VEC_VM_GC_ALLOC_OBJ2, _VEC_VM_PGCSTACK, _VEC_VM_ARGERR) && return true

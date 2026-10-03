@@ -2064,16 +2064,49 @@ end
 const _RUNTIME_THROW_PREFIXES = (
     "j_throw_", "ijl_throw", "jl_throw", "ijl_bounds_error", "jl_bounds_error")
 
+# Bennett-0gm7: callee-name prefixes of the intrinsics that may sit between an
+# error-helper call and its block's `unreachable` without making the call's
+# return observable. Each one is ALSO in `_convert_instruction`'s U15
+# `benign_prefixes` (so dropping the error call leaves nothing that refers to
+# it) and has no effect a later instruction could see (LangRef): debug
+# intrinsics, lifetime markers, `llvm.assume`, the noalias scope declaration,
+# and `llvm.trap` (itself noreturn). Deliberately absent: `llvm.sideeffect`,
+# `llvm.debugtrap` (can return), `llvm.invariant.*`, `julia.*` (GC effects).
+# LLVM 18.1 (Julia 1.12) parses `llvm.dbg.*` as call instructions; newer LLVM's
+# non-instruction debug records are not visited by `LLVMGetNextInstruction`.
+const _NORETURN_SCAN_SKIP_PREFIXES = (
+    "llvm.dbg.", "llvm.lifetime.", "llvm.assume",
+    "llvm.experimental.noalias.scope.decl", "llvm.trap")
+
 # True iff `call` cannot return: the call site or the callee declaration is
-# `noreturn`, or the next instruction is `unreachable` (returning would be UB).
-# The second arm covers hand-written `.ll` that declares `@ijl_throw(ptr)`
-# without attributes; real Julia IR carries the attribute (at optimize=false a
-# `j_throw_*` call is not always directly followed by `unreachable`).
+# `noreturn`, or the block ends in `unreachable` with only harmless
+# instructions after `call` (returning would be UB). The second arm covers
+# hand-written `.ll` that declares `@ijl_throw(ptr)` without attributes; real
+# Julia IR carries the attribute (at optimize=false a `j_throw_*` call is not
+# always directly followed by `unreachable`). The scan skips direct calls to
+# `_NORETURN_SCAN_SKIP_PREFIXES` intrinsics and to further runtime-throw-named
+# helpers (two throws in a row: if the first returns, the second runs, and the
+# block still cannot reach live code; the second is dropped by this same rule).
+# Anything else — a store, any other call, any non-call instruction, a `ret` /
+# `br` terminator — means "may return" (Bennett-0gm7).
 function _is_noreturn_call(call::LLVM.Instruction)
     _57hd_call_attr(call, _57HD_FN_ATTR_IDX, "noreturn") != C_NULL && return true
     nxt = LLVM.API.LLVMGetNextInstruction(call)
-    return nxt != C_NULL &&
-           LLVM.API.LLVMGetInstructionOpcode(nxt) == LLVM.API.LLVMUnreachable
+    while nxt != C_NULL
+        op = LLVM.API.LLVMGetInstructionOpcode(nxt)
+        op == LLVM.API.LLVMUnreachable && return true
+        op == LLVM.API.LLVMCall || return false
+        co = LLVM.API.LLVMGetCalledValue(nxt)
+        LLVM.API.LLVMIsAFunction(co) != C_NULL || return false   # indirect call
+        len = Ref{Csize_t}(0)
+        pn = Ptr{UInt8}(LLVM.API.LLVMGetValueName2(co, len))
+        pn == C_NULL && return false
+        cn = unsafe_string(pn, len[])
+        (any(p -> startswith(cn, p), _NORETURN_SCAN_SKIP_PREFIXES) ||
+         any(p -> startswith(cn, p), _RUNTIME_THROW_PREFIXES)) || return false
+        nxt = LLVM.API.LLVMGetNextInstruction(nxt)
+    end
+    return false
 end
 
 # True iff `call` is a call to a never-returning error helper: the callee name
