@@ -834,6 +834,9 @@ runfile("test_epwy_fold_constants_default.jl")
 # Bennett-b1vp / U31 — soft_fptoui + LLVMFPToUI dispatch (was previously
 # silently routed through the signed soft_fptosi).
 runfile("test_b1vp_fptoui.jl")
+# Bennett-3wk7 — f32/f16 fptosi/fptoui/sitofp/uitofp fail loud (was a
+# width-only IRCast reinterpreting the float bit pattern).
+runfile("test_3wk7_f32_cast_reject.jl")
 # Bennett-xlsz / U29 — unify reversible_compile kwargs across the three
 # overloads; unknown kwargs raise ArgumentError with the supported set.
 runfile("test_xlsz_kwargs_unified.jl")

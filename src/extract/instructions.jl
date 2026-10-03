@@ -6170,6 +6170,23 @@ function _emit_cell_call(inst::LLVM.Instruction, ops, n_ops::Int,
     return IRCall(dest, callee, cell_args, cell_widths, ret_w)
 end
 
+# Bennett-3wk7: shared fail-loud for fptosi/fptoui/sitofp/uitofp whose
+# float side is not `double`, or whose softfloat callee is unregistered.
+function _int_fp_cast_error(inst::LLVM.Instruction, fp_ty, callee_name::AbstractString, callee)
+    if !(fp_ty isa LLVM.LLVMDouble)
+        _ir_error(inst,
+            "int<->float conversion on a non-double float type ($(fp_ty)) " *
+            "is unsupported: there are no native f32/f16 soft-float " *
+            "conversion primitives (CLAUDE.md rule 13 / Bennett-3rph). A " *
+            "width-only cast would reinterpret the float bit pattern as an " *
+            "integer, a silent miscompile (Bennett-3wk7).")
+    end
+    callee === nothing && _ir_error(inst,
+        "softfloat callee `$(callee_name)` is not registered, so this " *
+        "double conversion cannot be lowered (Bennett-3wk7).")
+    _ir_error(inst, "unhandled int<->double conversion shape (Bennett-3wk7).")
+end
+
 function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symbol},
                               counter::Ref{Int},
                               lanes::Dict{_LLVMRef, Vector{IROperand}}=Dict{_LLVMRef, Vector{IROperand}}();
@@ -7769,8 +7786,9 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 ]
             end
         end
-        # Fallback: treat as width conversion (for non-Float64 or when callee not registered)
-        return IRCast(dest, dst_w < src_w ? :trunc : (dst_w > src_w ? :zext : :trunc), _operand(src, names), src_w, dst_w)
+        # Bennett-3wk7: no width-only IRCast fallback — that reinterprets the
+        # float bit pattern as an integer (silent miscompile). Fail loud.
+        _int_fp_cast_error(inst, LLVM.value_type(src), callee_name, callee)
     end
 
     # sitofp/uitofp: int → float conversion via soft_sitofp (actual IEEE 754 encode)
@@ -7792,8 +7810,8 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 ]
             end
         end
-        # Fallback
-        return IRCast(dest, dst_w > src_w ? :zext : (dst_w < src_w ? :trunc : :trunc), _operand(src, names), src_w, dst_w)
+        # Bennett-3wk7: no width-only IRCast fallback (see fptosi above).
+        _int_fp_cast_error(inst, LLVM.value_type(inst), "soft_sitofp", callee)
     end
 
     # fcmp: floating-point comparison. Route through soft_fcmp_* functions.
