@@ -8344,6 +8344,20 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         # circuit-path behaviour).
     end
 
+    # Bennett-19jw: native float arithmetic has no lowering. A Julia function
+    # reaches it only on the native route (`::Float64`-annotated `f`, or a
+    # mixed Float64/integer signature); say how to get the soft-float route.
+    if opc in (LLVM.API.LLVMFAdd, LLVM.API.LLVMFSub, LLVM.API.LLVMFMul,
+               LLVM.API.LLVMFDiv, LLVM.API.LLVMFRem)
+        throw(ArgumentError(_ir_error_msg(inst,
+            "native floating-point arithmetic is not lowered. Compile a " *
+            "Julia function as `reversible_compile(f, Float64...)` (or an " *
+            "all-Float64 `Tuple`) with a generic `f` (no `::Float64` " *
+            "annotations), which routes every float operation through " *
+            "bit-exact soft-float; mixed Float64/integer signatures lower " *
+            "only float comparisons and conversions (Bennett-19jw)")))
+    end
+
     _ir_error(inst, "unsupported LLVM opcode")
 end
 

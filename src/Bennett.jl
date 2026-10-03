@@ -434,11 +434,34 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
             "matching the Float64 overload's cross-overload rejection " *
             "(Bennett-iwj6)"))
     end
+    # Bennett-19jw: `Tuple{Float64,...}` is a spelling of the Float64 overload,
+    # which runs `f` on SoftFloat values so every float operation is a
+    # bit-exact soft-float call. Extracting f's native IR instead died on the
+    # first fadd/fmul or Float64 literal. Delegate whenever that overload
+    # would accept `f` (a SoftFloat method exists), so both spellings build
+    # the same circuit; a `::Float64`-annotated `f` and mixed Float64/integer
+    # signatures stay on the native route below, which lowers float compares
+    # and conversions via soft_* callees and rejects float arithmetic loudly.
+    Ps = arg_types.parameters
+    if !isempty(Ps) && all(T -> T === Float64, Ps) &&
+       hasmethod(f, Tuple{ntuple(_ -> SoftFloat, length(Ps))...})
+        return reversible_compile(f, Ps...; optimize, max_loop_iterations,
+                                  compact_calls, strategy, add, mul,
+                                  fold_constants, target, auto_self_reversing,
+                                  mem, persistent_impl, hashcons)
+    end
     for (i, T) in enumerate(arg_types.parameters)
         _is_supported_arg_type(T) || throw(ArgumentError(
             "reversible_compile: arg_types[$i] = $T is not supported; " *
             "expected one of $(_SUPPORTED_SCALAR_ARGS) or an NTuple of " *
             "those"))
+        # Bennett-19jw: the native route cannot load Float64 elements out of
+        # a tuple-typed argument (undefined-SSA crash), and the SoftFloat
+        # route takes scalar Float64 arguments only.
+        T <: Tuple && Float64 in T.parameters && throw(ArgumentError(
+            "reversible_compile: arg_types[$i] = $T — a tuple-typed argument " *
+            "with Float64 elements is not supported; pass the elements as " *
+            "separate Float64 arguments (Bennett-19jw)"))
     end
 
     # Bennett-4bcp / U102: NTuple{N,T} IS Tuple{T,T,...,T}, so passing

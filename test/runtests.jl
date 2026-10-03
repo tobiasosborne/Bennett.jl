@@ -199,6 +199,9 @@ runfile("test_g6u9_softfloat_mixed_eq.jl")
 # Bennett-lgwa: Float64 overload adapts constant / Bool / integer results and
 # rejects other result types (was an opaque VoidType error).
 runfile("test_lgwa_float64_result_kinds.jl")
+# Bennett-19jw: `Tuple{Float64...}` delegates to the Float64 overload (same
+# circuit); native float arithmetic and Float64 tuple-typed args reject loudly.
+runfile("test_19jw_float64_tuple_route.jl")
 # Bennett-8aes: SoftFloat methods ordinary Float64 code uses (mixed ordered
 # comparisons, isnan & co, isequal/isless, mixed min/max, fma/muladd, x^n).
 runfile("test_8aes_softfloat_missing_methods.jl")

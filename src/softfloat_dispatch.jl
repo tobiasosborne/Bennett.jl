@@ -243,6 +243,9 @@ A Float64 result (computed or constant) is output as its UInt64 bit pattern;
 a Bool or Int8-Int64 / UInt8-UInt64 result is output as itself. Any other
 result type is rejected with an `ArgumentError` (Bennett-lgwa).
 
+`reversible_compile(f, Tuple{Float64,...})` delegates here whenever `f` has a
+SoftFloat method, so both spellings build the same circuit (Bennett-19jw).
+
 Implementation: The user's function is called with SoftFloat arguments inside a
 `@force_inline`-d wrapper. This ensures Julia inlines through f → SoftFloat./ →
 soft_fdiv etc., eliminating struct-passing ABI and producing clean integer IR
