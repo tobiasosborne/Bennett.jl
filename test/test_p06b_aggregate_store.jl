@@ -671,9 +671,12 @@ end
     @testset "(i) ArrayType store and volatile store are untouched" begin
         for pc in (true, false)
             msg = _p06b_msg("p06b_array_store"; ptr_cells=pc)
-            @test occursin("Bennett-lgzx", msg)
-            @test occursin("U114", msg)
-            @test occursin("store of non-integer type", msg)
+            # Bennett-9fke: the fixture builds its `[2 x ptr]` with a LIVE
+            # `insertvalue`, which the cc0.3 catch used to drop silently; it is
+            # now refused at extraction, before the ArrayType store refusal
+            # (Bennett-lgzx / U114) is reached. Either way: loud, and not p06b's.
+            @test occursin("Bennett-9fke", msg)
+            @test occursin("insertvalue", msg)
             @test !occursin("Bennett-p06b", msg)
         end
         vmsg = _p06b_msg("p06b_volatile"; ptr_cells=true)
