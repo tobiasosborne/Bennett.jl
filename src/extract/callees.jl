@@ -8,6 +8,17 @@ const _known_callees = Dict{String, Function}()
 # where _lookup_callee somehow triggers a register during compilation.
 const _known_callees_lock = ReentrantLock()
 
+# Bennett-7q9z: registry generation, bumped AFTER every mutation of
+# `_known_callees` / `_known_callee_names` that changes them. Both compile
+# caches fold it into their stamp (`_cache_stamp`): a registration does not
+# move Julia's world counter, so without it a ParsedIR or circuit built before
+# `register_callee!` was served after it, with the callee lowered the old way.
+# Bumping after the mutation (never before) means a compile that raced it
+# either sees the old stamp at insert time — and skips the insert — or read
+# the new stamp and the new registry together.
+const _callee_registry_gen = Threads.Atomic{UInt}(0)
+_callee_registry_changed!() = (Threads.atomic_add!(_callee_registry_gen, UInt(1)); nothing)
+
 """
     register_callee!(f::Function) -> Nothing
 
@@ -20,15 +31,18 @@ the old overwrite silently inlined the last-registered body for both.
 """
 function register_callee!(f::Function)
     name = string(nameof(f))
-    lock(_known_callees_lock) do
+    changed = lock(_known_callees_lock) do
         prev = get(_known_callees, name, nothing)
         prev === nothing || prev === f || throw(ArgumentError(
             "register_callee!: cannot register $(parentmodule(f)).$name — the bare " *
             "name `$name` is already registered to $(parentmodule(prev)).$(nameof(prev)). " *
             "LLVM call symbols (`j_$(name)_<NNN>`) carry no module, so two same-named " *
             "callees cannot share the registry (Bennett-p9a0); rename one of them."))
+        prev === f && return false
         _known_callees[name] = f
+        return true
     end
+    changed && _callee_registry_changed!()   # Bennett-7q9z
     return nothing
 end
 
@@ -138,34 +152,44 @@ end
 # callable structs / `Type` constructors are accepted like `extract_parsed_ir`.
 const _parsed_ir_cache = Dict{Tuple{Any, Type, Bool, Symbol, Int}, ParsedIR}()
 const _parsed_ir_cache_lock = ReentrantLock()
-const _parsed_ir_cache_world = Ref{UInt}(0)
+const _parsed_ir_cache_world = Ref{Tuple{UInt, UInt}}((0, 0))   # `_cache_stamp()` it was filled at
 const _PARSED_IR_CACHE_MAX = 256
 
 """
-    _cache_world_gate!(cache, world_ref) -> UInt
+    _cache_stamp() -> Tuple{UInt, UInt}
 
-Bennett-4ddk: empty `cache` when the global world counter has moved since
-`world_ref` was recorded, then return the current world. Call with the
-cache's lock held.
+`(world counter, callee-registry generation)`: what a cached ParsedIR or
+circuit depends on beyond its key (Bennett-4ddk world, Bennett-7q9z registry).
 """
-function _cache_world_gate!(cache::AbstractDict, world_ref::Base.RefValue{UInt})
-    w = Base.get_world_counter()
-    if w != world_ref[]
+_cache_stamp() = (Base.get_world_counter(), _callee_registry_gen[])
+
+"""
+    _cache_world_gate!(cache, stamp_ref) -> Tuple{UInt, UInt}
+
+Bennett-4ddk / Bennett-7q9z: empty `cache` when the world counter or the
+callee-registry generation has moved since `stamp_ref` was recorded, then
+return the current `_cache_stamp()`. Call with the cache's lock held.
+"""
+function _cache_world_gate!(cache::AbstractDict, stamp_ref::Base.RefValue{Tuple{UInt, UInt}})
+    st = _cache_stamp()
+    if st != stamp_ref[]
         empty!(cache)
-        world_ref[] = w
+        stamp_ref[] = st
     end
-    return w
+    return st
 end
 
 """
-    _cache_insert_bounded!(cache, key, val, maxlen, world)
+    _cache_insert_bounded!(cache, key, val, maxlen, stamp)
 
-Bennett-4ddk: store `key => val` unless the world moved during the
-computation of `val` (then the entry's world is ambiguous — skip it), evicting
-arbitrary entries first so `length(cache) <= maxlen`. Call with the lock held.
+Bennett-4ddk: store `key => val` unless the world (or, Bennett-7q9z, the
+callee registry) moved during the computation of `val` (then the entry's
+stamp is ambiguous — skip it), evicting arbitrary entries first so
+`length(cache) <= maxlen`. Call with the lock held.
 """
-function _cache_insert_bounded!(cache::AbstractDict, key, val, maxlen::Int, world::UInt)
-    Base.get_world_counter() == world || return val
+function _cache_insert_bounded!(cache::AbstractDict, key, val, maxlen::Int,
+                                stamp::Tuple{UInt, UInt})
+    _cache_stamp() == stamp || return val
     while length(cache) >= maxlen
         delete!(cache, first(keys(cache)))
     end
@@ -184,7 +208,8 @@ entry). On a hit returns the previously-built `ParsedIR` by identity.
 sharing across compiles is safe.
 
 The key is `(f, arg_types, optimize, mem, bit_width)`; the cache is emptied
-whenever the world counter moves (Bennett-4ddk) and holds at most
+whenever the world counter moves (Bennett-4ddk) or the callee registry changes
+(Bennett-7q9z), and holds at most
 `_PARSED_IR_CACHE_MAX` entries.
 """
 function _extract_parsed_ir_cached(f, arg_types::Type{<:Tuple};
@@ -204,9 +229,8 @@ function _extract_parsed_ir_cached(f, arg_types::Type{<:Tuple};
     end
 end
 
-"""Empty the `_parsed_ir_cache`. For tests, and as a manual escape hatch
-after `register_callee!` (a registry change does not move the world, so the
-Bennett-4ddk world gate does not see it)."""
+"""Empty the `_parsed_ir_cache`. For tests; registry changes invalidate the
+cache on their own (Bennett-7q9z), except direct edits of the registry Dicts."""
 function _clear_parsed_ir_cache!()
     lock(_parsed_ir_cache_lock) do
         empty!(_parsed_ir_cache)
@@ -310,7 +334,7 @@ function register_callee_name!(llvm_bare::AbstractString, canonical::Symbol,
         "register_callee_name!: $callable_type has an instance; register the callable " *
         "with `register_callee!` instead (Bennett-m5q9)."))
     entry = (canonical, Base.typename(callable_type))
-    lock(_known_callees_lock) do
+    changed = lock(_known_callees_lock) do
         prev = get(_known_callee_names, name, nothing)
         prev === nothing || prev == entry || throw(ArgumentError(
             "register_callee_name!: cannot register $(_callee_identity_qual(entry[2])) as " *
@@ -318,8 +342,11 @@ function register_callee_name!(llvm_bare::AbstractString, canonical::Symbol,
             "$(_callee_identity_qual(prev[2])) => :$(prev[1]). LLVM call symbols " *
             "(`j_$(name)_<NNN>`) carry no module, so two callables cannot share the " *
             "name (Bennett-m5q9); rename one of them."))
+        prev == entry && return false
         _known_callee_names[name] = entry
+        return true
     end
+    changed && _callee_registry_changed!()   # Bennett-7q9z
     return nothing
 end
 

@@ -528,5 +528,8 @@ function extract_parsed_ir_set_from_julia(f, argtypes::Type{<:Tuple};
                 end
             end
         end
+        # Bennett-7q9z: the restore is a registry change too (it unregisters).
+        isempty(_my_registered_keys) && isempty(_my_registered_names) ||
+            _callee_registry_changed!()
     end
 end

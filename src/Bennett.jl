@@ -567,9 +567,11 @@ const _PARSED_OVERLOAD_CROSS_REJECT = (:optimize, :bit_width, :strategy)
 # the lock. Key is `parsed` itself plus all 10 compile kwargs.
 # Bennett-4ddk: world-gated and size-bounded like `_parsed_ir_cache` (lowering
 # re-extracts registered callees, so a circuit depends on the world too).
+# Bennett-7q9z: ...and on the callee registry, whose generation is the second
+# half of the `_cache_stamp()` the cache is gated on.
 const _compile_cache = Dict{Tuple, ReversibleCircuit}()
 const _compile_cache_lock = ReentrantLock()
-const _compile_cache_world = Ref{UInt}(0)
+const _compile_cache_world = Ref{Tuple{UInt, UInt}}((0, 0))   # `_cache_stamp()` it was filled at
 const _COMPILE_CACHE_MAX = 32
 
 # Bennett-33zr / BennettVM ADR 0003: registration hook for the
@@ -580,10 +582,8 @@ const _COMPILE_CACHE_MAX = 32
 # `using BennettVM`, so the circuit path is byte-unchanged when the VM is absent.
 const _REVERSIBLE_VM_BACKEND = Ref{Any}(nothing)
 
-"""Empty the `_compile_cache`. For tests, and as a manual escape hatch
-after `register_callee!` redefines a callee that was already lowered into
-a cached circuit (otherwise the next compile would return the stale
-pre-register circuit by identity hit)."""
+"""Empty the `_compile_cache`. For tests; registry changes invalidate the
+cache on their own (Bennett-7q9z), except direct edits of the registry Dicts."""
 function _clear_compile_cache!()
     lock(_compile_cache_lock) do
         empty!(_compile_cache)
@@ -617,16 +617,16 @@ it through `_extract_parsed_ir_cached` (Bennett-uiaq).
 Bennett-4ddk: the cache is emptied whenever Julia's world counter moves
 (a method definition anywhere, or a new global binding), so a redefined
 function or callee is never served a stale circuit, and it holds at most
-`_COMPILE_CACHE_MAX` entries.
+`_COMPILE_CACHE_MAX` entries. Bennett-7q9z: it is also emptied whenever the
+callee registry changes (`register_callee!`, `register_callee_name!`, the
+closed-world set extractor's scoped restore), which does not move the world.
 
 **`ReversibleCircuit` is effectively immutable** — callers MUST NOT
 mutate `.gates`, `.input_wires`, or any other field of the returned
 value after this function returns. The cached entry is shared with all
 future callers; in-place mutation would corrupt subsequent compiles.
 
-Use `Bennett._clear_compile_cache!()` to invalidate (e.g. after
-`register_callee!` for a custom callee that was lowered into a cached
-circuit).
+`Bennett._clear_compile_cache!()` empties it by hand (for tests).
 """
 function reversible_compile(parsed::ParsedIR;
                             max_loop_iterations::Int=_DEFAULT_COMPILE_OPTIONS.max_loop_iterations,
