@@ -466,3 +466,33 @@ function _jl_global_jit_alias_operand(inst::LLVM.Instruction)::Union{Nothing, St
     end
     return nothing
 end
+
+# Bennett-n4di: EVERY GlobalAlias reached from `inst`'s raw operands (directly
+# or inside a ConstantExpr, same depth cap as O1 above), as
+# `(alias_name, aliasee_name)` pairs. The callee of a call is an operand too,
+# so an alias-called function is seen. Raw C API only (see O1). Feeds the
+# module_walk benign-error swallow, which may drop an instruction only when
+# every alias it touches is a Julia `jl_global#N.jit` runtime alias.
+function _global_alias_operands(inst::LLVM.Instruction)::Vector{Tuple{String, String}}
+    out = Tuple{String, String}[]
+    function scan(ref, depth)
+        ref == C_NULL && return
+        k = LLVM.API.LLVMGetValueKind(ref)
+        if k == LLVM.API.LLVMGlobalAliasValueKind
+            nm = unsafe_string(LLVM.API.LLVMGetValueName(ref))
+            tgt = _resolve_aliasee(ref)
+            tnm = tgt === nothing ? "<unresolvable>" :
+                  unsafe_string(LLVM.API.LLVMGetValueName(tgt))
+            push!(out, (nm, isempty(tnm) ? "<unnamed>" : tnm))
+        elseif k == LLVM.API.LLVMConstantExprValueKind && depth < 4
+            for j in 0:(Int(LLVM.API.LLVMGetNumOperands(ref)) - 1)
+                scan(LLVM.API.LLVMGetOperand(ref, j), depth + 1)
+            end
+        end
+        return
+    end
+    for i in 0:(Int(LLVM.API.LLVMGetNumOperands(inst.ref)) - 1)
+        scan(LLVM.API.LLVMGetOperand(inst.ref, i), 0)
+    end
+    return out
+end

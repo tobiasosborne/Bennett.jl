@@ -659,6 +659,30 @@ function _module_to_parsed_ir_on_func_walk(mod::LLVM.Module, func::LLVM.Function
                         occursin("LLVMGlobalAlias", msg))) ||
                     (e isa MethodError && occursin("PointerType", msg))
                 )
+                # Bennett-n4di: the alias-family skip was written for Julia's
+                # `jl_global#N.jit` runtime aliases ONLY. Any other GlobalAlias
+                # (from_ll / clang `alias`, e.g. `@a = alias i8, ptr @g`) went
+                # down the same skip, and a store or call through it was
+                # ERASED — no SSA consumer is left to trip a later error
+                # (Astra F17). Admit the skip only when the instruction touches
+                # at least one alias and every alias it touches is a jl_global
+                # JIT alias; otherwise fail loud here, at the instruction.
+                if benign && e isa ErrorException
+                    aliases = _global_alias_operands(inst)
+                    bad = filter(p -> !_is_jl_global_jit_alias_name(p[1]), aliases)
+                    isempty(bad) || _ir_error(inst,
+                        "Bennett-n4di: operand through GlobalAlias " *
+                        join(("`@$(a)` (aliasee `@$(t)`)" for (a, t) in bad), ", ") *
+                        " — GlobalAlias operands are not modelled; only Julia's " *
+                        "`jl_global#N.jit` runtime aliases are skipped. Dropping " *
+                        "this instruction would silently erase its effect " *
+                        "(CLAUDE.md §1). Reference the aliasee directly.")
+                    isempty(aliases) && _ir_error(inst,
+                        "Bennett-n4di: LLVM.jl could not wrap an operand of this " *
+                        "instruction ($(first(msg, 200))) and no `jl_global#N.jit` " *
+                        "GlobalAlias operand explains it; refusing to drop the " *
+                        "instruction silently (CLAUDE.md §1).")
+                end
                 benign ? nothing : rethrow()
             end
             ir_inst === nothing && continue

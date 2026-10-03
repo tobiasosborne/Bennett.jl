@@ -881,6 +881,9 @@ runfile("test_jfw6_vec_vm_extract.jl")
 # + non-Bennett-authored guard (was: bare substring match that could
 # swallow unrelated Bennett fail-loud errors).
 runfile("test_g27k_cc03_catch_narrow.jl")
+# Bennett-n4di — the cc0.3 skip admits only jl_global#N.jit aliases; a
+# store / call / load through any other GlobalAlias fails loud (Astra F17).
+runfile("test_n4di_global_alias_fail_loud.jl")
 # Bennett-6fg9 / U19 — simulate arity + per-input bit-width guard (was:
 # silent drop of extra tuple elements, silent wrap of over-wide values).
 runfile("test_6fg9_simulate_arity.jl")
