@@ -117,6 +117,14 @@ function _value_eager_bennett_impl(lr::LoweringResult)
                 push!(result, gates[gi])
             end
             cleaned[i] = true
+            # Bennett-htu2: release the reads this dead group held on its
+            # dependencies, or a dependency whose only consumer was dead keeps
+            # a phantom count and Phase 3 never schedules it (dirty ancilla).
+            # Its reversal is left to Phase 3, which reaches it in order.
+            for dep in g.input_ssa_vars
+                j = get(name_to_idx, dep, 0)
+                j > 0 && (consumer_count[j] -= 1)
+            end
         end
     end
 
