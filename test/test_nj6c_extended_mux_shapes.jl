@@ -139,12 +139,16 @@ end
             return gate_count(_nj6c_compile(ir))
         end
         # (N, W) → (total, Toffoli)
+        # Bennett-brsg (2026-10-03): the store callee now passes the bits of
+        # the packed word above N·W through (`| (arr & HI)`), costing CNOT/NOT
+        # gates only (Toffoli unchanged). Old totals: 3422 / 6022 / 7326 /
+        # 8596 / 5142.
         baselines = Dict(
-            (3,  8) => (3422, 458),
-            (5,  8) => (6022, 896),
-            (6,  8) => (7326, 1086),
-            (7,  8) => (8596, 1280),
-            (3, 16) => (5142, 602),
+            (3,  8) => (3550, 458),
+            (5,  8) => (6150, 896),
+            (6,  8) => (7374, 1086),
+            (7,  8) => (8628, 1280),
+            (3, 16) => (5270, 602),
         )
         for ((N, W), (total, toffoli)) in baselines
             gc = _gc(N, W)

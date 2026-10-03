@@ -15,13 +15,23 @@
 #
 # Constraint: N·W ≤ 64 (single-UInt64 packing). Multi-word shapes (N·W > 64,
 # e.g. (8, 16), (16, 8), (32, 8)) are a follow-up (M1b).
+#
+# Bennett-brsg (Astra B-arith F10): every store touches ONLY the W bits of slot
+# `idx`; all other bits of `arr` — including the unused bits above N·W — pass
+# through unchanged (`| (arr & HI)` below, HI = bits above N·W). Before brsg
+# the assembly rebuilt only the low N·W bits, so a guarded store with pred=0
+# returned `arr` with its high bits cleared instead of `arr`. In the lowered
+# pipeline those high bits are always zero (`_wires_to_u64!` zero-extends and
+# the result is sliced back to N·W wires), so the pass-through is unobservable
+# there; it costs gates only for shapes with N·W < 64.
 
 """
     soft_mux_store_4x8(arr, idx, val) -> UInt64
 
 Write `val & 0xff` into position `idx ∈ 0:3` of a 4-element, 8-bit-per-element
 array packed into the low 32 bits of `arr`. Returns the updated array.
-Other slots are preserved. Branchless.
+Other slots and the high 32 bits of `arr` are preserved; `idx ≥ 4` returns
+`arr` unchanged. Branchless.
 """
 @inline function soft_mux_store_4x8(arr::UInt64, idx::UInt64, val::UInt64)::UInt64
     m = UInt64(0xff)
@@ -30,7 +40,7 @@ Other slots are preserved. Branchless.
     s1 = ifelse(idx == UInt64(1), v, (arr >> 8)  & m)
     s2 = ifelse(idx == UInt64(2), v, (arr >> 16) & m)
     s3 = ifelse(idx == UInt64(3), v, (arr >> 24) & m)
-    return s0 | (s1 << 8) | (s2 << 16) | (s3 << 24)
+    return s0 | (s1 << 8) | (s2 << 16) | (s3 << 24) | (arr & ~UInt64(0xffffffff))
 end
 
 """
@@ -108,14 +118,14 @@ end
     soft_mux_store_2x8(arr, idx, val) -> UInt64
 
 Write `val & 0xff` into position `idx ∈ 0:1` of a 2-element, 8-bit array
-packed into the low 16 bits of `arr`.
+packed into the low 16 bits of `arr`. Bits 16:63 of `arr` are preserved.
 """
 @inline function soft_mux_store_2x8(arr::UInt64, idx::UInt64, val::UInt64)::UInt64
     m = UInt64(0xff)
     v = val & m
     s0 = ifelse(idx == UInt64(0), v, arr        & m)
     s1 = ifelse(idx == UInt64(1), v, (arr >> 8) & m)
-    return s0 | (s1 << 8)
+    return s0 | (s1 << 8) | (arr & ~UInt64(0xffff))
 end
 
 """
@@ -134,14 +144,14 @@ end
     soft_mux_store_2x16(arr, idx, val) -> UInt64
 
 Write `val & 0xffff` into position `idx ∈ 0:1` of a 2-element, 16-bit array
-packed into the low 32 bits of `arr`.
+packed into the low 32 bits of `arr`. Bits 32:63 of `arr` are preserved.
 """
 @inline function soft_mux_store_2x16(arr::UInt64, idx::UInt64, val::UInt64)::UInt64
     m = UInt64(0xffff)
     v = val & m
     s0 = ifelse(idx == UInt64(0), v, arr         & m)
     s1 = ifelse(idx == UInt64(1), v, (arr >> 16) & m)
-    return s0 | (s1 << 16)
+    return s0 | (s1 << 16) | (arr & ~UInt64(0xffffffff))
 end
 
 """
@@ -218,7 +228,8 @@ end
 #
 # Each `soft_mux_store_guarded_NxW(arr, idx, val, pred)` behaves exactly like
 # the matching `soft_mux_store_NxW(arr, idx, val)` when `pred & 1 == 1`, and
-# returns `arr` unchanged when `pred & 1 == 0`. The low bit of `pred` carries
+# returns `arr` unchanged (all 64 bits, Bennett-brsg) when `pred & 1 == 0`,
+# for every idx and val. The low bit of `pred` carries
 # the path predicate (block guard); high bits are explicitly masked off to
 # defend against high-bit garbage surfacing via the 1→64 wire promotion.
 #
@@ -245,7 +256,7 @@ UInt64 (low bit carries the 1-bit path predicate; high bits ignored).
     s1 = ifelse((g & UInt64(idx == UInt64(1))) != UInt64(0), v, (arr >> 8)  & m)
     s2 = ifelse((g & UInt64(idx == UInt64(2))) != UInt64(0), v, (arr >> 16) & m)
     s3 = ifelse((g & UInt64(idx == UInt64(3))) != UInt64(0), v, (arr >> 24) & m)
-    return s0 | (s1 << 8) | (s2 << 16) | (s3 << 24)
+    return s0 | (s1 << 8) | (s2 << 16) | (s3 << 24) | (arr & ~UInt64(0xffffffff))
 end
 
 """
@@ -287,6 +298,7 @@ for (N, W) in [(3, 8), (5, 8), (6, 8), (7, 8), (3, 16)]
     load_name  = Symbol(:soft_mux_load_,  N, :x, W)
     store_name = Symbol(:soft_mux_store_, N, :x, W)
     mask       = UInt64((UInt128(1) << W) - UInt128(1))
+    hi_mask    = ~UInt64((UInt128(1) << (N * W)) - UInt128(1))  # Bennett-brsg
 
     @eval begin
         @inline function $load_name(arr::UInt64, idx::UInt64)::UInt64
@@ -315,7 +327,8 @@ for (N, W) in [(3, 8), (5, 8), (6, 8), (7, 8), (3, 16)]
                 k0 = UInt64(k - 1)
                 ifelse(idx == k0, v, (arr >> (Int(k0) * $W)) & m)
             end
-            return reduce(|, ntuple(k -> slots[k] << ((k - 1) * $W), $N))
+            return (arr & $hi_mask) |
+                   reduce(|, ntuple(k -> slots[k] << ((k - 1) * $W), $N))
         end
     end
 end
@@ -328,6 +341,9 @@ for (N, W) in [(2, 8), (2, 16), (4, 16), (2, 32),
     @assert N * W <= 64 "shape ($N, $W) exceeds UInt64 packing"
     fn_name = Symbol(:soft_mux_store_guarded_, N, :x, W)
     mask    = UInt64((UInt128(1) << W) - UInt128(1))
+    # Bennett-brsg: bits above N·W pass through (zero for N·W == 64 shapes,
+    # where LLVM folds the `arr & 0` term away).
+    hi_mask = ~UInt64((UInt128(1) << (N * W)) - UInt128(1))
 
     @eval begin
         """
@@ -335,8 +351,9 @@ for (N, W) in [(2, 8), (2, 16), (4, 16), (2, 32),
 
         M2d — conditional MUX-store for $($N)×$($W)-bit packed array. Behaves
         as `soft_mux_store_$($N)x$($W)(arr, idx, val)` when `pred & 1 != 0`;
-        returns `arr` unchanged when `pred & 1 == 0`. Branchless; high bits
-        of `pred` are masked off.
+        returns `arr` unchanged (all 64 bits) when `pred & 1 == 0`. Bits of
+        `arr` above N·W always pass through. Branchless; high bits of `pred`
+        are masked off.
         """
         @inline function $fn_name(arr::UInt64, idx::UInt64,
                                   val::UInt64, pred::UInt64)::UInt64
@@ -348,7 +365,8 @@ for (N, W) in [(2, 8), (2, 16), (4, 16), (2, 32),
                 ifelse((g & UInt64(idx == k0)) != UInt64(0),
                        v, (arr >> (Int(k0) * $W)) & m)
             end
-            return reduce(|, ntuple(k -> slots[k] << ((k - 1) * $W), $N))
+            return (arr & $hi_mask) |
+                   reduce(|, ntuple(k -> slots[k] << ((k - 1) * $W), $N))
         end
     end
 end
