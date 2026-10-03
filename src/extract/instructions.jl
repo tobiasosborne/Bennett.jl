@@ -5000,6 +5000,13 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     # llvm.bswap.iN(x) = reverse byte order (N must be multiple of 16)
     if startswith(cname, "llvm.bswap.")
         w = _iwidth(ops[1])
+        # Bennett-u5h0: LangRef / the LLVM verifier require an even number of
+        # bytes. Unverified .ll text reaches here anyway; at w % 8 != 0 the
+        # byte loop drops the top w % 8 bits (i9 → x & 0xff) and at w < 8 it
+        # emits a negative shift, so reject every width LLVM rejects.
+        w % 16 == 0 || _ir_error(inst,
+            "llvm.bswap.i$w: width must be a multiple of 16 (an even number " *
+            "of bytes) per LLVM LangRef (Bennett-u5h0)")
         x_op = _operand(ops[1], names)
         n_bytes = w ÷ 8
         result = IRInst[]
