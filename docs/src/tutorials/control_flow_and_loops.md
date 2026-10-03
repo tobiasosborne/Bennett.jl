@@ -26,7 +26,7 @@ c = reversible_compile(absf, Int8)
 
 gate_count(c)      # => (total = 258, NOT = 60, CNOT = 156, Toffoli = 42)
 ancilla_count(c)   # => 100
-toffoli_depth(c)   # => 16
+toffoli_depth(c)   # => 30
 ```
 
 `gate_count` returns a `NamedTuple`, not a bare integer — `total` plus the

@@ -161,7 +161,7 @@ julia> toffoli_depth(reversible_compile((x, y) -> x * y, Int32, Int32))         
 180
 
 julia> toffoli_depth(reversible_compile((x, y) -> x * y, Int32, Int32; mul=:qcla_tree))    # Sun–Borissov tree
-56
+256
 ```
 
 ## Memory and table lookup

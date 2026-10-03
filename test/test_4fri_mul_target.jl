@@ -12,8 +12,8 @@ using Bennett
 #
 # This pins:
 #   1. Default behaviour unchanged (`target=:gate_count`, shift-and-add).
-#   2. `target=:depth` flips `:auto` to `qcla_tree` at W=32 with a
-#      ≥3× Toffoli-depth reduction.
+#   2. `target=:depth` flips `:auto` to `qcla_tree` at W=32 (the ≥3×
+#      Toffoli-depth reduction is @test_broken since Bennett-u3b2).
 #   3. Explicit `mul=:shift_add` still wins over a `target=:depth`
 #      preference (user intent is authoritative).
 #   4. Invalid `target` values raise ArgumentError naming the valid set.
@@ -38,8 +38,14 @@ using Bennett
                                    target=:depth, fold_constants=false)
         @test verify_reversibility(c_def)
         @test verify_reversibility(c_dep)
-        # Pin the 3× depth reduction advertised in the U30 catalogue.
-        @test toffoli_depth(c_dep) * 3 <= toffoli_depth(c_def)
+        # The U30 catalogue advertised a ≥3× Toffoli-depth reduction, but it
+        # was measured with the pre-Bennett-u3b2 metric that skipped CNOTs
+        # (old: 56 vs 190). With dependencies carried through CNOTs the
+        # qcla_tree circuit is DEEPER than shift-and-add at W=32: 256 vs 190.
+        # Pin the measured values; the reduction claim is a known-broken goal.
+        @test toffoli_depth(c_def) == 190
+        @test toffoli_depth(c_dep) == 256
+        @test_broken toffoli_depth(c_dep) * 3 <= toffoli_depth(c_def)
         # Same outputs on a range of inputs.
         for x in Int32.([0, 1, 3, -7, 100]), y in Int32.([0, 1, -4, 11, 255])
             @test simulate(c_def, (x, y)) == simulate(c_dep, (x, y))

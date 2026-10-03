@@ -96,7 +96,8 @@ verify_reversibility(c)  # true
 When you are targeting a fault-tolerant architecture, T-depth — not total gate
 count — is the cost that matters, and `toffoli_depth` is the proxy for it
 (each Toffoli decomposes to a fixed-depth T-gadget). The QCLA-tree multiplier
-collapses the depth dramatically. On `Int32 × Int32`:
+has `O(log² W)` Toffoli-depth asymptotically, but at `Int32 × Int32` the
+compiled circuit is currently *deeper* than shift-and-add:
 
 ```julia
 square = (x, y) -> x * y
@@ -105,12 +106,14 @@ c_default = reversible_compile(square, Int32, Int32)                  # mul=:shi
 c_tree    = reversible_compile(square, Int32, Int32; mul=:qcla_tree)
 
 toffoli_depth(c_default)  # 180
-toffoli_depth(c_tree)     # 56
+toffoli_depth(c_tree)     # 256
 ```
 
-That is a **3.2× depth reduction** (180 → 56) for the same product. The trade
-is more total Toffoli gates and more ancillae — exactly the bargain you want
-when error-corrected logical depth dominates the resource bill.
+An earlier version of this page reported `56` and a 3.2× reduction; that
+number came from a `toffoli_depth` that ignored dependencies carried through
+CNOT gates (fixed in Bennett-u3b2). The bare primitive tracks the paper's
+`3·log²n + 7·log n + 14` formula (`128` vs `124` at `W=32`), but uncomputation
+doubles it in the compiled circuit, so the crossover lies at larger `W`.
 
 You do not have to name the multiplier by hand. Setting `target=:depth`
 flips `mul=:auto` from shift-and-add to `qcla_tree` (pre-resolved in
@@ -119,7 +122,7 @@ automatically:
 
 ```julia
 # target=:depth promotes mul=:auto → :qcla_tree, producing the same
-# 56-Toffoli-depth circuit as mul=:qcla_tree above.
+# 256-Toffoli-depth circuit as mul=:qcla_tree above.
 c = reversible_compile((x, y) -> x * y, Int32, Int32; target=:depth)
 verify_reversibility(c)  # true
 ```

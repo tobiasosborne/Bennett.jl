@@ -36,9 +36,9 @@ function _measure(W)
 
     wd .= 0; md = 0
     for g in gates
-        g isa ToffoliGate || continue
-        ws = (g.control1, g.control2, g.target)
-        d = maximum(wd[w] for w in ws) + 1
+        # Bennett-u3b2: NOT/CNOT carry the dependency, only Toffolis add depth.
+        ws = Bennett.gate_wires(g)
+        d = maximum(wd[w] for w in ws) + (g isa ToffoliGate ? 1 : 0)
         for w in ws; wd[w] = d; end
         md = max(md, d)
     end
@@ -73,14 +73,15 @@ end
     end
 end
 
-@testset "X3: Toffoli-depth BEATS paper formula (wire-granular parallelism)" begin
+@testset "X3: Toffoli-depth within 10% of paper formula" begin
     # Paper's 3 log²n + 7 log n + 14 formula assumes Schedule B time-slicing.
-    # Our measured Toffoli-depth walks per-wire dependencies and finds more
-    # parallelism at the gate-emission level. Expected ratio < 0.5 at n >= 8.
+    # Bennett-u3b2: this testset used to claim "beats paper, ratio < 0.5"
+    # (measured 20/24/28), but the metric skipped CNOTs and so dropped every
+    # dependency carried through a CNOT copy. Propagating through all gates
+    # gives 56/88/128 vs paper 62/90/124 (ratio 0.90/0.98/1.03).
     for W in (8, 16, 32)
         m = _measure(W)
-        @test m.tof_depth <= _paper_tdep(W)
-        @test m.tof_depth / _paper_tdep(W) < 0.5
+        @test m.tof_depth < 1.1 * _paper_tdep(W)
     end
 end
 

@@ -124,17 +124,19 @@ t_count(c::ReversibleCircuit) = 7 * count(g -> g isa ToffoliGate, c.gates)
 """
     toffoli_depth(c::ReversibleCircuit) -> Int
 
-Longest chain of Toffoli gates along a data-dependence path. NOT/CNOT gates
-do not advance the count. This is the raw circuit-level metric; `t_depth`
-converts it to a Clifford+T T-depth estimate via a Toffoli decomposition.
+Longest chain of Toffoli gates along a data-dependence path. Every gate
+propagates the deepest Toffoli count among its wires to all the wires it
+touches, but only a Toffoli increments it: NOT/CNOT gates cost nothing yet
+still carry the dependency (Toffoli → CNOT → Toffoli has depth 2,
+Bennett-u3b2). This is the raw circuit-level metric; `t_depth` converts it
+to a Clifford+T T-depth estimate via a Toffoli decomposition.
 """
 function toffoli_depth(c::ReversibleCircuit)
     wd = zeros(Int, c.n_wires)
     md = 0
     for gate in c.gates
-        gate isa ToffoliGate || continue
         ws = gate_wires(gate)
-        d = maximum(wd[w] for w in ws) + 1
+        d = maximum(wd[w] for w in ws) + (gate isa ToffoliGate ? 1 : 0)
         for w in ws; wd[w] = d; end
         md = max(md, d)
     end

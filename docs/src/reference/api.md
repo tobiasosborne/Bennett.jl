@@ -101,7 +101,7 @@ c_shift = reversible_compile((x, y) -> x * y, Int32, Int32);             # mul=:
 toffoli_depth(c_shift)                                                   # => 180
 
 c_tree  = reversible_compile((x, y) -> x * y, Int32, Int32; mul=:qcla_tree);
-toffoli_depth(c_tree)                                                    # => 56
+toffoli_depth(c_tree)                                                    # => 256 (Bennett-u3b2)
 ```
 
 `add=:qcla` also compiles and verifies on this function. A small polynomial

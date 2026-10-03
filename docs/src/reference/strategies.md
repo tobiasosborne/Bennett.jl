@@ -114,7 +114,7 @@ cs = reversible_compile((x, y) -> x * y, Int32, Int32)               # mul=:auto
 toffoli_depth(cs)   # => 180
 
 cd = reversible_compile((x, y) -> x * y, Int32, Int32; mul = :qcla_tree)
-toffoli_depth(cd)   # => 56
+toffoli_depth(cd)   # => 256   (deeper than shift_add; see note below)
 ```
 
 Notes:
@@ -128,8 +128,12 @@ Notes:
   but the binop lowering slices `[1:W]` (mod `2^W`) for an LLVM `mul`, so the
   self-reversing fast path is currently unreachable on that route (the high `W`
   bits are stranded as dirty ancillae).
-- Measured `qcla_tree` Toffoli-depth *beats* the paper's Table III formula
-  (`< 0.5×`) due to wire-granular parallelism.
+- The bare `lower_mul_qcla_tree!` primitive measures Toffoli-depth
+  `56 / 88 / 128` at `W = 8 / 16 / 32`, i.e. `0.90–1.03×` the paper's Table III
+  formula. The compiled `W=32` circuit (forward + uncompute) reaches `256`,
+  deeper than shift_add's `180`. Earlier text claimed it *beat* the paper
+  (`< 0.5×`) and quoted `56`; that was an artifact of a `toffoli_depth` that
+  skipped CNOT-carried dependencies (Bennett-u3b2).
 
 ---
 

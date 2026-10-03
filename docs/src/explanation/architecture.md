@@ -148,14 +148,14 @@ Reversible arithmetic is not one algorithm per operation — it is a cost surfac
 
 There is **no Karatsuba**: `mul=:karatsuba` was removed (2026-04-27) and now throws. It was 1.9–3.5× worse on Toffoli count than schoolbook for every width up to 64; the crossover is past W=128. The dispatcher accepts only `:auto`, `:shift_add`, `:qcla_tree`.
 
-The payoff is visible on a 32×32 multiply, where the two strategies sit at very different points on the cost surface:
+On a 32×32 multiply the two strategies sit at different points on the cost surface (the tree's `O(log²W)` depth advantage has not yet overtaken its uncompute cost at this width):
 
 ```julia
 c1 = reversible_compile((x, y) -> x * y, Int32, Int32)                 # default => shift_add
 toffoli_depth(c1)   # => 180
 
 c2 = reversible_compile((x, y) -> x * y, Int32, Int32; mul=:qcla_tree)
-toffoli_depth(c2)   # => 56
+toffoli_depth(c2)   # => 256 (Bennett-u3b2: not yet shallower at W=32)
 ```
 
 The framework is additive: a new strategy plugs into `_pick_{add,mul}_strategy` without touching any call site.

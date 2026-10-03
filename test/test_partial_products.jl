@@ -19,9 +19,9 @@ end
 function _toffoli_depth(gates, n_wires)
     wd = zeros(Int, n_wires); md = 0
     for g in gates
-        g isa ToffoliGate || continue
-        ws = (g.control1, g.control2, g.target)
-        d = maximum(wd[w] for w in ws) + 1
+        # Bennett-u3b2: NOT/CNOT carry the dependency, only Toffolis add depth.
+        ws = Bennett.gate_wires(g)
+        d = maximum(wd[w] for w in ws) + (g isa ToffoliGate ? 1 : 0)
         for w in ws; wd[w] = d; end
         md = max(md, d)
     end
