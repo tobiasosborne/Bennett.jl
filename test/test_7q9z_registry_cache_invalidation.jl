@@ -6,11 +6,16 @@ using Bennett: register_callee!, register_callee_name!, extract_parsed_ir
 # (`_parsed_ir_cache`, `_compile_cache`). Registration does not move Julia's
 # world counter, so the Bennett-4ddk world gate never saw it: a ParsedIR (or
 # circuit) built BEFORE `register_callee!` was served by identity AFTER it, with
-# the callee lowered the old way. Witness: `f7q9z` calls `throw_7q9z`, whose
-# `j_throw_` LLVM symbol the unregistered path drops as a benign throw helper
-# (leaving the call's result undefined, so the compile fails in lowering). The
-# failing compile still CACHED that ParsedIR, so after registering `throw_7q9z`
-# the next compile reused it and failed again, until a manual cache clear.
+# the callee lowered the old way. The original witness was a user function
+# named `throw_7q9z`: its `j_throw_` LLVM symbol was dropped as a benign throw
+# helper, so the unregistered compile's extraction SUCCEEDED and was cached, and
+# after `register_callee!` that stale ParsedIR was reused. Bennett-08xz closed
+# that drop (a `j_throw_` call is dropped only when it is `noreturn`); an
+# unregistered call now fails loud in extraction and caches nothing. So the
+# end-to-end witness below now checks only that a registration turns a loud
+# miss into a correct circuit with the world unmoved, and the stale-cache
+# invariant itself is pinned by the cache-identity testsets (a hit before the
+# registration, a rebuilt object after it).
 # Fix: a registry generation counter, bumped on every registry mutation, is
 # folded into the caches' world stamp.
 #
@@ -19,8 +24,8 @@ using Bennett: register_callee!, register_callee_name!, extract_parsed_ir
 # and empties both caches — which would mask the bug. The witness therefore
 # runs inside top-level functions, and asserts the world did not move.
 
-@noinline throw_7q9z(x::Int8) = x * x + Int8(3)
-f7q9z(x::Int8) = throw_7q9z(x) + Int8(1)
+@noinline q7_sq(x::Int8) = x * x + Int8(3)
+f7q9z(x::Int8) = q7_sq(x) + Int8(1)
 q7_plain(x::Int8) = x + Int8(1)
 q7_dummy(x::Int8) = x - Int8(1)
 @noinline q7_leaf(x::Int8) = x + Int8(2)
@@ -66,13 +71,14 @@ function _q7_witness()
     w0 = Base.get_world_counter()
     try
         before = _q7_try_compile(f7q9z, Int8)
-        @test before isa Exception          # unregistered: no circuit
-        register_callee!(throw_7q9z)
+        @test before isa Exception          # unregistered: loud U15 error, no circuit
+        before isa Exception && @test occursin("q7_sq", sprint(showerror, before))
+        register_callee!(q7_sq)
         after = _q7_try_compile(f7q9z, Int8)
         @test Base.get_world_counter() == w0   # the 4ddk gate cannot have fired
         _q7_exhaustive(after, f7q9z)
     finally
-        _q7_unregister!("throw_7q9z")
+        _q7_unregister!("q7_sq")
     end
 end
 

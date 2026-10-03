@@ -135,7 +135,7 @@ function _vec_vm_skeleton(func::LLVM.Function, vb::_VecBacking)
             push!(skel, inst.ref)        # global-address Memory-header load
         else
             cn = _heap_callee_name(inst)
-            if !isempty(cn) && _vec_vm_is_skel_callee(cn)
+            if !isempty(cn) && _vec_vm_is_skel_callee(inst, cn)
                 push!(skel, inst.ref)
             end
         end
@@ -206,7 +206,7 @@ function _vec_vm_skeleton(func::LLVM.Function, vb::_VecBacking)
             continue
         end
         cn = _heap_callee_name(inst)
-        _vec_vm_is_skel_callee(cn) ||
+        _vec_vm_is_skel_callee(inst, cn) ||
             _vec_vm_error("skeleton-tainted call to `@$(isempty(cn) ? "?" : cn)` " *
                           "($(_heap_vname(inst))) is not an allowlisted Case-A " *
                           "callee — the Vector pointer / element value escapes " *
@@ -255,7 +255,11 @@ end
 # `setindex!`) matches NEITHER class and is still rejected loud (P-callee).
 # Ref: src/extract/instructions.jl §U15 benign_prefixes; heap.jl §P-callee.
 #   Bennett-msob (over-rejection regression fix).
-function _vec_vm_is_skel_callee(cn::AbstractString)
+# Bennett-08xz: a class-(2) name counts only when the call cannot return
+# (`_is_noreturn_call`, as in `_is_runtime_throw_call`) — a user function
+# `throw_foo` mangles to `j_throw_foo_NNN`, and treating its call as skeleton
+# would drop it.
+function _vec_vm_is_skel_callee(inst::LLVM.Instruction, cn::AbstractString)
     cn in (_VEC_VM_MEM_ALLOC, _VEC_VM_GC_LOADED, _VEC_VM_GC_ALLOC_OBJ,
            _VEC_VM_GC_ALLOC_OBJ2, _VEC_VM_PGCSTACK, _VEC_VM_ARGERR) && return true
     startswith(cn, "llvm.memset.") && return true
@@ -263,7 +267,8 @@ function _vec_vm_is_skel_callee(cn::AbstractString)
     startswith(cn, "llvm.lifetime.") && return true
     startswith(cn, "llvm.smul.with.overflow.") && return true
     startswith(cn, "llvm.trap") && return true
-    _vec_vm_is_dead_throw_callee(cn) && return true
+    _vec_vm_is_dead_throw_callee(cn) &&
+        return _is_noreturn_call(inst)
     return false
 end
 

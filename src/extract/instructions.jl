@@ -2050,6 +2050,39 @@ function _57hd_call_attr(call::LLVM.Instruction, idx::UInt32, nm::String)
     return LLVM.API.LLVMGetEnumAttributeAtIndex(co, idx, k)
 end
 
+# Bennett-08xz: callee-name prefixes of Julia's never-returning runtime / Base
+# error helpers. A NAME IS NOT ENOUGH: Julia mangles a user function
+# `throw_foo` as `j_throw_foo_NNN`, and a `.ll` input may name a C function
+# `jl_throw_x` / `ijl_bounds_error_x`; dropping such a call deletes a returned
+# value or an effect. Measured (Julia 1.12, both optimize modes): every genuine
+# helper — `ijl_throw` (DivideError, InexactError via fptosi),
+# `ijl_bounds_error_int`, `j_throw_inexacterror_NNN`,
+# `j_throw_boundserror_NNN`, `j_throw_overflowerr_binaryop_NNN`,
+# `j_throw_complex_domainerror_NNN` — carries `noreturn` on its declaration
+# (`ijl_*` not at the call site), and so does a user function inferred
+# `Union{}`, which is equally an error path.
+const _RUNTIME_THROW_PREFIXES = (
+    "j_throw_", "ijl_throw", "jl_throw", "ijl_bounds_error", "jl_bounds_error")
+
+# True iff `call` cannot return: the call site or the callee declaration is
+# `noreturn`, or the next instruction is `unreachable` (returning would be UB).
+# The second arm covers hand-written `.ll` that declares `@ijl_throw(ptr)`
+# without attributes; real Julia IR carries the attribute (at optimize=false a
+# `j_throw_*` call is not always directly followed by `unreachable`).
+function _is_noreturn_call(call::LLVM.Instruction)
+    _57hd_call_attr(call, _57HD_FN_ATTR_IDX, "noreturn") != C_NULL && return true
+    nxt = LLVM.API.LLVMGetNextInstruction(call)
+    return nxt != C_NULL &&
+           LLVM.API.LLVMGetInstructionOpcode(nxt) == LLVM.API.LLVMUnreachable
+end
+
+# True iff `call` is a call to a never-returning error helper: the callee name
+# has a runtime-throw prefix AND `_is_noreturn_call`. A prefix match that can
+# return to live code must take the normal call path (registered callee or the
+# loud U15 error).
+_is_runtime_throw_call(call::LLVM.Instruction, cname::AbstractString) =
+    any(p -> startswith(cname, p), _RUNTIME_THROW_PREFIXES) && _is_noreturn_call(call)
+
 # The callee's MemoryEffects, or `nothing` when no `memory` attribute is
 # retrievable at all (⇒ `:unknown` ⇒ the walk stops). `julia.get_pgcstack`
 # carries NO attribute group whatever and lands here, deliberately: this arm
@@ -7086,17 +7119,11 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             # valid input would be a compilation bug upstream.
             "llvm.trap",
             "llvm.debugtrap",
-            # Julia runtime throw helpers. For pure-bit-op functions on
-            # UInt64 (the soft-float kernels) these are unreachable dead
-            # code that Julia's type-conservative codegen emits anyway.
-            # Silent drop matches pre-fix behaviour; see U15 note: any
-            # function whose throw path IS reachable on valid input would
-            # silently produce garbage, which is the same gap as before.
-            "j_throw_",
-            "ijl_throw",
-            "jl_throw",
-            "ijl_bounds_error",
-            "jl_bounds_error",
+            # Julia runtime throw helpers (`j_throw_*`, `ijl_throw`,
+            # `ijl_bounds_error*`, ...) are NOT here: they are dropped by
+            # `_is_runtime_throw_call` below only when the call cannot return
+            # (Bennett-08xz — the bare prefix also matched user functions
+            # named `throw_*`).
             # Julia meta-ops (GC safepoint, pointer_from_objref, etc.).
             "julia.safepoint",
             "julia.gc_",
@@ -7106,6 +7133,15 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             "julia.get_gc_frame_slot",
         )
         if any(p -> startswith(cname, p), benign_prefixes)
+            return nothing
+        end
+        # Julia runtime throw helpers. For pure-bit-op functions on UInt64
+        # (the soft-float kernels) these are unreachable dead code that Julia's
+        # type-conservative codegen emits anyway. Silent drop matches pre-fix
+        # behaviour; see U15 note: any function whose throw path IS reachable on
+        # valid input would silently produce garbage (Bennett-jzhh). The drop
+        # needs a call that cannot return as well as the name (Bennett-08xz).
+        if _is_runtime_throw_call(inst, cname)
             return nothing
         end
         # Inline asm: the callee operand is not a named function value.

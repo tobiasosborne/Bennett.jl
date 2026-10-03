@@ -505,6 +505,9 @@ runfile("test_ares_atomic_vm_relax.jl")
 # keeps llvm.lifetime/trap/etc. correctness-neutral. (memset graduated
 # out of the allowlist via Bennett-9nwt — handled explicitly now.)
 runfile("test_5oyt_unregistered_callee.jl")
+# Bennett-08xz — a `j_throw_` / `ijl_throw` / `*_bounds_error` name alone no
+# longer drops a call: it must also be `noreturn` (user `throw_*` functions).
+runfile("test_08xz_throw_prefix_user_fn.jl")
 # Bennett-wh1p — callee demangling is case-preserving (one shared
 # `_demangle_llvm_callee`): `j_Foo_N` no longer folds onto a registered `foo`
 # (silent wrong body) nor misses a registered `Foo` (loud set-extraction reject).
