@@ -349,6 +349,10 @@ runfile("test_mrhg_narrow_soundness.jl")
 # eq/ne/unsigned compare admits only constants a signed and an unsigned source
 # agree on (0..2^(W-1)-1), exhaustively against a number-semantics oracle.
 runfile("test_6p8j_narrow_cmp_consts.jl")
+# Bennett-g7d6 — the narrowed ParsedIR decides every field explicitly: the
+# metadata fields (globals / memssa / synth_ptr_provenance) are reset only while
+# no narrowed node can read them; constant-table functions are refused.
+runfile("test_g7d6_narrow_parsedir_fields.jl")
 runfile("test_preprocessing.jl")
 runfile("test_t0_preprocessing.jl")
 runfile("test_ir_memory_types.jl")

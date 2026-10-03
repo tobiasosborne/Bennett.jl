@@ -571,6 +571,8 @@ MemSSAInfo() = MemSSAInfo(Dict{Int,Int}(), Dict{Int,Union{Int,Symbol}}(),
 
 # --- Parsed IR bundle ---
 
+# Adding a field? Bit-width narrowing must decide what to do with it:
+# `_NARROW_PARSEDIR_FIELDS` in src/narrow.jl (checked at load time, Bennett-g7d6).
 struct ParsedIR
     ret_width::Int
     args::Vector{Tuple{Symbol, Int}}

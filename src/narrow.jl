@@ -202,7 +202,76 @@ function _narrow_ir(parsed::ParsedIR, W::Int)
         new_term = _narrow_inst(block.terminator, S, W)
         push!(new_blocks, IRBasicBlock(block.label, new_insts, new_term))
     end
-    return ParsedIR(W, new_args, new_blocks, [W])
+    return _narrow_rebuild(parsed, W, new_args, new_blocks)
+end
+
+# ---- rebuilding the narrowed ParsedIR (Bennett-g7d6) ------------------------
+#
+# Every ParsedIR field and what narrowing does with it.  `:retyped` fields are
+# rewritten by `_narrow_ir` above.  `:dead_metadata` fields are side tables
+# that only memory / pointer / call nodes read (`globals`: the load and GEP
+# lowerings; `memssa`, `synth_ptr_provenance`: extraction only).  They describe
+# SOURCE-width data and layouts, so they cannot be carried into a W-bit IR;
+# they are reset to their defaults, which is exact ONLY while the narrowed IR
+# has no node that could read them — `_narrow_rebuild` enforces that.  The
+# pre-g7d6 code called the 4-argument back-compat constructor, which reset
+# them with no such check.  A new ParsedIR field must get a decision here: the
+# load-time check below (and test_g7d6) compares this list to `fieldnames`.
+const _NARROW_PARSEDIR_FIELDS = (
+    :ret_width            => :retyped,
+    :args                 => :retyped,
+    :blocks               => :retyped,
+    :ret_elem_widths      => :retyped,
+    :globals              => :dead_metadata,
+    :memssa               => :dead_metadata,
+    :synth_ptr_provenance => :dead_metadata,
+)
+# "Is this dead-metadata field at its default?" — one predicate per field.
+const _NARROW_METADATA_IS_DEFAULT = (
+    globals              = isempty,
+    memssa               = isnothing,
+    synth_ptr_provenance = isempty,
+)
+Tuple(first.(_NARROW_PARSEDIR_FIELDS)) == fieldnames(ParsedIR) &&
+    Set(f for (f, k) in _NARROW_PARSEDIR_FIELDS if k === :dead_metadata) ==
+        Set(keys(_NARROW_METADATA_IS_DEFAULT)) ||
+    error("src/narrow.jl: _NARROW_PARSEDIR_FIELDS is out of sync with " *
+          "fieldnames(ParsedIR) = $(fieldnames(ParsedIR)); decide how bit-width " *
+          "narrowing treats the new field (Bennett-g7d6)")
+
+# The scalar node types the allowlist admits; none of them reads a
+# dead-metadata field.  Any other node in a narrowed IR is a potential reader.
+const _NARROW_SCALAR_NODES =
+    Union{IRBinOp, IRICmp, IRSelect, IRCast, IRPhi, IRRet, IRBranch}
+
+function _narrow_rebuild(parsed::ParsedIR, W::Int,
+                         new_args::Vector{Tuple{Symbol, Int}},
+                         new_blocks::Vector{IRBasicBlock})
+    reader = nothing
+    for blk in new_blocks, inst in Iterators.flatten((blk.instructions,
+                                                      (blk.terminator,)))
+        inst isa _NARROW_SCALAR_NODES && continue
+        reader = inst
+        break
+    end
+    if reader !== nothing
+        for (name, kind) in _NARROW_PARSEDIR_FIELDS
+            kind === :dead_metadata || continue
+            getfield(_NARROW_METADATA_IS_DEFAULT, name)(getfield(parsed, name)) &&
+                continue
+            throw(ArgumentError(
+                "reversible_compile(...; bit_width=W): refusing to narrow — the " *
+                "IR carries a non-default `$name` and the narrowed IR contains " *
+                "a `$(typeof(reader))` node that may read it: `$name` describes " *
+                "SOURCE-width data / layout that narrowing cannot re-type, and " *
+                "dropping it would silently change what that node computes " *
+                "(Bennett-g7d6)"))
+        end
+    end
+    return ParsedIR(W, new_args, new_blocks, [W],
+                    Dict{Symbol, Tuple{Vector{UInt64}, Int}}(),   # globals
+                    nothing,                                     # memssa
+                    Set{Tuple{Symbol, Int, Int}}())              # synth_ptr_provenance
 end
 
 # ---- per-node narrowing (validate, then rewrite) ----------------------------
