@@ -29,6 +29,25 @@ end
 @inline Base.:-(a::Real, b::SoftFloat) = SoftFloat(Float64(a)) - b
 @inline Base.:(<)(a::SoftFloat, b::SoftFloat) = soft_fcmp_olt(a.bits, b.bits) != UInt64(0)
 @inline Base.:(==)(a::SoftFloat, b::SoftFloat) = soft_fcmp_oeq(a.bits, b.bits) != UInt64(0)
+# Bennett-g6u9: mixed equality. SoftFloat is not a Number, so without these
+# `SoftFloat(0.0) == 0.0` falls to Base's generic `x === y` (false) and the
+# branch folds away at trace time — a silent miscompile. `!=` follows via
+# Base's `!(x == y)`. Integer comparison is exact like Base's Float64/Integer
+# `==`: `Float64(b) == b` (Base semantics, constant-folded for literals) is
+# false when `b` is not representable, and then no Float64 equals `b`.
+@inline Base.:(==)(a::SoftFloat, b::Float64) = a == SoftFloat(b)
+@inline Base.:(==)(a::Float64, b::SoftFloat) = SoftFloat(a) == b
+@inline function Base.:(==)(a::SoftFloat, b::Integer)
+    fb = Float64(b)
+    return (a == SoftFloat(fb)) & (fb == b)
+end
+@inline Base.:(==)(a::Integer, b::SoftFloat) = b == a
+Base.:(==)(a::SoftFloat, b::Real) = _softfloat_mixed_eq_reject(b)
+Base.:(==)(a::Real, b::SoftFloat) = _softfloat_mixed_eq_reject(a)
+@noinline _softfloat_mixed_eq_reject(y) =
+    throw(ArgumentError("SoftFloat == $(typeof(y)) is not supported (Bennett-g6u9): only " *
+                        "Float64 and Integer operands compare exactly against a SoftFloat; " *
+                        "convert the operand to Float64 explicitly"))
 @inline Base.copysign(x::SoftFloat, y::SoftFloat) =
     SoftFloat((x.bits & UInt64(0x7fffffffffffffff)) | (y.bits & UInt64(0x8000000000000000)))
 @inline Base.abs(x::SoftFloat) = SoftFloat(x.bits & UInt64(0x7fffffffffffffff))

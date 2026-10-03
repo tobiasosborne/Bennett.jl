@@ -180,6 +180,9 @@ runfile("test_3mo_llvm_sincos_dispatch.jl")
 # overloads + the dq8l/U81 VoidType-wall extraction regression + one full
 # reversible_compile(sin, Float64) E2E — the heavy part).
 runfile("test_l5v8_softfloat_sugar_transcendentals.jl")
+# Bennett-g6u9: mixed SoftFloat/Float64 and SoftFloat/Integer `==` (was Base's
+# generic `===` fallback → branch folded away, silent identity miscompile).
+runfile("test_g6u9_softfloat_mixed_eq.jl")
 # Bennett-s1zl: direct llvm.tan dispatch (Tier C1 trig completion).
 runfile("test_s1zl_llvm_tan_dispatch.jl")
 # Bennett-qpke: direct llvm.atan dispatch (Tier C1.2 — atan, no rem_pio2).
