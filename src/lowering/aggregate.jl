@@ -190,6 +190,40 @@ function _cond_negate_inplace!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     end
 end
 
+_is_zero_operand(op::IROperand) = op isa ConstOperand && op.value == 0
+
+"""
+    _compose_gep_index!(gates, wa, vw, base_idx, delta, tag) -> IROperand
+
+Bennett-jkf0: element index of a GEP whose base is itself a GEP result —
+`base_idx + delta`. Constant/zero cases fold with no gates (an alloca-direct
+origin has `base_idx == 0`, so its GEPs keep their pre-jkf0 index operand
+unchanged). A runtime sum is emitted as a ripple adder into fresh wires,
+recorded in `vw` under the synthetic name `tag`; the sum is modular in the
+runtime operand's width, which is exact for every in-range element index
+(including negative constant deltas, two's complement).
+"""
+function _compose_gep_index!(gates::Vector{ReversibleGate}, wa::WireAllocator,
+                             vw::Dict{Symbol,Vector{Int}},
+                             base_idx::IROperand, delta::IROperand, tag::Symbol)
+    base_idx isa ConstOperand && delta isa ConstOperand &&
+        return iconst(base_idx.value + delta.value)
+    _is_zero_operand(base_idx) && return delta
+    _is_zero_operand(delta) && return base_idx
+    (base_idx isa Union{SSAOperand,ConstOperand} && delta isa Union{SSAOperand,ConstOperand}) ||
+        throw(ArgumentError("GEP-on-GEP index composition: unsupported operand kinds " *
+                            "($(typeof(base_idx)), $(typeof(delta))) (Bennett-jkf0)"))
+    widths = [length(vw[op.name]) for op in (base_idx, delta) if op isa SSAOperand]
+    all(==(widths[1]), widths) ||
+        throw(DimensionMismatch("GEP-on-GEP index composition: runtime index widths " *
+                                "$(widths) differ; mixed-width index sums are NYI (Bennett-jkf0)"))
+    W = widths[1]
+    a = resolve!(gates, wa, vw, base_idx, W)
+    b = resolve!(gates, wa, vw, delta, W)
+    vw[tag] = lower_add!(gates, wa, a, b, W)
+    return ssa(tag)
+end
+
 """GEP with constant offset: record that dest points to base + offset_bytes."""
 function lower_ptr_offset!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                            vw::Dict{Symbol,Vector{Int}}, inst::IRPtrOffset;
@@ -216,24 +250,40 @@ function lower_ptr_offset!(gates::Vector{ReversibleGate}, wa::WireAllocator,
         isempty(base_origins) &&
             throw(AssertionError("lower_ptr_offset!: persistent base '$(inst.base.name)' " *
                 "has no ptr_provenance entry — _lower_alloca_dynamic_n! should have installed one."))
-        new_origins = [PtrOrigin(o.alloca_dest, iconst(0), o.predicate_wire)
+        # Bennett-jkf0: a zero offset is an alias of the base pointer — keep
+        # the base's index (pre-fix this reset it to 0, so `p1 + 0` read slot 0).
+        new_origins = [PtrOrigin(o.alloca_dest, o.idx_op, o.predicate_wire)
                        for o in base_origins]
         ptr_provenance[inst.dest] = new_origins
         return
     end
 
-    # The base operand should be a flat wire array (from ptr param)
-    if !haskey(vw, inst.base.name)
-        throw(AssertionError("lower_var_gep!: GEP base $(inst.base.name) not found in variable wires"))
-    end
-    base_wires = vw[inst.base.name]
-    # PtrOffset just records a view into the base array at byte offset
-    # Store as a synthetic entry: (base_wires, byte_offset)
-    # For simplicity, slice the wire array
-    bit_offset = inst.offset_bytes * 8
-    # Store a reference — the IRLoad will do the actual copy
-    vw[inst.dest] = base_wires[(bit_offset + 1):end]
+    has_prov = _ptr_offset_provenance!(gates, wa, vw, inst, ptr_provenance, alloca_info)
 
+    # Legacy view (pointer params / NTuple inputs): a slice of the base's
+    # flat wire array at the byte offset; the legacy IRLoad copies from it.
+    # Bennett-jkf0: a provenance-carrying pointer's loads/stores never read
+    # this view, so when the base has none (ptr-select/phi results) or the
+    # offset leaves it (e.g. a negative offset off a dynamic-GEP snapshot),
+    # skip it instead of crashing on the slice.
+    bit_offset = inst.offset_bytes * 8
+    if haskey(vw, inst.base.name) && 0 <= bit_offset <= length(vw[inst.base.name])
+        vw[inst.dest] = vw[inst.base.name][(bit_offset + 1):end]
+    elseif !has_prov
+        throw(AssertionError("lower_ptr_offset!: GEP base $(inst.base.name) has no pointer " *
+            "provenance and no in-range variable wires (offset $(inst.offset_bytes)B)"))
+    end
+    return nothing
+end
+
+"""
+Bennett-cc0 M2b / Bennett-jkf0: provenance for a constant-offset GEP. Returns
+true iff `ptr_provenance[inst.dest]` was recorded (i.e. the base has
+provenance).
+"""
+function _ptr_offset_provenance!(gates::Vector{ReversibleGate}, wa::WireAllocator,
+                                  vw::Dict{Symbol,Vector{Int}}, inst::IRPtrOffset,
+                                  ptr_provenance, alloca_info)
     # Bennett-cc0 M2b: propagate pointer provenance per-origin. For each
     # origin of the base (typically 1 pre-M2b; >1 after a ptr-phi/select),
     # bump the element index by `offset_bytes / ew_bytes` — i.e. the GEP
@@ -256,10 +306,15 @@ function lower_ptr_offset!(gates::Vector{ReversibleGate}, wa::WireAllocator,
             PtrOrigin[]
         end
         new_origins = PtrOrigin[]
-        for o in base_origins
-            o.idx_op isa ConstOperand || continue  # non-const base idx: skip
+        for (k, o) in enumerate(base_origins)
+            # Bennett-jkf0: pre-fix, runtime-index origins (`p = &a[x & 3]`)
+            # and unknown allocas were silently skipped (`continue`), so the
+            # dest lost its provenance and `load q` copied a pre-store
+            # snapshot. Every origin must now carry over or fail loud.
             info = get(alloca_info, o.alloca_dest, nothing)
-            info === nothing && continue
+            info === nothing &&
+                throw(AssertionError("lower_ptr_offset!: origin of %$(inst.base.name) points " *
+                    "at unknown alloca %$(o.alloca_dest) (Bennett-jkf0)"))
             ew = first(info)
             # Bennett-ixiz sub-element guard: a byte offset that doesn't
             # divide the element width cleanly cannot be represented as
@@ -269,13 +324,17 @@ function lower_ptr_offset!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                     "is sub-element on alloca '$(o.alloca_dest)' (elem_w=$ew bits); " *
                     "intra-slot offsets are not representable in the shadow-tape " *
                     "model. Bennett-ixiz."))
-            new_idx = iconst(o.idx_op.value + div(inst.offset_bytes * 8, ew))
+            new_idx = _compose_gep_index!(gates, wa, vw, o.idx_op,
+                                          iconst(div(inst.offset_bytes * 8, ew)),
+                                          Symbol("__jkf0_idx_", inst.dest, "_", k))
             push!(new_origins, PtrOrigin(o.alloca_dest, new_idx, o.predicate_wire))
         end
         if !isempty(new_origins)
             ptr_provenance[inst.dest] = new_origins
+            return true
         end
     end
+    return false
 end
 
 """
@@ -324,33 +383,48 @@ function lower_var_gep!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                 "installed one. (Bennett-z2dj Step 8)"))
         end
         new_origins = PtrOrigin[]
-        for o in base_origins
-            # The slab's "alloca_dest" is itself; the new origin's idx is the GEP's
-            # runtime index; predicate_wire is inherited.
-            push!(new_origins, PtrOrigin(o.alloca_dest, inst.index, o.predicate_wire))
+        for (k, o) in enumerate(base_origins)
+            # The slab's "alloca_dest" is itself; the new origin's idx is the
+            # base's idx + the GEP's index (Bennett-jkf0: pre-fix it overwrote
+            # the base idx, so `&p1[0]` read slot 0); predicate_wire inherited.
+            new_idx = _compose_gep_index!(gates, wa, vw, o.idx_op, inst.index,
+                                          Symbol("__jkf0_idx_", inst.dest, "_", k))
+            push!(new_origins, PtrOrigin(o.alloca_dest, new_idx, o.predicate_wire))
         end
         ptr_provenance[inst.dest] = new_origins
         return
     end
 
-    # Bennett-cc0 M2b: if base is an alloca, record provenance per-origin so
-    # lower_store!/lower_load! can route through the right callee. The dynamic
-    # index is uniform across origins — each origin gets the same `inst.index`
-    # with its existing `predicate_wire`.
+    # Bennett-cc0 M2b: if the base carries provenance, record it per-origin so
+    # lower_store!/lower_load! can route through the right callee. Each origin
+    # keeps its `predicate_wire`; its index becomes base idx + `inst.index`.
+    # Bennett-jkf0: pre-fix only a raw-alloca base was handled (and its idx
+    # overwritten), so a GEP off a GEP result had no provenance and its load
+    # copied the stale MUX snapshot below.
     if ptr_provenance !== nothing && alloca_info !== nothing &&
-       haskey(alloca_info, inst.base.name)
-        # Single-origin producer path — use the entry predicate as the guard.
-        # (lower_alloca! already registers this origin; this branch handles
-        # the case where the base is a raw alloca reference, not itself an
-        # SSA name carrying multi-origin provenance.)
-        base_origins = get(ptr_provenance, inst.base.name, PtrOrigin[])
-        if !isempty(base_origins)
-            new_origins = PtrOrigin[]
-            for o in base_origins
-                push!(new_origins, PtrOrigin(o.alloca_dest, inst.index, o.predicate_wire))
-            end
-            ptr_provenance[inst.dest] = new_origins
+       !isempty(get(ptr_provenance, inst.base.name, PtrOrigin[]))
+        new_origins = PtrOrigin[]
+        for (k, o) in enumerate(ptr_provenance[inst.base.name])
+            info = get(alloca_info, o.alloca_dest, nothing)
+            info === nothing &&
+                throw(AssertionError("lower_var_gep!: origin of %$(inst.base.name) points " *
+                    "at unknown alloca %$(o.alloca_dest) (Bennett-jkf0)"))
+            # A non-zero base idx is in alloca elements; adding a non-zero GEP
+            # index in a different unit would silently mis-address.
+            _is_zero_operand(o.idx_op) || _is_zero_operand(inst.index) ||
+                inst.elem_width == first(info) ||
+                throw(DimensionMismatch("lower_var_gep!: GEP elem_width=$(inst.elem_width) on " *
+                    "%$(inst.base.name) differs from alloca %$(o.alloca_dest) elem_width=" *
+                    "$(first(info)); cannot compose indices (Bennett-jkf0)"))
+            new_idx = _compose_gep_index!(gates, wa, vw, o.idx_op, inst.index,
+                                          Symbol("__jkf0_idx_", inst.dest, "_", k))
+            push!(new_origins, PtrOrigin(o.alloca_dest, new_idx, o.predicate_wire))
         end
+        ptr_provenance[inst.dest] = new_origins
+        # A GEP-derived base's wires are a snapshot, not the array: the legacy
+        # MUX view below would be dead (provenance-routed loads/stores never
+        # read it) and may not even be formable. Only raw allocas keep it.
+        haskey(alloca_info, inst.base.name) || return nothing
     end
 
     haskey(vw, inst.base.name) ||

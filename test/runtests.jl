@@ -276,6 +276,8 @@ runfile("test_cb9y_multi_origin_runtime_idx.jl")
 # Bennett-37w3 — multi-origin (selected-pointer) stores guarded by block ∧ origin
 # predicate (Astra B-lowering F1; 3+1: docs/design/2026-09-26-astra-fixes/37w3-*).
 runfile("test_37w3_selected_pointer_store_predicate.jl")
+# Bennett-jkf0 — GEP-on-GEP keeps/composes pointer provenance (Astra B-lowering F2).
+runfile("test_jkf0_gep_provenance_composition.jl")
 runfile("test_gate_count_regression.jl")
 runfile("test_negative.jl")
 runfile("test_soft_sitofp.jl")
