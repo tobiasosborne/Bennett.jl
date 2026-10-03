@@ -496,3 +496,84 @@ function _global_alias_operands(inst::LLVM.Instruction)::Vector{Tuple{String, St
     end
     return out
 end
+
+# Bennett-gq1z: every leaf operand of `inst` (raw operands, recursing into
+# ConstantExprs to the same depth cap as above) that `LLVM.Value` cannot wrap,
+# as `(value_kind, label)` — the alias NAME for a GlobalAlias, the printed
+# operand otherwise (e.g. `ptr blockaddress(@f, %bb)`). Raw C API only.
+function _unwrappable_operands(inst::LLVM.Instruction)::Vector{Tuple{String, String}}
+    out = Tuple{String, String}[]
+    function scan(ref, depth)
+        ref == C_NULL && return
+        k = LLVM.API.LLVMGetValueKind(ref)
+        if k == LLVM.API.LLVMConstantExprValueKind && depth < 4
+            for j in 0:(Int(LLVM.API.LLVMGetNumOperands(ref)) - 1)
+                scan(LLVM.API.LLVMGetOperand(ref, j), depth + 1)
+            end
+            return
+        end
+        wrappable = try
+            LLVM.Value(ref)
+            true
+        catch e
+            e isa InterruptException && rethrow()
+            false
+        end
+        wrappable && return
+        label = if k == LLVM.API.LLVMGlobalAliasValueKind
+            unsafe_string(LLVM.API.LLVMGetValueName(ref))
+        else
+            cs = LLVM.API.LLVMPrintValueToString(ref)
+            s = unsafe_string(cs)
+            LLVM.API.LLVMDisposeMessage(cs)
+            s
+        end
+        push!(out, (string(k), label))
+        return
+    end
+    for i in 0:(Int(LLVM.API.LLVMGetNumOperands(inst.ref)) - 1)
+        scan(LLVM.API.LLVMGetOperand(inst.ref, i), 0)
+    end
+    return out
+end
+
+# Bennett-gq1z: opcodes whose omission can only lose a VALUE, never an effect:
+# no memory write, no call, no control flow, no trap (integer div/rem left out).
+const _GQ1Z_PURE_VALUE_OPCODES = (
+    LLVM.API.LLVMLoad, LLVM.API.LLVMGetElementPtr,
+    LLVM.API.LLVMTrunc, LLVM.API.LLVMZExt, LLVM.API.LLVMSExt,
+    LLVM.API.LLVMFPTrunc, LLVM.API.LLVMFPExt, LLVM.API.LLVMFPToUI,
+    LLVM.API.LLVMFPToSI, LLVM.API.LLVMUIToFP, LLVM.API.LLVMSIToFP,
+    LLVM.API.LLVMPtrToInt, LLVM.API.LLVMIntToPtr, LLVM.API.LLVMBitCast,
+    LLVM.API.LLVMAddrSpaceCast, LLVM.API.LLVMICmp, LLVM.API.LLVMFCmp,
+    LLVM.API.LLVMSelect, LLVM.API.LLVMPHI, LLVM.API.LLVMExtractValue,
+    LLVM.API.LLVMInsertValue, LLVM.API.LLVMExtractElement,
+    LLVM.API.LLVMInsertElement, LLVM.API.LLVMShuffleVector, LLVM.API.LLVMFreeze,
+    LLVM.API.LLVMAdd, LLVM.API.LLVMSub, LLVM.API.LLVMMul, LLVM.API.LLVMAnd,
+    LLVM.API.LLVMOr, LLVM.API.LLVMXor, LLVM.API.LLVMShl, LLVM.API.LLVMLShr,
+    LLVM.API.LLVMAShr, LLVM.API.LLVMFAdd, LLVM.API.LLVMFSub, LLVM.API.LLVMFMul,
+    LLVM.API.LLVMFDiv, LLVM.API.LLVMFRem, LLVM.API.LLVMFNeg)
+
+# Bennett-gq1z: the ONLY certificate under which the module walk may skip an
+# instruction LLVM.jl cannot wrap (the cc0.3 runtime-alias skip): every
+# unwrappable operand is a Julia `jl_global#N.jit` runtime alias, and the
+# instruction is a side-effect-free value (non-volatile, non-atomic for a
+# load). Its result is then either unused or an SSA name nothing defines, which
+# lowering rejects (`resolve!: undefined SSA variable`). A store / call /
+# terminator through the alias, or any other unwrappable kind (`blockaddress`,
+# ...), is NOT covered: skipping it erases an effect with no consumer left to
+# notice (review 3 T1).
+function _jl_global_skip_certified(inst::LLVM.Instruction,
+                                   unw::Vector{Tuple{String, String}})::Bool
+    isempty(unw) && return false
+    all(u -> u[1] == string(LLVM.API.LLVMGlobalAliasValueKind) &&
+             _is_jl_global_jit_alias_name(u[2]), unw) || return false
+    opc = LLVM.opcode(inst)
+    opc in _GQ1Z_PURE_VALUE_OPCODES || return false
+    if opc == LLVM.API.LLVMLoad
+        LLVM.API.LLVMGetVolatile(inst.ref) == 0 || return false
+        LLVM.API.LLVMGetOrdering(inst.ref) == LLVM.API.LLVMAtomicOrderingNotAtomic ||
+            return false
+    end
+    return true
+end

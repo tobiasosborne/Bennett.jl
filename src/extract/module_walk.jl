@@ -474,6 +474,16 @@ function _module_to_parsed_ir_on_func_walk(mod::LLVM.Module, func::LLVM.Function
         union!(_p06b_suppressed_refs, sret_writes.call_return_suppressed)
     end
     union!(_p06b_suppressed_refs, consumed_sret.suppressed)
+    # Bennett-gq1z: reject `indirectbr` (Bennett-4eu hard stop) BEFORE any
+    # instruction is converted. Its target is typically a `select` / `phi` /
+    # `store` of `blockaddress` constants, which the per-instruction walk now
+    # rejects with the generic unrepresentable-operand error; checking the
+    # terminators first keeps the precise 4eu diagnostic.
+    for bb in LLVM.blocks(func)
+        t = LLVM.terminator(bb)
+        t !== nothing && LLVM.opcode(t) == LLVM.API.LLVMIndirectBr &&
+            _reject_indirectbr(t)
+    end
     for bb in LLVM.blocks(func)
         label = Symbol(LLVM.name(bb))
 
@@ -664,11 +674,15 @@ function _module_to_parsed_ir_on_func_walk(mod::LLVM.Module, func::LLVM.Function
                 # (from_ll / clang `alias`, e.g. `@a = alias i8, ptr @g`) went
                 # down the same skip, and a store or call through it was
                 # ERASED — no SSA consumer is left to trip a later error
-                # (Astra F17). Fail loud here only when the instruction touches
-                # at least one non-jl_global alias. An unwrappable operand that
-                # is NOT an alias (e.g. a `blockaddress` constant) keeps the
-                # skip, so later terminators (indirectbr, Bennett-4eu) still
-                # reject precisely; the residual skip is Bennett-gq1z.
+                # (Astra F17). Fail loud, naming the alias and its aliasee.
+                #
+                # Bennett-gq1z (review 3 T1): every OTHER unwrappable operand
+                # also fails loud unless `_jl_global_skip_certified` holds
+                # (only jl_global#N.jit aliases, side-effect-free value
+                # instruction). Pre-gq1z a `store ptr blockaddress(...)` was
+                # erased and the circuit read the earlier stored 0. The
+                # Bennett-4eu indirectbr diagnostic no longer relies on this
+                # skip: the block walk below rejects indirectbr up front.
                 if benign && e isa ErrorException
                     aliases = _global_alias_operands(inst)
                     bad = filter(p -> !_is_jl_global_jit_alias_name(p[1]), aliases)
@@ -679,6 +693,17 @@ function _module_to_parsed_ir_on_func_walk(mod::LLVM.Module, func::LLVM.Function
                         "`jl_global#N.jit` runtime aliases are skipped. Dropping " *
                         "this instruction would silently erase its effect " *
                         "(CLAUDE.md §1). Reference the aliasee directly.")
+                    unw = _unwrappable_operands(inst)
+                    _jl_global_skip_certified(inst, unw) || _ir_error(inst,
+                        "Bennett-gq1z: operand(s) LLVM.jl cannot represent: " *
+                        (isempty(unw) ? "<none found among the raw operands; " *
+                                        "LLVM.jl raised: $(first(split(msg, '\n')))>" :
+                         join(("$(k) `$(l)`" for (k, l) in unw), ", ")) *
+                        ". Such constants (`blockaddress`, ...) are not " *
+                        "modelled, and skipping the instruction would silently " *
+                        "erase it. The only certified skip is a side-effect-free " *
+                        "value instruction whose sole unrepresentable operands " *
+                        "are Julia `jl_global#N.jit` runtime aliases (CLAUDE.md §1).")
                 end
                 benign ? nothing : rethrow()
             end

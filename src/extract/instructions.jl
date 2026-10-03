@@ -6903,16 +6903,9 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
     # `goto *ptr` in C is a GCC extension uncommon in numerical code;
     # Rust never). Fail loud here rather than the generic
     # unsupported-opcode error so the user gets actionable context.
-    if opc == LLVM.API.LLVMIndirectBr
-        _ir_error(inst,
-            "indirectbr (computed goto) is not supported. Bennett's " *
-            "static-CFG model requires compile-time-known branch " *
-            "targets — phi resolution, loop unrolling, and the Bennett " *
-            "construction itself depend on it. If you reached this " *
-            "from C `goto *ptr` or similar, restructure the source as " *
-            "a switch over an explicit integer dispatch index. " *
-            "(Bennett-4eu hard stop)")
-    end
+    # (Bennett-gq1z: `module_walk.jl` also raises this up front, before any
+    # instruction of the function is converted — see `_reject_indirectbr`.)
+    opc == LLVM.API.LLVMIndirectBr && _reject_indirectbr(inst)
 
     # call instructions: handle known LLVM intrinsics, skip the rest
     if opc == LLVM.API.LLVMCall

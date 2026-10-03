@@ -116,3 +116,19 @@ function _ir_error(inst::LLVM.Instruction, reason::AbstractString)
     error(_ir_error_msg(inst, reason))
 end
 
+
+# Bennett-4eu: the `indirectbr` hard stop (rationale at its `_convert_instruction`
+# arm). Bennett-gq1z: also raised by `module_walk.jl` for every block terminator
+# BEFORE any instruction is converted, so a `select` / `store` of `blockaddress`
+# constants feeding the indirectbr is reported as this precise error rather
+# than as the generic unrepresentable-operand rejection.
+function _reject_indirectbr(inst::LLVM.Instruction)
+    _ir_error(inst,
+        "indirectbr (computed goto) is not supported. Bennett's " *
+        "static-CFG model requires compile-time-known branch " *
+        "targets — phi resolution, loop unrolling, and the Bennett " *
+        "construction itself depend on it. If you reached this " *
+        "from C `goto *ptr` or similar, restructure the source as " *
+        "a switch over an explicit integer dispatch index. " *
+        "(Bennett-4eu hard stop)")
+end
