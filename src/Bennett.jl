@@ -401,7 +401,35 @@ function _bind_closure_capture(c::ReversibleCircuit, bytes::Vector{UInt8},
     return ReversibleCircuit(c.n_wires, vcat(nots, c.gates, nots),
                              c.input_wires[nb+nr+1:end], c.output_wires,
                              vcat(c.ancilla_wires, self_w), c.input_widths[lead+1:end],
-                             c.output_elem_widths, c.loop_check_wires)
+                             c.output_elem_widths, c.loop_check_wires;
+                             output_elem_unsigned=c.output_elem_unsigned)
+end
+
+# Bennett-13xy: record the output element signedness from the Julia return
+# type `R` so `simulate` decodes `f`'s result exactly instead of guessing from
+# the input layout (Bennett-zc50 heuristic). Recorded only when `R` is a
+# fixed-width integer, or a concrete tuple of them, whose element count AND
+# natural widths match the circuit's output layout; anything else (Bool,
+# Union / abstract returns, `bit_width`-narrowed layouts) stays `nothing`.
+const _SIGNEDNESS_INTS = (Int8, Int16, Int32, Int64, UInt8, UInt16, UInt32, UInt64)
+
+function _julia_output_unsigned(@nospecialize(R), elem_widths::Vector{Int})
+    R isa DataType || return nothing
+    elems = R <: Tuple ? (isconcretetype(R) ? fieldtypes(R) : return nothing) : (R,)
+    length(elems) == length(elem_widths) || return nothing
+    for (T, w) in zip(elems, elem_widths)
+        (T in _SIGNEDNESS_INTS && 8 * sizeof(T) == w) || return nothing
+    end
+    return Bool[T <: Unsigned for T in elems]
+end
+
+function _with_julia_return_type(c::ReversibleCircuit, @nospecialize(R))
+    R === nothing && return c
+    uns = _julia_output_unsigned(R, c.output_elem_widths)
+    uns === nothing && return c
+    return ReversibleCircuit(c.n_wires, c.gates, c.input_wires, c.output_wires,
+                             c.ancilla_wires, c.input_widths, c.output_elem_widths,
+                             c.loop_check_wires; output_elem_unsigned=uns)
 end
 
 const _TUPLE_OVERLOAD_KWARGS = (:optimize, :max_loop_iterations,
@@ -548,11 +576,14 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     # output width). It refuses a narrowed compile — the table evaluates the
     # natural-width function, which is not what `bit_width=W` asks for — and
     # a return type it has no layout for.
+    # Bennett-13xy: the Julia return type, recorded on the circuit as the
+    # output signedness (see `_with_julia_return_type`).
+    ret_type = Core.Compiler.return_type(f, arg_types)
     if strategy === :tabulate && target !== :reversible_vm
         lr, reason = _tabulate_circuit(f, arg_types, bit_width, auto_self_reversing)
         lr === nothing && throw(ArgumentError(
             "reversible_compile: strategy=:tabulate not applicable — $reason"))
-        return bennett(lr)
+        return _with_julia_return_type(bennett(lr), ret_type)
     end
 
     # Expression path (also base for :auto). Extract IR once; the cost model
@@ -578,7 +609,7 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
         # table cannot honour (narrowing, no scalar-Integer return). Fall
         # through to expression lowering — which computes exactly that
         # function — rather than emit a differently-defined one.
-        lr === nothing || return bennett(lr)
+        lr === nothing || return _with_julia_return_type(bennett(lr), ret_type)
     end
 
     # Bennett-mrhg: re-type the extracted IR to `bit_width` bits.  This is an
@@ -600,7 +631,8 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     c = reversible_compile(parsed;
         max_loop_iterations, compact_calls, add, mul,
         fold_constants, target, auto_self_reversing,
-        mem=lower_mem, persistent_impl, hashcons)
+        mem=lower_mem, persistent_impl, hashcons,
+        _julia_return_type=ret_type)
     # Bennett-o9sv: the (cached) circuit takes the closure object as its
     # leading input; bind it to this closure's captured values. Bound outside
     # the compile cache, so same-type closures never share a bound circuit.
@@ -696,7 +728,11 @@ function reversible_compile(parsed::ParsedIR;
                             mem::Symbol=_DEFAULT_COMPILE_OPTIONS.mem,
                             persistent_impl::Symbol=_DEFAULT_COMPILE_OPTIONS.persistent_impl,
                             hashcons::Symbol=_DEFAULT_COMPILE_OPTIONS.hashcons,
+                            _julia_return_type=nothing,
                             kwargs...)
+    # `_julia_return_type` is INTERNAL (Bennett-13xy): the Julia-function
+    # overload passes `f`'s return type so the circuit records its output
+    # signedness. Direct ParsedIR / .ll callers leave it `nothing` (unknown).
     _reject_unknown_kwargs("ParsedIR overload", _PARSED_OVERLOAD_KWARGS,
                            _PARSED_OVERLOAD_CROSS_REJECT, kwargs)
     # Bennett-z2dj T5-P6 (Step 9): front-load NYI errors at the surface.
@@ -729,14 +765,14 @@ function reversible_compile(parsed::ParsedIR;
     # new one (`ParsedIR` has no custom `==`/`hash`: egal semantics).
     key = (parsed, max_loop_iterations, compact_calls, add, mul,
            fold_constants, target, auto_self_reversing, mem, persistent_impl,
-           hashcons)
+           hashcons, _julia_return_type)
     lock(_compile_cache_lock) do
         w = _cache_world_gate!(_compile_cache, _compile_cache_world)
         haskey(_compile_cache, key) && return _compile_cache[key]
         lr = lower(parsed; max_loop_iterations, compact_calls, add, mul,
                    fold_constants, target, auto_self_reversing,
                    mem, persistent_impl, hashcons)
-        c = bennett(lr)
+        c = _with_julia_return_type(bennett(lr), _julia_return_type)
         return _cache_insert_bounded!(_compile_cache, key, c,
                                       _COMPILE_CACHE_MAX, w)
     end

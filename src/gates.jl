@@ -178,6 +178,12 @@ struct ReversibleCircuit
     # max_loop_iterations). Disjoint from input/output/ancilla. Empty
     # for every loop-free circuit (all pinned gate-count baselines).
     loop_check_wires::Vector{LoopGuard}
+    # Bennett-13xy: per-output-element signedness recorded from the Julia
+    # return type at compile time (`true` = Unsigned). `nothing` = unknown
+    # (raw ParsedIR / .ll / hand-built circuits, Bool or narrowed returns):
+    # `simulate` then falls back to the Bennett-zc50 width-equality heuristic.
+    # Decoding metadata only — never affects the gate stream.
+    output_elem_unsigned::Union{Nothing,Vector{Bool}}
 
     # Bennett-6azb / U58: validate the wire partition at construction
     # time. `ancilla ∩ input` or `ancilla ∩ output` would make the
@@ -196,7 +202,14 @@ struct ReversibleCircuit
                                ancilla_wires::Vector{WireIndex},
                                input_widths::Vector{Int},
                                output_elem_widths::Vector{Int},
-                               loop_check_wires::Vector{LoopGuard}=LoopGuard[])
+                               loop_check_wires::Vector{LoopGuard}=LoopGuard[];
+                               output_elem_unsigned::Union{Nothing,Vector{Bool}}=nothing)
+        output_elem_unsigned === nothing ||
+            length(output_elem_unsigned) == length(output_elem_widths) ||
+            throw(ArgumentError(
+                "ReversibleCircuit: output_elem_unsigned has " *
+                "$(length(output_elem_unsigned)) entries but the output has " *
+                "$(length(output_elem_widths)) elements (Bennett-13xy)"))
         in_set = Set(input_wires)
         out_set = Set(output_wires)
         anc_set = Set(ancilla_wires)
@@ -312,7 +325,8 @@ struct ReversibleCircuit
             "n_wires=$n_wires"))
 
         return new(n_wires, gates, input_wires, output_wires, ancilla_wires,
-                   input_widths, output_elem_widths, loop_check_wires)
+                   input_widths, output_elem_widths, loop_check_wires,
+                   output_elem_unsigned === nothing ? nothing : copy(output_elem_unsigned))
     end
 end
 

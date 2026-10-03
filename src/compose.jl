@@ -234,5 +234,7 @@ function compose(c1::ReversibleCircuit, c2::ReversibleCircuit)
 
     return ReversibleCircuit(n_total, new_gates, input_wires, output_wires,
                              ancilla_wires, input_widths, output_elem_widths,
-                             loop_check_wires)
+                             loop_check_wires;
+                             # Bennett-13xy: the composite returns c2's output.
+                             output_elem_unsigned=c2.output_elem_unsigned)
 end

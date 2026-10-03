@@ -141,7 +141,7 @@ function simulate(circuit::ReversibleCircuit, ::Type{T},
 end
 
 function _simulate(circuit::ReversibleCircuit, inputs::Tuple;
-                   unsigned_out::Union{Nothing,Bool}=nothing)
+                   unsigned_out::Union{Nothing,Bool,Vector{Bool}}=nothing)
     bits = zeros(Bool, circuit.n_wires)
     return _simulate_with_buffer!(bits, circuit, inputs; unsigned_out)
 end
@@ -207,7 +207,7 @@ end
 
 function _simulate_with_buffer!(bits::Vector{Bool}, circuit::ReversibleCircuit,
                                  inputs::Tuple;
-                                 unsigned_out::Union{Nothing,Bool}=nothing)
+                                 unsigned_out::Union{Nothing,Bool,Vector{Bool}}=nothing)
     # Bennett-6fg9 / U19: guard arity and per-input bit-width at entry.
     # Pre-fix, a too-long tuple silently dropped the extras, a too-short
     # tuple crashed with a raw BoundsError deep in the input-ingest loop,
@@ -288,13 +288,17 @@ function _simulate_with_buffer!(bits::Vector{Bool}, circuit::ReversibleCircuit,
     # input is unsigned, return unsigned. Otherwise fall back to the
     # prior signed behaviour (covers mixed signedness, bit-packed
     # inputs like `NTuple{3,Int8}` fed as a UInt64, and any layout we
-    # can't confidently classify). The circuit itself carries only
-    # widths; threading types through ReversibleCircuit would be a §2
-    # core change.
+    # can't confidently classify). Bennett-13xy: circuits compiled from a
+    # Julia function now carry `output_elem_unsigned` (from the return
+    # type), which wins below; the heuristic is only the fallback for
+    # circuits with no Julia return type (raw ParsedIR / .ll, hand-built).
     # Bennett-u91f: callers that know the user-facing input layout (the
     # ControlledCircuit wrapper, whose inner circuit carries a 1-bit ctrl
     # as input 1) pass `unsigned_out` explicitly.
-    unsigned_out = something(unsigned_out,
+    # Bennett-13xy: a signedness recorded at compile time from the Julia
+    # return type (`circuit.output_elem_unsigned`) beats the heuristic, which
+    # is only the fallback for circuits with no Julia return type.
+    unsigned_out = something(unsigned_out, circuit.output_elem_unsigned,
         _infer_unsigned_out(circuit.input_widths, circuit.output_elem_widths, inputs))
     return _read_output(bits, circuit.output_wires, circuit.output_elem_widths, unsigned_out)
 end
@@ -417,8 +421,8 @@ function diagnose_nonzero(circuit::ReversibleCircuit, inputs::Tuple{Vararg{Integ
         end
     end
 
-    unsigned_out = _infer_unsigned_out(circuit.input_widths,
-                                       circuit.output_elem_widths, inputs)
+    unsigned_out = something(circuit.output_elem_unsigned,
+        _infer_unsigned_out(circuit.input_widths, circuit.output_elem_widths, inputs))
     output = _read_output(bits, circuit.output_wires,
                           circuit.output_elem_widths, unsigned_out)
 
@@ -441,15 +445,16 @@ end
 
 """
 Read the output value from the simulation bit vector. Returns
-Int8/16/32/64 (or UInt… if `unsigned_out` is true) for single-element
-outputs, or a Tuple for multi-element (insertvalue) outputs. For tuple
-outputs, every element inherits `unsigned_out`; there's no per-element
-type record on the circuit today, so mixed-signedness returns need a
-manual `reinterpret` at the call site.
+Int8/16/32/64 (or UInt… where unsigned) for single-element outputs, or a
+Tuple for multi-element (insertvalue) outputs. `unsigned_out` is either one
+`Bool` applied to every element (the Bennett-zc50 heuristic) or a per-element
+`Vector{Bool}` (the circuit's recorded `output_elem_unsigned`, Bennett-13xy).
 """
-function _read_output(bits, output_wires, elem_widths, unsigned_out::Bool)
+function _read_output(bits, output_wires, elem_widths,
+                      unsigned_out::Union{Bool,Vector{Bool}})
+    _uns(k) = unsigned_out isa Bool ? unsigned_out : unsigned_out[k]
     if length(elem_widths) == 1
-        return _read_int(bits, output_wires, 1, elem_widths[1], unsigned_out)
+        return _read_int(bits, output_wires, 1, elem_widths[1], _uns(1))
     end
     starts = Vector{Int}(undef, length(elem_widths))
     s = 1
@@ -457,7 +462,7 @@ function _read_output(bits, output_wires, elem_widths, unsigned_out::Bool)
         starts[k] = s
         s += elem_widths[k]
     end
-    return ntuple(k -> _read_int(bits, output_wires, starts[k], elem_widths[k], unsigned_out),
+    return ntuple(k -> _read_int(bits, output_wires, starts[k], elem_widths[k], _uns(k)),
                   length(elem_widths))
 end
 
