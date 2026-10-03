@@ -228,13 +228,15 @@ _canonical_callee_key(callee_key, argtypes)::Symbol =
     Symbol(_callee_barename(callee_key, argtypes), "#",
            _argtype_digest(_spectypes_of(callee_key, argtypes)))
 
-# Demangle an LLVM-mangled callee Symbol to its bare name. Reuses the EXACT
-# regex from `_lookup_callee` (callees.jl): `julia_<name>_<NNN>` / `j_<name>_<NNN>`
-# → `<name>`, dropping the drift-prone `_NNN`. Returns the bare name as a Symbol,
-# or `nothing` if the symbol is not in mangled form (e.g. a raw intrinsic name).
+# Demangle an LLVM-mangled callee Symbol to its bare name via the shared
+# `_demangle_llvm_callee` (callees.jl): `julia_<name>_<NNN>` / `j_<name>_<NNN>`
+# → `<name>`, dropping the drift-prone `_NNN`, CASE-PRESERVED (Bennett-wh1p:
+# `bare_to_key` is case-sensitive, so `j_#MakeIt##0_12` must give `#MakeIt##0`,
+# not `#makeit##0`). Returns the bare name as a Symbol, or `nothing` if the
+# symbol is not in mangled form (e.g. a raw intrinsic name).
 function _demangle_callee_symbol(sym::Symbol)
-    m = match(r"^(?:julia_|j_)(.+)_(\d+)$", lowercase(String(sym)))
-    return m === nothing ? nothing : Symbol(m.captures[1])
+    bare = _demangle_llvm_callee(String(sym))
+    return bare === nothing ? nothing : Symbol(bare)
 end
 
 """

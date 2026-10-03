@@ -471,6 +471,10 @@ runfile("test_ares_atomic_vm_relax.jl")
 # keeps llvm.lifetime/trap/etc. correctness-neutral. (memset graduated
 # out of the allowlist via Bennett-9nwt — handled explicitly now.)
 runfile("test_5oyt_unregistered_callee.jl")
+# Bennett-wh1p — callee demangling is case-preserving (one shared
+# `_demangle_llvm_callee`): `j_Foo_N` no longer folds onto a registered `foo`
+# (silent wrong body) nor misses a registered `Foo` (loud set-extraction reject).
+runfile("test_wh1p_callee_case_folding.jl")
 # Bennett-qal5 / U16 — multi-index GEPs and GEPs on unsupported bases
 # reject loud (was silent drop, leaving dest SSA undefined). Full
 # type-walking byte-offset accumulation deferred.

@@ -119,19 +119,36 @@ function _clear_parsed_ir_cache!()
     return nothing
 end
 
+"""
+    _demangle_llvm_callee(llvm_name::AbstractString) -> Union{String, Nothing}
+
+THE one demangler for Julia-emitted LLVM callee symbols, shared by
+[`_lookup_callee`](@ref), [`_lookup_callee_name`](@ref) and the closed-world
+check's `_demangle_callee_symbol`: `julia_<name>_<NNN>` / `j_<name>_<NNN>` →
+`<name>` (the drift-prone `_<NNN>` dropped), `nothing` if not in that form.
+
+Bennett-wh1p: CASE-PRESERVING. Only the `julia_`/`j_` prefix matches case-
+insensitively; the captured name keeps its original casing. The registries are
+keyed by `string(nameof(f))`, which is case-sensitive, so folding the capture
+both made a capitalised callee unresolvable (`j_Upper_1050` → `upper`, a miss)
+and SILENTLY bound it to a lowercase namesake (`j_Foo_101` → `foo`, whose body
+was then inlined for `Foo`: wrong circuit, ancillae still clean).
+"""
+function _demangle_llvm_callee(llvm_name::AbstractString)
+    m = match(r"^(?:julia_|j_)(.+)_(\d+)$"i, llvm_name)
+    return m === nothing ? nothing : String(m.captures[1])
+end
+
 function _lookup_callee(llvm_name::String)
     lock(_known_callees_lock) do
         # First: try exact match (for hardcoded lookups like "soft_fcmp_ole")
         haskey(_known_callees, llvm_name) && return _known_callees[llvm_name]
 
         # Second: LLVM-mangled names follow julia_<funcname>_<NNN> or j_<funcname>_<NNN>.
-        # Extract the function name and do exact dict lookup.
-        lname = lowercase(llvm_name)
-        m = match(r"^(?:julia_|j_)(.+)_(\d+)$", lname)
-        if m !== nothing
-            fname = m.captures[1]
-            haskey(_known_callees, fname) && return _known_callees[fname]
-        end
+        # Extract the function name (case-preserved, Bennett-wh1p) and do an
+        # exact dict lookup.
+        fname = _demangle_llvm_callee(llvm_name)
+        fname !== nothing && haskey(_known_callees, fname) && return _known_callees[fname]
         return nothing
     end
 end
@@ -158,14 +175,11 @@ end
 # the digest from TABLE keys but call sites carry bare names, and the closed-
 # world check's `bare_to_key` map is keyed the same way.
 #
-# CASE PRESERVATION (deliberate divergence from `_lookup_callee`): the lookup
-# below lowercases only for the PREFIX match and takes the capture from the
-# ORIGINAL string. `_lookup_callee` lowercases the capture too, which silently
-# breaks any capitalised callee (`julia_Adder_770` → `:adder`); that is a real
-# latent bug, tracked separately as Bennett-wh1p, and is NOT touched here —
-# changing it could alter which callees resolve on the circuit path (Rule 6,
-# gate-count baselines). This new path must simply not inherit it: a functor is
-# named after its TYPE, so capitalisation is the common case, not the exception.
+# CASE PRESERVATION: the lookup below matches the `julia_`/`j_` PREFIX case-
+# insensitively and keeps the capture's original casing — a functor is named
+# after its TYPE, so capitalisation is the common case, not the exception.
+# (Bennett-wh1p later moved `_lookup_callee` onto the same shared demangler,
+# `_demangle_llvm_callee`; it used to lowercase the capture.)
 const _known_callee_names = Dict{String, Symbol}()   # guarded by _known_callees_lock
 
 """
@@ -196,11 +210,9 @@ function _lookup_callee_name(llvm_name::String)
         haskey(_known_callee_names, llvm_name) && return _known_callee_names[llvm_name]
         # Case-INSENSITIVE on the `julia_`/`j_` prefix only; the capture keeps
         # the original casing (Bennett-40ys — a functor is named after its type).
-        m = match(r"^(?:julia_|j_)(.+)_(\d+)$"i, llvm_name)
-        if m !== nothing
-            fname = m.captures[1]
-            haskey(_known_callee_names, fname) && return _known_callee_names[fname]
-        end
+        fname = _demangle_llvm_callee(llvm_name)
+        fname !== nothing && haskey(_known_callee_names, fname) &&
+            return _known_callee_names[fname]
         return nothing
     end
 end
