@@ -249,6 +249,9 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
 
     # Detect loops (back-edges) and compute acyclic topo order
     back_edges = find_back_edges(blocks)
+    # Bennett-73gr: DFS back edges are natural-loop back edges only in a
+    # reducible CFG; reject irreducible regions (side-entry cycles) loud.
+    _check_natural_loops(blocks, back_edges, entry_unreachable)
     order = topo_sort(blocks; ignore_edges=back_edges)
 
     # If there are loops, we need max_loop_iterations
@@ -268,6 +271,8 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
     # iteration-local dicts). Collect every loop's body region up front and
     # skip those labels in the function-level walk below.
     loop_body_labels = Set{Symbol}()
+    reach_preds = isempty(loop_headers) ? Dict{Symbol,Vector{Symbol}}() :
+        _reachable_preds(blocks, entry_unreachable)
     for hl in loop_headers
         h = block_map[hl]
         hterm = h.terminator
@@ -276,6 +281,7 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
         eot = !(hterm.true_label == hl || hterm.true_label in ll)
         elabel = eot ? hterm.true_label : hterm.false_label
         body = _collect_loop_body_blocks(h, block_map, elabel, ll, loop_headers, back_edges)
+        _check_loop_single_entry(hl, body, reach_preds)
         union!(loop_body_labels, body)
     end
 

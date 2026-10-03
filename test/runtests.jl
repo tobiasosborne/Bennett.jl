@@ -1207,6 +1207,10 @@ runfile("test_fq8n_phi_mixed_widths.jl")
 # dead blocks record no edges; the silent arms of `_compute_block_pred!` /
 # `_edge_predicate!` are asserts; debug-mode `PRED_AUDIT` exclusion oracle.
 runfile("test_c6ex_predication_soundness.jl")
+# Bennett-73gr (Astra B-lowering F18) — every DFS back edge must be a natural-
+# loop back edge (header dominates tail) and loop bodies single-entry; an
+# irreducible side-entry cycle is refused loud (was: 128/256 silent miscompile).
+runfile("test_73gr_irreducible_cfg.jl")
 # Bennett-lgzx / U114 — `_convert_instruction` no longer silently drops
 # stores of non-integer types or stores whose target pointer isn't a
 # registered SSA name. Errors loudly per CLAUDE.md §1.

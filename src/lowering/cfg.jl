@@ -147,6 +147,149 @@ function find_back_edges(blocks::Vector{IRBasicBlock})
     return back
 end
 
+"""
+    _immediate_dominators(blocks, unreachable) -> Dict{Symbol,Symbol}
+
+Immediate dominator of every block reachable from the entry (`blocks[1]`),
+by the Cooper–Harvey–Kennedy iterative algorithm over reverse postorder. The
+entry maps to itself. Blocks in `unreachable` are absent.
+"""
+function _immediate_dominators(blocks::Vector{IRBasicBlock}, unreachable::Set{Symbol})
+    entry = blocks[1].label
+    succs = Dict{Symbol,Vector{Symbol}}()
+    preds = Dict{Symbol,Vector{Symbol}}(b.label => Symbol[] for b in blocks)
+    for b in blocks
+        s = b.terminator isa IRBranch ?
+            Symbol[t for t in branch_targets(b.terminator) if haskey(preds, t)] : Symbol[]
+        succs[b.label] = s
+        b.label in unreachable && continue
+        for t in s
+            push!(preds[t], b.label)
+        end
+    end
+    # Reverse postorder of the reachable blocks (iterative DFS).
+    post = Symbol[]
+    visited = Set{Symbol}([entry])
+    stack = Tuple{Symbol,Int}[(entry, 1)]
+    while !isempty(stack)
+        u, i = stack[end]
+        if i <= length(succs[u])
+            stack[end] = (u, i + 1)
+            v = succs[u][i]
+            v in visited || (push!(visited, v); push!(stack, (v, 1)))
+        else
+            pop!(stack); push!(post, u)
+        end
+    end
+    rpo = reverse(post)
+    num = Dict(l => i for (i, l) in enumerate(rpo))
+    idom = Dict{Symbol,Symbol}(entry => entry)
+    function intersect(a::Symbol, b::Symbol)
+        while a !== b
+            while num[a] > num[b]; a = idom[a]; end
+            while num[b] > num[a]; b = idom[b]; end
+        end
+        return a
+    end
+    changed = true
+    while changed
+        changed = false
+        for n in rpo
+            n === entry && continue
+            new = nothing
+            for p in preds[n]
+                haskey(idom, p) || continue
+                new = new === nothing ? p : intersect(p, new)
+            end
+            new === nothing && continue
+            if get(idom, n, nothing) !== new
+                idom[n] = new; changed = true
+            end
+        end
+    end
+    return idom
+end
+
+"""
+    _reachable_preds(blocks, unreachable) -> Dict{Symbol,Vector{Symbol}}
+
+CFG predecessors of every block, counting only edges whose source is
+reachable from the entry (an unreachable block's predicate is identically 0).
+"""
+function _reachable_preds(blocks::Vector{IRBasicBlock}, unreachable::Set{Symbol})
+    preds = Dict{Symbol,Vector{Symbol}}(b.label => Symbol[] for b in blocks)
+    for b in blocks
+        b.label in unreachable && continue
+        b.terminator isa IRBranch || continue
+        for t in branch_targets(b.terminator)
+            haskey(preds, t) && !(b.label in preds[t]) && push!(preds[t], b.label)
+        end
+    end
+    return preds
+end
+
+"""
+    _check_natural_loops(blocks, back_edges, unreachable)
+
+Bennett-73gr: the unroller (`lower_loop!`) is sound only for NATURAL loops.
+`find_back_edges` classifies by DFS colouring alone, which in an irreducible
+region (a cycle with two entries, e.g. entry → H or L; L → H; H → exit or L)
+marks L→H a back edge although H does not dominate L; the driver then drops
+the entry→L edge and the circuit silently miscomputes (Astra B-lowering F18:
+128/256 wrong, `verify_reversibility` passing). Requires, for every back edge
+t→h with t reachable from the entry, that h dominates t. A CFG is reducible
+iff every DFS retreating edge passes this test, so every irreducible CFG is
+rejected whatever the DFS order. Fails loud naming the blocks; emits no
+gates, so reducible CFGs lower byte-identically. The single-entry property of
+the body the unroller actually walks is checked separately
+(`_check_loop_single_entry`).
+"""
+function _check_natural_loops(blocks::Vector{IRBasicBlock},
+                              back_edges::Vector{Tuple{Symbol,Symbol}},
+                              unreachable::Set{Symbol})
+    isempty(back_edges) && return nothing
+    idom = _immediate_dominators(blocks, unreachable)
+    entry = blocks[1].label
+    function dominates(h::Symbol, n::Symbol)
+        while true
+            n === h && return true
+            n === entry && return false
+            n = idom[n]
+        end
+    end
+    for (t, h) in back_edges
+        t in unreachable && continue   # predicate ≡ 0; never executes
+        dominates(h, t) || error("lower: irreducible CFG — the cycle through back edge " *
+            "$t → $h has a side entry: $h does not dominate $t ($t is reachable from " *
+            "the entry $entry without passing $h). This is not a natural loop; the " *
+            "loop unroller would drop the side-entry edge and silently miscompute. " *
+            "Irreducible control flow is not supported (Bennett-73gr)")
+    end
+    return nothing
+end
+
+"""
+    _check_loop_single_entry(hlabel, body, preds)
+
+Bennett-73gr: every block of the loop body the unroller walks
+(`_collect_loop_body_blocks`) must have all its reachable predecessors inside
+the loop (`hlabel` ∪ `body`); only the header may be entered from outside.
+The unroller predicates body blocks solely from in-loop edges, so an outside
+predecessor's edge would be silently dropped. Implied by
+`_check_natural_loops` for well-formed natural loops; asserted here against
+the region actually lowered.
+"""
+function _check_loop_single_entry(hlabel::Symbol, body::Vector{Symbol},
+                                  preds::Dict{Symbol,Vector{Symbol}})
+    inloop = Set{Symbol}(body); push!(inloop, hlabel)
+    for n in body, p in preds[n]
+        p in inloop || error("lower: irreducible CFG — loop $hlabel has a side entry: " *
+            "body block $n has predecessor $p outside the loop. Only the loop header " *
+            "may be entered from outside (Bennett-73gr)")
+    end
+    return nothing
+end
+
 """Topological sort ignoring specified edges (e.g. back-edges)."""
 function topo_sort(blocks::Vector{IRBasicBlock};
                    ignore_edges::Vector{Tuple{Symbol,Symbol}}=Tuple{Symbol,Symbol}[])
