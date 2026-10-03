@@ -42,16 +42,19 @@ const _NARROW_ARITH_OPS = (:add, :sub, :mul, :and, :or, :xor)
 const _NARROW_SHIFT_OPS = (:shl, :lshr, :ashr)
 const _NARROW_CAST_OPS  = (:trunc, :sext, :zext)
 # Comparison predicates that read their operands as SIGNED values.  `eq`/`ne`
-# are bit-pattern compares, and the unsigned predicates read the W-bit
-# pattern, so all three admit any constant in [0, 2^W - 1].
+# are pattern compares (congruence mod 2^W) and the unsigned predicates read
+# the W-bit pattern; the constant each admits is in `_narrow_cmp_consts`
+# (Bennett-6p8j).
 const _NARROW_SIGNED_PREDS = (:slt, :sle, :sgt, :sge)
 
 _narrow_reject(why::AbstractString) = throw(ArgumentError(
     "reversible_compile(...; bit_width=W): refusing to narrow — $why. " *
     "bit-width narrowing re-types a function to W-bit two's-complement modular " *
     "semantics and is an allowlist: narrowable are add/sub/mul/and/or/xor, " *
-    "constant-amount shifts with 0 <= k <= W, comparisons (in either " *
-    "signedness) against a constant that still fits in W bits, selects, " *
+    "constant-amount shifts with 0 <= k <= W, comparisons against a " *
+    "constant that fits in W bits (signed orderings: a signed W-bit value; " *
+    "unsigned orderings: 0..2^(W-1)-1; eq/ne: a sign- or zero-extended " *
+    "W-bit pattern other than the type maxima), selects, " *
     "trunc/sext/zext between the iS and i1 domains, and iS/i1 phis/branches " *
     "over those.  Compile without `bit_width`, or rewrite the function in " *
     "terms of them. (Bennett-mrhg)"))
@@ -240,8 +243,8 @@ function _narrow_inst(inst::IRICmp, S::Int, W::Int)
     what = "comparison `$(inst.dest)` (:$(inst.predicate))"
     _narrow_domain(inst.width, S, what)
     _narrow_operands((inst.op1, inst.op2), what)
-    _narrow_cmp_consts(inst, W)
-    return IRICmp(inst.dest, inst.predicate, inst.op1, inst.op2,
+    op1, op2 = _narrow_cmp_consts(inst, W)
+    return IRICmp(inst.dest, inst.predicate, op1, op2,
                   _narrow_w(inst.width, W))
 end
 
@@ -253,20 +256,64 @@ end
 # entirely: `icmp sle typemin(Int64), sext(x)` re-typed to 8 bits is
 # `sle 0, x` (true for every x >= 0), and `icmp slt x, typemin(Int8)` re-typed
 # to 3 bits is `slt x, 0` — the opposite test.
+#
+# Bennett-6p8j: the constant is read at the comparison's OWN width w (S, or 1
+# for an i1 compare).  LLVM constants arrive sign-extended, so the i8 pattern
+# 0xff is `-1` whether the source wrote `Int8(-1)` or `0xff` — the IR does not
+# record which.  With cs the signed i$w value of the constant:
+#   * a comparison `_narrow_w` leaves at width w (W == S, or an i1 compare) is
+#     not re-typed at all, so every i$w constant keeps its exact meaning;
+#   * a signed ordering reads its constant as cs, which must fit in min(W, w)
+#     signed bits (and is rewritten to cs, so a hand-written unsigned spelling
+#     such as 255 for i8 -1 lowers as -1);
+#   * an unsigned ordering needs 0 <= cs <= 2^(min(W, w)-1) - 1: the optimizer
+#     rewrites signed range checks into unsigned ones (`0 <= x < 10` ->
+#     `icmp ult x, 10`, `x < 0 || x > 12` -> `icmp ugt x, 12`), which agree
+#     with the source on every W-bit input only below 2^(W-1);
+#   * eq/ne is congruence mod 2^W, a pattern compare: when W < w the constant
+#     must be the sign- or zero-extension of its low W bits (cs in
+#     smin(W)..umax(W)), so `Int8(-8)` and `0x0c` are fine at W = 4; when
+#     W > w, the sign- and zero-extended readings of a negative cs are two
+#     different W-bit patterns, so cs >= 0.  EXCEPT the source type's maxima
+#     -1 (0xff) and smax(w) (127): the optimizer folds an ORDERING against a
+#     type extreme into an equality (`x >= 0xff` / `x > 0xfe` -> `x == -1`,
+#     `x < 0xff` -> `x != -1`, `x > 126` -> `x == 127`), and that ordering
+#     has no W-bit meaning.  (The minima are 0, always fine, and smin(w),
+#     which never reproduces from its low W bits.)
 function _narrow_cmp_consts(inst::IRICmp, W::Int)
-    lo, hi = inst.predicate in _NARROW_SIGNED_PREDS ?
-             (_narrow_smin(W), _narrow_smax(W)) : (0, _narrow_umax(W))
-    for (op, side) in ((inst.op1, "op1"), (inst.op2, "op2"))
-        op isa ConstOperand || continue
-        lo <= op.value <= hi && continue
-        _narrow_reject(
-            "comparison `$(inst.dest)` (:$(inst.predicate)) tests $side against " *
-            "the constant $(op.value), which does not fit in W=$W bits " *
-            "(allowed $lo..$hi for this predicate's signedness): re-typing " *
-            "the constant changes what the test MEANS — a source-width limit " *
-            "guard (typemin/typemax/width-1 of the source type) lands here")
+    w = inst.width
+    retyped = _narrow_w(w, W) != w
+    m = min(W, w)
+    pred = inst.predicate
+    narrow_op(op, side) = begin
+        op isa ConstOperand || return op
+        c = op.value
+        _narrow_smin(w) <= c <= _narrow_umax(w) || _narrow_reject(
+            "comparison `$(inst.dest)` (:$pred) tests $side against the " *
+            "constant $c, which is not an i$w value at all")
+        retyped || return op
+        # The signed i$w reading of the constant (`c > smax` only when w < 64).
+        cs = c > _narrow_smax(w) ? c - (1 << w) : c
+        ok, allowed = if pred in _NARROW_SIGNED_PREDS
+            _narrow_smin(m) <= cs <= _narrow_smax(m), "$(_narrow_smin(m))..$(_narrow_smax(m))"
+        elseif pred in (:eq, :ne)
+            (W < w ? _narrow_smin(W) <= cs <= _narrow_umax(W) : cs >= 0) &&
+                cs != -1 && cs != _narrow_smax(w),
+            (W < w ? "$(_narrow_smin(W))..$(_narrow_umax(W))" : ">= 0") *
+                ", except the type maxima -1 and $(_narrow_smax(w))"
+        else
+            0 <= cs <= _narrow_smax(m), "0..$(_narrow_smax(m))"
+        end
+        ok || _narrow_reject(
+            "comparison `$(inst.dest)` (:$pred) tests $side against the " *
+            "constant $c (signed i$w value $cs), which is not allowed at W=$W " *
+            "(allowed: $allowed): re-typing it changes what the test MEANS — " *
+            "a source-width limit guard (typemin/typemax/width-1 of the " *
+            "source type) or an ordering the optimizer folded into this " *
+            "compare lands here (Bennett-6p8j)")
+        return cs == c ? op : ConstOperand(cs)
     end
-    return nothing
+    return narrow_op(inst.op1, "op1"), narrow_op(inst.op2, "op2")
 end
 
 function _narrow_inst(inst::IRSelect, S::Int, W::Int)

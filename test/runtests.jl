@@ -342,6 +342,11 @@ runfile("test_narrow.jl")
 # the F13 tuple/aggregate layout, plus the rejection battery (memory, runtime
 # shifts, division, loops, widened domains, typemin guards).
 runfile("test_mrhg_narrow_soundness.jl")
+# Bennett-6p8j — comparison constants under narrowing are read at the compare's
+# own width: eq/ne against `Int8(-1)` at bit_width=8 compiles, and a re-typed
+# eq/ne/unsigned compare admits only constants a signed and an unsigned source
+# agree on (0..2^(W-1)-1), exhaustively against a number-semantics oracle.
+runfile("test_6p8j_narrow_cmp_consts.jl")
 runfile("test_preprocessing.jl")
 runfile("test_t0_preprocessing.jl")
 runfile("test_ir_memory_types.jl")
