@@ -121,8 +121,11 @@ vector of [`transitive_callees`](@ref) BEFORE `_split_spectypes`), as a Set.
 Lets tests compare specTypes directly without round-tripping through the
 `(callee, argtypes)` split. Not exported.
 """
-function _transitive_callee_specTypes(f, argtypes::Type{<:Tuple})
-    root = Base.signature_type(f, argtypes)
+_transitive_callee_specTypes(f, argtypes::Type{<:Tuple}) =
+    _transitive_callee_specTypes(Base.signature_type(f, argtypes))
+
+# By root signature — also the Bennett-p9a0 callee-identity fallback.
+function _transitive_callee_specTypes(@nospecialize(root::Type))
     visited = Set{DataType}()
     work    = copy(_invoke_callees(root))
     while !isempty(work)

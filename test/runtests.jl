@@ -483,6 +483,9 @@ runfile("test_5oyt_unregistered_callee.jl")
 # `_demangle_llvm_callee`): `j_Foo_N` no longer folds onto a registered `foo`
 # (silent wrong body) nor misses a registered `Foo` (loud set-extraction reject).
 runfile("test_wh1p_callee_case_folding.jl")
+# Bennett-p9a0 — a registered callee must be the very function the LLVM call
+# targets (module identity), not merely a namesake.
+runfile("test_p9a0_callee_module_identity.jl")
 # Bennett-qal5 / U16 — multi-index GEPs and GEPs on unsupported bases
 # reject loud (was silent drop, leaving dest SSA undefined). Full
 # type-walking byte-offset accumulation deferred.

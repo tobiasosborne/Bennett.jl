@@ -80,9 +80,12 @@ function extract_parsed_ir(f, arg_types::Type{<:Tuple};
         () -> _julia_ir_string(f, arg_types; optimize=optimize, dump_module=true),
         ptr_cells;
         diag_src = () -> _diag_src_for_sig(Base.signature_type(f, arg_types)))
-    return _parsed_ir_from_ir_string(ir_string; preprocess=preprocess, passes=passes,
-                                     use_memory_ssa=use_memory_ssa, mem=mem,
-                                     ptr_cells=ptr_cells, jl_global_certs=certs)
+    # Bennett-p9a0: the root's `:invoke` edges vouch for demangled callee hits.
+    return _with_callee_root(Base.signature_type(f, arg_types)) do
+        _parsed_ir_from_ir_string(ir_string; preprocess=preprocess, passes=passes,
+                                  use_memory_ssa=use_memory_ssa, mem=mem,
+                                  ptr_cells=ptr_cells, jl_global_certs=certs)
+    end
 end
 
 # Bennett-40ys: the TAIL of `extract_parsed_ir`, factored out VERBATIM so the
@@ -184,9 +187,12 @@ function extract_parsed_ir_by_sig(@nospecialize(sig::Type);
                                 debuginfo=:none),
         ptr_cells;
         diag_src = () -> _diag_src_for_sig(sig))
-    return _parsed_ir_from_ir_string(ir_string; preprocess=preprocess, passes=passes,
-                                     use_memory_ssa=use_memory_ssa, mem=mem,
-                                     ptr_cells=ptr_cells, jl_global_certs=certs)
+    # Bennett-p9a0: the root's `:invoke` edges vouch for demangled callee hits.
+    return _with_callee_root(sig) do
+        _parsed_ir_from_ir_string(ir_string; preprocess=preprocess, passes=passes,
+                                  use_memory_ssa=use_memory_ssa, mem=mem,
+                                  ptr_cells=ptr_cells, jl_global_certs=certs)
+    end
 end
 
 # Shared plumbing for the external-IR entry points. Takes an already-parsed

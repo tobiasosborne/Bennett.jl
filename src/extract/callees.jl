@@ -8,14 +8,91 @@ const _known_callees = Dict{String, Function}()
 # where _lookup_callee somehow triggers a register during compilation.
 const _known_callees_lock = ReentrantLock()
 
-"""Register a Julia function for gate-level inlining when encountered as an LLVM call."""
+"""
+    register_callee!(f::Function) -> Nothing
+
+Register a Julia function for gate-level inlining when encountered as an LLVM
+call. The registry is keyed by the BARE name `string(nameof(f))` — the only
+part of the LLVM symbol `j_<name>_<NNN>` that names the function. Re-registering
+the same function is a no-op; registering a DIFFERENT function under an
+already-registered bare name (e.g. `A.same` after `B.same`) throws (Bennett-p9a0):
+the old overwrite silently inlined the last-registered body for both.
+"""
 function register_callee!(f::Function)
-    # Get the LLVM name Julia would give this function (j_name_NNN pattern)
-    # We match by substring, so just store the Julia function name
+    name = string(nameof(f))
     lock(_known_callees_lock) do
-        _known_callees[string(nameof(f))] = f
+        prev = get(_known_callees, name, nothing)
+        prev === nothing || prev === f || throw(ArgumentError(
+            "register_callee!: cannot register $(parentmodule(f)).$name — the bare " *
+            "name `$name` is already registered to $(parentmodule(prev)).$(nameof(prev)). " *
+            "LLVM call symbols (`j_$(name)_<NNN>`) carry no module, so two same-named " *
+            "callees cannot share the registry (Bennett-p9a0); rename one of them."))
+        _known_callees[name] = f
     end
     return nothing
+end
+
+# ---- Bennett-p9a0: module identity of a demangled callee ----
+#
+# The registry key is a bare name and the LLVM symbol carries no module, so a
+# call `j_same_NNN` to the UNREGISTERED `A.same` used to resolve to a registered
+# `B.same`, whose body was then inlined (wrong circuit, ancillae still clean).
+# A Julia-function extraction knows its root signature, and Julia's codegen
+# emits a `j_<name>_<NNN>` call for each `:invoke` left in the root's optimized
+# typed code — so the root's `:invoke` edges say which function each name
+# denotes. `extract_parsed_ir` / `extract_parsed_ir_by_sig` set `_CALLEE_ROOT`
+# for the walk; `_lookup_callee` then accepts a demangled hit only when the
+# edges hold exactly one function of that name and it IS the registered one,
+# and fails loud otherwise. `.ll`/`.bc`/IR-string entries have no Julia root
+# (the scope is unset): they keep name-only resolution, which is unambiguous
+# within the registry because `register_callee!` rejects same-named functions.
+mutable struct _CalleeRoot
+    sig::Type
+    direct::Union{Nothing, Vector{DataType}}    # root's own `:invoke` specTypes (lazy)
+    closure::Union{Nothing, Set{DataType}}      # transitive `:invoke` specTypes (lazy)
+end
+_CalleeRoot(sig::Type) = _CalleeRoot(sig, nothing, nothing)
+
+const _CALLEE_ROOT = Base.ScopedValues.ScopedValue{Union{Nothing, _CalleeRoot}}(nothing)
+
+"""Run `body()` with `sig` as the Julia root whose `:invoke` edges vouch for
+demangled callee hits (Bennett-p9a0)."""
+_with_callee_root(body, sig::Type) =
+    Base.ScopedValues.with(body, _CALLEE_ROOT => _CalleeRoot(sig))
+
+# The distinct function types named `fname` among the callee specTypes `sts`.
+function _callee_types_named(sts, fname::AbstractString)
+    out = DataType[]
+    for st in sts
+        fT = st.parameters[1]
+        (fT isa DataType && isdefined(fT, :instance) && fT.instance isa Function) || continue
+        string(nameof(fT.instance)) == fname && !(fT in out) && push!(out, fT)
+    end
+    return out
+end
+
+function _check_callee_identity(root::_CalleeRoot, llvm_name::String,
+                                fname::String, hit::Function)
+    # Direct edges first (the case for every call in the root's own body); the
+    # transitive closure covers a call that reached the root's LLVM body from a
+    # co-emitted callee. Both are computed at most once per extraction.
+    root.direct === nothing && (root.direct = _invoke_callees(root.sig))
+    cands = _callee_types_named(root.direct, fname)
+    if isempty(cands)
+        root.closure === nothing && (root.closure = _transitive_callee_specTypes(root.sig))
+        cands = _callee_types_named(root.closure, fname)
+    end
+    length(cands) == 1 && only(cands) === typeof(hit) && return nothing
+    _qual(fT) = "$(parentmodule(fT.instance)).$(nameof(fT.instance))"
+    why = isempty(cands) ?
+        "no function named `$fname` is invoked beneath $(root.sig), so the call's target is unknown" :
+        length(cands) > 1 ?
+        "several functions named `$fname` are invoked beneath $(root.sig) " *
+        "($(join(_qual.(cands), ", "))) and the symbol does not say which" :
+        "it targets $(_qual(only(cands))), not the registered $(parentmodule(hit)).$fname"
+    error("Bennett-p9a0: LLVM call `$llvm_name` demangles to the registered callee " *
+          "name `$fname`, but $why. Refusing to inline a body that may be the wrong " *
+          "function; give the callees distinct names.")
 end
 
 # Bennett-ej4n / U48: cache extracted ParsedIR keyed on (callee, arg_types).
@@ -140,17 +217,24 @@ function _demangle_llvm_callee(llvm_name::AbstractString)
 end
 
 function _lookup_callee(llvm_name::String)
-    lock(_known_callees_lock) do
+    hit, fname = lock(_known_callees_lock) do
         # First: try exact match (for hardcoded lookups like "soft_fcmp_ole")
-        haskey(_known_callees, llvm_name) && return _known_callees[llvm_name]
+        haskey(_known_callees, llvm_name) && return (_known_callees[llvm_name], nothing)
 
         # Second: LLVM-mangled names follow julia_<funcname>_<NNN> or j_<funcname>_<NNN>.
         # Extract the function name (case-preserved, Bennett-wh1p) and do an
         # exact dict lookup.
         fname = _demangle_llvm_callee(llvm_name)
-        fname !== nothing && haskey(_known_callees, fname) && return _known_callees[fname]
-        return nothing
+        fname !== nothing && haskey(_known_callees, fname) &&
+            return (_known_callees[fname], fname)
+        return (nothing, nothing)
     end
+    # Bennett-p9a0: a demangled hit is only a NAME match — confirm it is the
+    # function the call targets (outside the registry lock: this may infer).
+    root = _CALLEE_ROOT[]
+    fname === nothing || root === nothing ||
+        _check_callee_identity(root, llvm_name, fname, hit)
+    return hit
 end
 
 # ---- Bennett-40ys: callees known by NAME but not by VALUE ----
