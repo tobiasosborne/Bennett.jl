@@ -124,6 +124,8 @@ runfile("test_sr8v_compile_cache.jl")
 # Bennett-uiaq: route reversible_compile(f, T) through _extract_parsed_ir_cached
 # so back-to-back compiles auto-hit the sr8v cache.
 runfile("test_uiaq_compile_cache_transparent.jl")
+# Bennett-4ddk: compile caches invalidate on world change, accept callables, stay bounded.
+runfile("test_4ddk_compile_cache_soundness.jl")
 runfile("test_y986_loop_header_dispatch.jl")
 runfile("test_gboa_dirty_bit_hygiene.jl")
 runfile("test_d77b_fcmp_predicates.jl")

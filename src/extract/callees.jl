@@ -21,49 +21,97 @@ end
 # Bennett-ej4n / U48: cache extracted ParsedIR keyed on (callee, arg_types).
 # `extract_parsed_ir` does a ~21ms LLVM C-API walk per invocation; a circuit
 # with N references to the same callee paid that N times via `lower_call!`.
-# Module-scoped because registered callees are stable functions in this
-# package — the cache is small (one entry per distinct (callee, arg_types)
-# pair) and never grows after warm-up. Avoids worsening the LoweringCtx
-# back-compat-constructor sprawl tracked in Bennett-ehoa / U43.
+# Avoids worsening the LoweringCtx back-compat-constructor sprawl tracked in
+# Bennett-ehoa / U43.
 #
 # Bennett-uiaq: cache key extended to include `optimize` and `mem` so the
 # top-level `reversible_compile(f, arg_types)` overload can route its
-# `extract_parsed_ir(f, arg_types; optimize, mem)` call through this
-# helper and auto-hit the Bennett-sr8v compile cache on repeat calls,
-# WITHOUT silently dropping non-default extraction kwargs. The old
-# no-kwargs call shape (e.g. src/lowering/call.jl:82) is preserved via
-# the kwarg defaults `optimize=true, mem=:auto` — matches the old
-# `extract_parsed_ir(f, arg_types)` defaults exactly.
-const _parsed_ir_cache = Dict{Tuple{Function, Type, Bool, Symbol}, ParsedIR}()
+# extraction through this helper and auto-hit the Bennett-sr8v compile cache
+# on repeat calls, WITHOUT silently dropping non-default extraction kwargs.
+# The no-kwargs call shape (src/lowering/call.jl) keeps the defaults
+# `optimize=true, mem=:auto` — matches `extract_parsed_ir(f, arg_types)`.
+#
+# Bennett-4ddk: the key `(f, arg_types, ...)` does NOT change when a method is
+# redefined (the function object survives `@eval g(x) = ...`), nor when a
+# callee that `f` inlines is. Both this cache and `_compile_cache` are
+# therefore WORLD-GATED: an access in a different world (`Base.get_world_counter`)
+# than the cache was filled in empties it first. That is conservative — any
+# method definition, and in Julia 1.12 any new global binding, bumps the world
+# — but sound for transitive redefinition, where a per-method check is not.
+# Same-world repeats (the intra-compile `lower_call!` reuse, back-to-back
+# compiles) still hit. Each cache is also size-bounded, and `f` is untyped so
+# callable structs / `Type` constructors are accepted like `extract_parsed_ir`.
+const _parsed_ir_cache = Dict{Tuple{Any, Type, Bool, Symbol, Int}, ParsedIR}()
 const _parsed_ir_cache_lock = ReentrantLock()
+const _parsed_ir_cache_world = Ref{UInt}(0)
+const _PARSED_IR_CACHE_MAX = 256
 
 """
-    _extract_parsed_ir_cached(f, arg_types; optimize=true, mem=:auto) -> ParsedIR
+    _cache_world_gate!(cache, world_ref) -> UInt
 
-Memoised wrapper over `extract_parsed_ir(f, arg_types; optimize, mem)`.
-On a cache hit returns the previously-extracted `ParsedIR` by identity;
-on a miss extracts, stores, and returns. `ParsedIR` is immutable and
-the lowering pipeline only reads from it, so sharing across compiles
-is safe.
-
-The key is `(f, arg_types, optimize, mem)` so distinct extraction
-kwargs do not collide on the same cache slot.
+Bennett-4ddk: empty `cache` when the global world counter has moved since
+`world_ref` was recorded, then return the current world. Call with the
+cache's lock held.
 """
-function _extract_parsed_ir_cached(f::Function, arg_types::Type{<:Tuple};
+function _cache_world_gate!(cache::AbstractDict, world_ref::Base.RefValue{UInt})
+    w = Base.get_world_counter()
+    if w != world_ref[]
+        empty!(cache)
+        world_ref[] = w
+    end
+    return w
+end
+
+"""
+    _cache_insert_bounded!(cache, key, val, maxlen, world)
+
+Bennett-4ddk: store `key => val` unless the world moved during the
+computation of `val` (then the entry's world is ambiguous — skip it), evicting
+arbitrary entries first so `length(cache) <= maxlen`. Call with the lock held.
+"""
+function _cache_insert_bounded!(cache::AbstractDict, key, val, maxlen::Int, world::UInt)
+    Base.get_world_counter() == world || return val
+    while length(cache) >= maxlen
+        delete!(cache, first(keys(cache)))
+    end
+    cache[key] = val
+    return val
+end
+
+"""
+    _extract_parsed_ir_cached(f, arg_types; optimize=true, mem=:auto, bit_width=0) -> ParsedIR
+
+Memoised wrapper over `extract_parsed_ir(f, arg_types; optimize, mem)`,
+followed by `_narrow_ir(_, bit_width)` when `bit_width > 0` (Bennett-4ddk: so
+identical narrowed compiles share one `ParsedIR`, hence one compile-cache
+entry). On a hit returns the previously-built `ParsedIR` by identity.
+`ParsedIR` is immutable and the lowering pipeline only reads from it, so
+sharing across compiles is safe.
+
+The key is `(f, arg_types, optimize, mem, bit_width)`; the cache is emptied
+whenever the world counter moves (Bennett-4ddk) and holds at most
+`_PARSED_IR_CACHE_MAX` entries.
+"""
+function _extract_parsed_ir_cached(f, arg_types::Type{<:Tuple};
                                     optimize::Bool=true,
-                                    mem::Symbol=:auto)::ParsedIR
-    key = (f, arg_types, optimize, mem)
+                                    mem::Symbol=:auto,
+                                    bit_width::Int=0)::ParsedIR
+    key = (f, arg_types, optimize, mem, bit_width)
     lock(_parsed_ir_cache_lock) do
+        w = _cache_world_gate!(_parsed_ir_cache, _parsed_ir_cache_world)
         haskey(_parsed_ir_cache, key) && return _parsed_ir_cache[key]
-        pir = extract_parsed_ir(f, arg_types; optimize, mem)
-        _parsed_ir_cache[key] = pir
-        return pir
+        pir = bit_width > 0 ?
+            _narrow_ir(_extract_parsed_ir_cached(f, arg_types; optimize, mem),
+                       bit_width) :
+            extract_parsed_ir(f, arg_types; optimize, mem)
+        return _cache_insert_bounded!(_parsed_ir_cache, key, pir,
+                                      _PARSED_IR_CACHE_MAX, w)
     end
 end
 
 """Empty the `_parsed_ir_cache`. For tests, and as a manual escape hatch
-if a callee gets redefined (e.g. under Revise) — registered callees in
-this package are otherwise stable across the process lifetime."""
+after `register_callee!` (a registry change does not move the world, so the
+Bennett-4ddk world gate does not see it)."""
 function _clear_parsed_ir_cache!()
     lock(_parsed_ir_cache_lock) do
         empty!(_parsed_ir_cache)

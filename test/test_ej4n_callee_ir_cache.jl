@@ -44,9 +44,9 @@ using Bennett
         # Bennett-uiaq: cache key extended to 4-tuple
         # (f, arg_types, optimize, mem) — default kwargs are
         # `optimize=true, mem=:auto` (match the no-kwargs call shape above).
-        @test haskey(Bennett._parsed_ir_cache, (soft_fadd, Tuple{UInt64, UInt64}, true, :auto))
-        @test haskey(Bennett._parsed_ir_cache, (soft_fmul, Tuple{UInt64, UInt64}, true, :auto))
-        @test haskey(Bennett._parsed_ir_cache, (soft_fneg, Tuple{UInt64}, true, :auto))
+        @test haskey(Bennett._parsed_ir_cache, (soft_fadd, Tuple{UInt64, UInt64}, true, :auto, 0))
+        @test haskey(Bennett._parsed_ir_cache, (soft_fmul, Tuple{UInt64, UInt64}, true, :auto, 0))
+        @test haskey(Bennett._parsed_ir_cache, (soft_fneg, Tuple{UInt64}, true, :auto, 0))
     end
 
     @testset "compile of a parent fn populates the cache" begin
@@ -62,7 +62,7 @@ using Bennett
 
         # Bennett-uiaq: 4-tuple key (f, arg_types, optimize, mem) with defaults.
         @test haskey(Bennett._parsed_ir_cache,
-                     (soft_fadd, Tuple{UInt64, UInt64}, true, :auto))
+                     (soft_fadd, Tuple{UInt64, UInt64}, true, :auto, 0))
         n_after_first = length(Bennett._parsed_ir_cache)
         @test n_after_first >= 1
 

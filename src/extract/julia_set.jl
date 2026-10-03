@@ -323,8 +323,7 @@ lowering, matching [`extract_parsed_ir_set_from_ll`](@ref).
 
 `f` is left UNTYPED so this accepts the same callee kinds as `extract_parsed_ir`
 (a plain `Function` *or* a `Type` constructor like `AssertionError`). It does NOT
-route through `_extract_parsed_ir_cached` (which is `f::Function`-keyed and would
-MethodError on a constructor key).
+route through `_extract_parsed_ir_cached`.
 
 Keyword arguments:
 - `optimize` (default `false`): body-extraction optimisation level. CW-D1a edges

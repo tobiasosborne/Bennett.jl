@@ -411,9 +411,8 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     # carries the normalised `:auto` down to the delegation below.
     # Bennett-uiaq: route through `_extract_parsed_ir_cached` so repeat
     # `reversible_compile(f, arg_types)` calls auto-hit the Bennett-sr8v
-    # compile cache (which keys on `objectid(parsed)`). The cache key
-    # includes `optimize` and `mem` so non-default extraction kwargs do
-    # not collide.
+    # compile cache (which keys on `parsed`). The cache key includes
+    # `optimize` and `mem` so non-default extraction kwargs do not collide.
     parsed = _extract_parsed_ir_cached(f, arg_types; optimize, mem)
 
     # Bennett-33zr: same `:reversible_vm` carve-out as the explicit-tabulate
@@ -432,14 +431,16 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     # ALLOWLIST pass — it either proves the rewrite preserves W-bit modular
     # semantics, or it throws an ArgumentError naming the bead.  Never a
     # plausible-looking wrong circuit.
+    # Bennett-4ddk: narrowed through the parsed-IR cache, so identical
+    # narrowed compiles share one `ParsedIR` and hence one compile-cache entry.
     if bit_width > 0
-        parsed = _narrow_ir(parsed, bit_width)
+        parsed = _extract_parsed_ir_cached(f, arg_types; optimize, mem, bit_width)
     end
     # Bennett-uiaq: route the final lower+bennett through the ParsedIR
-    # overload so the Bennett-sr8v compile cache (keyed on
-    # `objectid(parsed)` + all 10 kwargs) auto-hits on repeat calls.
-    # The parsed-IR cache above ensures the same `parsed` instance is
-    # returned for the same (f, arg_types, optimize, mem) tuple, so
+    # overload so the Bennett-sr8v compile cache (keyed on `parsed` + all
+    # 10 kwargs) auto-hits on repeat calls. The parsed-IR cache above
+    # ensures the same `parsed` instance is returned for the same
+    # (f, arg_types, optimize, mem, bit_width) tuple in one world, so
     # back-to-back `reversible_compile(g, Int8)` calls produce
     # `===`-identical `ReversibleCircuit` results.
     return reversible_compile(parsed;
@@ -460,11 +461,13 @@ const _PARSED_OVERLOAD_CROSS_REJECT = (:optimize, :bit_width, :strategy)
 # Bennett-sr8v: durable src-side memoisation of compiled circuits.
 # Mirrors the `_extract_parsed_ir_cached` / `_parsed_ir_cache` pattern in
 # src/extract/callees.jl: Dict + ReentrantLock, check-then-populate inside
-# the lock. Key is identity on `parsed` plus all 10 compile kwargs — see
-# the docstring on `reversible_compile(::ParsedIR; ...)` below for why we
-# use `objectid` instead of structural equality.
+# the lock. Key is `parsed` itself plus all 10 compile kwargs.
+# Bennett-4ddk: world-gated and size-bounded like `_parsed_ir_cache` (lowering
+# re-extracts registered callees, so a circuit depends on the world too).
 const _compile_cache = Dict{Tuple, ReversibleCircuit}()
 const _compile_cache_lock = ReentrantLock()
+const _compile_cache_world = Ref{UInt}(0)
+const _COMPILE_CACHE_MAX = 32
 
 # Bennett-33zr / BennettVM ADR 0003: registration hook for the
 # `target=:reversible_vm` backend. BennettVM depends on Bennett, so Bennett MUST
@@ -499,17 +502,19 @@ passing `optimize`, `bit_width`, or `strategy` here raises `ArgumentError`.
 ## Caching (Bennett-sr8v)
 
 The compiled `ReversibleCircuit` is memoised in a module-scoped cache
-keyed on `(objectid(parsed), max_loop_iterations, compact_calls, add,
-mul, fold_constants, target, auto_self_reversing, mem, persistent_impl,
-hashcons)` — i.e. identity on `parsed` plus all 10 compile kwargs.
-`objectid` is used (not structural equality) because `ParsedIR` has no
-custom `==`/`hash`; the hit pattern is the post-Bennett-hybr workflow
-where callers hoist `extract_parsed_ir_from_ll(...)` once and reuse the
-same `ParsedIR` instance across compiles. The `reversible_compile(f,
-arg_types)` overload calls `extract_parsed_ir` directly and so does NOT
-hit this cache across repeat calls — callers who want top-level
-memoisation across `(f, types)` compiles should route through
-`_extract_parsed_ir_cached(f, types)` and then `reversible_compile(parsed)`.
+keyed on `(parsed, max_loop_iterations, compact_calls, add, mul,
+fold_constants, target, auto_self_reversing, mem, persistent_impl,
+hashcons)` — `parsed` compares by egal (`ParsedIR` has no custom
+`==`/`hash`) and the key keeps it alive. The hit pattern is the
+post-Bennett-hybr workflow where callers hoist
+`extract_parsed_ir_from_ll(...)` once and reuse the same `ParsedIR`
+across compiles; the `reversible_compile(f, arg_types)` overload reaches
+it through `_extract_parsed_ir_cached` (Bennett-uiaq).
+
+Bennett-4ddk: the cache is emptied whenever Julia's world counter moves
+(a method definition anywhere, or a new global binding), so a redefined
+function or callee is never served a stale circuit, and it holds at most
+`_COMPILE_CACHE_MAX` entries.
 
 **`ReversibleCircuit` is effectively immutable** — callers MUST NOT
 mutate `.gates`, `.input_wires`, or any other field of the returned
@@ -558,18 +563,22 @@ function reversible_compile(parsed::ParsedIR;
             "does not depend on BennettVM — the VM backend plugs in.)")
         return _REVERSIBLE_VM_BACKEND[](parsed)   # → BennettVM.VMProgram
     end
-    # Bennett-sr8v: identity-key the compile cache on parsed + all kwargs.
-    key = (objectid(parsed), max_loop_iterations, compact_calls, add, mul,
+    # Bennett-sr8v: key the compile cache on parsed + all kwargs.
+    # Bennett-4ddk: `parsed` itself, not `objectid(parsed)` — the key then
+    # holds it alive, so a GC'd ParsedIR's recycled objectid cannot alias a
+    # new one (`ParsedIR` has no custom `==`/`hash`: egal semantics).
+    key = (parsed, max_loop_iterations, compact_calls, add, mul,
            fold_constants, target, auto_self_reversing, mem, persistent_impl,
            hashcons)
     lock(_compile_cache_lock) do
+        w = _cache_world_gate!(_compile_cache, _compile_cache_world)
         haskey(_compile_cache, key) && return _compile_cache[key]
         lr = lower(parsed; max_loop_iterations, compact_calls, add, mul,
                    fold_constants, target, auto_self_reversing,
                    mem, persistent_impl, hashcons)
         c = bennett(lr)
-        _compile_cache[key] = c
-        return c
+        return _cache_insert_bounded!(_compile_cache, key, c,
+                                      _COMPILE_CACHE_MAX, w)
     end
 end
 
