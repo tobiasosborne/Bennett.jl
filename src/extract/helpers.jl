@@ -261,6 +261,42 @@ function _type_width(tp)
     end
 end
 
+"""
+    _gep_stride_bytes(dl::LLVM.DataLayout, ty::LLVM.LLVMType) -> Int
+
+Byte distance between consecutive `ty` elements in memory — the step of one
+GEP index over source element type `ty`. This is LLVM's ALLOCATION size
+(`LLVMABISizeOfType` == `DataLayout::getTypeAllocSize`), NOT the value's bit
+width ÷ 8 (Bennett-edt9 / Astra F13): `i24` steps 4 bytes and `i9` 2 bytes on
+every datalayout Julia uses (they take the next specified integer's alignment),
+and a custom layout (`e-i32:64`) can pad even a power-of-two integer.
+"""
+_gep_stride_bytes(dl::LLVM.DataLayout, ty::LLVM.LLVMType) = Int(LLVM.abi_size(dl, ty))
+
+"""
+    _var_gep_packed_width(inst, ty::LLVM.IntegerType) -> Int
+
+Element bit width for an `IRVarGEP` over integer elements of type `ty`.
+`IRVarGEP` addresses element `i` at bit `i * elem_width`, i.e. it assumes the
+elements are PACKED (stride == width). That holds only when the allocation
+stride is exactly `width ÷ 8` bytes; for `i1`, `i9`, `i24`, … (or a padding
+datalayout) the native element sits elsewhere, so refuse loud (Bennett-edt9).
+"""
+function _var_gep_packed_width(inst::LLVM.Instruction, ty::LLVM.IntegerType)::Int
+    w = Int(LLVM.width(ty))
+    stride = _gep_stride_bytes(_inst_datalayout(inst), ty)
+    8 * stride == w || _ir_error(inst,
+        "getelementptr over $(ty): the allocation stride is $(stride) " *
+        "byte(s) but the element is $(w) bits, so elements are not packed " *
+        "and IRVarGEP's `index * elem_width` bit addressing cannot express " *
+        "the native layout (Bennett-edt9)")
+    return w
+end
+
+# The DataLayout of the module containing instruction `inst`.
+_inst_datalayout(inst::LLVM.Instruction) =
+    LLVM.datalayout(LLVM.parent(LLVM.parent(LLVM.parent(inst))))
+
 const _OPCODE_MAP = Dict(
     LLVM.API.LLVMAdd  => :add,  LLVM.API.LLVMSub  => :sub,
     LLVM.API.LLVMMul  => :mul,  LLVM.API.LLVMAnd  => :and,

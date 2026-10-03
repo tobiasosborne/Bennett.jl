@@ -1374,13 +1374,15 @@ function _root_byte_offset(val::LLVM.Value, depth::Int=0)::Union{Nothing, Int}
         return nothing
     end
     idx_off = 0
+    # Bennett-edt9: strides are DataLayout allocation sizes, never `width ÷ 8`.
+    dl = _inst_datalayout(val)
     for i in 2:length(gops)
         iv = gops[i]
         iv isa LLVM.ConstantInt || return nothing        # runtime index
         ival = Int(LLVM.API.LLVMConstIntGetSExtValue(iv.ref))
         if i == 2
             if srcty isa LLVM.IntegerType
-                idx_off += ival * div(LLVM.width(srcty), 8)
+                idx_off += ival * _gep_stride_bytes(dl, srcty)
             elseif srcty isa LLVM.ArrayType
                 ival == 0 || return nothing
             else
@@ -1390,7 +1392,7 @@ function _root_byte_offset(val::LLVM.Value, depth::Int=0)::Union{Nothing, Int}
             srcty isa LLVM.ArrayType || return nothing
             inner = LLVM.eltype(srcty)
             inner isa LLVM.IntegerType || return nothing
-            idx_off += ival * div(LLVM.width(inner), 8)
+            idx_off += ival * _gep_stride_bytes(dl, inner)
         end
     end
     sub = _root_byte_offset(gops[1], depth + 1)
@@ -4125,23 +4127,24 @@ function _global_root_and_offset(val::LLVM.Value, depth::Int=0
             e isa InterruptException && rethrow()
             return nothing
         end
-        # Compute byte offset from index operands.
-        idx_off = 0
+        # Collect (index, stepped type) from the index operands; the byte
+        # strides need the root global's DataLayout (below).
+        steps = Tuple{Int, LLVM.LLVMType}[]
         for i in 2:length(gep_ops)
             iv = gep_ops[i]
             iv isa LLVM.ConstantInt || return nothing  # variable GEP
             ival = Int(LLVM.API.LLVMConstIntGetSExtValue(iv.ref))
             if i == 2
                 # First index strides over `srcty`. We accept either:
-                # (a) `srcty` is integer iM → stride = M/8 (e.g.
-                #     `getelementptr i8, ptr @g, i32 4` → 4 bytes).
+                # (a) `srcty` is integer iM → stride = its allocation size
+                #     (e.g. `getelementptr i8, ptr @g, i32 4` → 4 bytes;
+                #     `getelementptr i24, ptr @g, i32 1` → 4 bytes, Bennett-edt9).
                 # (b) `srcty` is ArrayType — first index must be 0
                 #     (stepping past the whole array doesn't make
                 #     sense for a memcpy source). Non-zero outer
                 #     index → reject (multi-array GEP exotica).
                 if srcty isa LLVM.IntegerType
-                    stride = div(LLVM.width(srcty), 8)
-                    idx_off += ival * stride
+                    push!(steps, (ival, srcty))
                 elseif srcty isa LLVM.ArrayType
                     ival == 0 || return nothing
                 else
@@ -4152,8 +4155,7 @@ function _global_root_and_offset(val::LLVM.Value, depth::Int=0
                 if srcty isa LLVM.ArrayType
                     inner = LLVM.eltype(srcty)
                     inner isa LLVM.IntegerType || return nothing
-                    stride = div(LLVM.width(inner), 8)
-                    idx_off += ival * stride
+                    push!(steps, (ival, inner))
                 else
                     return nothing
                 end
@@ -4162,6 +4164,10 @@ function _global_root_and_offset(val::LLVM.Value, depth::Int=0
         sub = _global_root_and_offset(base, depth + 1)
         sub === nothing && return nothing
         (gref, gbase_off) = sub
+        # Bennett-edt9: GEP strides are allocation sizes from the module's
+        # DataLayout, never `width ÷ 8`.
+        dl = LLVM.datalayout(LLVM.Module(LLVM.API.LLVMGetGlobalParent(gref)))
+        idx_off = sum((ival * _gep_stride_bytes(dl, ty) for (ival, ty) in steps); init=0)
         return (gref, gbase_off + idx_off)
     end
     return nothing
@@ -7157,16 +7163,36 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 # bennettvm-b5x). For the integer branch it is the true element
                 # width; for the legacy non-integer branch (U16 out of scope)
                 # offset is the raw index, so 8 is its raw-index unit (1 byte).
+                #
+                # Bennett-edt9 (Astra F13): the stride is the DataLayout's
+                # ALLOCATION size, not `width ÷ 8` — `gep i24, ptr %p, i64 1`
+                # steps 4 bytes (Julia: `unsafe_load(Ptr{U24}(p), 2)`), and a
+                # `float`/`double` source steps 4/8 bytes, not the raw index
+                # (Julia: `unsafe_load(Ptr{Float32}(p), 2)`).
                 offset, elem_bits = if src_type_const isa LLVM.IntegerType
-                    stride_bytes = LLVM.width(src_type_const) ÷ 8
-                    stride_bytes >= 1 || _ir_error(inst,
+                    ew_c = Int(LLVM.width(src_type_const))
+                    ew_c >= 8 || _ir_error(inst,
                         "constant-index GEP with sub-byte source element " *
-                        "width $(LLVM.width(src_type_const)) bits not " *
-                        "supported (Bennett-vz5n / U12)")
-                    (raw_idx * stride_bytes, Int(LLVM.width(src_type_const)))
+                        "width $(ew_c) bits not supported (Bennett-vz5n / U12)")
+                    stride_bytes = _gep_stride_bytes(_inst_datalayout(inst),
+                                                     src_type_const)
+                    # BennettVM recovers the cell as `offset ÷ (elem_width ÷ 8)`,
+                    # which is only the element index when the stride is
+                    # exactly `elem_width ÷ 8` (no allocation padding).
+                    (ptr_cells && 8 * stride_bytes != ew_c) && _ir_error(inst,
+                        "constant-index GEP over $(src_type_const) under " *
+                        "ptr_cells: allocation stride $(stride_bytes) bytes " *
+                        "≠ element width $(ew_c) bits ÷ 8, so the cell index " *
+                        "`offset_bytes ÷ (elem_width ÷ 8)` is not expressible " *
+                        "(Bennett-edt9)")
+                    (raw_idx * stride_bytes, ew_c)
+                elseif src_type_const isa LLVM.FloatingPointType
+                    stride_bytes = _gep_stride_bytes(_inst_datalayout(inst),
+                                                     src_type_const)
+                    (raw_idx * stride_bytes, 8 * stride_bytes)
                 else
-                    # Struct / array / float / vector base: legacy raw-index
-                    # behaviour. Silent-pass, tracked in U16. elem_width=8 is
+                    # Struct / array / vector / pointer base: legacy raw-index
+                    # behaviour. Silent-pass, tracked in U16 / Bennett-0ucg. elem_width=8 is
                     # the legacy raw-index unit (offset is the raw index, U16
                     # out of scope — BennettVM only receives the integer-source
                     # `mem=:vm` GEPs, never this branch).
@@ -7186,7 +7212,7 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                     "variable-index getelementptr with non-integer source " *
                     "element type $(src_type) not supported; cannot infer " *
                     "a bit-exact elem_width (Bennett-plb7 / U13)")
-                ew = LLVM.width(src_type)
+                ew = _var_gep_packed_width(inst, src_type)
                 return IRVarGEP(dest, ssa(names[base.ref]), idx_op, ew)
             end
         end
@@ -7218,7 +7244,7 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 "getelementptr on global with non-integer source element " *
                 "type $(src_type) not supported; cannot infer elem_width " *
                 "(Bennett-plb7 / U13)")
-            ew = LLVM.width(src_type)
+            ew = _var_gep_packed_width(inst, src_type)
             if ops[2] isa LLVM.ConstantInt
                 # Compile-time index into a constant table — still synthesizable
                 # as IRVarGEP with a constant-kind index.
@@ -7278,7 +7304,7 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                         "constant 0 (the single-array base step); got a " *
                         "non-zero / non-constant first index (Bennett-qal5 / " *
                         "U16; bennettvm-416r.4)")
-                    ew_arr = LLVM.width(elem_ty_arr)
+                    ew_arr = _var_gep_packed_width(inst, elem_ty_arr)
                     base_sym_arr = is_local_arr ? names[base.ref] :
                                    Symbol(LLVM.name(base))
                     idx_op_arr = ops[3] isa LLVM.ConstantInt ?

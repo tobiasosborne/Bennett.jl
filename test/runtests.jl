@@ -458,6 +458,9 @@ runfile("test_u21m_switch_phi_patching.jl")
 # Bennett-vz5n / U12 — constant-index GEP scales the raw index by the
 # source element's byte stride (was raw_idx; now raw_idx * bytes).
 runfile("test_vz5n_gep_offset_bytes.jl")
+# Bennett-edt9 — GEP strides are the DataLayout allocation size (i24 → 4,
+# float → 4), not width ÷ 8 / the raw index; unpacked IRVarGEP strides fail loud.
+runfile("test_edt9_gep_alloc_stride.jl")
 # Bennett-plb7 / U13 — variable-index GEP fails loud on non-integer source
 # element types (was: silent default to elem_width = 8).
 runfile("test_plb7_irvargep_elem_width.jl")
