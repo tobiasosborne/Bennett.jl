@@ -167,6 +167,52 @@ function _canonical_type_path(gname::AbstractString)::String
     return replace(gname[2:end], r"#\d+$" => "")
 end
 
+# ---- Bennett-pdwn: the type-tag identity namespace -------------------------
+#
+# A type tag's VM-cell value must (a) never equal null (`ptr null` lowers to
+# `ConstOperand(0)`, Bennett-beaw), (b) never equal any address BennettVM can
+# hand out — stack `[1, 2^40)`, malloc arena `[2^40, 2^48)`, the materialised
+# read-only globals from `GLOBAL_BASE = 2^48` upward, the empty-Memory data
+# sentinel `GLOBAL_BASE + 2^47` — and (c) be the SAME for one type in every
+# function of a closed-world set (each function is extracted separately, so a
+# per-function first-seen counter is not enough). The pre-pdwn dense counter
+# started at 0 and failed all three (Astra B-extract-core F19).
+#
+# The id is therefore a pure function of the canonical type path: an
+# 8-byte-aligned FNV-1a-64 slot in the reserved band
+# `[GLOBAL_BASE + 2^46, GLOBAL_BASE + 2^47)` — above anything the globals tier
+# lays out, below the sentinel, and inside BennettVM's globals read-window trap
+# band, so an (unmodelled) dereference of a tag traps loud. FNV-1a is spelled
+# out (not `Base.hash`) so the id is independent of the Julia version.
+# `_TYPE_TAG_REGISTRY` records every minted id process-wide and fails loud if
+# two distinct types ever land on one slot (2^43 slots: a collision is
+# astronomically unlikely, but it must never become a silent type confusion).
+const _TYPE_TAG_BAND_BASE  = (Int64(1) << 48) + (Int64(1) << 46)
+const _TYPE_TAG_BAND_SLOTS = UInt64(1) << 43          # 2^46 bytes / 8-byte slots
+const _TYPE_TAG_REGISTRY = Dict{Int64, String}()
+const _TYPE_TAG_REGISTRY_LOCK = ReentrantLock()
+
+function _fnv1a64(s::AbstractString)::UInt64
+    h = 0xcbf29ce484222325
+    for b in codeunits(s)
+        h = (h ⊻ UInt64(b)) * 0x00000100000001b3
+    end
+    return h
+end
+
+function _type_tag_id(canon::AbstractString)::Int64
+    id = _TYPE_TAG_BAND_BASE + Int64(_fnv1a64(canon) % _TYPE_TAG_BAND_SLOTS) * Int64(8)
+    lock(_TYPE_TAG_REGISTRY_LOCK) do
+        prev = get!(_TYPE_TAG_REGISTRY, id, String(canon))
+        prev == canon || error(
+            "ir_extract.jl: Bennett-pdwn: type-tag id collision — the distinct " *
+            "types `$(prev)` and `$(canon)` both hash to type-tag id $(id). " *
+            "Emitting either would make the two types compare equal (a silent " *
+            "type confusion); widen or re-seed `_type_tag_id` (CLAUDE.md §1).")
+    end
+    return id
+end
+
 # ---- Bennett-klgz / bennettvm-90l: determinism classifier for jlplt_*_got ----
 #
 # When Julia's JIT calls a runtime C entry point that has not been eagerly bound

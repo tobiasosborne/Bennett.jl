@@ -6220,8 +6220,8 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                               suppressed_refs::Set{_LLVMRef}=Set{_LLVMRef}(),
                               # Bennett-iwo9 / CW-D3 Lever 1: extraction-local
                               # type-tag interning. `tag_ids` maps a canonical
-                              # type path ("Main.Base.Dict") → dense Int64 id
-                              # (first-seen walk order, deterministic). `tag_ssa`
+                              # type path ("Main.Base.Dict") → its Int64 id
+                              # (`_type_tag_id`, Bennett-pdwn). `tag_ssa`
                               # records the SSA dests that carry a type-tag value
                               # (provenance), so a downstream ptrtoint/inttoptr
                               # whose source is a tag is recognised as the sound
@@ -7511,7 +7511,7 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
 
         # Bennett-iwo9 / CW-D3 Lever 1: a `load ptr, ptr @"+Type#N"` reading a
         # Julia type-tag global. Recognise BY NAME (never the JIT address in the
-        # initializer), mint/look-up a deterministic dense id for the canonical
+        # initializer), mint/look-up the deterministic id (Bennett-pdwn) for the canonical
         # type path, and lower to `IRBinOp(dest, :or, iconst(id), iconst(0), 64)`
         # — a width-64 constant identity (consensus decisions 1+3). Record `dest`
         # in `tag_ssa` so the downstream ptrtoint/inttoptr round-trip is
@@ -7528,9 +7528,10 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             pname = LLVM.name(ptr)
             if _is_type_tag_global_name(pname)
                 canon = _canonical_type_path(pname)   # fail-loud on malformed `+`-names
-                id = get!(tag_ids, canon) do
-                    Int64(length(tag_ids))            # dense, first-seen order
-                end
+                # Bennett-pdwn: a nonzero, function-independent id in the
+                # reserved type-tag band (never the null cell 0, never a VM
+                # address) — see `_type_tag_id` in constexpr.jl.
+                id = get!(() -> _type_tag_id(canon), tag_ids, canon)
                 push!(tag_ssa, inst.ref)
                 return IRBinOp(dest, :or, iconst(Int(id)), iconst(0), 64)
             end

@@ -18,9 +18,9 @@
 #     NEVER by the non-deterministic JIT address in their initializer.
 #   - The canonical type path strips the leading `+` and the trailing `#N`,
 #     so `Dict#148` and `Dict#999` are the SAME type → SAME interned id.
-#   - The id is minted deterministically (first-seen walk order) into an
-#     extraction-local interning table; extracting the same fixture twice
-#     yields the same id.
+#   - The id is minted deterministically (Bennett-pdwn: a pure function of
+#     the canonical path, nonzero, in a reserved band — never the null cell);
+#     extracting the same fixture twice yields the same id.
 #   - A genuine pointer<->int round-trip whose source is NOT a type tag
 #     (e.g. a function-arg pointer) is NOT modelled and FAILS LOUD
 #     (CLAUDE.md §1) — only the type-tag round-trip is sound.
@@ -107,8 +107,9 @@ top:
 }
 """
 
-# Two DISTINCT type tags in ONE function → two distinct dense ids; first-seen
-# walk order assigns id 0 to the first-loaded tag, id 1 to the second.
+# Two DISTINCT type tags in ONE function → two distinct ids (Bennett-pdwn:
+# `_type_tag_id` of each canonical path; pre-pdwn these were dense 0 and 1,
+# and 0 collided with null).
 const TAG_TWO_TYPES = """
 @"+Main.Base.Dict#148" = external global ptr
 @"+Core.AssertionError#153" = external global ptr
@@ -262,10 +263,10 @@ end
     end
 
     # =====================================================================
-    # GATE (a4) — TWO distinct types in one function → two distinct dense ids
-    # assigned in first-seen order (0, then 1).
+    # GATE (a4) — TWO distinct types in one function → two distinct ids, each
+    # `_type_tag_id(canonical path)` (Bennett-pdwn; formerly dense 0, then 1).
     # =====================================================================
-    @testset "GATE (a4) — two distinct type tags → distinct dense ids" begin
+    @testset "GATE (a4) — two distinct type tags → distinct ids" begin
         (st, pir) = _extract_ll_iwo9("two", TAG_TWO_TYPES, "f"; cells=true)
         @test st === :ok
         if st === :ok
@@ -273,9 +274,10 @@ end
             id2 = _tag_load_id(pir, :t2)   # Core.AssertionError (second seen)
             @test id1 !== nothing && id2 !== nothing
             @test id1 != id2
-            # Dense, first-seen interning: 0 then 1.
-            @test id1 == 0
-            @test id2 == 1
+            # Bennett-pdwn: path-derived, never the null cell 0.
+            @test id1 == Bennett._type_tag_id("Main.Base.Dict")
+            @test id2 == Bennett._type_tag_id("Core.AssertionError")
+            @test id1 != 0 && id2 != 0
         end
     end
 

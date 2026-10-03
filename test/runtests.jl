@@ -611,6 +611,9 @@ runfile("test_3ptu_fence_drop.jl")
 # (circuit path byte-identical). Advances the fdict root to the gc_alloc_obj
 # wall (Lever 2, separate bead). Does NOT touch gc_alloc_obj or BennettVM.
 runfile("test_iwo9_typetag.jl")
+# Bennett-pdwn — type-tag ids are nonzero (never the null cell), in a reserved
+# VM-address band, and identical across separately extracted functions.
+runfile("test_pdwn_typetag_null_collision.jl")
 # Bennett-r92o / CW-D3 Lever 2 — julia.gc_alloc_obj un-drop under the closed-world
 # `ptr_cells=true` gate: a Symbol-callee IRCall(:gc_alloc_obj, [size,tag], [64,64], 64)
 # with the task arg dropped, fail-loud on wrong arity. Gate-off byte-identical

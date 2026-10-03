@@ -190,8 +190,10 @@ function _module_to_parsed_ir_on_func_walk(mod::LLVM.Module, func::LLVM.Function
 
     # Bennett-iwo9 / CW-D3 Lever 1: extraction-local type-tag interning. Owned
     # here, threaded into every `_convert_instruction` call and mutated in
-    # place. `tag_ids` maps a canonical type path → dense first-seen Int64 id
-    # (deterministic across re-extractions because the walk order is); `tag_ssa`
+    # place. `tag_ids` caches canonical type path → Int64 id; the id itself is
+    # `_type_tag_id(path)` (Bennett-pdwn: a pure function of the path in a
+    # reserved nonzero band, so it never equals null / a VM address and is the
+    # same in every function of a closed-world set); `tag_ssa`
     # records the SSA instruction refs that carry a type-tag value so the
     # downstream ptrtoint/inttoptr round-trip is recognised. Only consulted under
     # `ptr_cells=true`. NOT persisted into ParsedIR (consensus decision 2): the
