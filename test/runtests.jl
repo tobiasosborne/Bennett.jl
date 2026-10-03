@@ -301,6 +301,9 @@ runfile("test_pebbled_space.jl")
 runfile("test_wire_allocator.jl")
 runfile("test_soft_fround.jl")
 runfile("test_callee_bennett.jl")
+# Bennett-9k7n — lower_call! remaps callee wires through the vector allocate!
+# returns (free-list reuse after a QROM lookup made it non-contiguous).
+runfile("test_9k7n_call_wire_remap_freelist.jl")
 runfile("test_cuccaro_safety.jl")
 runfile("test_narrow.jl")
 # Bennett-mrhg — the bit_width narrowing SOUNDNESS contract: `_narrow_ir` is an

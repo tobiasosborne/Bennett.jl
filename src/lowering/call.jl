@@ -92,7 +92,7 @@ function lower_call!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     # Bennett-s0tn: the hardcoded max_loop_iterations=64 here is a known
     # smell (filed as a follow-up bead). If the callee has a data-dependent
     # loop, its `loop_guards` reference callee-numbered convergence wires;
-    # they MUST be wire-offset-remapped and appended to the caller's
+    # they MUST be remapped (via `wmap`) and appended to the caller's
     # accumulator below — never silently dropped.
     callee_lr = lower(callee_parsed; max_loop_iterations=64)
 
@@ -101,8 +101,10 @@ function lower_call!(gates::Vector{ReversibleGate}, wa::WireAllocator,
         # This frees all intermediate wires, keeping only the output.
         callee_circuit = bennett(callee_lr)
 
-        wire_offset = wire_count(wa)
-        allocate!(wa, callee_circuit.n_wires)
+        # Bennett-9k7n: callee wire k lands on `wmap[k]` — NOT on
+        # `wire_count(wa) + k`. `allocate!` pops the free list first (QROM
+        # frees its scratch), so the block it returns need not be contiguous.
+        wmap = allocate!(wa, callee_circuit.n_wires)
 
         # Connect caller arguments → callee input wires (CNOT copy)
         for (i, arg_op) in enumerate(inst.args)
@@ -110,33 +112,32 @@ function lower_call!(gates::Vector{ReversibleGate}, wa::WireAllocator,
             w = inst.arg_widths[i]
             callee_start = sum(callee_parsed.args[j][2] for j in 1:(i-1); init=0)
             for bit in 1:w
-                callee_wire = callee_circuit.input_wires[callee_start + bit] + wire_offset
+                callee_wire = wmap[callee_circuit.input_wires[callee_start + bit]]
                 push!(gates, CNOTGate(caller_wires[bit], callee_wire))
             end
         end
 
-        # Insert ALL callee gates (forward + copy + reverse) with wire offset
+        # Insert ALL callee gates (forward + copy + reverse), remapped via wmap
         for g in callee_circuit.gates
-            push!(gates, _remap_gate_offset(g, wire_offset))
+            push!(gates, _remap_gate(g, wmap))
         end
 
         # The callee's output wires (remapped) are the Bennett copy wires
-        result_wires = [w + wire_offset for w in callee_circuit.output_wires]
+        result_wires = [wmap[w] for w in callee_circuit.output_wires]
         vw[inst.dest] = result_wires
 
         # Bennett-s0tn: the callee circuit's loop-check wires (post-bennett
         # `conv_copy`) carry the convergence bit, set by the loop-copy CNOT
-        # inside `callee_circuit.gates` which we just inlined. Remap by the
-        # wire offset and append to the caller's accumulator so the caller's
+        # inside `callee_circuit.gates` which we just inlined. Remap through
+        # `wmap` and append to the caller's accumulator so the caller's
         # `simulate` checks them. Never drop them.
         for lg in callee_circuit.loop_check_wires
-            push!(loop_guards, LoopGuard(lg.wire + wire_offset,
+            push!(loop_guards, LoopGuard(wmap[lg.wire],
                                          lg.header_label, lg.K))
         end
     else
         # Original behavior: insert only forward gates, caller's Bennett handles cleanup
-        wire_offset = wire_count(wa)
-        allocate!(wa, callee_lr.n_wires)
+        wmap = allocate!(wa, callee_lr.n_wires)   # Bennett-9k7n: see above
 
         # Connect caller arguments → callee input wires (CNOT copy)
         for (i, arg_op) in enumerate(inst.args)
@@ -144,40 +145,38 @@ function lower_call!(gates::Vector{ReversibleGate}, wa::WireAllocator,
             w = inst.arg_widths[i]
             callee_start = sum(callee_parsed.args[j][2] for j in 1:(i-1); init=0)
             for bit in 1:w
-                callee_wire = callee_lr.input_wires[callee_start + bit] + wire_offset
+                callee_wire = wmap[callee_lr.input_wires[callee_start + bit]]
                 push!(gates, CNOTGate(caller_wires[bit], callee_wire))
             end
         end
 
-        # Insert callee's forward gates with wire offset
+        # Insert callee's forward gates, remapped via wmap
         for g in callee_lr.gates
-            push!(gates, _remap_gate_offset(g, wire_offset))
+            push!(gates, _remap_gate(g, wmap))
         end
 
         # The callee's output wires (remapped) become the result
-        result_wires = [w + wire_offset for w in callee_lr.output_wires]
+        result_wires = [wmap[w] for w in callee_lr.output_wires]
         vw[inst.dest] = result_wires
 
         # Bennett-s0tn: the callee LR's loop guards reference callee-
         # numbered forward-pass convergence wires. We just inlined the
-        # callee's forward gates with `wire_offset` — including the
+        # callee's forward gates through `wmap` — including the
         # `lower_loop!`-emitted convergence CNOT — so each `conv_w` now
-        # lives at `lg.wire + wire_offset` in the caller's wire space. The
+        # lives at `wmap[lg.wire]` in the caller's wire space. The
         # caller's Bennett wrap will copy it out. Append remapped guards.
         for lg in callee_lr.loop_guards
-            push!(loop_guards, LoopGuard(lg.wire + wire_offset,
+            push!(loop_guards, LoopGuard(wmap[lg.wire],
                                          lg.header_label, lg.K))
         end
     end
 end
 
-function _remap_gate_offset(g::NOTGate, offset::Int)
-    NOTGate(g.target + offset)
-end
-function _remap_gate_offset(g::CNOTGate, offset::Int)
-    CNOTGate(g.control + offset, g.target + offset)
-end
-function _remap_gate_offset(g::ToffoliGate, offset::Int)
-    ToffoliGate(g.control1 + offset, g.control2 + offset, g.target + offset)
-end
+# Bennett-9k7n: remap callee wire k → caller wire `wmap[k]` (the vector
+# `allocate!` returned; may be non-contiguous after free-list reuse).
+_remap_gate(g::NOTGate, wmap::Vector{Int}) = NOTGate(wmap[g.target])
+_remap_gate(g::CNOTGate, wmap::Vector{Int}) =
+    CNOTGate(wmap[g.control], wmap[g.target])
+_remap_gate(g::ToffoliGate, wmap::Vector{Int}) =
+    ToffoliGate(wmap[g.control1], wmap[g.control2], wmap[g.target])
 
