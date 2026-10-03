@@ -88,12 +88,13 @@
                          floatmax(Float64), -floatmax(Float64)]
         for x in probes
             x_bits = reinterpret(UInt64, x)
-            # control=true: must equal forward soft_fneg (after Int64→UInt64 reinterpret)
+            # control=true: must equal forward soft_fneg, decoded as UInt64
+            # (Bennett-u91f: was Int64 before the payload-layout decode fix).
             on_raw  = simulate(cc, true,  x_bits)
-            @test reinterpret(UInt64, Int64(on_raw)) == soft_fneg(x_bits)
+            @test on_raw === soft_fneg(x_bits)
             # control=false: no work done; output is zero.
             off_raw = simulate(cc, false, x_bits)
-            @test off_raw == 0
+            @test off_raw === UInt64(0)
         end
         @test verify_reversibility(cc)
     end
@@ -120,8 +121,8 @@
             a_bits = reinterpret(UInt64, a)
             b_bits = reinterpret(UInt64, b)
             on_raw  = simulate(cc, true,  (a_bits, b_bits))
-            @test reinterpret(UInt64, Int64(on_raw)) == fmul_then_neg(a_bits, b_bits)
-            @test simulate(cc, false, (a_bits, b_bits)) == 0
+            @test on_raw === fmul_then_neg(a_bits, b_bits)   # Bennett-u91f: UInt64
+            @test simulate(cc, false, (a_bits, b_bits)) === UInt64(0)
         end
         @test verify_reversibility(cc)
     end

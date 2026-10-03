@@ -973,6 +973,9 @@ runfile("test_fehu_simulate_inplace.jl")
 # → signed, backward-compat) instead of always reinterpreting as signed.
 # Bennett-llqc: was on disk but never wired into runtests.jl — registered here.
 runfile("test_zc50_simulate_signedness.jl")
+# Bennett-u91f — simulate(controlled(c), ctrl, x) infers signedness from the
+# payload layout, not the full inner tuple whose 1-bit ctrl defeated zc50.
+runfile("test_u91f_controlled_signedness.jl")
 # Bennett-2hhx / U136 — soft_round (IEEE 754 roundToIntegralTiesToEven).
 # Bit-exact vs Base.round(::Float64): ties-to-even, subnormals, ±Inf, NaN
 # (with quiet-bit), boundary at 2^52, plus 5,000-sample raw-bits sweep.

@@ -140,9 +140,22 @@ function simulate(circuit::ReversibleCircuit, ::Type{T},
     return raw % T
 end
 
-function _simulate(circuit::ReversibleCircuit, inputs::Tuple)
+function _simulate(circuit::ReversibleCircuit, inputs::Tuple;
+                   unsigned_out::Union{Nothing,Bool}=nothing)
     bits = zeros(Bool, circuit.n_wires)
-    return _simulate_with_buffer!(bits, circuit, inputs)
+    return _simulate_with_buffer!(bits, circuit, inputs; unsigned_out)
+end
+
+# Bennett-zc50 / U100 output-signedness heuristic, factored out so the
+# ControlledCircuit wrapper can apply it to the payload layout (Bennett-u91f).
+# Unsigned iff every input width equals every output element width AND every
+# input is `Unsigned`; otherwise signed (mixed signedness, bit-packed inputs,
+# narrowing/widening layouts we cannot confidently classify).
+function _infer_unsigned_out(input_widths, output_elem_widths, inputs::Tuple)
+    widths_align = !isempty(inputs) && !isempty(output_elem_widths) &&
+                   all(w == input_widths[1] for w in input_widths) &&
+                   all(w == input_widths[1] for w in output_elem_widths)
+    return widths_align && all(x isa Unsigned for x in inputs)
 end
 
 """
@@ -193,7 +206,8 @@ function simulate!(buffer::Vector{Bool}, circuit::ReversibleCircuit, input::Inte
 end
 
 function _simulate_with_buffer!(bits::Vector{Bool}, circuit::ReversibleCircuit,
-                                 inputs::Tuple)
+                                 inputs::Tuple;
+                                 unsigned_out::Union{Nothing,Bool}=nothing)
     # Bennett-6fg9 / U19: guard arity and per-input bit-width at entry.
     # Pre-fix, a too-long tuple silently dropped the extras, a too-short
     # tuple crashed with a raw BoundsError deep in the input-ingest loop,
@@ -277,10 +291,11 @@ function _simulate_with_buffer!(bits::Vector{Bool}, circuit::ReversibleCircuit,
     # can't confidently classify). The circuit itself carries only
     # widths; threading types through ReversibleCircuit would be a §2
     # core change.
-    widths_align = !isempty(inputs) && !isempty(circuit.output_elem_widths) &&
-                   all(w == circuit.input_widths[1] for w in circuit.input_widths) &&
-                   all(w == circuit.input_widths[1] for w in circuit.output_elem_widths)
-    unsigned_out = widths_align && all(x isa Unsigned for x in inputs)
+    # Bennett-u91f: callers that know the user-facing input layout (the
+    # ControlledCircuit wrapper, whose inner circuit carries a 1-bit ctrl
+    # as input 1) pass `unsigned_out` explicitly.
+    unsigned_out = something(unsigned_out,
+        _infer_unsigned_out(circuit.input_widths, circuit.output_elem_widths, inputs))
     return _read_output(bits, circuit.output_wires, circuit.output_elem_widths, unsigned_out)
 end
 
@@ -402,10 +417,8 @@ function diagnose_nonzero(circuit::ReversibleCircuit, inputs::Tuple{Vararg{Integ
         end
     end
 
-    widths_align = !isempty(inputs) && !isempty(circuit.output_elem_widths) &&
-                   all(w == circuit.input_widths[1] for w in circuit.input_widths) &&
-                   all(w == circuit.input_widths[1] for w in circuit.output_elem_widths)
-    unsigned_out = widths_align && all(x isa Unsigned for x in inputs)
+    unsigned_out = _infer_unsigned_out(circuit.input_widths,
+                                       circuit.output_elem_widths, inputs)
     output = _read_output(bits, circuit.output_wires,
                           circuit.output_elem_widths, unsigned_out)
 

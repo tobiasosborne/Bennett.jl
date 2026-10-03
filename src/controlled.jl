@@ -226,7 +226,12 @@ function _simulate_ctrl(cc::ControlledCircuit, ctrl::Bool, inputs::Tuple)
         "simulate(ControlledCircuit, …): expected " *
         "$(length(c.input_widths) - 1) f-inputs, got $(length(inputs)) " *
         "(inner input_widths = $(c.input_widths), first is ctrl)"))
-    return _simulate(c, (Int(ctrl), inputs...))
+    # Bennett-u91f: decode output signedness from the PAYLOAD layout. The
+    # zc50 heuristic run over the full inner tuple would see the signed
+    # 1-bit ctrl and always fall back to signed decoding (0xff → -1).
+    unsigned_out = _infer_unsigned_out(c.input_widths[2:end],
+                                       c.output_elem_widths, inputs)
+    return _simulate(c, (Int(ctrl), inputs...); unsigned_out)
 end
 
 """
