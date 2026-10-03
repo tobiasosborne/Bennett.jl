@@ -5,7 +5,7 @@
 # Bennett-kh6n future-work stub.
 #
 # Semantically minimumnum/maximumnum are NaN-absorbing (return non-NaN
-# operand if exactly one is NaN; canonical qNaN if both NaN) AND specify
+# operand if exactly one is NaN; a NaN if both NaN — `b` unchanged, Bennett-4qgq) AND specify
 # `-0.0 < +0.0` for the ±0 tie-break. Our existing `soft_fmin` /
 # `soft_fmax` (Bennett-k2w6) ALREADY chose the specified ±0 tie-break
 # (matches `Base.min` / `Base.max`), so the aliases are bit-identical

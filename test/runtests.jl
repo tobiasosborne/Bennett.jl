@@ -1103,6 +1103,9 @@ runfile("test_kh6n_prefix_discipline.jl")
 # NaN-propagating, matches Base.min/Base.max bit-exactly) closing the
 # kh6n future-work stub. Bennett-llqc: registered here (was unwired).
 runfile("test_k2w6_soft_fminmax.jl")
+# Bennett-4qgq — min/max return a NaN operand's exact bits (sign, payload,
+# signalling state) per native Base.min/max and llvm.minnum/maxnum.
+runfile("test_4qgq_fminmax_nan_payload.jl")
 # Bennett-mq6f — native soft_round_away (round-half-AWAY-from-zero, ≡
 # llvm.round.f64) closing the kh6n round-family gap; llvm.roundeven.f64
 # now dispatches to (banker's) soft_round. Bennett-llqc: registered here
