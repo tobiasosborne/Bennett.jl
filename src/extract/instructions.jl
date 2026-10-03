@@ -4989,55 +4989,56 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
         push!(result, IRBinOp(dest, :add, ssa(prev), iconst(0), w))
         return result
     end
-    # llvm.fshl.i64(a, b, shift) = (a << shift) | (b >> (64 - shift))
-    if startswith(cname, "llvm.fshl.")
+    # llvm.fshl.iW(a, b, s) / llvm.fshr.iW(a, b, s) — funnel shifts.
+    # Bennett-ytpe: LangRef takes the amount modulo W, and k = s mod W == 0
+    # returns `a` (fshl) / `b` (fshr) unchanged. For k ≠ 0:
+    #   fshl = (a << k) | (b >> (W - k))      fshr = (a << (W - k)) | (b >> k)
+    # The naive expansion at k == 0 shifts by W, which the dynamic barrel
+    # shifter masks to a shift by 0 (result `a | b`), so the zero case is an
+    # explicit select and only shifts by 1..W-1 are ever emitted.
+    if startswith(cname, "llvm.fshl.") || startswith(cname, "llvm.fshr.")
+        is_fshl = startswith(cname, "llvm.fshl.")
         w = _iwidth(ops[1])
         a_op = _operand(ops[1], names)
         b_op = _operand(ops[2], names)
         sh_op = _operand(ops[3], names)
+        keep_op = is_fshl ? a_op : b_op          # result when k == 0
         shl_dest = _auto_name(counter)
         lshr_dest = _auto_name(counter)
         if sh_op isa ConstOperand
-            # Constant-fold: w - const is const (no runtime sub needed)
+            # IR constants arrive sign-extended; reduce the unsigned W-bit
+            # amount mod W (exact for non-power-of-two W too).
+            amt = w >= 64 ? reinterpret(UInt64, sh_op.value) :
+                            UInt64(sh_op.value & ((1 << w) - 1))
+            k = Int(amt % UInt64(w))
+            k == 0 && return IRBinOp(dest, :add, keep_op, iconst(0), w)
+            shl_k, lshr_k = is_fshl ? (k, w - k) : (w - k, k)
             return [
-                IRBinOp(shl_dest, :shl, a_op, sh_op, w),
-                IRBinOp(lshr_dest, :lshr, b_op, iconst(w - sh_op.value), w),
-                IRBinOp(dest, :or, ssa(shl_dest), ssa(lshr_dest), w),
-            ]
-        else
-            rsh_amount = _auto_name(counter)
-            return [
-                IRBinOp(shl_dest, :shl, a_op, sh_op, w),
-                IRBinOp(rsh_amount, :sub, iconst(w), sh_op, w),
-                IRBinOp(lshr_dest, :lshr, b_op, ssa(rsh_amount), w),
-                IRBinOp(dest, :or, ssa(shl_dest), ssa(lshr_dest), w),
-            ]
-        end
-    end
-    # llvm.fshr.i64(a, b, shift) = (a << (64 - shift)) | (b >> shift)
-    if startswith(cname, "llvm.fshr.")
-        w = _iwidth(ops[1])
-        a_op = _operand(ops[1], names)
-        b_op = _operand(ops[2], names)
-        sh_op = _operand(ops[3], names)
-        shl_dest = _auto_name(counter)
-        lshr_dest = _auto_name(counter)
-        if sh_op isa ConstOperand
-            # Constant-fold: w - const is const
-            return [
-                IRBinOp(shl_dest, :shl, a_op, iconst(w - sh_op.value), w),
-                IRBinOp(lshr_dest, :lshr, b_op, sh_op, w),
-                IRBinOp(dest, :or, ssa(shl_dest), ssa(lshr_dest), w),
-            ]
-        else
-            shl_amount = _auto_name(counter)
-            return [
-                IRBinOp(shl_amount, :sub, iconst(w), sh_op, w),
-                IRBinOp(shl_dest, :shl, a_op, ssa(shl_amount), w),
-                IRBinOp(lshr_dest, :lshr, b_op, sh_op, w),
+                IRBinOp(shl_dest, :shl, a_op, iconst(shl_k), w),
+                IRBinOp(lshr_dest, :lshr, b_op, iconst(lshr_k), w),
                 IRBinOp(dest, :or, ssa(shl_dest), ssa(lshr_dest), w),
             ]
         end
+        # Runtime amount: s mod W is `s & (W - 1)` only for power-of-two W; a
+        # non-power-of-two W would need a urem-by-constant circuit — reject.
+        ispow2(w) || _ir_error(inst,
+            "$cname with a runtime shift amount at non-power-of-two width $w " *
+            "is not supported (s mod $w needs a urem circuit; Bennett-ytpe)")
+        k_name = _auto_name(counter)
+        wk_name = _auto_name(counter)
+        or_name = _auto_name(counter)
+        is_zero = _auto_name(counter)
+        shl_amt, lshr_amt = is_fshl ? (ssa(k_name), ssa(wk_name)) :
+                                      (ssa(wk_name), ssa(k_name))
+        return [
+            IRBinOp(k_name, :and, sh_op, iconst(w - 1), w),
+            IRBinOp(wk_name, :sub, iconst(w), ssa(k_name), w),
+            IRBinOp(shl_dest, :shl, a_op, shl_amt, w),
+            IRBinOp(lshr_dest, :lshr, b_op, lshr_amt, w),
+            IRBinOp(or_name, :or, ssa(shl_dest), ssa(lshr_dest), w),
+            IRICmp(is_zero, :eq, ssa(k_name), iconst(0), w),
+            IRSelect(dest, ssa(is_zero), keep_op, ssa(or_name), w),
+        ]
     end
     # llvm.fabs: clear sign bit (AND with ~sign_bit)
     if startswith(cname, "llvm.fabs.")

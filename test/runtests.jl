@@ -154,6 +154,7 @@ runfile("test_switch.jl")
 runfile("test_rev_memory.jl")
 # Bennett-u2yp / U149: test_sat_pebbling.jl removed alongside src/pebble/sat_pebbling.jl
 runfile("test_intrinsics.jl")
+runfile("test_ytpe_funnel_shift.jl")
 runfile("test_liveness.jl")
 runfile("test_sha256.jl")
 runfile("test_value_eager.jl")
