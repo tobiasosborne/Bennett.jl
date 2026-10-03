@@ -109,6 +109,31 @@ end
         _check_all_int8_o9sv(c, x -> x - Int8(33))
     end
 
+    @testset "singleton-typed captures (a captured Type) are skipped" begin
+        mk_t(T) = x -> x + zero(T)
+        mk_tk(T, k) = x -> x + k + zero(T)
+        mk_kt(T, k) = x -> zero(T) + x * k
+        mk_nothing(n) = x -> (n === nothing ? x + Int8(1) : x)
+        g_o9sv(x) = x + Int8(7)
+        mk_fn(g) = x -> g(x) + Int8(1)
+        mk_nested(T, a) = (h = y -> y + a + zero(T); x -> h(x) + Int8(1))
+        cases = [
+            (mk_t(Int8),                x -> x),
+            (mk_tk(Int8, Int8(5)),      x -> x + Int8(5)),
+            (mk_kt(Int8, Int8(3)),      x -> x * Int8(3)),
+            (mk_nothing(nothing),       x -> x + Int8(1)),
+            (mk_fn(g_o9sv),             x -> x + Int8(8)),
+            (mk_nested(Int8, Int8(2)),  x -> x + Int8(3)),
+        ]
+        for (f, oracle) in cases
+            c = reversible_compile(f, Int8)
+            @test c.input_widths == [8]
+            _check_all_int8_o9sv(c, oracle)
+        end
+        @test_throws ArgumentError reversible_compile(
+            (r = Ref(Int8(1)); T = Int8; x -> x + r[] + zero(T)), Int8)
+    end
+
     @testset "captures that can change after compilation are rejected" begin
         r = Ref(Int8(7))
         fr = x -> x - r[]

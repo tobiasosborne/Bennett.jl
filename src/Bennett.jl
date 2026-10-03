@@ -307,6 +307,19 @@ local named function): a `Function` subtype whose name starts with `#`."
 _is_closure_type(T::DataType) = T <: Function && startswith(String(nameof(T)), "#")
 _is_closure_type(::Any) = false
 
+# Bennett-o9sv follow-up: a closure created inside a function that takes a type
+# (`T -> x -> x + zero(T)`) stores `T` as an 8-byte DataType pointer in a field
+# declared `Type{Int8}`. The value is fully determined by the declared field
+# type (one instance), so there is nothing to bind and nothing that can change.
+_is_type_singleton_field(FT) = FT isa DataType && FT.name === Type.body.name &&
+    !(FT.parameters[1] isa TypeVar)
+
+# True when closure type `T` holds only plain-bits state and fields of
+# `_is_type_singleton_field` type (checked recursively through captured closures).
+_capture_ok(T::Type) = _is_type_singleton_field(T) ||
+    (isbitstype(T) && !_has_ptr_leaf(T)) ||
+    (_is_closure_type(T) && isconcretetype(T) && all(_capture_ok, fieldtypes(T)))
+
 _has_ptr_leaf(T::Type) = T <: Ptr || T <: Core.LLVMPtr ||
     (!isprimitivetype(T) && any(_has_ptr_leaf, fieldtypes(T)))
 
@@ -324,6 +337,8 @@ function _capture_bytes!(buf::Vector{UInt8}, x, off::Int)
         end
     else
         for i in 1:fieldcount(T)
+            # a `Type{X}` field is a pointer to a determined type: leave zero
+            _is_type_singleton_field(fieldtype(T, i)) && continue
             _capture_bytes!(buf, getfield(x, i), off + Int(fieldoffset(T, i)))
         end
     end
@@ -341,7 +356,7 @@ function _closure_capture_bytes(f)
     T = typeof(f)
     (_is_closure_type(T) && sizeof(T) > 0) || return nothing
     caps = join(("$n::$(fieldtype(T, n))" for n in fieldnames(T)), ", ")
-    (isbitstype(T) && !_has_ptr_leaf(T)) || throw(ArgumentError(
+    _capture_ok(T) || throw(ArgumentError(
         "reversible_compile: closure $f captures state that is not an " *
         "immutable plain-bits value ($caps). A Ref, mutable struct, array, or " *
         "variable reassigned after capture (Core.Box) can change after " *
@@ -361,19 +376,28 @@ the end — exact, because every input wire is preserved by the circuit.
 function _bind_closure_capture(c::ReversibleCircuit, bytes::Vector{UInt8},
                                n_args::Int)
     nb = 8 * length(bytes)
-    (length(c.input_widths) == n_args + 1 && c.input_widths[1] == nb) || error(
+    # A closure holding a `Type{X}` field is not isbits, and Julia then often
+    # also passes a `.roots.#self#` GC-roots pointer right after `#self#` (not
+    # when the type is the only field): a 64-bit input that is never read (the
+    # type is a compile-time constant); bound to zero.
+    roots = length(c.input_widths) == n_args + 2
+    nr = roots ? 64 : 0
+    lead = roots ? 2 : 1
+    (length(c.input_widths) == n_args + lead && c.input_widths[1] == nb &&
+     (!roots || c.input_widths[2] == nr)) || error(
         "reversible_compile: capturing closure compiled to input widths " *
-        "$(c.input_widths); expected a leading $nb-bit closure input then " *
+        "$(c.input_widths); expected a leading $nb-bit closure input" *
+        (roots ? " and a 64-bit roots input" : "") * " then " *
         "$n_args argument(s) (Bennett-o9sv)")
-    self_w = c.input_wires[1:nb]
+    self_w = c.input_wires[1:nb+nr]
     isempty(intersect(self_w, c.output_wires)) || error(
         "reversible_compile: closure input wires overlap the outputs; cannot " *
         "bind the captured values (Bennett-o9sv)")
     nots = ReversibleGate[NOTGate(self_w[i]) for i in 1:nb
                           if (bytes[(i - 1) >> 3 + 1] >> ((i - 1) & 7)) & 0x01 == 0x01]
     return ReversibleCircuit(c.n_wires, vcat(nots, c.gates, nots),
-                             c.input_wires[nb+1:end], c.output_wires,
-                             vcat(c.ancilla_wires, self_w), c.input_widths[2:end],
+                             c.input_wires[nb+nr+1:end], c.output_wires,
+                             vcat(c.ancilla_wires, self_w), c.input_widths[lead+1:end],
                              c.output_elem_widths, c.loop_check_wires)
 end
 
