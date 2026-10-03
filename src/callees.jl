@@ -63,6 +63,7 @@ const _CALLEES_FP_CMP = (
 # IEEE 754 width / signedness conversions.
 const _CALLEES_FP_CONV = (
     soft_fpext, soft_fptrunc, soft_fptosi, soft_fptoui, soft_sitofp,
+    soft_uitofp,  # Bennett-s6d6: distinct unsigned i64 → double
 )
 
 # IEEE 754 transcendentals (musl-derived branchless + Julia-idiom variants).

@@ -279,6 +279,8 @@ runfile("test_37w3_selected_pointer_store_predicate.jl")
 runfile("test_gate_count_regression.jl")
 runfile("test_negative.jl")
 runfile("test_soft_sitofp.jl")
+# Bennett-s6d6 — uitofp i64 → double via unsigned soft_uitofp (was soft_sitofp).
+runfile("test_s6d6_uitofp_u64.jl")
 runfile("test_sret.jl")
 runfile("test_dv1z_hetero_sret.jl")
 runfile("test_jghk_multireturn_sret.jl")

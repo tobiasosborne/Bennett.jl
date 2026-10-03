@@ -7792,11 +7792,17 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
     end
 
     # sitofp/uitofp: int → float conversion via soft_sitofp (actual IEEE 754 encode)
+    # Bennett-s6d6: a full-width `uitofp i64` must NOT route through the signed
+    # converter (bit 63 would be read as a sign) — it goes to soft_uitofp.
+    # Narrower uitofp sources are zero-extended to i64 below, so they are
+    # always < 2^63 and soft_sitofp is exact (and cheaper) for them.
     if opc in (LLVM.API.LLVMSIToFP, LLVM.API.LLVMUIToFP)
         src = LLVM.operands(inst)[1]
         src_w = _iwidth(src)
         dst_w = _iwidth(inst)
-        callee = _lookup_callee("soft_sitofp")
+        callee_name = (opc == LLVM.API.LLVMUIToFP && src_w == 64) ?
+                      "soft_uitofp" : "soft_sitofp"
+        callee = _lookup_callee(callee_name)
         if callee !== nothing && dst_w == 64
             if src_w == 64
                 return IRCall(dest, callee, [_operand(src, names)], [src_w], dst_w)
@@ -7811,7 +7817,7 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
             end
         end
         # Bennett-3wk7: no width-only IRCast fallback (see fptosi above).
-        _int_fp_cast_error(inst, LLVM.value_type(inst), "soft_sitofp", callee)
+        _int_fp_cast_error(inst, LLVM.value_type(inst), callee_name, callee)
     end
 
     # fcmp: floating-point comparison. Route through soft_fcmp_* functions.

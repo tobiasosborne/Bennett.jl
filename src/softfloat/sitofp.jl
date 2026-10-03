@@ -84,3 +84,27 @@ Algorithm:
 
     return result
 end
+
+"""
+    soft_uitofp(a::UInt64)::UInt64
+
+Convert unsigned UInt64 to IEEE 754 double-precision float (as UInt64 bit
+pattern), round-to-nearest-even. Bit-exact with `Float64(::UInt64)`.
+Branchless; reuses `soft_sitofp`.
+
+Bennett-s6d6: `uitofp i64` used to be routed through `soft_sitofp`, which
+reads bit 63 as a sign, so every input ≥ 2^63 came out negative.
+
+Algorithm (the standard halve-with-sticky trick): for a ≥ 2^63, convert
+`v = (a >> 1) | (a & 1)` — which is < 2^63, so the signed converter sees a
+non-negative value — and add 1 to the biased exponent (×2). The OR keeps the
+dropped bit as a sticky bit: v has 63 significant bits and rounds at bit 9,
+so bit 0 only ever feeds the sticky, and RNE is preserved exactly. The ×2
+cannot overflow (the largest result is 2^64). For a < 2^63 this is plain
+`soft_sitofp(a)`.
+"""
+@inline function soft_uitofp(a::UInt64)::UInt64
+    hi = (a >> 63) & UInt64(1)
+    v = ifelse(hi == UInt64(1), (a >> 1) | (a & UInt64(1)), a)
+    return soft_sitofp(v) + (hi << 52)
+end
