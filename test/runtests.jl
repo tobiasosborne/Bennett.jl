@@ -593,6 +593,10 @@ runfile("test_nd45_ptr_cells_call_emission_multifn.jl")
 # transitively closes the callee set (root excluded, edges@optimize=true per the
 # corrected ADR-0021 Decision-1). The path to SC9 Case B (reversible Dict).
 runfile("test_d1a_transitive_callees.jl")
+# Bennett-okcg — transitive_callees never returns its ROOT, even a recursive one
+# (self-loop / cycle through the root); set extraction keys the root once, via
+# include_root only, and registers a recursive root so its back-call resolves.
+runfile("test_okcg_recursive_root_callgraph.jl")
 # Bennett-CW-D1b / bennettvm-416r.11 chunk b — extract_parsed_ir_set_from_julia
 # closed-world Julia multi-IR producer (src/extract/julia_set.jl). Walks
 # transitive_callees, extracts root+helper bodies, keys by drift-free canonical

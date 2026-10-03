@@ -332,7 +332,11 @@ Keyword arguments:
   are harvested at `optimize=true` internally regardless; bodies are extracted at
   `optimize=false` for predictable IR (CLAUDE.md Rule 5).
 - `include_root` (default `true`): PREPEND the root `(f, argtypes)` body
-  (entry-first ordering).
+  (entry-first ordering). This is the ONLY way the root body enters the set:
+  `transitive_callees` excludes the root even when it is recursive (Bennett-okcg),
+  so the root appears exactly once with `true` and NEVER with `false` — for a
+  recursive root, `false` yields helpers whose calls back to the root are then
+  unresolved in-set (see the closed-world check below).
 - `drop_throw_leaves` (default `true`): drop `Type{<:Exception}` constructor
   callees BEFORE extraction (their bodies hit the ptr-width wall). Their bare
   names are recorded so the closed-world check accepts surviving IRCalls to them.
@@ -369,7 +373,7 @@ function extract_parsed_ir_set_from_julia(f, argtypes::Type{<:Tuple};
         "not in (:fail_loud, :skip)"))
 
     # (1) single call-graph source — no re-walk.
-    callees = transitive_callees(f, argtypes)
+    callees, root_recursive = _transitive_callees_walk(f, argtypes)
 
     # (2) throw-leaf partition BEFORE extraction.
     throw_leaf_names = Set{Symbol}()
@@ -436,7 +440,15 @@ function extract_parsed_ir_set_from_julia(f, argtypes::Type{<:Tuple};
         # Register every live callee, by VALUE where one exists and by NAME
         # otherwise (idempotent; `Type{T}` constructor callees are not
         # registerable and don't appear as in-module calls).
-        for (k, at) in live_callees
+        #
+        # Bennett-okcg: a RECURSIVE root is registered too — `transitive_callees`
+        # no longer returns it as a callee, but the recursive call in its own body
+        # (or in a helper's, for f -> g -> f) must still resolve to it. Its body
+        # is extracted ONLY by step (4), so it is never keyed twice.
+        reg_callees = root_recursive ?
+            vcat(live_callees, [_split_spectypes(Base.signature_type(f, argtypes))]) :
+            live_callees
+        for (k, at) in reg_callees
             if _callee_key_kind(k) === :instanceless
                 bare = _callee_barename(k, at)
                 register_callee_name!(string(bare), bare, k)

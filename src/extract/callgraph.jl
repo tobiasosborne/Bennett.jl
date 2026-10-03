@@ -84,6 +84,12 @@ Walk the typed call graph beneath `(f, argtypes)` and return every
 transitively-reached callee as a `(callee_key, Tuple{argtypes...})` pair, in
 discovery order, deduplicated, with the ROOT `(f, argtypes)` itself EXCLUDED.
 
+The root is excluded UNCONDITIONALLY — also when it is reachable from itself
+(self-recursion `f -> f`, or a cycle back through it, `f -> g -> f`); Bennett-okcg.
+The returned vector is therefore duplicate-free and never contains the root
+signature, so a consumer that wants the root body must add it itself
+([`extract_parsed_ir_set_from_julia`](@ref) does so iff `include_root=true`).
+
 `callee_key` is `typeof(g)` for a plain function `g`, or `Type{T}` for a
 type/constructor callee (e.g. `Type{AssertionError}`).
 
@@ -97,29 +103,47 @@ cap is a Rule-1 backstop against a divergence introduced by future Julia
 internals changes. All state is call-local (no module-level caches), so repeated
 calls and nested sub-walks never pollute each other.
 """
-function transitive_callees(f, argtypes::Type{<:Tuple})
+transitive_callees(f, argtypes::Type{<:Tuple}) = first(_transitive_callees_walk(f, argtypes))
+
+# The walk behind `transitive_callees`, also reporting whether the root is
+# RECURSIVE (reachable from itself: a self-loop or a cycle through the root).
+# The set producer needs that bit: it must register a recursive root as a callee
+# so the recursive call in the root's / a helper's body resolves (Bennett-okcg).
+function _transitive_callees_walk(f, argtypes::Type{<:Tuple})
     root = Base.signature_type(f, argtypes)
-    visited = Set{DataType}()
+    # Bennett-okcg: seed `visited` WITH the root. A self-recursive root (or a
+    # cycle back through it, f -> g -> f) has the root among its reached edges;
+    # an empty seed re-discovered it as a "callee", and the set producer then
+    # extracted it twice (callee + prepended root) -> duplicate canonical key.
+    visited = Set{DataType}((root,))
     order   = DataType[]
+    root_recursive = false
     work    = copy(_invoke_callees(root))
     while !isempty(work)
         st = pop!(work)
+        st == root && (root_recursive = true)
         st in visited && continue
         push!(visited, st); push!(order, st)
         length(visited) > _CALLGRAPH_MAX_NODES && error(
             "callgraph.jl: transitive_callees exceeded $_CALLGRAPH_MAX_NODES nodes from root $root (Rule 1)")
         append!(work, _invoke_callees(st))
     end
-    return [_split_spectypes(st) for st in order]
+    return [_split_spectypes(st) for st in order], root_recursive
 end
 
 """
     _transitive_callee_specTypes(f, argtypes) -> Set{DataType}
 
-Internal helper: the raw transitively-reached callee *specTypes* (the `order`
-vector of [`transitive_callees`](@ref) BEFORE `_split_spectypes`), as a Set.
-Lets tests compare specTypes directly without round-tripping through the
+Internal helper: the raw transitively-reached *specTypes* beneath the root, as
+a Set. Lets tests compare specTypes directly without round-tripping through the
 `(callee, argtypes)` split. Not exported.
+
+DIFFERS from [`transitive_callees`](@ref) on a recursive root (Bennett-okcg):
+this is the REACHABILITY set, so it contains the root signature iff the root is
+reachable from itself (self-recursion or a cycle through it). That is what its
+consumer, `_check_callee_identity` (callees.jl), needs: a call back to the root
+from a co-emitted callee must resolve to the root's identity. For every other
+node the two agree: `Set(order) == setdiff(this, (root,))`.
 """
 _transitive_callee_specTypes(f, argtypes::Type{<:Tuple}) =
     _transitive_callee_specTypes(Base.signature_type(f, argtypes))
