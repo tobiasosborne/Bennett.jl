@@ -428,3 +428,415 @@ const _I5ZN_FOLDS = (false, true)
         end
     end
 end
+
+# ============================================================================
+# Part 2 — header SSA values live after the loop (review1 R2, 2026-10-03).
+#
+# THE BUG. Freezing header STORES is not enough. Every remaining unrolled
+# iteration and the s0tn check-only pass re-lower the header into the same
+# value map, and a load ignores the block predicate. So a header load placed
+# ABOVE a store, replayed after the exit, reads the post-exit memory (the
+# value that store wrote) and replaces the SSA value the exit block returns.
+# The fix holds every header value that is used outside the loop AND depends
+# on a load at its exit-visit value (`_loop_header_hold_set` / `_loop_hold!`
+# in src/lowering/cfg.jl), folding in the check-only pass's values only when
+# that (K+1)-th header visit really happens — a loop whose trip count is
+# exactly K exits THERE.
+#
+# THE ORACLE is `_i5zn_interp`, a direct interpreter of the small UInt8
+# ParsedIR fixtures (no Bennett code involved). For every one of the 256
+# inputs and every K: if the source executes the header at most K+1 times the
+# circuit must return the interpreter's value (simulate also asserts the
+# ancillae are clean); otherwise simulate must refuse loudly through the
+# Bennett-s0tn guard. `verify_reversibility` runs on every circuit whose K
+# covers every input.
+#
+# PRE-FIX (RED, parked branch 8b272a8 without the hold): the R2 witness gives
+# (20, 10) instead of (10, 20); see the per-testset notes below.
+# ============================================================================
+
+using Bennett: IRSelect, SSAOperand, ConstOperand
+
+# ---- independent reference interpreter ----
+function _i5zn_interp(p::ParsedIR, x::UInt8; fuel::Int=100_000)
+    env = Dict{Symbol,Any}(p.args[1][1] => x)
+    mem = Dict{Symbol,UInt8}()
+    blocks = Dict(b.label => b for b in p.blocks)
+    visits = Dict{Symbol,Int}()
+    val(op) = op isa SSAOperand ? env[op.name] : UInt8(mod(op.value, 256))
+    s8(v::UInt8) = reinterpret(Int8, v)
+    binop(op, a, b) = op === :add ? a + b : op === :sub ? a - b :
+                      op === :mul ? a * b : op === :and ? a & b :
+                      op === :or  ? a | b : op === :xor ? a ⊻ b :
+                      op === :shl ? (b < 8 ? a << b : 0x00) :
+                      op === :lshr ? (b < 8 ? a >> b : 0x00) :
+                      error("interp: binop $op")
+    icmp(pr, a, b) = pr === :eq ? a == b : pr === :ne ? a != b :
+                     pr === :ult ? a < b : pr === :ule ? a <= b :
+                     pr === :ugt ? a > b : pr === :uge ? a >= b :
+                     pr === :slt ? s8(a) < s8(b) : pr === :sle ? s8(a) <= s8(b) :
+                     pr === :sgt ? s8(a) > s8(b) : pr === :sge ? s8(a) >= s8(b) :
+                     error("interp: icmp $pr")
+    prev = nothing
+    cur = p.blocks[1]
+    while true
+        (fuel -= 1) > 0 || error("interp: out of fuel")
+        visits[cur.label] = get(visits, cur.label, 0) + 1
+        # phis read the predecessor's values simultaneously
+        phivals = [(i.dest, val(first(v for (v, b) in i.incoming if b == prev)))
+                   for i in cur.instructions if i isa IRPhi]
+        for (d, v) in phivals
+            env[d] = v
+        end
+        for i in cur.instructions
+            if i isa IRPhi
+            elseif i isa IRAlloca
+                env[i.dest] = i.dest              # a pointer is its alloca's name
+            elseif i isa IRStore
+                mem[val(i.ptr)] = val(i.val)
+            elseif i isa IRLoad
+                env[i.dest] = mem[val(i.ptr)]
+            elseif i isa IRBinOp
+                env[i.dest] = binop(i.op, val(i.op1), val(i.op2))
+            elseif i isa IRICmp
+                env[i.dest] = icmp(i.predicate, val(i.op1), val(i.op2))
+            elseif i isa IRSelect
+                env[i.dest] = val(i.cond) ? val(i.op1) : val(i.op2)
+            else
+                error("interp: unsupported $(typeof(i))")
+            end
+        end
+        t = cur.terminator
+        t isa IRRet && return (val(t.op), visits)
+        nxt = t.cond === nothing ? t.true_label :
+              (val(t.cond) ? t.true_label : t.false_label)
+        prev = cur.label
+        cur = blocks[nxt]
+    end
+end
+
+"""
+    _i5zn_check(p, Ks; fold) -> Int
+
+Every input, every K, against `_i5zn_interp`. Returns the number of
+(K, input) pairs that had to — and did — fail loud, so a caller can assert the
+below-trip-count side was exercised.
+"""
+function _i5zn_check(p::ParsedIR, Ks; fold::Bool, header::Symbol=:h)
+    nloud = 0
+    for K in Ks
+        c = reversible_compile(p; max_loop_iterations=K, fold_constants=fold)
+        bad = Any[]
+        all_converge = true
+        for x in _I5ZN_XS
+            want, visits = _i5zn_interp(p, _i5zn_u(x))
+            if get(visits, header, 0) <= K + 1
+                got = try
+                    UInt8(mod(Int(simulate(c, x)), 256))
+                catch e
+                    sprint(showerror, e)
+                end
+                got == want || push!(bad, (K=K, x=x, want=want, got=got))
+            else
+                all_converge = false
+                msg = try
+                    simulate(c, x); "no error"
+                catch e
+                    sprint(showerror, e)
+                end
+                if occursin("did not converge", msg) &&
+                   occursin("max_loop_iterations=$K", msg)
+                    nloud += 1
+                else
+                    push!(bad, (K=K, x=x, want=:loud, got=msg))
+                end
+            end
+        end
+        isempty(bad) || @info "i5zn mismatches (K=$K, fold=$fold)" length(bad) first(bad, 4)
+        @test isempty(bad)
+        all_converge && @test verify_reversibility(c)
+    end
+    return nloud
+end
+
+# ---- fixtures ----
+
+# R2 — review1's swap witness, VERBATIM (a := 10, b := 20; n := x & 1; the
+# header loads both, swaps them, and the exit returns the PRE-swap load `va`).
+function _i5zn_r2_swap()
+    ParsedIR(8, [(:x, 8)], [
+        IRBasicBlock(:entry, IRInst[
+            IRAlloca(:a, 8, iconst(1)),
+            IRAlloca(:b, 8, iconst(1)),
+            IRStore(ssa(:a), iconst(10), 8),
+            IRStore(ssa(:b), iconst(20), 8),
+            IRBinOp(:n, :and, ssa(:x), iconst(1), 8),
+        ], IRBranch(nothing, :h, nothing)),
+        IRBasicBlock(:h, IRInst[
+            IRPhi(:i, 8, [(iconst(0), :entry), (ssa(:i2), :h)]),
+            IRLoad(:va, ssa(:a), 8),
+            IRLoad(:vb, ssa(:b), 8),
+            IRStore(ssa(:a), ssa(:vb), 8),
+            IRStore(ssa(:b), ssa(:va), 8),
+            IRBinOp(:i2, :add, ssa(:i), iconst(1), 8),
+            IRICmp(:done, :uge, ssa(:i), ssa(:n), 8),
+        ], IRBranch(ssa(:done), :exit, :h)),
+        IRBasicBlock(:exit, IRInst[], IRRet(ssa(:va), 8)),
+    ], [8])
+end
+
+# S1 — the swap generalised: data-dependent contents (a := x, b := x ⊻ 0x5a),
+# trip count n := (x >> 6) & 3, and the exit combines BOTH pre-store loads
+# through a pure chain (`t`, `r` are outside the loop; `va`/`vb` are held).
+function _i5zn_s1_swap()
+    ParsedIR(8, [(:x, 8)], [
+        IRBasicBlock(:entry, IRInst[
+            IRAlloca(:a, 8, iconst(1)), IRAlloca(:b, 8, iconst(1)),
+            IRStore(ssa(:a), ssa(:x), 8),
+            IRBinOp(:x2, :xor, ssa(:x), iconst(0x5a % Int), 8),
+            IRStore(ssa(:b), ssa(:x2), 8),
+            IRBinOp(:x6, :lshr, ssa(:x), iconst(6), 8),
+            IRBinOp(:n, :and, ssa(:x6), iconst(3), 8),
+        ], IRBranch(nothing, :h, nothing)),
+        IRBasicBlock(:h, IRInst[
+            IRPhi(:i, 8, [(iconst(0), :entry), (ssa(:i2), :h)]),
+            IRLoad(:va, ssa(:a), 8),
+            IRLoad(:vb, ssa(:b), 8),
+            IRBinOp(:vb1, :add, ssa(:vb), ssa(:i), 8),
+            IRStore(ssa(:a), ssa(:vb1), 8),
+            IRStore(ssa(:b), ssa(:va), 8),
+            IRBinOp(:i2, :add, ssa(:i), iconst(1), 8),
+            IRICmp(:done, :uge, ssa(:i), ssa(:n), 8),
+        ], IRBranch(ssa(:done), :exit, :h)),
+        IRBasicBlock(:exit, IRInst[
+            IRBinOp(:t, :shl, ssa(:vb), iconst(1), 8),
+            IRBinOp(:r, :add, ssa(:va), ssa(:t), 8),
+        ], IRRet(ssa(:r), 8)),
+    ], [8])
+end
+
+# S2 — load AFTER store in the header (its replay is benign), next to a
+# pre-store load and a pure value derived from the post-store load (`u`).
+function _i5zn_s2_load_after_store()
+    ParsedIR(8, [(:x, 8)], [
+        IRBasicBlock(:entry, IRInst[
+            IRAlloca(:a, 8, iconst(1)),
+            IRStore(ssa(:a), ssa(:x), 8),
+            IRBinOp(:n, :and, ssa(:x), iconst(3), 8),
+        ], IRBranch(nothing, :h, nothing)),
+        IRBasicBlock(:h, IRInst[
+            IRPhi(:i, 8, [(iconst(0), :entry), (ssa(:i2), :h)]),
+            IRLoad(:v, ssa(:a), 8),
+            IRBinOp(:m, :mul, ssa(:v), iconst(3), 8),
+            IRBinOp(:v2, :add, ssa(:m), ssa(:i), 8),
+            IRStore(ssa(:a), ssa(:v2), 8),
+            IRLoad(:w, ssa(:a), 8),
+            IRBinOp(:u, :xor, ssa(:w), ssa(:x), 8),
+            IRBinOp(:i2, :add, ssa(:i), iconst(1), 8),
+            IRICmp(:done, :uge, ssa(:i), ssa(:n), 8),
+        ], IRBranch(ssa(:done), :exit, :h)),
+        IRBasicBlock(:exit, IRInst[
+            IRBinOp(:r1, :add, ssa(:u), ssa(:v), 8),
+            IRBinOp(:r, :add, ssa(:r1), ssa(:i), 8),
+        ], IRRet(ssa(:r), 8)),
+    ], [8])
+end
+
+# S3 — the EXIT TEST itself reads memory: `while *a < lim; *a += step`, with
+# the exit returning the pre-store load `v`. Trip count is data-dependent
+# (step := (x & 3) + 1, lim := x >> 4; up to 16 header visits).
+function _i5zn_s3_load_cond()
+    ParsedIR(8, [(:x, 8)], [
+        IRBasicBlock(:entry, IRInst[
+            IRAlloca(:a, 8, iconst(1)),
+            IRStore(ssa(:a), iconst(0), 8),
+            IRBinOp(:s0, :and, ssa(:x), iconst(3), 8),
+            IRBinOp(:step, :add, ssa(:s0), iconst(1), 8),
+            IRBinOp(:lim, :lshr, ssa(:x), iconst(4), 8),
+        ], IRBranch(nothing, :h, nothing)),
+        IRBasicBlock(:h, IRInst[
+            IRPhi(:i, 8, [(iconst(0), :entry), (ssa(:i2), :h)]),
+            IRLoad(:v, ssa(:a), 8),
+            IRBinOp(:v2, :add, ssa(:v), ssa(:step), 8),
+            IRStore(ssa(:a), ssa(:v2), 8),
+            IRBinOp(:i2, :add, ssa(:i), iconst(1), 8),
+            IRICmp(:done, :uge, ssa(:v), ssa(:lim), 8),
+        ], IRBranch(ssa(:done), :exit, :h)),
+        IRBasicBlock(:exit, IRInst[
+            IRLoad(:fa, ssa(:a), 8),
+            IRBinOp(:t, :shl, ssa(:i), iconst(4), 8),
+            IRBinOp(:t2, :xor, ssa(:t), ssa(:v), 8),
+            IRBinOp(:r, :add, ssa(:t2), ssa(:fa), 8),
+        ], IRRet(ssa(:r), 8)),
+    ], [8])
+end
+
+# S4 — a multi-block loop (header → body → latch): header load / store whose
+# pre-store load `v` is returned after the loop, body side effects driven by
+# `v`, and the latch-defined counter.
+function _i5zn_s4_multiblock(; ret_latch::Bool=false)
+    ParsedIR(8, [(:x, 8)], [
+        IRBasicBlock(:entry, IRInst[
+            IRAlloca(:a, 8, iconst(1)), IRAlloca(:b, 8, iconst(1)),
+            IRStore(ssa(:a), ssa(:x), 8), IRStore(ssa(:b), iconst(5), 8),
+            IRBinOp(:n, :and, ssa(:x), iconst(3), 8),
+        ], IRBranch(nothing, :h, nothing)),
+        IRBasicBlock(:h, IRInst[
+            IRPhi(:i, 8, [(iconst(0), :entry), (ssa(:k1), :latch)]),
+            IRLoad(:v, ssa(:a), 8),
+            IRBinOp(:v2, :add, ssa(:v), ssa(:x), 8),
+            IRStore(ssa(:a), ssa(:v2), 8),
+            IRICmp(:done, :uge, ssa(:i), ssa(:n), 8),
+        ], IRBranch(ssa(:done), :exit, :body)),
+        IRBasicBlock(:body, IRInst[
+            IRLoad(:w, ssa(:b), 8),
+            IRBinOp(:w2, :add, ssa(:w), ssa(:v), 8),
+            IRStore(ssa(:b), ssa(:w2), 8),
+        ], IRBranch(nothing, :latch, nothing)),
+        IRBasicBlock(:latch, IRInst[IRBinOp(:k1, :add, ssa(:i), iconst(1), 8)],
+            IRBranch(nothing, :h, nothing)),
+        IRBasicBlock(:exit, IRInst[
+            IRLoad(:rb, ssa(:b), 8),
+            IRBinOp(:r, :xor, ssa(ret_latch ? :k1 : :v), ssa(:rb), 8),
+        ], IRRet(ssa(:r), 8)),
+    ], [8])
+end
+
+# S5 — an EXIT-BLOCK PHI takes the held header value on the header edge and a
+# constant on an edge that skips the loop entirely (x < 0).
+function _i5zn_s5_exit_phi()
+    ParsedIR(8, [(:x, 8)], [
+        IRBasicBlock(:entry, IRInst[
+            IRAlloca(:a, 8, iconst(1)),
+            IRStore(ssa(:a), ssa(:x), 8),
+            IRBinOp(:n, :and, ssa(:x), iconst(3), 8),
+            IRICmp(:skip, :slt, ssa(:x), iconst(0), 8),
+        ], IRBranch(ssa(:skip), :exit, :h)),
+        IRBasicBlock(:h, IRInst[
+            IRPhi(:i, 8, [(iconst(0), :entry), (ssa(:i2), :h)]),
+            IRLoad(:v, ssa(:a), 8),
+            IRBinOp(:v2, :add, ssa(:v), iconst(7), 8),
+            IRStore(ssa(:a), ssa(:v2), 8),
+            IRBinOp(:i2, :add, ssa(:i), iconst(1), 8),
+            IRICmp(:done, :uge, ssa(:i), ssa(:n), 8),
+        ], IRBranch(ssa(:done), :exit, :h)),
+        IRBasicBlock(:exit, IRInst[
+            IRPhi(:r, 8, [(ssa(:v), :h), (iconst(99), :entry)]),
+        ], IRRet(ssa(:r), 8)),
+    ], [8])
+end
+
+# S6 — control: a PURE header value used after the loop (`s2`, from header
+# phis only) is not held — its replay recomputes it from the frozen phis.
+function _i5zn_s6_pure()
+    ParsedIR(8, [(:x, 8)], [
+        IRBasicBlock(:entry, IRInst[IRBinOp(:n, :and, ssa(:x), iconst(7), 8)],
+            IRBranch(nothing, :h, nothing)),
+        IRBasicBlock(:h, IRInst[
+            IRPhi(:i, 8, [(iconst(0), :entry), (ssa(:i2), :h)]),
+            IRPhi(:s, 8, [(ssa(:x), :entry), (ssa(:s2), :h)]),
+            IRBinOp(:s1, :mul, ssa(:s), iconst(5), 8),
+            IRBinOp(:s2, :add, ssa(:s1), ssa(:i), 8),
+            IRBinOp(:i2, :add, ssa(:i), iconst(1), 8),
+            IRICmp(:done, :uge, ssa(:i), ssa(:n), 8),
+        ], IRBranch(ssa(:done), :exit, :h)),
+        IRBasicBlock(:exit, IRInst[], IRRet(ssa(:s2), 8)),
+    ], [8])
+end
+
+# S7 — a second exit (`break` from the body straight to the exit block).
+function _i5zn_s7_two_exits()
+    ParsedIR(8, [(:x, 8)], [
+        IRBasicBlock(:entry, IRInst[IRBinOp(:n, :and, ssa(:x), iconst(3), 8)],
+            IRBranch(nothing, :h, nothing)),
+        IRBasicBlock(:h, IRInst[
+            IRPhi(:i, 8, [(iconst(0), :entry), (ssa(:i2), :body)]),
+            IRICmp(:done, :uge, ssa(:i), ssa(:n), 8),
+        ], IRBranch(ssa(:done), :exit, :body)),
+        IRBasicBlock(:body, IRInst[
+            IRBinOp(:i2, :add, ssa(:i), iconst(1), 8),
+            IRICmp(:brk, :eq, ssa(:i2), iconst(2), 8),
+        ], IRBranch(ssa(:brk), :exit, :h)),
+        IRBasicBlock(:exit, IRInst[
+            IRPhi(:r, 8, [(ssa(:i), :h), (iconst(77), :body)]),
+        ], IRRet(ssa(:r), 8)),
+    ], [8])
+end
+
+_i5zn_errmsg(f) = try f(); "no error" catch e; sprint(showerror, e) end
+
+@testset "Bennett-i5zn part 2: header values live after the loop hold their exit-visit value" begin
+
+    @testset "R2 witness verbatim (review1, K=2): (10, 20)" begin
+        # x=0: n=0, one header visit, returns the original a = 10.
+        # x=1: n=1, two visits; the 2nd visit loads a = 20 (after one swap).
+        # Pre-fix: main (10, 10), parked branch 8b272a8 (20, 10).
+        c = reversible_compile(_i5zn_r2_swap(); max_loop_iterations=2, fold_constants=false)
+        @test (Int(simulate(c, Int8(0))), Int(simulate(c, Int8(1)))) == (10, 20)
+        @test verify_reversibility(c)
+    end
+
+    @testset "R2 swap, every input, K ∈ 1:4 — fold=$fold" for fold in _I5ZN_FOLDS
+        @test _i5zn_check(_i5zn_r2_swap(), (1, 2, 4); fold) == 0   # trip ≤ 2 visits
+    end
+
+    @testset "S1 data-dependent swap, pure exit chain — fold=$fold" for fold in _I5ZN_FOLDS
+        # ≤ 4 header visits: K=2 is below the trip count for x>>6 == 3.
+        @test _i5zn_check(_i5zn_s1_swap(), (2, 3, 4, 7); fold) > 0
+    end
+
+    @testset "S2 load after store in the header — fold=$fold" for fold in _I5ZN_FOLDS
+        @test _i5zn_check(_i5zn_s2_load_after_store(), (2, 3, 4, 7); fold) > 0
+    end
+
+    @testset "S3 exit test reads memory — fold=$fold" for fold in _I5ZN_FOLDS
+        @test _i5zn_check(_i5zn_s3_load_cond(), (8, 15, 16, 19); fold) > 0
+    end
+
+    @testset "S4 multi-block loop, pre-store header load returned — fold=$fold" for fold in _I5ZN_FOLDS
+        @test _i5zn_check(_i5zn_s4_multiblock(), (2, 3, 4, 7); fold) > 0
+    end
+
+    @testset "S5 exit-block phi over a held header value — fold=$fold" for fold in _I5ZN_FOLDS
+        # K ≥ 3 only: at K = 2 the inputs that SKIP the loop (x < 0) are refused
+        # by the s0tn guard although the header never runs — the guard is not
+        # gated by the header's path predicate (Bennett-n9o8, a separate bead;
+        # loud, not a wrong answer). The below-trip-count side is covered by
+        # the other fixtures.
+        @test _i5zn_check(_i5zn_s5_exit_phi(), (3, 4, 7); fold) == 0
+    end
+
+    @testset "S6 control: pure header value is not held — fold=$fold" for fold in _I5ZN_FOLDS
+        @test _i5zn_check(_i5zn_s6_pure(), (6, 7, 8, 11); fold) > 0
+    end
+
+    @testset "hold set: exactly the load-tainted header values used after the loop" begin
+        hs(p) = (bm = Dict(b.label => b for b in p.blocks);
+                 Bennett._loop_header_hold_set(bm[:h],
+                     Symbol[l for l in (:body, :latch) if haskey(bm, l)], bm))
+        @test hs(_i5zn_r2_swap()) == [:va]
+        @test hs(_i5zn_s1_swap()) == [:va, :vb]
+        @test hs(_i5zn_s2_load_after_store()) == [:v, :u]
+        @test hs(_i5zn_s3_load_cond()) == [:v]
+        @test hs(_i5zn_s4_multiblock()) == [:v]
+        @test hs(_i5zn_s6_pure()) == Symbol[]       # pure: no hold, no extra gate
+        @test hs(_i5zn_f1_parsed()) == Symbol[]     # header load not used after
+    end
+
+    @testset "S4' latch-defined value used after the loop: loud" begin
+        # Not valid SSA (the latch does not dominate the exit), but a
+        # hand-written ParsedIR is not verified: refuse rather than return the
+        # last unrolled iteration's `k1`.
+        msg = _i5zn_errmsg(() -> reversible_compile(_i5zn_s4_multiblock(ret_latch=true);
+                                                    max_loop_iterations=4))
+        @test occursin("Bennett-i5zn", msg)
+        @test occursin("%k1", msg) && occursin("latch", msg)
+    end
+
+    @testset "S7 second loop exit (break): loud" begin
+        msg = _i5zn_errmsg(() -> reversible_compile(_i5zn_s7_two_exits();
+                                                    max_loop_iterations=4))
+        @test occursin("second loop exit", msg)
+        @test occursin("Bennett-c6ex", msg)
+    end
+end

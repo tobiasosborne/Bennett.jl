@@ -294,6 +294,109 @@ function _loop_and!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     return _and_wire!(gates, wa, [w], [active])[1]
 end
 
+# Bennett-i5zn: instruction types whose result is a pure function of their SSA
+# operands' wires. A header value built only from these (and from header phis
+# and loop-invariant values) is recomputed IDENTICALLY by every post-exit
+# replay of the header, because the phis are frozen. Anything else — an
+# IRLoad above all, which reads memory a later header store has changed — is a
+# taint source. Unlisted types are tainted by default (conservative).
+const _LOOP_PURE_INSTS = Union{IRBinOp, IRICmp, IRSelect, IRCast, IRExtractValue,
+                               IRInsertValue, IRInsertBits, IRPtrOffset, IRVarGEP,
+                               IRCall}
+
+_loop_inst_dest(inst::IRInst) = hasfield(typeof(inst), :dest) ? getfield(inst, :dest) : nothing
+
+"""
+    _loop_header_hold_set(header, body_labels, block_map) -> Vector{Symbol}
+
+Bennett-i5zn: the header's non-phi SSA values that must be HELD at their
+exit-visit value. The unroller re-lowers the header on every remaining
+unrolled iteration and in the s0tn check-only pass, into the same `vw`, so
+after the loop `vw[d]` is the value of the LAST replay, not of the header
+visit that actually exited. That is harmless for a value that is a pure
+function of the (frozen) phis and loop invariants — the replay recomputes it
+bit-for-bit — but not for one that depends on a header load: after exit the
+replayed load reads the post-exit memory (e.g. a load above a store in the
+header sees the value that store wrote). So a header value is held iff it is
+(a) used outside the loop region and (b) tainted by a non-pure instruction
+(see `_LOOP_PURE_INSTS`). Pure loops therefore keep their gates byte-identical.
+
+Values defined in BODY blocks (latch included) cannot be live after the loop:
+the only exit edge leaves from the header (`_collect_loop_body_blocks` rejects
+a body→exit edge), so the header→exit path bypasses every body block and no
+body definition dominates a use outside the loop. Hand-written IR that does
+use one is rejected loud — the unroller holds no such value, and `vw` would
+silently give the last unrolled iteration's (possibly inactive) value.
+"""
+function _loop_header_hold_set(header::IRBasicBlock, body_labels::Vector{Symbol},
+                               block_map::Dict{Symbol,IRBasicBlock})
+    hlabel = header.label
+    region = Set{Symbol}(body_labels)
+    push!(region, hlabel)
+
+    header_defs = Symbol[]
+    tainted = Set{Symbol}()
+    for inst in header.instructions
+        inst isa IRPhi && continue
+        d = _loop_inst_dest(inst)
+        d === nothing && continue
+        push!(header_defs, d)
+        if !(inst isa _LOOP_PURE_INSTS) || any(in(tainted), _ssa_operands(inst))
+            push!(tainted, d)
+        end
+    end
+
+    body_defs = Dict{Symbol,Symbol}()
+    for b in body_labels, inst in block_map[b].instructions
+        d = _loop_inst_dest(inst)
+        d === nothing || (body_defs[d] = b)
+    end
+
+    live_out = Set{Symbol}()
+    for (lbl, blk) in block_map
+        lbl in region && continue
+        for item in Iterators.flatten((blk.instructions, (blk.terminator,)))
+            for s in _ssa_operands(item)
+                haskey(body_defs, s) && throw(AssertionError(
+                    "lower_loop!: %$s is defined in body block $(body_defs[s]) of loop " *
+                    "$hlabel but used outside the loop (in $lbl); the loop exits only from " *
+                    "its header, so no body definition dominates a use after the loop — " *
+                    "the unroller cannot hold such a value at its exit-visit value " *
+                    "(Bennett-i5zn)"))
+                push!(live_out, s)
+            end
+        end
+    end
+    return Symbol[d for d in header_defs if d in tainted && d in live_out]
+end
+
+"""
+    _loop_hold!(gates, wa, vw, held, hold_set, active, hlabel)
+
+Bennett-i5zn: fold the header values just (re-)lowered into `held` iff this
+header visit really happened: `held[d] = active ? vw[d] : held[d]`. `active ===
+nothing` is iteration 1 (always active), which seeds `held` with no gate.
+"""
+function _loop_hold!(gates, wa, vw, held::Dict{Symbol,Vector{Int}},
+                     hold_set::Vector{Symbol}, active::Union{Nothing,Int}, hlabel::Symbol)
+    for d in hold_set
+        haskey(vw, d) || throw(AssertionError(
+            "lower_loop!: header value %$d of loop $hlabel is used after the loop and " *
+            "depends on a load, but has no wires (a pointer-typed value?) — it cannot " *
+            "be held at its exit-visit value (Bennett-i5zn)"))
+        fresh = vw[d]
+        if active === nothing
+            held[d] = fresh
+        else
+            length(fresh) == length(held[d]) || throw(AssertionError(
+                "lower_loop!: header value %$d of loop $hlabel changed width across " *
+                "unrolled iterations ($(length(held[d])) → $(length(fresh))) (Bennett-i5zn)"))
+            held[d] = lower_mux!(gates, wa, [active], fresh, held[d], length(fresh))
+        end
+    end
+    return nothing
+end
+
 """
     lower_loop!(gates, wa, vw, header_block, block_map, back_edges, K, preds, branch_info; <ctx kwargs>)
 
@@ -317,6 +420,11 @@ select, and the Bennett-s0tn check-only pass. After the first exit all
 observable state is frozen, so the answer no longer depends on K. Pre-i5zn
 only the phis were frozen, and the answer DID depend on K: a header store
 replayed on every unrolled iteration, silently (verify_reversibility passed).
+Freezing effects is not enough for header VALUES: each replay re-lowers the
+header into `vw`, and a replayed load reads the post-exit memory. Header values
+used after the loop that depend on a load are therefore held at their
+exit-visit value (`_loop_header_hold_set` / `_loop_hold!`), the check-only
+pass's values folded in only under `active_{K+1}`.
 """
 # Bennett-x2iw / U88: optional state bundled in `opts::BlockLoweringOpts`
 # (loop_headers field is consumed by `lower_loop!`; lower_block_insts!
@@ -396,6 +504,11 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
     body_block_order = _collect_loop_body_blocks(header, block_map, exit_label,
                                                  latch_labels, opts.loop_headers, back_edges)
     @debug "lower_loop! body_block_order" hlabel body_block_order
+
+    # Bennett-i5zn: header values that must be held at their exit-visit value
+    # (live after the loop AND load-tainted) — see `_loop_header_hold_set`.
+    hold_set = _loop_header_hold_set(header, body_block_order, block_map)
+    held = Dict{Symbol,Vector{Int}}()
 
     # Bennett-jepw: the function-level pass (src/lower.jl ~437) populates
     # block_pred[hlabel] before calling lower_loop!. We rely on this for
@@ -514,6 +627,7 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
         for inst in header_body_insts
             _lower_inst!(iter_ctx, inst, hlabel)
         end
+        _loop_hold!(gates, wa, vw, held, hold_set, iter_active, hlabel)   # Bennett-i5zn
 
         # (a2) Resolve the header's exit condition ONCE — reused at (c).
         # Lives between (a1) and (b) so any header-body inst that produces
@@ -655,7 +769,15 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
     for inst in header_body_insts
         _lower_inst!(conv_ctx, inst, hlabel)
     end
+    # Bennett-i5zn: the (K+1)-th visit is real iff `active_{K+1}` — the source
+    # loop may exit exactly there (trip count K), and then ITS header values
+    # are the ones the exit block reads. Fold them in under that predicate,
+    # then publish the held values in place of the last replay's.
+    _loop_hold!(gates, wa, vw, held, hold_set, iter_active, hlabel)
     postk_cond = resolve!(gates, wa, vw, term.cond, 1)
+    for d in hold_set
+        vw[d] = held[d]
+    end
     # `postk_cond[1]==1` ⇔ header branch would take the body again.
     # Convergence ⇔ branch would take the EXIT instead.
     conv_exit = exit_on_true ? postk_cond : lower_not1!(gates, wa, postk_cond)
