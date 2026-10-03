@@ -311,7 +311,25 @@ end
 # called through Base, e.g. `map(g, (x,))`); identical signatures are pruned.
 # Calls the walk cannot resolve (splats via Core._apply_iterate, non-unique
 # matches on abstract types) are not descended into.
+# Bennett-iffz: statement correspondence is only an assumption, so whenever
+# it cannot be established the verdict is "unresolved" (a String starting
+# with `_SFD_UNRESOLVED`), never `nothing` and never an internal error:
+# a `@generated` method anywhere on the walk (its two specializations are
+# different bodies — `T === Float64 ? :(Int8(1)) : :(Int8(2))` passed as
+# "same method, same length"), two typed bodies of different length, and, in
+# user methods, a splat / `invoke` whose argument types differ or a call
+# whose argument types are not concrete and may select a user method (the
+# walk cannot see what either side picks at run time). The Float64 overload
+# refuses an unresolved f; the Tuple overload does not delegate it.
+const _SFD_UNRESOLVED = "unresolved: "
+
 _sfd_is_user(m::Method) = !(Base.moduleroot(m.module) in (Base, Core, Bennett))
+
+_sfd_unresolved(why::String) = _SFD_UNRESOLVED * why
+
+# Constants whose differing between the typings is expected: the type
+# objects themselves (`typeof(x)` is Float64 vs SoftFloat) and tuples of them.
+_sfd_typeish(@nospecialize(v)) = v isa Type || (v isa Tuple && any(_sfd_typeish, v))
 
 _sfd_dead(ci, i) = ci.code[i] isa Core.Const && ci.ssavaluetypes[i] === Union{}
 
@@ -355,6 +373,9 @@ const _SFD_MAX_NODES = 5_000
 function _sfd_walk(@nospecialize(sigF), @nospecialize(sigS), m::Method, visited)
     (sigF, sigS) in visited && return nothing
     push!(visited, (sigF, sigS))
+    Base.hasgenerator(m) && return _sfd_unresolved(
+        "$m is a @generated method, whose Float64 and SoftFloat " *
+        "specializations are different generated bodies")
     length(visited) > _SFD_MAX_NODES && error(
         "reversible_compile(f, Float64...): dispatch-divergence walk exceeded " *
         "$_SFD_MAX_NODES nodes at $m (Bennett-czox)")
@@ -362,10 +383,9 @@ function _sfd_walk(@nospecialize(sigF), @nospecialize(sigS), m::Method, visited)
     rS = Base.code_typed_by_type(sigS; optimize=false)
     (length(rF) == 1 && length(rS) == 1) || return nothing
     ciF = rF[1][1]; ciS = rS[1][1]
-    length(ciF.code) == length(ciS.code) || error(
-        "reversible_compile(f, Float64...): typed code of $m has " *
-        "$(length(ciF.code)) statements for $sigF but $(length(ciS.code)) for " *
-        "$sigS — Julia introspection internals changed (Bennett-czox)")
+    length(ciF.code) == length(ciS.code) || return _sfd_unresolved(
+        "typed code of $m has $(length(ciF.code)) statements for Float64 " *
+        "arguments but $(length(ciS.code)) on the SoftFloat trace")
     user = _sfd_is_user(m)
     for i in eachindex(ciF.code)
         _sfd_dead(ciF, i) && continue
@@ -380,18 +400,39 @@ function _sfd_walk(@nospecialize(sigF), @nospecialize(sigS), m::Method, visited)
                 tS.val isa Bool && tF.val !== tS.val &&
                 return "statement $i of $m is the constant $(tF.val) natively " *
                        "but $(tS.val) on the SoftFloat trace (a type test)"
+            # Bennett-iffz: any other same-typed constant (not a type
+            # object) that differs is a divergence too, e.g. `Int8(1)` vs
+            # `Int8(2)`; 0.0 vs SoftFloat(0.0) differ in type and are expected.
+            tF isa Core.Const && tS isa Core.Const &&
+                typeof(tF.val) === typeof(tS.val) && !_sfd_typeish(tF.val) &&
+                tF.val !== tS.val &&
+                return "statement $i of $m is the constant $(repr(tF.val)) " *
+                       "natively but $(repr(tS.val)) on the SoftFloat trace"
         end
         cF = _sfd_call(ciF.code[i]); cF === nothing && continue
         cS = _sfd_call(ciS.code[i])
-        cS === nothing && error(
-            "reversible_compile(f, Float64...): statement $i of $m is a call " *
-            "for $sigF but not for $sigS (Bennett-czox)")
+        cS === nothing && return _sfd_unresolved(
+            "statement $i of $m is a call for Float64 arguments but not on " *
+            "the SoftFloat trace")
         aF = Any[_sfd_argtype(ciF, a) for a in cF.args]
         aS = Any[_sfd_argtype(ciS, a) for a in cS.args]
-        (aF[1] === Union{} || aF[1] <: Core.Builtin) && continue
+        aF[1] === Union{} && continue
         stF = Tuple{aF...}; stS = Tuple{aS...}
+        if aF[1] <: Core.Builtin
+            user && stF != stS &&
+                aF[1] in (typeof(Core._apply_iterate), typeof(Core.invoke)) &&
+                return _sfd_unresolved(
+                    "call $i in $m is a splat or invoke whose argument types " *
+                    "differ between Float64 and SoftFloat")
+            continue
+        end
         mF = _sfd_methods(stF); mF === nothing && continue
         mS = _sfd_methods(stS); mS === nothing && continue
+        user && !(Base.isdispatchtuple(stF) && Base.isdispatchtuple(stS)) &&
+            (any(_sfd_is_user, mF) || any(_sfd_is_user, mS)) &&
+            return _sfd_unresolved(
+                "call $i in $m has non-concrete argument types and may select " *
+                "a user method at run time")
         if mF != mS
             (any(_sfd_is_user, mF) || any(_sfd_is_user, mS)) &&
                 return "call $i in $m selects $(_sfd_show(mF)) natively but " *
@@ -410,7 +451,9 @@ end
 
 `nothing` when calling `f` on `N` SoftFloat values selects the same user
 methods and type-test outcomes as calling it on `N` Float64 values; otherwise
-a description of the first divergence found (Bennett-czox).
+a description of the first divergence found (Bennett-czox), or a String
+starting with `_SFD_UNRESOLVED` when correspondence of the two traces cannot
+be established (`@generated` methods, unmatched bodies — Bennett-iffz).
 """
 function _softfloat_dispatch_divergence(f, N::Int)
     sigF = Tuple{Core.Typeof(f), ntuple(_ -> Float64, N)...}
@@ -429,6 +472,13 @@ end
 
 function _check_softfloat_dispatch(f, N::Int)
     d = _softfloat_dispatch_divergence(f, N)
+    d !== nothing && startswith(d, _SFD_UNRESOLVED) && throw(ArgumentError(
+        "reversible_compile(f, Float64...): cannot verify that tracing $f on " *
+        "SoftFloat values selects the same code as f(::Float64...): " *
+        "$(chopprefix(d, _SFD_UNRESOLVED)). A @generated method (or a body " *
+        "the walk cannot match statement by statement) cannot be traced on " *
+        "SoftFloat soundly; `reversible_compile(f, Tuple{Float64...})` " *
+        "compiles the native method instead (Bennett-iffz)"))
     d === nothing || throw(ArgumentError(
         "reversible_compile(f, Float64...): $d. The Float64 overload traces f " *
         "on SoftFloat values, and SoftFloat is not a Float64 / AbstractFloat / " *

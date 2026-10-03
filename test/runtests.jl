@@ -205,6 +205,7 @@ runfile("test_19jw_float64_tuple_route.jl")
 # Bennett-czox: SoftFloat trace must select the same user methods / type-test
 # branches as the native Float64 call; divergent f rejected / not delegated.
 runfile("test_czox_softfloat_dispatch_divergence.jl")
+runfile("test_iffz_softfloat_generated_unresolved.jl")
 # Bennett-8aes: SoftFloat methods ordinary Float64 code uses (mixed ordered
 # comparisons, isnan & co, isequal/isless, mixed min/max, fma/muladd, x^n).
 runfile("test_8aes_softfloat_missing_methods.jl")
