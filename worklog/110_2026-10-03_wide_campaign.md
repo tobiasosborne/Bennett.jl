@@ -1,5 +1,68 @@
 # Worklog chunk 110 — 2026-10-03 — wide campaign over the Astra queue (4 concurrent workers)
 
+## Session log — 2026-10-03 — batch 3 landed: Bennett-htu2 (73dc11d), Bennett-ui55 (271700c), Bennett-s6d6 (349d42b), Bennett-wh1p (2cb5c31)
+
+**Bennett-htu2 — ValueEager dead groups kept phantom consumer counts** (73dc11d). Phase 1 of
+`src/pebble/value_eager.jl` reversed a dead-end group right after computing it but never
+decremented the counts it held on its dependencies, so Phase 3's Kahn walk never queued a
+dependency whose only consumer was dead and its wires stayed dirty. The bead's guess ("only a
+missed optimisation") was wrong: the circuits were dirty (F10 witness threw `Ancilla wire 2 not
+zero`; 200 of 400 seeded random grouped LRs failed). Fix: 8 lines decrementing each dependency's
+count once per occurrence; the dependency is not cascaded into Phase 1, Phase 3 reverses it. New
+`test/test_htu2_value_eager_dead_deps.jl`: red 1 fail + 4 errors, green 264/264; targeted run
+8399/8399. Gate counts unchanged (baselines use DefaultStrategy). Cascading left out (filed).
+
+**Bennett-ui55 — five strategy fast paths dropped failing loop guards** (271700c). Bennett-rjk7
+copied the self_reversing short-circuit into eager.jl, value_eager.jl, pebbling.jl and
+pebbled_groups.jl (x2) ahead of each impl's own guard fallback; only `_bennett_default` had the
+Bennett-s0tn empty-`loop_guards` check, so the Astra F8 witness came back as a clean circuit with
+no `loop_check_wires`. Fix: one shared `_self_reversing_circuit(lr)` in `src/bennett_transform.jl`
+(guard check, U03 probe, build), called by Default and all five impls; no inlined copies remain.
+**Touches a core file (`bennett_transform.jl`): on the list for the next independent review.**
+New `test/test_ui55_self_reversing_loop_guards.jl` (86 pass; red 27 failures, only Default
+passed): witness rejected under all 6 strategies, the 5 legacy aliases and `bennett_direct`.
+Targeted 18 files: 149929 pass, 1 pre-existing broken; gate-count regression 39/39, unchanged.
+
+**Bennett-s6d6 — 64-bit uitofp used the signed converter** (349d42b). The SIToFP/UIToFP block in
+`src/extract/instructions.jl` sent both to `soft_sitofp`, which reads bit 63 as sign:
+`Float64(typemax(UInt64))` came out 0xbff0..., wrong for every x >= 2^63 on plain Julia input.
+Narrower unsigned sources are zero-extended below 2^63 and were already right. Fix: branchless
+`soft_uitofp` in `src/softfloat/sitofp.jl` (for a >= 2^63 convert `(a>>1)|(a&1)` and double; the
+OR'd bit only feeds sticky, so RNE stays exact); exported, registered in `_CALLEES_FP_CONV`;
+64-bit-source `uitofp` dispatches to it, all other int->double casts unchanged. New
+`test/test_s6d6_uitofp_u64.jl`: bit-exact vs `Float64(::UInt64)` on edges, RNE ties and 600k
+random inputs, circuits for UInt8 (all), UInt16/32/64, Int64 unchanged; targeted 2630/2630. No
+baseline moved; Int64->Float64 stays 17970, new UInt64->Float64 is 19796. Narrow uitofp stays on
+zext + `soft_sitofp` (exact; routing it to `soft_uitofp` would cost +1826 gates).
+
+**Bennett-wh1p — callee demangling lowercased case-sensitive registry keys** (2cb5c31).
+`register_callee!` keys on `string(nameof(f))` but `_lookup_callee` lowercased the LLVM name, and
+`_demangle_callee_symbol` lowercased its capture. With `Wh1pBump` and `wh1pbump` both registered,
+`j_Wh1pBump_N` bound to the wrong one: 256/256 Int8 outputs wrong with `verify_reversibility`
+true; a capitalised-only callee made the closed-world set path reject loud. Fix:
+`_demangle_llvm_callee` in `src/extract/callees.jl` (prefix case-insensitive, capture preserved),
+the single demangler for `_lookup_callee`, `_lookup_callee_name` and `julia_set.jl`. New
+`test/test_wh1p_callee_case_folding.jl`; targeted 3003 pass, 1 pre-existing broken. Gate counts
+unchanged. Same-name callees from different modules (Bennett-p9a0) deliberately not addressed.
+
+**Gotchas.**
+- The defect behind ui55 was one short-circuit copied into five strategies ahead of each one's
+  guard check; the U03 probe treats the 0-valued convergence wire as a clean ancilla, so the copy
+  was silent. Fix the shared builder, not the copies.
+- A per-input `@test` over a 600k random sweep prints 600k stack traces in a red run; collect
+  mismatches into one `@test` (s6d6).
+- `until ! pgrep -f "<pattern>"` wait loops match their own bash command line and never exit; use
+  the background-task notification instead (s6d6).
+- `bennett_direct` is not exported; a test must import it explicitly or `@test_throws
+  ErrorException` sees an UndefVarError and reports Fail instead of Error (ui55).
+- Test callees are registered globally (the Bennett-6rqq leak), so wh1p fixtures use unique
+  `Wh1p*` names. A random grouped-LR generator is easy: each group writes fresh wires and reads
+  inputs plus deps' results; `LoweringResult` with explicit groups needs the 8-arg form (htu2).
+
+**Filed:** Bennett-914j (P3) ValueEager: cascade dead-dependency cleanup into Phase 1.
+**Annotated:** Bennett-n47e — s6d6 worker independently flagged int<->double casts with width > 64
+(uitofp too).
+
 ## Session log — 2026-10-03 — batch 2 landed: Bennett-iys2 (61e18a6), Bennett-3vji (d27a383), Bennett-4ddk (4f29c91), Bennett-retr (75f8969)
 
 **Bennett-iys2 — soft_pow(-1, y) returned +1 for every y** (61e18a6). The last step of `soft_pow`
