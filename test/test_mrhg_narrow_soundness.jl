@@ -348,9 +348,13 @@ end
         ("bxor",    mrhg_bxor,   UInt8, oracle_bxor,   2:7, (false, true)),
         ("shl1",    mrhg_shl1,   Int8,  oracle_shl1,   2:7, (false, true)),
         ("lshr2",   mrhg_lshr2,  UInt8, oracle_lshr2,  2:7, (false, true)),
-        ("ifelse3", mrhg_ifelse3, Int8, oracle_ifelse3, 2:7, (false, true)),
-        ("join",    mrhg_join,   Int8,  oracle_join,   2:7, (false, true)),
-        ("branch2", mrhg_branch2, Int8, oracle_branch2, 2:7, (false, true)),
+        # Bennett-koi8: these three branch on `x < 0`, a SIGNED ordering,
+        # which is refused in optimised IR at W < 8 (the optimizer writes
+        # unsigned source orderings that way too: UInt8 `x < 0x80` ->
+        # `icmp sgt x, -1`), so they are required only unoptimised.
+        ("ifelse3", mrhg_ifelse3, Int8, oracle_ifelse3, 2:7, (false,)),
+        ("join",    mrhg_join,   Int8,  oracle_join,   2:7, (false,)),
+        ("branch2", mrhg_branch2, Int8, oracle_branch2, 2:7, (false,)),
         ("constret", mrhg_constret, Int8, oracle_constret, 2:7, (false, true)),
         # a shift amount is a COUNT: 3 is in range only for W >= 3
         ("shl3",    mrhg_shl3,   Int8,  oracle_shl3,   3:7, (false, true)),
@@ -359,7 +363,9 @@ end
         ("eq1",     mrhg_eq1,    Int8,  oracle_eq1,    2:7, (true,)),
         # `abs`/`x >> 1` unoptimised carry the sign-fill guard `ashr x, 7`
         ("ashr1",   mrhg_ashr1,  Int8,  oracle_ashr1,  2:7, (true,)),
-        ("abs",     mrhg_abs,    Int8,  oracle_abs,    2:7, (true,)),
+        # ... and optimised `abs` is a signed ordering (Bennett-koi8), so it is
+        # required nowhere; every cell must still be correct or refused.
+        ("abs",     mrhg_abs,    Int8,  oracle_abs,    2:7, ()),
     ]
 
     n_accepted = 0
@@ -416,11 +422,11 @@ end
     for cell in (("add1", 4, false), ("sub5", 2, true), ("sq", 4, true),
                  ("poly", 6, false), ("band", 2, true), ("bor", 3, false),
                  ("bxor", 6, false), ("shl1", 3, true), ("lshr2", 5, false),
-                 ("ifelse3", 7, true), ("join", 3, false),
-                 ("branch2", 2, false), ("branch2", 5, true),
+                 ("ifelse3", 7, false), ("join", 3, false),
+                 ("branch2", 2, false), ("branch2", 5, false),
                  ("constret", 4, false), ("constret", 6, true),
                  ("shl3", 4, true),
-                 ("eq1", 2, true), ("ashr1", 6, true), ("abs", 3, true))
+                 ("eq1", 2, true), ("ashr1", 6, true))
         @test cell in accepted_cells
     end
 end
@@ -432,6 +438,14 @@ end
                             (mrhg_preds10, oracle_preds10))
             for optimize in (false, true)
                 c, err = mrhg_compile(f, Int8, Int8; bit_width=W, optimize)
+                # Bennett-koi8: narrowing refuses a signed ordering in
+                # optimised IR at W < 8, so preds10 is required to compile
+                # only unoptimised (the optimizer currently folds its chain
+                # away from signed predicates; either way, correct or refused).
+                if f === mrhg_preds10 && optimize && err !== nothing
+                    @test is_mrhg_rejection(err)
+                    continue
+                end
                 @test err === nothing
                 if err === nothing
                     @test c.output_elem_widths == [W]
@@ -513,8 +527,10 @@ end
             IRICmp(:c, :slt, ssa(:x), iconst(0), 8),
             IRCast(:s, :sext, ssa(:c), 1, 8)],
             IRRet(ssa(:s), 8))], [8])
+    # (hand-built IR is the literal program, not optimizer output: a signed
+    # ordering in it is the source's own — Bennett-koi8)
     for W in 2:6
-        c = reversible_compile(Bennett._narrow_ir(sext_p, W))
+        c = reversible_compile(Bennett._narrow_ir(sext_p, W; optimized=false))
         @test verify_reversibility(c)
         for p in 0:wmask(W)
             want = wsign(p, W) < 0 ? wmask(W) : 0

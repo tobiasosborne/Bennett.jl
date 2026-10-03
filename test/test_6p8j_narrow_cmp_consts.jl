@@ -19,6 +19,13 @@
 # Every accepted circuit must give exactly that answer on every input, or the
 # compile must be refused with the Bennett-mrhg ArgumentError (the narrowing
 # contract of test_mrhg_narrow_soundness.jl).
+#
+# Bennett-koi8 tightened the rule: at W < 8 an eq/ne constant must lie in
+# 0..2^(W-1)-1, where the pattern reading above and the number reading
+# (`x == 5` never holds for a 3-bit signed x) coincide, and optimised IR may
+# not carry a signed ordering or compare a computed value.  The two optimizer
+# folds this file pinned as known holes are now refused.  The generated
+# corpus in test_koi8_narrow_folded_cmp.jl is the main soundness check.
 
 using Test
 using Bennett
@@ -78,12 +85,11 @@ function p6_mismatches(c, f, T, op, C, W)
     return bad
 end
 
-# Cells where the optimizer has folded the comparison literal into a sign-bit
-# test, whose constants (-1 / 0) fit every W, so no constant check can see the
-# out-of-range source literal: `x < 0x80` -> `icmp sgt x, -1`.  A known hole
-# of the narrowing allowlist under optimize=true (see the report filed with
-# Bennett-6p8j); pinned here as @test_broken so that closing it is noticed.
-p6_known_hole(T, op, C, W, optimize) = optimize && W < 8 && T === UInt8 &&
+# Cells where the optimizer folds the comparison literal into a sign-bit test
+# (`x < 0x80` -> `icmp sgt x, -1`), whose constants fit every W.  Pinned as a
+# known hole by Bennett-6p8j; Bennett-koi8 refuses every signed ordering in
+# optimised IR at W < 8, so these cells must now be refusals.
+p6_signbit_fold(T, op, C, W, optimize) = optimize && W < 8 && T === UInt8 &&
     ((op in (:<, :>=) && C == 128) || (op in (:<=, :>) && C == 127))
 
 p6_eq100(x::Int8) = ifelse(x == Int8(100), Int8(1), Int8(0))
@@ -111,23 +117,28 @@ end
 @testset "exhaustive sweep: every predicate x boundary constant x W x optimize" begin
     n_acc = 0; n_ref = 0
     wrong = String[]; holes = String[]; missing_acc = String[]; bad_err = String[]
+    n_fold = 0
     for T in (Int8, UInt8), (op, _) in P6_OPS, W in P6_WS, C in p6_consts(T, W),
         optimize in (false, true)
         f = P6_FUNS[(T, op, C)]
         c, err = p6_compile(f, T; W, optimize)
         cell = "$T $op $C @W=$W,opt=$optimize"
+        p6_signbit_fold(T, op, C, W, optimize) && (n_fold += 1)
         # Must compile: the unoptimised IR is the literal `icmp pred x, C`;
         # at W = 8 nothing is re-typed; otherwise a signed ordering needs a
         # signed W-bit literal, an unsigned one 0..2^(W-1)-1 (the bound a
         # folded signed range check agrees on), and eq/ne a sign- or
         # zero-extended W-bit pattern other than the type maxima -1 / 127.
+        # Bennett-koi8: eq/ne now needs 0..2^(W-1)-1 (a negative or high
+        # constant can be an ordering the optimizer folded into an equality).
         c8 = C > 127 ? C - 256 : C            # the i8 constant LLVM hands over
         fits = W == 8 || (op in (:(==), :!=) ?
-                (-(1 << (W - 1)) <= c8 <= (1 << W) - 1 && c8 != -1 && c8 != 127) :
+                (0 <= c8 <= (1 << (W - 1)) - 1) :
             T === Int8 ? -(1 << (W - 1)) <= C <= (1 << (W - 1)) - 1 :
                          0 <= C <= (1 << (W - 1)) - 1)
         if err !== nothing
             n_ref += 1
+            p6_signbit_fold(T, op, C, W, optimize) && push!(holes, cell)
             p6_is_refusal(err) || push!(bad_err, cell)
             (!optimize && fits) && push!(missing_acc, cell)
             continue
@@ -136,16 +147,17 @@ end
         @test verify_reversibility(c)
         bad = p6_mismatches(c, f, T, op, C, W)
         isempty(bad) && continue
-        msg = "$cell wrong at patterns $(first(bad, 6))"
-        p6_known_hole(T, op, C, W, optimize) ? push!(holes, msg) : push!(wrong, msg)
+        push!(wrong, "$cell wrong at patterns $(first(bad, 6))")
     end
     println("  6p8j cells: $n_acc accepted, $n_ref refused; WRONG: $wrong; " *
-            "missing: $missing_acc; known holes: $(length(holes))")
+            "missing: $missing_acc; sign-bit folds refused: $(length(holes))")
     @test isempty(wrong)          # soundness: accepted => right on every input
     @test isempty(bad_err)        # a refusal is the narrowing ArgumentError
     @test isempty(missing_acc)    # non-vacuity: the allowlist accepts what it should
     @test n_acc >= 300 && n_ref >= 100
-    @test_broken isempty(holes)
+    # the former known hole (Bennett-6p8j): every sign-bit-fold cell refused
+    @test length(holes) == n_fold
+    @test n_fold > 0
 end
 
 @testset "pinned refusals: one IR constant, two meanings" begin
@@ -190,14 +202,22 @@ end
     # the pre-fix wrong cells are now refusals
     @test p6_compile(p6_range, Int8; W=4, optimize=true)[1] === nothing
     @test p6_compile(p6_outside, Int8; W=4, optimize=true)[1] === nothing
-    # KNOWN HOLE: `9 <= x <= 12` folds to `icmp ult (add x, -9), 4`; the
-    # out-of-range literal 12 hides in an add constant, which wraps like
-    # data, so no comparison-constant rule can see it.  Accepted and wrong at
-    # W = 4 (true for x = -7..-4).
-    c, err = p6_compile(p6_band, Int8; W=4, optimize=true)
-    @test_broken c === nothing ||
-                 all((Int(simulate(c, Int8, p6_in(Int8, p))) & 15) ==
-                     (9 <= p6_wsign(p, 4) <= 12 ? 1 : 0) for p in 0:15)
+    # FORMER KNOWN HOLE (Bennett-6p8j): `9 <= x <= 12` folds to
+    # `icmp ult (add x, -9), 4`; the out-of-range literal 12 hides in an add
+    # constant, and the narrowed test was true for x = -7..-4 at W = 4.
+    # Bennett-koi8 refuses a comparison of a computed (add) value in
+    # optimised IR; unoptimised IR is the source's own two compares.
+    for W in (4, 6)
+        c, err = p6_compile(p6_band, Int8; W, optimize=true)
+        @test c === nothing && p6_is_refusal(err)
+        @test occursin("Bennett-koi8", err.msg)
+    end
+    # unoptimised, at a W where 9 and 12 are signed W-bit values
+    c, err = p6_compile(p6_band, Int8; W=6, optimize=false)
+    @test err === nothing
+    @test c !== nothing && verify_reversibility(c) &&
+          all((Int(simulate(c, Int8, p6_in(Int8, p))) & 63) ==
+              (9 <= p6_wsign(p, 6) <= 12 ? 1 : 0) for p in 0:63)
 end
 
 @testset "hand-built IR: unsigned spelling, i1 compares, non-i8 constants" begin
@@ -209,7 +229,9 @@ end
             IRCast(:r, :zext, ssa(:b), 1, 8)],
             IRRet(ssa(:r), 8))], [8])
     for W in (2, 3, 4, 6)
-        c = reversible_compile(Bennett._narrow_ir(mk(:slt, 255), W))
+        # (hand-built IR is the literal program, so `optimized=false`: a
+        # signed ordering in optimised IR is refused — Bennett-koi8)
+        c = reversible_compile(Bennett._narrow_ir(mk(:slt, 255), W; optimized=false))
         @test verify_reversibility(c)
         @test all((simulate(c, Int8, Int8(p)) & p6_wmask(W)) ==
                   (p6_wsign(p, W) < -1 ? 1 : 0) for p in 0:p6_wmask(W))
@@ -230,7 +252,7 @@ end
             IRSelect(:r, ssa(:t), iconst(3), iconst(1), 8)],
             IRRet(ssa(:r), 8))], [8])
     for W in (2, 3, 4)
-        c = reversible_compile(Bennett._narrow_ir(i1_p, W))
+        c = reversible_compile(Bennett._narrow_ir(i1_p, W; optimized=false))
         @test verify_reversibility(c)
         @test all((simulate(c, Int8, Int8(p)) & p6_wmask(W)) ==
                   (p6_wsign(p, W) < 0 ? 3 : 1) % (1 << W) for p in 0:p6_wmask(W))

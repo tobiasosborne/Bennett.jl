@@ -68,12 +68,19 @@ using Bennett
         # Regression test for _narrow_inst(::IRCast) — previously referenced a
         # nonexistent src_width field and passed args in the wrong positional
         # order, breaking any bit_width>0 compile of a function with a cast.
+        #
+        # Bennett-koi8: this ran at bit_width=3, reading 5 as the 3-bit
+        # PATTERN 101 (true at x = -3).  An eq/ne constant at W < 8 must now
+        # lie in 0..2^(W-1)-1, the values every reading agrees on, because the
+        # IR cannot tell `x == C` from an ordering the optimizer folded into
+        # one; 5 is fine at W = 4, and the W = 3 compile is a refusal.
         f(x::Int8) = Int8(x == 5 ? 1 : 0)
-        c = reversible_compile(f, Int8; bit_width=3)
-        for x in 0:7
+        c = reversible_compile(f, Int8; bit_width=4)
+        for x in 0:15
             @test simulate(c, Int8(x)) == (x == 5 ? Int8(1) : Int8(0))
         end
         @test verify_reversibility(c)
+        @test_throws ArgumentError reversible_compile(f, Int8; bit_width=3)
     end
 
     @testset "narrow with compound boolean predicate (i1 IRBinOp)" begin
@@ -82,9 +89,10 @@ using Bennett
         # width unconditionally, so the i1 operands of the and became i3 while
         # resolve! still returned only 1 wire, crashing lower_and! in the loop
         # over 1:W. Predicate is chosen width-agnostic (== is not signed/unsigned).
+        # Bennett-koi8: bit_width=4 (was 3), so that 5 is in 0..2^(W-1)-1.
         f(x::Int8) = Int8((x != Int8(0) && x != Int8(5)) ? 1 : 0)
-        c = reversible_compile(f, Int8; bit_width=3)
-        for x in 0:7
+        c = reversible_compile(f, Int8; bit_width=4)
+        for x in 0:15
             expected = (x != 0 && x != 5) ? Int8(1) : Int8(0)
             @test simulate(c, Int8(x)) == expected
         end

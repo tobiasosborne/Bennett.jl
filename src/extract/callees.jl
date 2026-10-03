@@ -222,7 +222,7 @@ function _extract_parsed_ir_cached(f, arg_types::Type{<:Tuple};
         haskey(_parsed_ir_cache, key) && return _parsed_ir_cache[key]
         pir = bit_width > 0 ?
             _narrow_ir(_extract_parsed_ir_cached(f, arg_types; optimize, mem),
-                       bit_width) :
+                       bit_width; optimized=optimize) :
             extract_parsed_ir(f, arg_types; optimize, mem)
         return _cache_insert_bounded!(_parsed_ir_cache, key, pir,
                                       _PARSED_IR_CACHE_MAX, w)

@@ -42,9 +42,9 @@ const _NARROW_ARITH_OPS = (:add, :sub, :mul, :and, :or, :xor)
 const _NARROW_SHIFT_OPS = (:shl, :lshr, :ashr)
 const _NARROW_CAST_OPS  = (:trunc, :sext, :zext)
 # Comparison predicates that read their operands as SIGNED values.  `eq`/`ne`
-# are pattern compares (congruence mod 2^W) and the unsigned predicates read
-# the W-bit pattern; the constant each admits is in `_narrow_cmp_consts`
-# (Bennett-6p8j).
+# and the unsigned predicates are re-typed only against constants whose value
+# is the same in every reading; the constant each admits is in
+# `_narrow_cmp_consts` (Bennett-6p8j, Bennett-koi8).
 const _NARROW_SIGNED_PREDS = (:slt, :sle, :sgt, :sge)
 
 _narrow_reject(why::AbstractString) = throw(ArgumentError(
@@ -53,8 +53,9 @@ _narrow_reject(why::AbstractString) = throw(ArgumentError(
     "semantics and is an allowlist: narrowable are add/sub/mul/and/or/xor, " *
     "constant-amount shifts with 0 <= k <= W, comparisons against a " *
     "constant that fits in W bits (signed orderings: a signed W-bit value; " *
-    "unsigned orderings: 0..2^(W-1)-1; eq/ne: a sign- or zero-extended " *
-    "W-bit pattern other than the type maxima), selects, " *
+    "unsigned orderings and eq/ne: 0..2^(W-1)-1; under optimize=true at " *
+    "W < S no signed orderings, and only arguments and and/or/xor/select/phi " *
+    "of them may be compared), selects, " *
     "trunc/sext/zext between the iS and i1 domains, and iS/i1 phis/branches " *
     "over those.  Compile without `bit_width`, or rewrite the function in " *
     "terms of them. (Bennett-mrhg)"))
@@ -189,12 +190,23 @@ else — a widened domain, a source-width limit guard, a runtime shift amount, a
 shift count outside [0, W], an aggregate return, memory, a call, a loop —
 throws an `ArgumentError` naming the bead.  It never returns a circuit that
 computes something other than W-bit modular semantics.
+
+`optimized` (Bennett-koi8) says whether `parsed` came out of LLVM's optimizer
+(`optimize=true`, the default and the conservative answer).  Optimized IR can
+hold comparisons the optimizer FOLDED out of source orderings, so at W < S its
+comparisons get the extra checks of `_narrow_check_folded_cmp`.
 """
-function _narrow_ir(parsed::ParsedIR, W::Int)
+function _narrow_ir(parsed::ParsedIR, W::Int; optimized::Bool=true)
     1 <= W <= 64 || _narrow_reject("bit_width=$W is outside [1, 64]")
     S = _narrow_source_width(parsed)
     _narrow_check_return(parsed, S)
     _narrow_check_acyclic(parsed)
+    if optimized && W < S
+        faithful = _narrow_faithful_values(parsed, S, W)
+        for block in parsed.blocks, inst in block.instructions
+            _narrow_check_folded_cmp(inst, S, W, faithful)
+        end
+    end
     new_args = [(name, W) for (name, _) in parsed.args]
     new_blocks = IRBasicBlock[]
     for block in parsed.blocks
@@ -339,16 +351,33 @@ end
 #     rewrites signed range checks into unsigned ones (`0 <= x < 10` ->
 #     `icmp ult x, 10`, `x < 0 || x > 12` -> `icmp ugt x, 12`), which agree
 #     with the source on every W-bit input only below 2^(W-1);
-#   * eq/ne is congruence mod 2^W, a pattern compare: when W < w the constant
-#     must be the sign- or zero-extension of its low W bits (cs in
-#     smin(W)..umax(W)), so `Int8(-8)` and `0x0c` are fine at W = 4; when
-#     W > w, the sign- and zero-extended readings of a negative cs are two
-#     different W-bit patterns, so cs >= 0.  EXCEPT the source type's maxima
-#     -1 (0xff) and smax(w) (127): the optimizer folds an ORDERING against a
-#     type extreme into an equality (`x >= 0xff` / `x > 0xfe` -> `x == -1`,
-#     `x < 0xff` -> `x != -1`, `x > 126` -> `x == 127`), and that ordering
-#     has no W-bit meaning.  (The minima are 0, always fine, and smin(w),
-#     which never reproduces from its low W bits.)
+#   * eq/ne, when W < w, needs 0 <= cs <= 2^(W-1)-1 (Bennett-koi8).  The
+#     IR cannot tell an equality the source wrote from an ORDERING the
+#     optimizer folded into one: `x >= 0xff` -> `x == -1`, `x > 126` ->
+#     `x == 127`, and a singleton range `(x >= 248) & (x <= 248)` ->
+#     `x == -8`, which the earlier "sign- or zero-extends from its low W bits"
+#     rule accepted and read as the 4-bit pattern 8 (true at x = 8, while no
+#     4-bit UInt8 value reaches 248).  Proof sketch: whatever source predicate
+#     P folded into `v == c`, P agrees with `v == c` on every i$w value, in
+#     particular on e(p) for each W-bit input p, where e is the embedding of
+#     the source's reading of p (sext for a signed source, zext for an
+#     unsigned one — the IR does not say which).  The narrowed test is
+#     `p == c mod 2^W`.  For 0 <= c <= 2^(W-1)-1, sext(p) == c and
+#     zext(p) == c both hold iff p == c, so the two agree under EITHER
+#     reading — including a signed source whose folded ordering was signed
+#     (Int8 `(x >= 3) & (x <= 3)` -> `x == 3`: a negative W-bit x is a
+#     negative i8 value, never 3).  For c >= 2^W (unsigned) or c < -2^(W-1)
+#     no e(p) equals c, yet one pattern does; c in 2^(W-1)..2^W-1 equals
+#     zext(p) but not sext(p), and c in -2^(W-1)..-1 the reverse — each is
+#     wrong under one of the readings, so it is refused.  (This also reads a
+#     hand-written `x == 5` at W = 3 as the number 5, which no 3-bit signed
+#     input equals, rather than as the pattern 101.)  When W > w the sign-
+#     and zero-extended readings of a negative cs are two different W-bit
+#     patterns, so cs >= 0, and smax(w) (127) stays excluded as above;
+#   * the argument above, and the ordering bounds, assume the compared value
+#     v is the embedding of its W-bit value and that the predicate's
+#     signedness is the source's.  Both hold for unoptimised IR; for
+#     optimised IR `_narrow_check_folded_cmp` refuses what breaks them.
 function _narrow_cmp_consts(inst::IRICmp, W::Int)
     w = inst.width
     retyped = _narrow_w(w, W) != w
@@ -366,10 +395,9 @@ function _narrow_cmp_consts(inst::IRICmp, W::Int)
         ok, allowed = if pred in _NARROW_SIGNED_PREDS
             _narrow_smin(m) <= cs <= _narrow_smax(m), "$(_narrow_smin(m))..$(_narrow_smax(m))"
         elseif pred in (:eq, :ne)
-            (W < w ? _narrow_smin(W) <= cs <= _narrow_umax(W) : cs >= 0) &&
-                cs != -1 && cs != _narrow_smax(w),
-            (W < w ? "$(_narrow_smin(W))..$(_narrow_umax(W))" : ">= 0") *
-                ", except the type maxima -1 and $(_narrow_smax(w))"
+            W < w ? (0 <= cs <= _narrow_smax(W), "0..$(_narrow_smax(W))") :
+                    (cs >= 0 && cs != _narrow_smax(w),
+                     ">= 0, except the type maximum $(_narrow_smax(w))")
         else
             0 <= cs <= _narrow_smax(m), "0..$(_narrow_smax(m))"
         end
@@ -383,6 +411,101 @@ function _narrow_cmp_consts(inst::IRICmp, W::Int)
         return cs == c ? op : ConstOperand(cs)
     end
     return narrow_op(inst.op1, "op1"), narrow_op(inst.op2, "op2")
+end
+
+# ---- folded comparisons in optimised IR (Bennett-koi8) ----------------------
+#
+# The constant bounds above are sound when the comparison is the source's own:
+# its signedness is the source's reading of the value, and the value is a
+# W-bit source value.  Optimised IR breaks both, and the IR records neither:
+#   * InstCombine rewrites UNSIGNED source orderings into signed ones: the
+#     sign-bit test UInt8 `x < 0x80` -> `icmp sgt x, -1`, and a union such as
+#     `(x < 2) | (x >= 0x80)` -> `icmp slt x, 2`.  An unsigned source reads a
+#     W-bit input as zext(p) >= 0, so every signed ordering against a W-bit
+#     constant other than smin(W) disagrees with it on the negative patterns.
+#     A signed ordering at W < S is therefore refused outright.
+#   * It introduces arithmetic computed at S bits: the range check
+#     `9 <= x <= 12` -> `icmp ult (add x, -9), 4`, which at W = 4 is true for
+#     the signed inputs -7..-4.  So both operands of a re-typed comparison
+#     must be FAITHFUL: values v with v_S = e(v_W) under both embeddings e
+#     (sext and zext) of every W-bit input — the arguments, and/or/xor of
+#     faithful values (sext and zext commute with bitwise ops), an `and` with
+#     a constant in smin(W)..smax(W) (a sign-extended mask keeps zext's zero
+#     high bits zero) or an or/xor with one in 0..smax(W) (the constants that
+#     are themselves faithful), and selects/phis of faithful values.  For a
+#     faithful v the unsigned and eq/ne bounds above give the same answer at W
+#     bits as the source-width test on e(p), for either e, so the narrowed
+#     comparison computes what the optimised program computes on the input,
+#     which is what the source computes.
+#   * It turns a sign test into a shift by S-1 (Int8 `x < 0` used as an
+#     integer -> `lshr x, 7`).  `k <= W` admits that shift only at W = S-1,
+#     where a 7-bit `lshr x, 7` is 0, not the sign: refused.
+# Unoptimised IR is the source program (Julia emits the source's own icmp,
+# signedness and operands), so none of this applies to it.  RESIDUAL HOLE
+# (Bennett-sl4h): a fold that relies on S-bit facts of the source's own
+# ARITHMETIC (an overflow the W-bit program has and the S-bit one lacks) is
+# invisible to any local rule; narrowing unoptimised IR has no such hole.
+_narrow_sval(c::Integer, S::Int) = c > _narrow_smax(S) ? c - (1 << S) : c
+
+function _narrow_faithful_values(parsed::ParsedIR, S::Int, W::Int)
+    faithful = Set{Symbol}(name for (name, w) in parsed.args if w == S)
+    ok(op, lo) = op isa SSAOperand ? op.name in faithful :
+        op isa ConstOperand && lo <= _narrow_sval(op.value, S) <= _narrow_smax(W)
+    changed = true
+    while changed       # phis may name values of later-listed blocks
+        changed = false
+        for block in parsed.blocks, inst in block.instructions
+            hasproperty(inst, :dest) && hasproperty(inst, :width) || continue
+            (inst.width == S && !(inst.dest in faithful)) || continue
+            is_f = if inst isa IRBinOp && inst.op in (:and, :or, :xor)
+                lo = inst.op === :and ? _narrow_smin(W) : 0
+                ok(inst.op1, lo) && ok(inst.op2, lo)
+            elseif inst isa IRSelect
+                ok(inst.op1, 0) && ok(inst.op2, 0)
+            elseif inst isa IRPhi
+                all(ok(op, 0) for (op, _) in inst.incoming)
+            else
+                false
+            end
+            is_f && (push!(faithful, inst.dest); changed = true)
+        end
+    end
+    return faithful
+end
+
+_narrow_check_folded_cmp(::IRInst, S::Int, W::Int, faithful) = nothing
+
+function _narrow_check_folded_cmp(inst::IRICmp, S::Int, W::Int, faithful)
+    inst.width == S || return nothing         # i1 compares are not re-typed
+    what = "comparison `$(inst.dest)` (:$(inst.predicate))"
+    inst.predicate in _NARROW_SIGNED_PREDS && _narrow_reject(
+        "$what is a SIGNED ordering in optimised IR: the optimizer rewrites " *
+        "unsigned source orderings into signed ones (UInt8 `x < 0x80` -> " *
+        "`icmp sgt x, -1`), and the IR does not record which the source " *
+        "wrote; compile with optimize=false to narrow the source's own " *
+        "comparison (Bennett-koi8)")
+    for op in (inst.op1, inst.op2)
+        (op isa SSAOperand && !(op.name in faithful)) || continue
+        _narrow_reject(
+            "$what in optimised IR compares `$(op.name)`, which is computed " *
+            "(add/sub/mul/shift/cast, or a mask/merge constant outside " *
+            "0..2^(W-1)-1) rather than an argument or a bitwise/select/phi of " *
+            "arguments: the optimizer writes folded range checks this way " *
+            "(`9 <= x <= 12` -> `icmp ult (add x, -9), 4`), and that S-bit " *
+            "arithmetic has no W-bit meaning; compile with optimize=false " *
+            "(Bennett-koi8)")
+    end
+    return nothing
+end
+
+function _narrow_check_folded_cmp(inst::IRBinOp, S::Int, W::Int, faithful)
+    (inst.width == S && inst.op in (:lshr, :ashr) && inst.op2 isa ConstOperand &&
+     (inst.op2::ConstOperand).value == S - 1) || return nothing
+    return _narrow_reject(
+        "binary op `$(inst.dest)` (:$(inst.op)) in optimised IR shifts by " *
+        "S-1 = $(S - 1), the sign-bit extraction the optimizer folds a sign " *
+        "test into (Int8 `x < 0` -> `lshr x, 7`); at W = $W it is not the " *
+        "sign; compile with optimize=false (Bennett-koi8)")
 end
 
 function _narrow_inst(inst::IRSelect, S::Int, W::Int)

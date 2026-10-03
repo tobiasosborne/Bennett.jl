@@ -356,6 +356,10 @@ runfile("test_mrhg_narrow_soundness.jl")
 # eq/ne/unsigned compare admits only constants a signed and an unsigned source
 # agree on (0..2^(W-1)-1), exhaustively against a number-semantics oracle.
 runfile("test_6p8j_narrow_cmp_consts.jl")
+# Bennett-koi8 — optimised IR can hide a source ORDERING in an eq/ne, a signed
+# ordering, an add-then-ult or a shift by S-1; a generated corpus of source
+# predicates checks every accepted narrowing against the source function.
+runfile("test_koi8_narrow_folded_cmp.jl")
 # Bennett-g7d6 — the narrowed ParsedIR decides every field explicitly: the
 # metadata fields (globals / memssa / synth_ptr_provenance) are reset only while
 # no narrowed node can read them; constant-table functions are refused.

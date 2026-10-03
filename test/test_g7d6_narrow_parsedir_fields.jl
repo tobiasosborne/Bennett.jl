@@ -140,7 +140,14 @@ end
         p = extract_parsed_ir(f, Tuple{Int8}; optimize=opt, use_memory_ssa=true)
         @test p.memssa !== nothing   # precondition: a non-default field
         for W in G7D6_WS
-            q = Bennett._narrow_ir(p, W)
+            # Bennett-koi8: `mix` compares `x > 0`, a SIGNED ordering, which
+            # narrowing refuses in optimised IR (the optimizer can write an
+            # unsigned source ordering that way); unoptimised IR narrows it.
+            if nm == "mix" && opt && W < 8
+                @test_throws ArgumentError Bennett._narrow_ir(p, W; optimized=opt)
+                continue
+            end
+            q = Bennett._narrow_ir(p, W; optimized=opt)
             @test q.memssa === nothing
             @test isempty(q.globals) && isempty(q.synth_ptr_provenance)
             @test q.ret_width == W && q.ret_elem_widths == [W]
