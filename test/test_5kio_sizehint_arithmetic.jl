@@ -19,20 +19,26 @@ using Bennett
 @testset "Bennett-5kio / U109 — sizehint! before arithmetic push! loops" begin
 
     @testset "static inspection: each touched fn calls sizehint!" begin
-        # adder.jl: 3 functions get a sizehint before their push! body.
-        adder_src = read(joinpath(dirname(pathof(Bennett)), "adder.jl"), String)
-        # Three sizehints, one per function.  An accidental drop fails here.
-        @test count(==("sizehint!"),
-                    [m.match for m in eachmatch(r"sizehint!", adder_src)]) >= 3
+        # Bennett-bie9: the hint now goes through `_grow_hint!` (sizehint!(v, n;
+        # shrink=false)); a bare `sizehint!(gates, ...)` shrinks on Julia >= 1.11
+        # and made lowering quadratic, so it must NOT reappear in the emitters.
+        src_dir = dirname(pathof(Bennett))
+        adder_src = read(joinpath(src_dir, "adder.jl"), String)
+        @test count(_ -> true, eachmatch(r"_grow_hint!\(gates", adder_src)) >= 3
         @test occursin("Bennett-5kio", adder_src)
 
-        mul_src = read(joinpath(dirname(pathof(Bennett)), "multiplier.jl"), String)
-        @test occursin("sizehint!", mul_src)
+        mul_src = read(joinpath(src_dir, "multiplier.jl"), String)
+        @test occursin("_grow_hint!(gates", mul_src)
         @test occursin("Bennett-5kio", mul_src)
 
-        qcla_src = read(joinpath(dirname(pathof(Bennett)), "qcla.jl"), String)
-        @test occursin("sizehint!", qcla_src)
+        qcla_src = read(joinpath(src_dir, "qcla.jl"), String)
+        @test occursin("_grow_hint!(gates", qcla_src)
         @test occursin("Bennett-5kio", qcla_src)
+
+        for src in (adder_src, mul_src, qcla_src)
+            # code lines only: the _grow_hint! docstring legitimately names sizehint!
+            @test !occursin(r"^\s*sizehint!\(\s*gates"m, src)
+        end
     end
 
     @testset "canonical gate counts unchanged" begin

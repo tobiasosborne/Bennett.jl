@@ -285,6 +285,7 @@ function _narrow_hybrid(f, arg_types::Type{<:Tuple}, mem::Symbol, W::Int)::Parse
         S == W ? nothing :
             _extract_parsed_ir_cached(f, arg_types; optimize=false, mem, bit_width=W)
     catch e
+        e isa InterruptException && rethrow()
         _narrow_attempt_refused(e) || rethrow()
         nothing
     end
@@ -317,6 +318,7 @@ function _narrow_unoptimised(f, arg_types::Type{<:Tuple}, mem::Symbol, W::Int)::
     opt = try
         _extract_parsed_ir_cached(f, arg_types; optimize=true, mem)
     catch e
+        e isa InterruptException && rethrow()
         _narrow_attempt_refused(e) || rethrow()
         return pir
     end

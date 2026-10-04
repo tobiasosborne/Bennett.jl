@@ -8539,6 +8539,7 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         r_alloca = try
             _alloca_reservation(inst, names, ptr_cells)
         catch e
+            e isa InterruptException && rethrow()
             e isa OverflowError || rethrow()
             _ir_error(inst, "Bennett-uiqq: alloca reservation (array length × " *
                       "count) overflows Int64 in function " *
