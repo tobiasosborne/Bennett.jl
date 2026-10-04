@@ -1071,10 +1071,12 @@ runfile("test_pksz_controlled_contiguous_wires.jl")
 # bugs (param not in func, malformed defline) instead of silently
 # returning 0; only the legitimate "no deref attr" case returns 0.
 runfile("test_zyjn_deref_bytes_distinct_failures.jl")
-# Bennett-8kno / U95 — _extract_const_globals narrows the LLVM.initializer
-# catch to LLVM.jl's "Unknown value kind" / "LLVMGlobalAlias" errors only;
-# OOM and other unexpected exceptions propagate.
+# Bennett-8kno / U95 — _extract_const_globals swallows no exceptions
+# (Bennett-omhx replaced the message-matched catch by a value-kind gate).
 runfile("test_8kno_extract_const_globals_narrowing.jl")
+# Bennett-omhx — alias-referencing const-global initializers: excluded/resolved
+# by value kind, never by exception text; unread costs nothing, read is loud.
+runfile("test_omhx_const_global_alias_init.jl")
 # Bennett-f6qa / U97 — every error("...") in lower.jl starts with a
 # recognised function-or-helper prefix; pebbling/pebbled_groups budget
 # wording unified to "insufficient pebbles — need at least N".

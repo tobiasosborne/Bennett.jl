@@ -873,9 +873,8 @@ identical bytes — semantically correct).
 Returns the assigned `UInt64`. Mutates `addr_assigned` and bumps
 `addr_counter`.
 
-Lives OUTSIDE `_extract_const_globals` per Bennett-8kno's static
-substring inspection (test_8kno's catch-block fingerprint must remain
-byte-identical).
+Lives OUTSIDE `_extract_const_globals`, whose body is statically inspected
+by test_8kno / test_omhx (no exception handling, no message matching).
 """
 function _assign_synthetic_addr!(addr_assigned::Dict{Symbol, UInt64},
                                  addr_counter::Base.RefValue{UInt64},
@@ -998,7 +997,14 @@ function _flatten_struct_to_bytes(init::LLVM.ConstantStruct,
     for i in 0:(nfields - 1)
         field_off = Int(LLVM.offsetof(dl, struct_ty, i))
         field_ty  = field_types[i + 1]
-        field_val = field_vals[i + 1]
+        # Bennett-omhx: a ptr field is read RAW and handed to `_ptr_identity`,
+        # which follows GlobalAlias chains. Wrapping it with `LLVM.Value` threw
+        # LLVM.jl's unknown-kind error on an alias operand (Julia's
+        # `jl_global#N.jit` or a user alias), killing the WHOLE compile even
+        # when the global is never read (Bennett-fpa0's contract). Non-ptr
+        # fields are never GlobalAliases (an alias is ptr-typed).
+        field_ref = LLVM.API.LLVMGetOperand(init.ref, i)
+        field_val = field_ty isa LLVM.PointerType ? nothing : field_vals[i + 1]
 
         if field_ty isa LLVM.IntegerType
             w = LLVM.width(field_ty)
@@ -1066,7 +1072,7 @@ function _flatten_struct_to_bytes(init::LLVM.ConstantStruct,
             ptr_size = Int(LLVM.pointersize(dl, 0))
             ptr_size == 8 || return (nothing, Tuple{Int,Int}[])
 
-            if LLVM.API.LLVMGetValueKind(field_val.ref) ==
+            if LLVM.API.LLVMGetValueKind(field_ref) ==
                LLVM.API.LLVMConstantPointerNullValueKind
                 # 8 zero bytes — already zeroed. No counter bump (null is
                 # not allocated a synthetic address). Still record
@@ -1085,7 +1091,7 @@ function _flatten_struct_to_bytes(init::LLVM.ConstantStruct,
                 #   (:addr,  K)    → REJECT (allocator-dependent;
                 #                    Bennett-land-inttoptr follow-up)
                 #   nothing        → REJECT (undef / unresolvable)
-                ident = _ptr_identity(field_val.ref)
+                ident = _ptr_identity(field_ref)
                 ident === nothing && return (nothing, Tuple{Int,Int}[])
                 kind, payload = ident
                 if kind === :null
@@ -1154,31 +1160,31 @@ function _extract_const_globals(mod::LLVM.Module, ptr_cells::Bool=false)
     synth_ptr_provenance = Set{Tuple{Symbol, Int, Int}}()
     dl = LLVM.datalayout(mod)
     for g in LLVM.globals(mod)
-        # Julia emits various globals (type references, aliases, dispatch tables)
-        # whose initializers we can't meaningfully materialize. Guard with a
-        # try/catch because LLVM.initializer errors for unknown value kinds
-        # (e.g. GlobalAlias).
         LLVM.isconstant(g) || continue
-        init = try
-            LLVM.initializer(g)
-        catch e
-            # Bennett-uinn / U93: re-raise InterruptException (Ctrl-C).
-            e isa InterruptException && rethrow()
-            # Bennett-8kno / U95: only swallow LLVM.jl's own
-            # "Unknown value kind" / "LLVMGlobalAlias" errors —
-            # exactly what the comment above predicts. OutOfMemoryError,
-            # StackOverflowError, MethodError, and other unexpected
-            # exceptions propagate out so a real bug isn't masked.
-            msg = sprint(showerror, e)
-            benign = e isa ErrorException && (
-                occursin("Unknown value kind", msg) ||
-                occursin("LLVMGlobalAlias", msg))
-            benign ? nothing : rethrow()
-        end
+        # Bennett-omhx: admission is decided by the initializer's VALUE KIND,
+        # read raw, never by matching the text of an exception. Pre-omhx an
+        # exception handler around `LLVM.initializer(g)` skipped any global
+        # whose initializer LLVM.jl cannot wrap, keyed on the error MESSAGE,
+        # whatever alias it was. Now only the four kinds the arms below
+        # materialise are wrapped (all wrappable by LLVM.jl); every other kind
+        # — a GlobalAlias (Julia's `jl_global#N.jit` and a user alias alike),
+        # a GlobalVariable / Function pointer, a plain ConstantArray, a
+        # ConstantFP, ... — is left out of `out`, as is an external
+        # declaration (no initializer). Bennett-fpa0's contract: an unread
+        # excluded global costs nothing; a READ of it fails loud naming it
+        # (memcpy G5: "@g is not extractable as a constant integer byte stream").
+        init_ref = LLVM.API.LLVMGetInitializer(g.ref)
+        init_ref == C_NULL && continue
+        init_kind = LLVM.API.LLVMGetValueKind(init_ref)
+        init_kind in (LLVM.API.LLVMConstantDataArrayValueKind,
+                      LLVM.API.LLVMConstantStructValueKind,
+                      LLVM.API.LLVMConstantAggregateZeroValueKind,
+                      LLVM.API.LLVMConstantIntValueKind) || continue
+        init = LLVM.initializer(g)
         if init === nothing
-            # An initializer LLVM.jl cannot represent (a GlobalAlias — Julia's
-            # interned heap literals `@"jl_global#N" = constant ptr @X.jit`, and
-            # the `+Type#N` type tags). NOTHING is seeded here any more
+            # Unreachable after the kind gate above (hsm3 breadcrumb): Julia's
+            # interned heap literals (GlobalAlias initializers, `+Type#N` type
+            # tags) are excluded by that gate. NOTHING is seeded here any more
             # (Bennett-hsm3): the pre-hsm3 arm seeded a zeroed header for every
             # `jl_global#N` BY NAME on the claim that "the empty-vs-non-empty
             # guard is structural" — FALSE (gcf7 D1/D2: a `const Ref(42)`, a
@@ -1187,7 +1193,9 @@ function _extract_const_globals(mod::LLVM.Module, ptr_cells::Bool=false)
             # singleton is now certified SEMANTICALLY in the producing session
             # (`src/extract/jlglobal_cert.jl`) and seeded under its OBJECT key by
             # `_seed_certified_jl_globals!` in the walk.
-            continue
+            error("_extract_const_globals: @$(LLVM.name(g)) has a non-null " *
+                  "initializer of kind $(init_kind) but LLVM.initializer " *
+                  "returned nothing — LLVM.jl invariant breach (Bennett-omhx)")
         end
 
         if init isa LLVM.ConstantDataArray

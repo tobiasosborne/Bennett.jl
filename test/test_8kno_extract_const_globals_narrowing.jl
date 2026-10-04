@@ -9,11 +9,12 @@
 # `ErrorException` whose message names "Unknown value kind" or
 # "LLVMGlobalAlias"; rethrow anything else.
 #
-# Static inspection test — ensures the narrowing pattern is present at
-# the `_extract_const_globals` site.  An end-to-end OOM test isn't
-# feasible without faking the allocator, but the static check is the
-# load-bearing invariant: a future agent removing the benign-check
-# clause would silently re-introduce the bug.
+# Bennett-omhx (2026-10-04) SUPERSEDES the narrowing: the handler is gone.
+# Admission is decided by the initializer's raw value kind (only the four
+# materialisable kinds are wrapped), so no exception is caught at all — OOM,
+# StackOverflow, MethodError and InterruptException propagate trivially, and
+# no decision depends on the text of an error. The static check below pins
+# that; test/test_omhx_const_global_alias_init.jl pins the behaviour.
 
 using Test
 using Bennett
@@ -36,23 +37,11 @@ using Bennett
                       lines, fn_line_idx + 1)
     body = join(lines[fn_line_idx:something(end_idx, length(lines))], "\n")
 
-    @testset "InterruptException is rethrown" begin
-        @test occursin("InterruptException", body)
-        @test occursin("rethrow()", body)
-    end
-
-    @testset "benign LLVM.jl errors are narrowed" begin
-        # Both characteristic substrings of the LLVM.jl error must
-        # appear: "Unknown value kind" (initializer of unknown kind)
-        # and "LLVMGlobalAlias" (the most common offender).
-        @test occursin("Unknown value kind", body)
-        @test occursin("LLVMGlobalAlias", body)
-    end
-
-    @testset "non-benign errors propagate" begin
-        # The conditional rethrow that propagates OOM/etc.  Look for
-        # `benign ? nothing : rethrow()` or equivalent.
-        @test occursin(r"benign\s*\?\s*nothing\s*:\s*rethrow\(\)", body)
+    @testset "no exception handling / message matching (Bennett-omhx)" begin
+        @test !occursin("catch", body)
+        @test !occursin("showerror", body)
+        @test !occursin("Unknown value kind", body)
+        @test occursin("LLVMGetValueKind", body)
     end
 
     @testset "end-to-end: real compile still extracts globals" begin
