@@ -185,7 +185,7 @@ function _dict_vm_extract(func::LLVM.Function,
 
     block = IRBasicBlock(:top, body, ret_inst)
     return ParsedIR(ret_width, args, [block], ret_elem_widths, globals,
-                    nothing, synth_ptr_provenance)
+                    nothing, synth_ptr_provenance, _width_dependent_intrinsics(func))
 end
 
 """

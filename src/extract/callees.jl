@@ -230,8 +230,7 @@ function _extract_parsed_ir_cached(f, arg_types::Type{<:Tuple};
         haskey(_parsed_ir_cache, key) && return _parsed_ir_cache[key]
         pir = bit_width == 0 ? extract_parsed_ir(f, arg_types; optimize, mem) :
               optimize       ? _narrow_hybrid(f, arg_types, mem, bit_width) :
-            _narrow_ir(_extract_parsed_ir_cached(f, arg_types; optimize=false, mem),
-                       bit_width; optimized=false)
+            _narrow_unoptimised(f, arg_types, mem, bit_width)
         return _cache_insert_bounded!(_parsed_ir_cache, key, pir,
                                       _PARSED_IR_CACHE_MAX, w)
     end
@@ -267,6 +266,14 @@ Everything else — `InterruptException`, `MethodError`, `BoundsError`,
 A refused attempt caches nothing for this key (the exception skips the
 insertion); only the returned result is cached, under the `optimize=true` key.
 
+Bennett-5y48: the unoptimised attempt is `_narrow_unoptimised`, which refuses
+width-dependent intrinsics and the Julia idioms LLVM recognises as them; the
+optimised path refuses the intrinsics too (`_narrow_ir`).
+
+LIMITATION (Bennett-5y48 stays open): a Julia-level width-dependent idiom that
+LLVM folds away is narrowed literally from the unoptimised IR —
+`ifelse(bitreverse(x) == 0, 1, 0)` re-types Julia's S-bit masks.
+
 LIMITATION (Bennett-sl4h stays open): on the fallback a fold that relies on an
 S-bit arithmetic fact can still be narrowed into a wrong circuit — a program
 whose unoptimised IR is refused AND whose optimised IR holds such a fold.
@@ -284,6 +291,42 @@ function _narrow_hybrid(f, arg_types::Type{<:Tuple}, mem::Symbol, W::Int)::Parse
     unopt === nothing || return unopt
     return _narrow_ir(_extract_parsed_ir_cached(f, arg_types; optimize=true, mem),
                       W; optimized=true)
+end
+
+"""
+    _narrow_unoptimised(f, arg_types, mem, W) -> ParsedIR
+
+The `bit_width=W, optimize=false` narrowing — and `_narrow_hybrid`'s first
+attempt, which goes through the same cache entry.  `_narrow_ir` refuses an
+intrinsic the extractor expanded for the source width S
+(`ParsedIR.width_dependent_ops`).  Bennett-5y48: Julia's own `bitreverse` and
+`bitrotate` are Julia code whose masks and shift amounts were folded for S
+(`typemax(T) ÷ 3`, `8sizeof(T)`) before LLVM sees them, so the UNOPTIMISED IR
+holds no intrinsic to refuse; LLVM's optimiser re-recognises those idioms as
+`llvm.bitreverse` / `llvm.fshl`.  So at `W != S` an accepted narrowing is
+refused when the OPTIMISED IR records a width-dependent intrinsic.  If the
+optimised IR cannot be extracted (an extraction refusal) there is nothing to
+read and the narrowing stands (the pre-5y48 result).  LIMITATION: an idiom
+LLVM folds away or does not recognise (`bitreverse(x) == 0` folds to
+`x == 0`) is not seen — see the LIMITATION in `_narrow_hybrid`.
+"""
+function _narrow_unoptimised(f, arg_types::Type{<:Tuple}, mem::Symbol, W::Int)::ParsedIR
+    raw = _extract_parsed_ir_cached(f, arg_types; optimize=false, mem)
+    pir = _narrow_ir(raw, W; optimized=false)
+    _narrow_source_width(raw) == W && return pir
+    opt = try
+        _extract_parsed_ir_cached(f, arg_types; optimize=true, mem)
+    catch e
+        _narrow_attempt_refused(e) || rethrow()
+        return pir
+    end
+    isempty(opt.width_dependent_ops) || _narrow_reject(
+        "the optimised IR of the function holds the width-dependent intrinsic(s) " *
+        "$(join(sort!(collect(opt.width_dependent_ops)), ", ")): LLVM recognised a " *
+        "bit-reverse / rotate / byte-swap / count-zeros idiom whose masks and " *
+        "shift amounts Julia computed for the source width, so the unoptimised " *
+        "IR re-typed to $W bits does not compute the $W-bit operation (Bennett-5y48)")
+    return pir
 end
 
 """A refusal of `_narrow_hybrid`'s unoptimised attempt, which falls back to

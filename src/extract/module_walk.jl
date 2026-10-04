@@ -484,7 +484,8 @@ function _module_to_parsed_ir_on_func_walk(mod::LLVM.Module, func::LLVM.Function
     if heap_skel.recognised
         block = IRBasicBlock(:top, heap_skel.survivors, heap_skel.ret_inst)
         return ParsedIR(ret_width, args, [block], ret_elem_widths, globals,
-                        nothing, synth_ptr_provenance)
+                        nothing, synth_ptr_provenance,
+                        _width_dependent_intrinsics(func))
     end
 
     # Bennett-utzc / CW-D (ADR 0017 §4): collect provably-dead unreachable throw
@@ -856,7 +857,7 @@ function _module_to_parsed_ir_on_func_walk(mod::LLVM.Module, func::LLVM.Function
                             _p06b_suppressed_refs)
 
     return ParsedIR(ret_width, args, blocks, ret_elem_widths, globals,
-                    nothing, synth_ptr_provenance)
+                    nothing, synth_ptr_provenance, _width_dependent_intrinsics(func))
 end
 
 """

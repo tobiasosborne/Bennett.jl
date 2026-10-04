@@ -99,5 +99,5 @@ function _vec_vm_extract(func::LLVM.Function,
     end
 
     return ParsedIR(ret_width, args, out, ret_elem_widths, globals, nothing,
-                    synth_ptr_provenance)
+                    synth_ptr_provenance, _width_dependent_intrinsics(func))
 end

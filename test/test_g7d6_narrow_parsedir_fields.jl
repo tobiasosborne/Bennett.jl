@@ -73,7 +73,8 @@ end
     @testset "every ParsedIR field has a narrowing decision" begin
         fields = Bennett._NARROW_PARSEDIR_FIELDS
         @test Tuple(first.(fields)) == fieldnames(ParsedIR)
-        @test all(last.(fields) .∈ Ref((:retyped, :dead_metadata)))
+        # :checked — Bennett-5y48's width_dependent_ops, refused at W != S
+        @test all(last.(fields) .∈ Ref((:retyped, :dead_metadata, :checked)))
         # The three fields the bead names are the dead-metadata ones.
         @test Set(first(f) for f in fields if last(f) === :dead_metadata) ==
               Set((:globals, :memssa, :synth_ptr_provenance))

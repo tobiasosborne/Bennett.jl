@@ -598,6 +598,26 @@ struct ParsedIR
     # back as a pointer/integer for arithmetic, comparison, or
     # dereference. Empty for any module with no ptr-field structs.
     synth_ptr_provenance::Set{Tuple{Symbol, Int, Int}}
+    # Bennett-5y48: provenance of width-dependent LLVM intrinsics.  The full
+    # names (e.g. "llvm.ctlz.i8") of every call in the source function to an
+    # intrinsic in `_WIDTH_DEPENDENT_INTRINSICS` (src/extract/instructions.jl)
+    # that the extractor EXPANDED into plain shifts / masks / selects whose
+    # constants are computed for the source width.  Bit-width narrowing reads
+    # it to refuse re-typing such an expansion (`_narrow_ir`).  Empty for
+    # hand-built IR and for every function with no such intrinsic.
+    width_dependent_ops::Set{String}
+end
+
+# Constructor without width-dependent provenance (Bennett-5y48 default: empty).
+# Every src/ extraction site passes the field explicitly; this form exists for
+# hand-built IR (tests) and the shorter legacy constructors below.
+function ParsedIR(ret_width::Int, args::Vector{Tuple{Symbol, Int}},
+                  blocks::Vector{IRBasicBlock}, ret_elem_widths::Vector{Int},
+                  globals::Dict{Symbol, Tuple{Vector{UInt64}, Int}},
+                  memssa::Union{Nothing, MemSSAInfo},
+                  synth_ptr_provenance::Set{Tuple{Symbol, Int, Int}})
+    ParsedIR(ret_width, args, blocks, ret_elem_widths, globals, memssa,
+             synth_ptr_provenance, Set{String}())
 end
 
 # Constructor without globals or memssa (defaults: empty globals, no memssa).

@@ -144,7 +144,7 @@ function _parsed_ir_from_ir_string(ir_string::AbstractString;
     if memssa !== nothing
         result = ParsedIR(result.ret_width, result.args, result.blocks,
                           result.ret_elem_widths, result.globals, memssa,
-                          result.synth_ptr_provenance)
+                          result.synth_ptr_provenance, result.width_dependent_ops)
     end
     return result
 end
@@ -316,7 +316,7 @@ function extract_parsed_ir_from_ll(path::AbstractString;
     if memssa !== nothing
         result = ParsedIR(result.ret_width, result.args, result.blocks,
                           result.ret_elem_widths, result.globals, memssa,
-                          result.synth_ptr_provenance)
+                          result.synth_ptr_provenance, result.width_dependent_ops)
     end
     return result
 end

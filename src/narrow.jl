@@ -199,6 +199,15 @@ comparisons get the extra checks of `_narrow_check_folded_cmp`.
 function _narrow_ir(parsed::ParsedIR, W::Int; optimized::Bool=true)
     1 <= W <= 64 || _narrow_reject("bit_width=$W is outside [1, 64]")
     S = _narrow_source_width(parsed)
+    # Bennett-5y48: an intrinsic the extractor expanded with S baked into its
+    # shift amounts / constants (ctlz, cttz, bitreverse, bswap, fshl, fshr —
+    # `_WIDTH_DEPENDENT_INTRINSICS`) does not mean the W-bit operation once
+    # re-typed; refuse on every path (unoptimised, optimised, direct call).
+    W == S || isempty(parsed.width_dependent_ops) || _narrow_reject(
+        "the function uses the width-dependent intrinsic(s) " *
+        "$(join(sort!(collect(parsed.width_dependent_ops)), ", ")), which the " *
+        "extractor expanded for the source width $S; re-typed to $W bits the " *
+        "expansion does not compute the $W-bit operation (Bennett-5y48)")
     _narrow_check_return(parsed, S)
     _narrow_check_acyclic(parsed)
     if optimized && W < S
@@ -247,6 +256,9 @@ const _NARROW_PARSEDIR_FIELDS = (
     :globals              => :dead_metadata,
     :memssa               => :dead_metadata,
     :synth_ptr_provenance => :dead_metadata,
+    # Bennett-5y48: `_narrow_ir` refuses any W != S narrowing while it is
+    # non-empty, so a rebuilt IR (W == S, or none recorded) carries it as is.
+    :width_dependent_ops  => :checked,
 )
 # "Is this dead-metadata field at its default?" — one predicate per field.
 const _NARROW_METADATA_IS_DEFAULT = (
@@ -293,7 +305,8 @@ function _narrow_rebuild(parsed::ParsedIR, W::Int,
     return ParsedIR(W, new_args, new_blocks, [W],
                     Dict{Symbol, Tuple{Vector{UInt64}, Int}}(),   # globals
                     nothing,                                     # memssa
-                    Set{Tuple{Symbol, Int, Int}}())              # synth_ptr_provenance
+                    Set{Tuple{Symbol, Int, Int}}(),              # synth_ptr_provenance
+                    copy(parsed.width_dependent_ops))            # Bennett-5y48
 end
 
 # ---- per-node narrowing (validate, then rewrite) ----------------------------

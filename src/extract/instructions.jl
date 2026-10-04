@@ -4994,6 +4994,43 @@ function _handle_memset_arm(cname::AbstractString, inst::LLVM.Instruction,
     return out
 end
 
+# Bennett-5y48: the integer intrinsics whose expansion below bakes the source
+# width w into shift amounts and constants (ctlz/cttz: the zero result `w` and
+# `w - 1 - i`; bitreverse: `shl w - 1 - i`; bswap: byte positions; fshl/fshr:
+# the amount mod w and the complementary `w - k`).  Re-typing such an
+# expansion to another width W computes neither the W-bit operation nor
+# anything else meaningful, so bit-width narrowing must refuse it — and it
+# cannot tell the expansion from source shifts afterwards.  The extractor
+# therefore records every such call on `ParsedIR.width_dependent_ops`.
+# NOT listed, because their expansion re-typed to W IS the W-bit operation:
+# umax/umin/smax/smin and abs (compare + select + `0 - x`), and ctpop (the
+# sum of bits `(x >> i) & 1`; every term with i >= W is a shift the narrowing
+# refuses or a 0).  A new expansion that reads `w` must be classified here.
+const _WIDTH_DEPENDENT_INTRINSICS = ("llvm.ctlz.", "llvm.cttz.", "llvm.bitreverse.",
+                                     "llvm.bswap.", "llvm.fshl.", "llvm.fshr.")
+
+"""
+    _width_dependent_intrinsics(func) -> Set{String}
+
+Names of the calls in `func` to an intrinsic in `_WIDTH_DEPENDENT_INTRINSICS`
+(scalar or vector form) — the provenance `ParsedIR.width_dependent_ops`
+carries to bit-width narrowing (Bennett-5y48).
+"""
+function _width_dependent_intrinsics(func::LLVM.Function)::Set{String}
+    found = Set{String}()
+    for bb in LLVM.blocks(func), inst in LLVM.instructions(bb)
+        LLVM.opcode(inst) == LLVM.API.LLVMCall || continue
+        ops = LLVM.operands(inst)
+        isempty(ops) && continue
+        callee = ops[length(ops)]
+        callee isa LLVM.Function || continue
+        cname = LLVM.name(callee)
+        any(p -> startswith(cname, p), _WIDTH_DEPENDENT_INTRINSICS) &&
+            push!(found, cname)
+    end
+    return found
+end
+
 # Bennett-tzrs / U41 (first-cut, 2026-04-27): the LLVM-intrinsic prefix
 # dispatch was lifted out of `_convert_instruction`'s 836-line body into
 # this helper. Order of `if startswith(cname, "...")` branches is LOAD-

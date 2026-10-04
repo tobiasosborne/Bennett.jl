@@ -394,6 +394,7 @@ runfile("test_koi8_narrow_folded_cmp.jl")
 # falls back to the optimised IR only when it is refused; the remaining hole
 # (fallback + a fold using an S-bit arithmetic fact) is pinned @test_broken.
 runfile("test_sl4h_narrow_unoptimised.jl")
+runfile("test_5y48_narrow_width_dependent.jl")
 # Bennett-g7d6 — the narrowed ParsedIR decides every field explicitly: the
 # metadata fields (globals / memssa / synth_ptr_provenance) are reset only while
 # no narrowed node can read them; constant-table functions are refused.
