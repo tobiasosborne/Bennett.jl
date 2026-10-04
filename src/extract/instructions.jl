@@ -4601,18 +4601,29 @@ Returns `true` iff, walking forward through the basic block from the
 alloca instruction to (but not including) `memset_inst`, no intervening
 instruction writes through a pointer that traces back to `alloca_ref`.
 
+Bennett-yppm: the walk tracks the set of DERIVED pointers — the alloca and
+every GEP / select / phi / bitcast / addrspacecast / freeze in the window
+with a derived operand (a `select` of `%p` has no `_alloca_root_ref`, so
+root-only checks wrongly treated a memset/memmove through it as disjoint).
+
 Returns `false` (conservative non-fresh) when:
   - `alloca_ref` is in a different basic block from `memset_inst`
     (cross-block freshness needs dominance analysis we don't have)
-  - any `Store` between alloca and memset has a pointer operand whose
-    `_alloca_root_ref` chain reaches `alloca_ref`
+  - any `Store` between alloca and memset has a derived pointer operand,
+    or a pointer operand whose `_alloca_root_ref` chain reaches `alloca_ref`
   - any `Store` whose pointer operand has no resolvable alloca root
     (pointer phi/select/parameter — we can't prove non-aliasing, so
     treat as a possible write to `alloca_ref`)
+  - any `Store` whose VALUE is a derived pointer (the address escapes)
   - any `Call` to `llvm.memcpy.*` / `llvm.memset.*` / `llvm.memmove.*`
-    whose dst arg traces back to `alloca_ref`
-  - any `Call` to a non-benign function with `alloca_ref`'s pointer
-    (or a GEP thereof) appearing in any argument position
+    whose dst arg is derived (a derived memcpy/memmove SOURCE is a read)
+  - any `Call` to a non-benign function with a derived pointer in any
+    argument position
+  - any other use of a derived pointer except a `load` / `icmp`
+    (`ptrtoint`, atomics, aggregates: escape or write)
+Writes through pointers not derived from the alloca (another alloca, a
+select of two other allocas) cannot reach it while its address has not
+escaped, so they leave it fresh.
 
 This is the predicate-12 gate for the c≠0 path in
 `_handle_memset_arm`, and (Bennett-ni9i) the certificate that lets the
@@ -4623,6 +4634,18 @@ function _alloca_is_fresh(alloca_ref::_LLVMRef, memset_inst::LLVM.Instruction)::
     alloca_inst = LLVM.Instruction(alloca_ref)
     LLVM.parent(alloca_inst) === LLVM.parent(memset_inst) || return false
 
+    # Bennett-yppm: `derived` holds every SSA value in the window that may
+    # point into the alloca — the alloca itself, then any GEP / select / phi /
+    # bitcast / addrspacecast / freeze with a derived operand. A `select` or
+    # GEP-of-select has no `_alloca_root_ref`, so the old root-only checks
+    # treated a write through it as disjoint and a later zero-fill was dropped
+    # over live data (Sol review 2A finding 3). Writes through pointers NOT
+    # derived from the alloca cannot reach it unless its address escaped, and
+    # every escape (stored as a value, passed to an unknown call, ptrtoint,
+    # any other use) is itself rejected below.
+    derived = Set{_LLVMRef}((alloca_ref,))
+    is_derived(v) = v.ref in derived
+
     seen_alloca = false
     for inst in LLVM.instructions(LLVM.parent(memset_inst))
         if !seen_alloca
@@ -4631,9 +4654,12 @@ function _alloca_is_fresh(alloca_ref::_LLVMRef, memset_inst::LLVM.Instruction)::
         end
         inst === memset_inst && return true
         opc = LLVM.opcode(inst)
+        ops = LLVM.operands(inst)
 
         if opc == LLVM.API.LLVMStore
-            ptr_v = LLVM.operands(inst)[2]
+            val_v, ptr_v = ops[1], ops[2]
+            is_derived(ptr_v) && return false     # may write our slot
+            is_derived(val_v) && return false     # our address escapes to memory
             root = _alloca_root_ref(ptr_v)
             root === nothing && return false      # opaque ptr — assume aliases
             root === alloca_ref && return false   # writes our slot
@@ -4641,14 +4667,17 @@ function _alloca_is_fresh(alloca_ref::_LLVMRef, memset_inst::LLVM.Instruction)::
         end
 
         if opc == LLVM.API.LLVMCall
-            call_ops = LLVM.operands(inst)
-            n_call_ops = length(call_ops)
+            n_call_ops = length(ops)
             n_call_ops >= 1 || continue
-            cname = try LLVM.name(call_ops[n_call_ops]) catch; "" end
+            cname = try LLVM.name(ops[n_call_ops]) catch; "" end
             if startswith(cname, "llvm.memcpy.") ||
                startswith(cname, "llvm.memset.") ||
                startswith(cname, "llvm.memmove.")
-                root = _alloca_root_ref(call_ops[1])
+                # dst (arg 1) derived → may write our slot. A derived memcpy /
+                # memmove SOURCE is a read and leaves the slot fresh; the
+                # memset value / length operands are integers.
+                is_derived(ops[1]) && return false
+                root = _alloca_root_ref(ops[1])
                 root === alloca_ref && return false
                 continue
             end
@@ -4660,14 +4689,26 @@ function _alloca_is_fresh(alloca_ref::_LLVMRef, memset_inst::LLVM.Instruction)::
                startswith(cname, "llvm.invariant.")
                 continue
             end
-            # Unknown call: if any arg traces to our alloca, conservatively reject.
+            # Unknown call: any arg that may point into our alloca (derived,
+            # or GEP-rooted at it) may be written through or escape — reject.
             for i in 1:(n_call_ops - 1)
-                root = _alloca_root_ref(call_ops[i])
+                is_derived(ops[i]) && return false
+                root = _alloca_root_ref(ops[i])
                 root === alloca_ref && return false
             end
             continue
         end
-        # Loads, GEPs, arithmetic, casts: pure with respect to memory writes.
+
+        any(is_derived, ops) || continue          # does not touch our pointer
+        if opc == LLVM.API.LLVMGetElementPtr || opc == LLVM.API.LLVMSelect ||
+           opc == LLVM.API.LLVMPHI || opc == LLVM.API.LLVMBitCast ||
+           opc == LLVM.API.LLVMAddrSpaceCast || opc == LLVM.API.LLVMFreeze
+            push!(derived, inst.ref)              # may-alias pointer
+        elseif opc == LLVM.API.LLVMLoad || opc == LLVM.API.LLVMICmp
+            # A read of / comparison against our pointer writes nothing.
+        else
+            return false   # ptrtoint, atomics, aggregates, ...: escape / write
+        end
     end
     return false
 end
@@ -4715,7 +4756,9 @@ end
 # Bennett-ni9i: human-readable reason for a failed `_memset_dst_certified_zero`.
 function _memset_dst_uncertified_reason(dst_v::LLVM.Value)::String
     _alloca_root_ref(dst_v) !== nothing && return "alloca-rooted but not " *
-        "fresh (a prior write to it, or the alloca is in a different basic block)"
+        "fresh (a prior write to it — directly or through a may-alias pointer " *
+        "derived from it by select / phi / GEP — its address escaping, or the " *
+        "alloca is in a different basic block; Bennett-yppm)"
     dst_v isa LLVM.Argument && return "a function argument (caller-owned memory)"
     LLVM.API.LLVMIsAGlobalVariable(dst_v.ref) != C_NULL && return "a global variable"
     return "not alloca-rooted (heap, loaded, phi/select or otherwise unknown provenance)"
