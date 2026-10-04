@@ -312,7 +312,12 @@ end
 # user Bool constant (`x isa Float64`) that differs. Same-method calls with
 # different argument types are walked recursively (this reaches user code
 # called through Base, e.g. `map(g, (x,))`); identical signatures are pruned.
-# Non-unique matches on abstract types are not descended into. Bennett-blnv:
+# Bennett-72xf: a call whose argument types are Unions of concrete types is
+# split into its concrete calls, each checked and walked; one that cannot be
+# split and has several candidate methods (or one user candidate) is
+# "unresolved" — in Base methods too: `map(g, (y,))` with
+# `y::Union{Int,Float64}` ran g's Float64 path natively but its generic path
+# on the trace. Bennett-blnv:
 # a builtin that invokes a callable (`Core._apply_iterate` — the splat inside
 # `Base.splat(g)` and `g ∘ h` —, `invokelatest`, `invoke`, ...) whose argument
 # types differ is resolved to the call it performs (splat of fixed-length
@@ -491,7 +496,9 @@ function _sfd_walk(@nospecialize(sigF), @nospecialize(sigS), m::Method, visited)
         aF[1] === Union{} && continue
         stF = Tuple{aF...}; stS = Tuple{aS...}
         if aF[1] <: Core.Builtin
-            stF == stS && continue
+            # Bennett-72xf: identical non-concrete argument types may still
+            # carry a Float64 and a SoftFloat at run time.
+            stF == stS && Base.isdispatchtuple(stF) && continue
             user && aF[1] in (typeof(Core._apply_iterate), typeof(Core.invoke)) &&
                 return _sfd_unresolved(
                     "call $i in $m is a splat or invoke whose argument types " *
@@ -515,28 +522,138 @@ function _sfd_walk(@nospecialize(sigF), @nospecialize(sigS), m::Method, visited)
                 "returns under only one of the Float64 / SoftFloat typings")
             aF[1] === Union{} && continue
             stF = Tuple{aF...}; stS = Tuple{aS...}
-            stF == stS && continue
         end
-        mF = _sfd_methods(stF); mS = _sfd_methods(stS)
-        r = _sfd_availability(stF, stS, mF, mS, "call $i in $m")
-        r === nothing || return r
-        isempty(mF) && continue   # MethodError under both typings
-        user && !(Base.isdispatchtuple(stF) && Base.isdispatchtuple(stS)) &&
-            (any(_sfd_is_user, mF) || any(_sfd_is_user, mS)) &&
-            return _sfd_unresolved(
-                "call $i in $m has non-concrete argument types and may select " *
-                "a user method at run time")
-        if mF != mS
-            (any(_sfd_is_user, mF) || any(_sfd_is_user, mS)) &&
-                return "call $i in $m selects $(_sfd_show(mF)) natively but " *
-                       "$(_sfd_show(mS)) on the SoftFloat trace"
-            continue
-        end
-        (stF == stS || length(mF) != 1) && continue
-        r = _sfd_walk(stF, stS, mF[1], visited)
+        r = _sfd_check_call(stF, stS, "call $i in $m", visited)
         r === nothing || return r
     end
     return nothing
+end
+
+# Bennett-72xf: `T` with every `Float64` (also inside type parameters)
+# replaced by `SoftFloat` — the SoftFloat-trace counterpart of a Float64-trace
+# type (`Tuple{Float64, Int}` -> `Tuple{SoftFloat, Int}`).
+function _sfd_subst(@nospecialize(t))
+    t === Float64 && return SoftFloat
+    (t isa DataType && !isempty(t.parameters)) || return t
+    return try
+        t.name.wrapper{Any[_sfd_subst(p) for p in t.parameters]...}
+    catch
+        t
+    end
+end
+
+const _SFD_MAX_SPLITS = 64
+
+# The concrete types a value of type `t` can have at run time: the members of
+# a Union of concrete types, where a fixed-length Tuple of such Unions counts
+# as the Union of its concrete Tuples (`Tuple{Union{Int,Float64}}` ->
+# `Tuple{Int}`, `Tuple{Float64}`); `nothing` for any other non-concrete type.
+function _sfd_components(@nospecialize(t))
+    out = Any[]
+    for c in Base.uniontypes(t)
+        if Base.isdispatchelem(c)
+            push!(out, c)
+        elseif c isa DataType && c <: Tuple && !Base.isvatuple(c)
+            ps = Any[]
+            for p in c.parameters
+                cp = _sfd_components(p)
+                cp === nothing && return nothing
+                push!(ps, cp)
+            end
+            prod(length, ps; init=1) > _SFD_MAX_SPLITS && return nothing
+            for q in Iterators.product(ps...)
+                push!(out, Tuple{q...})
+            end
+        else
+            return nothing
+        end
+        length(out) > _SFD_MAX_SPLITS && return nothing
+    end
+    return out
+end
+
+# Bennett-72xf: split a non-concrete call into the concrete calls it performs
+# at run time. Every argument type must be a Union of concrete (dispatch)
+# types on both typings; each Float64-trace component is paired with the
+# SoftFloat-trace component that is identical to it or is its Float64 ->
+# SoftFloat substitution, and a single unpaired component on each side is
+# paired with the other. Returns the (Float64 sig, SoftFloat sig) pairs of the
+# Cartesian product, or `nothing` when an argument type is not such a Union
+# (abstract, UnionAll, Vararg tuple, ...), the pairing is not one-to-one, or
+# the product exceeds `_SFD_MAX_SPLITS`.
+function _sfd_split(@nospecialize(stF), @nospecialize(stS))
+    (stF isa DataType && stS isa DataType) || return nothing
+    pF = stF.parameters; pS = stS.parameters
+    length(pF) == length(pS) || return nothing
+    per = Vector{Vector{Tuple{Any,Any}}}()
+    for j in eachindex(pF)
+        cF = _sfd_components(pF[j]); cS = _sfd_components(pS[j])
+        (cF === nothing || cS === nothing) && return nothing
+        pairs = Tuple{Any,Any}[]
+        for c in cF, d in cS
+            (d == c || d == _sfd_subst(c)) && push!(pairs, (c, d))
+        end
+        lF = Any[c for c in cF if !any(p -> p[1] == c, pairs)]
+        lS = Any[d for d in cS if !any(p -> p[2] == d, pairs)]
+        if length(lF) == 1 && length(lS) == 1
+            push!(pairs, (lF[1], lS[1]))
+        elseif !(isempty(lF) && isempty(lS))
+            return nothing
+        end
+        push!(per, pairs)
+    end
+    prod(length, per; init=1) > _SFD_MAX_SPLITS && return nothing
+    return [(Tuple{Any[p[1] for p in ps]...}, Tuple{Any[p[2] for p in ps]...})
+            for ps in Iterators.product(per...)]
+end
+
+# One call site with Float64-trace signature `stF` and SoftFloat-trace
+# signature `stS`: `nothing`, a divergence, or "unresolved". Bennett-72xf: a
+# non-concrete call is checked as the concrete calls it splits into (in Base
+# methods as well as user methods — a Union-typed call inside `map`, `Fix1`,
+# `∘`, ... reaches the user callable). A call that does not split is
+# "unresolved" when it has more than one candidate method (the walk cannot
+# tell which one each typing runs; this also covers a concrete signature with
+# several candidates, e.g. a `DataType`-typed argument) or when its single
+# candidate is a user method; a single Base candidate is walked under the
+# non-concrete signature. Base and user methods alike.
+function _sfd_check_call(@nospecialize(stF), @nospecialize(stS), site::String, visited)
+    concrete = Base.isdispatchtuple(stF) && Base.isdispatchtuple(stS)
+    concrete && stF == stS && return nothing
+    if !concrete
+        splits = _sfd_split(stF, stS)
+        if splits !== nothing
+            for (sF, sS) in splits
+                r = _sfd_check_call(sF, sS, site, visited)
+                r === nothing || return r
+            end
+            return nothing
+        end
+    end
+    mF = _sfd_methods(stF); mS = _sfd_methods(stS)
+    r = _sfd_availability(stF, stS, mF, mS, site)
+    r === nothing && isempty(mF) && return nothing   # MethodError under both typings
+    r === nothing || return r
+    multi = length(mF) > 1 || length(mS) > 1
+    (!concrete || multi) &&
+        (multi || any(_sfd_is_user, mF) || any(_sfd_is_user, mS)) &&
+        return _sfd_unresolved(
+            "$site cannot be split into concrete calls (argument types $stF " *
+            "natively, $stS on the SoftFloat trace) and " *
+            (multi ? "$(length(mF)) candidate methods, which the walk cannot " *
+                     "follow one by one" :
+                     "may select the user method $(_sfd_show(mF))") *
+            " (Bennett-72xf)")
+    if mF != mS
+        (any(_sfd_is_user, mF) || any(_sfd_is_user, mS)) &&
+            return "$site selects $(_sfd_show(mF)) natively but " *
+                   "$(_sfd_show(mS)) on the SoftFloat trace"
+        return nothing
+    end
+    # Identical signatures are pruned only when concrete (above): two values
+    # typed `Any` may be a Float64 and a SoftFloat at run time.
+    length(mF) == 1 || return nothing
+    return _sfd_walk(stF, stS, mF[1], visited)
 end
 
 """
