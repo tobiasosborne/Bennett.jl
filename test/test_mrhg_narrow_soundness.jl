@@ -275,6 +275,11 @@ mrhg_w_tup3(x::Int8)   = (x, x + Int8(1), x * Int8(2))
 # A scalar-memory function: a global Ref store + load.  optimize=false keeps
 # the store/load shape; optimize=true promotes it to a plain `add`, which
 # legitimately narrows.
+# Bennett-oai0: memory the front end really removes at optimize=true.
+mrhg_w_localref(x::Int8) = (r = Ref{Int8}(x); r[] += Int8(2); r[] += Int8(3); r[])
+# ... and a Ref'd tuple: `alloca [2 x i8]` + GEP stores at optimize=false,
+# fully promoted to `add i8 %x, 1` at optimize=true.
+mrhg_w_reftup(x::Int8) = (t = (x, x); r = Ref(t); r[][1] + Int8(1))
 const MRHG_G = Ref{Int8}(0)
 function mrhg_w_mem(x::Int8)
     MRHG_G[] = x
@@ -643,24 +648,49 @@ end
         err = mrhg_compile_mem_refusal(mrhg_w_mem, Int8; bit_width=W, optimize=false)
         @test err !== nothing && is_mem_refusal(err)
     end
-    # ... and once the front end promotes it to a plain `add` it must compile
-    # and be right: the allowlist is not "reject anything that ever touched
-    # memory", it is "reject IR with a layout the rewrite would corrupt".
-    # Bennett-6atf: at optimize=true the global store is no longer promoted
-    # away before extraction, so today this is ALSO refused by the gq1z
-    # extraction refusal.  Accept "compiles and is right" or that refusal.
-    c_mem = try
+    # Bennett-oai0: at optimize=true LLVM forwards the LOAD (`add i8 %x, 1`)
+    # but never promotes the STORE away -- a write to a Julia global is
+    # observable -- so the IR is `store i8 %x, ptr @jl_global#N.jit; add; ret`.
+    # Bennett-gq1z refuses that store in extraction, with or without
+    # bit_width (a circuit cannot write Julia global state; before gq1z the
+    # store was silently dropped).  This is a DEFINITE refusal, not either/or.
+    err_g = try
         reversible_compile(mrhg_w_mem, Int8; bit_width=4, optimize=true,
                            strategy=:expression)
-    catch e
-        @test is_mem_refusal(e)
         nothing
+    catch e
+        e
     end
-    if c_mem !== nothing
-        @test verify_reversibility(c_mem)
+    @test err_g isa ErrorException
+    @test err_g isa ErrorException && occursin("Bennett-gq1z", err_g.msg)
+    @test err_g isa ErrorException && occursin("LLVMGlobalAliasValueKind", err_g.msg)
+
+    # The allowlist is not "reject anything that ever touched memory", it is
+    # "reject IR with a layout the rewrite would corrupt": memory that the
+    # front end REALLY removes (optimised IR has no store/load/alloca/call)
+    # must compile at bit_width=4 and be right on all 16 patterns.
+    for (name, f, oracle) in (
+            ("local Ref +=2,+=3", mrhg_w_localref,
+             (p, W) -> wwrap(wsign(p, W) + 5, W)),
+            ("Ref of a tuple",    mrhg_w_reftup,  oracle_add1))
+        ir = sprint(show, Bennett.extract_ir(f, Tuple{Int8}; optimize=true))
+        @test !occursin(r"\b(alloca|store|load|call)\b", ir)
+        c_loc = reversible_compile(f, Int8; bit_width=4, optimize=true,
+                                   strategy=:expression)
+        @test verify_reversibility(c_loc)
         for p in 0:wmask(4)
-            @test (simulate(c_mem, Int8, Int8(p)) & wmask(4)) == oracle_add1(p, 4)
+            @test (simulate(c_loc, Int8, Int8(p)) & wmask(4)) == oracle(p, 4)
         end
+    end
+
+    # Bennett-oai0: LOCAL memory the unoptimised IR keeps (an `alloca` + GEP
+    # stores of a Ref'd tuple; no Julia global involved) reaches the narrowing
+    # refusal deterministically: the first memory node is the IRAlloca.
+    for W in (4, 8)
+        c, err = mrhg_compile(mrhg_w_reftup, Int8; bit_width=W, optimize=false)
+        @test c === nothing
+        @test err isa ArgumentError && is_mrhg_rejection(err)
+        @test err isa ArgumentError && occursin("IRAlloca", err.msg)
     end
 
     # Runtime shift amount (the barrel shifter implements `amount mod
