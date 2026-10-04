@@ -2064,7 +2064,10 @@ function _build_rerooted_slice(func::LLVM.Function,
             # --- everything else: a surviving user-arithmetic instruction ---
             # Convert via the normal walker path.
             ir_inst = _convert_instruction(inst, names, counter)
-            if ir_inst === nothing
+            # Bennett-q3fa: a lane-only vector producer (`VEC_LANES_ONLY`)
+            # emits no IR either; with no persistent lane table here, any
+            # consumer of its lanes fails loud at `_resolve_vec_lanes`.
+            if ir_inst === nothing || ir_inst === VEC_LANES_ONLY
                 # Benign non-skeleton intrinsic (`llvm.assume`, a non-skeleton
                 # `llvm.lifetime.*` / `llvm.dbg.*`, ...) — the normal module
                 # walker drops these; do the same so a `nothing` never lands

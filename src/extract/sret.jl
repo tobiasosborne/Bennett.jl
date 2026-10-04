@@ -722,7 +722,21 @@ function _try_handle_sret_vector_store!(inst::LLVM.Instruction, byte_off::Int,
         haskey(slot_values, slot) && _ir_error(inst,
             "sret slot $slot already written; vector store " *
             "(lane $lane) cannot re-write it")
-        slot_values[slot] = PendingVecLane(lane)
+    end
+    # Bennett-q3fa: a CONSTANT stored vector (ConstantDataVector /
+    # zeroinitializer / poison) has no producer instruction for pass 2 to
+    # resolve it after — decode its lanes here, directly.
+    if val isa LLVM.Constant
+        per_lane = _resolve_vec_lanes(val, Dict{_LLVMRef, Vector{IROperand}}(),
+                                      Dict{_LLVMRef, Symbol}(), n_lanes)
+        for lane in 0:(n_lanes - 1)
+            slot_values[first_slot + lane] = per_lane[lane + 1]
+        end
+        push!(suppressed, inst.ref)
+        return true
+    end
+    for lane in 0:(n_lanes - 1)
+        slot_values[first_slot + lane] = PendingVecLane(lane)
     end
     pending_vec[inst.ref] = (first_slot, n_lanes)
     pending_val_refs[inst.ref] = val.ref
@@ -1019,15 +1033,20 @@ function _resolve_pending_vec_for_val!(sret_writes,
                                         produced_ref::_LLVMRef,
                                         lanes::Dict{_LLVMRef, Vector{IROperand}})
     isempty(sret_writes.pending_vec) && return nothing
-    store_ref = nothing
-    for (sref, vref) in sret_writes.pending_val_refs
-        if vref === produced_ref
-            store_ref = sref
-            break
-        end
+    # Bennett-q3fa: ONE producer may feed SEVERAL pending stores (a splat
+    # `<4 x i64>` stored at slots [0,3] AND [4,7] of an 8-tuple) — resolve
+    # every one of them, not only the first match.
+    store_refs = [sref for (sref, vref) in sret_writes.pending_val_refs
+                  if vref === produced_ref]
+    for store_ref in store_refs
+        _resolve_one_pending_vec_store!(sret_writes, store_ref, produced_ref, lanes)
     end
-    store_ref === nothing && return nothing
+    return nothing
+end
 
+function _resolve_one_pending_vec_store!(sret_writes, store_ref::_LLVMRef,
+                                         produced_ref::_LLVMRef,
+                                         lanes::Dict{_LLVMRef, Vector{IROperand}})
     first_slot, n_lanes = sret_writes.pending_vec[store_ref]
     haskey(lanes, produced_ref) || throw(AssertionError(
         "ir_extract.jl: pending sret vector store's stored value " *
@@ -1045,6 +1064,26 @@ function _resolve_pending_vec_for_val!(sret_writes,
     delete!(sret_writes.pending_vec, store_ref)
     delete!(sret_writes.pending_val_refs, store_ref)
     return nothing
+end
+
+"""
+    _refuse_pending_vec_store(store, sret_writes)
+
+Bennett-q3fa: the pass-2 walker reached the SLP vector sret `store` while its
+lanes are still pending — the stored value's producer (which dominates the
+store) was skipped or defined no lanes. Loud `_ir_error` naming the slot range
+and the producer; never an unwritten sret slot.
+"""
+function _refuse_pending_vec_store(store::LLVM.Instruction, sret_writes)
+    first_slot, n_lanes = sret_writes.pending_vec[store.ref]
+    producer = LLVM.operands(store)[1]
+    _ir_error(store,
+        "Bennett-q3fa: sret vector store of lanes 0..$(n_lanes - 1) into " *
+        "slots [$first_slot, $(first_slot + n_lanes - 1)] is still pending: its " *
+        "stored value `$(strip(string(producer)))` defined no lanes before the " *
+        "store (its conversion was skipped, or it is not a vector producer " *
+        "_convert_vector_instruction decomposes). Returning would leave these " *
+        "slots unwritten (CLAUDE.md §1).")
 end
 
 """

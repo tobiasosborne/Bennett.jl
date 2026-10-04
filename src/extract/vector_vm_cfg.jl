@@ -215,7 +215,10 @@ function _vec_vm_emit_body!(body::Vector{IRInst}, bb::LLVM.BasicBlock,
         end
         inst.ref in skel && continue
         ir = _convert_instruction(inst, names, counter)
-        ir === nothing && continue
+        # Bennett-q3fa: a lane-only vector producer emits no IR. This caller
+        # passes no persistent lane table, so a consumer of those lanes fails
+        # loud at its own `_resolve_vec_lanes` (pre-q3fa behaviour, unchanged).
+        (ir === nothing || ir === VEC_LANES_ONLY) && continue
         if ir isa Vector
             append!(body, ir)
         elseif ir isa IRRet || ir isa IRBranch || ir isa IRSwitch

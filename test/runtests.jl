@@ -478,6 +478,9 @@ runfile("test_atf4_lower_call_nontrivial_args.jl")
 # Bennett-0c8o — vector-lane sret stores + vector loads (SLP-vectorised
 # NTuple{N,UInt64} returns); unblocks Bennett-z2dj.
 runfile("test_0c8o_vector_sret.jl")
+# Bennett-q3fa — vector-built tuple returns (insertelement / shufflevector /
+# ConstantVector lanes) into sret: lane-only producers resolve pending stores.
+runfile("test_q3fa_vector_tuple_return.jl")
 # Bennett-uyf9 — memcpy-form sret under optimize=false (auto-SROA canonicalisation).
 runfile("test_uyf9_memcpy_sret.jl")
 # Bennett-asw2 / U01 — verify_reversibility now checks Bennett invariants

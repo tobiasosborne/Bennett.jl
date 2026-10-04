@@ -576,6 +576,14 @@ function _module_to_parsed_ir_on_func_walk(mod::LLVM.Module, func::LLVM.Function
             # sret hook: suppress instructions already accounted for in the
             # pre-walk (sret-targeting stores and their constant-offset GEPs).
             if sret_writes !== nothing && inst.ref in sret_writes.suppressed
+                # Bennett-q3fa: a suppressed SLP vector sret store is the
+                # CONSUMER of its stored value's lanes. Its producer dominates
+                # it, so by now the producer was converted and resolved the
+                # store's slots — a still-pending store here means the
+                # producer was skipped or defined no lanes: refuse loud, naming
+                # the lanes and the producer, never a silent unwritten slot.
+                haskey(sret_writes.pending_vec, inst.ref) &&
+                    _refuse_pending_vec_store(inst, sret_writes)
                 continue
             end
             # Bennett-59zi: suppress the box alloca + the producing call + the
@@ -766,13 +774,20 @@ function _module_to_parsed_ir_on_func_walk(mod::LLVM.Module, func::LLVM.Function
                 end
                 benign ? nothing : rethrow()
             end
+            # `nothing` = no IR AND no lanes (a benign / certified skip). A
+            # skipped producer of a pending sret vector store is caught loud
+            # when the walker reaches that store (Bennett-q3fa, above).
             ir_inst === nothing && continue
             # Bennett-0c8o: after each successful conversion, if `inst` was
             # the producer of a pending sret vector store's stored value,
-            # harvest its lanes now.
+            # harvest its lanes now. Bennett-q3fa: this includes lane-only
+            # producers (`VEC_LANES_ONLY`: insertelement / shufflevector /
+            # identity bitcast), which define lanes but emit no IR — pre-q3fa
+            # they hit the `nothing` skip above and left the store pending.
             if sret_writes !== nothing
                 _resolve_pending_vec_for_val!(sret_writes, inst.ref, lanes)
             end
+            ir_inst === VEC_LANES_ONLY && continue
             if ir_inst isa Vector
                 for sub in ir_inst
                     push!(insts, sub)

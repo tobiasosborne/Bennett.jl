@@ -1,5 +1,14 @@
 # ---- Bennett-cc0.7 helpers ----
 
+# Bennett-q3fa: the result of a vector conversion that ONLY updated the lane
+# table (`insertelement`, `shufflevector`, identity vector `bitcast`) and emits
+# no IR instruction. Distinct from `nothing`, which means "no IR and no lanes"
+# (a benign / certified skip). The pass-2 walker must resolve pending sret
+# vector stores after a lane-only producer exactly as after an emitting one;
+# conflating the two (pre-q3fa) left `x -> (x, x, x, x)`'s sret store pending.
+struct _VecLanesOnly end
+const VEC_LANES_ONLY = _VecLanesOnly()
+
 # Safe vector-type probe. LLVM.value_type errors on unsupported value kinds
 # (e.g. LLVMGlobalAlias, see cc0.3). Call-instruction callees hit this path,
 # so the dispatcher uses the safe variant. An operand that isn't a plain
@@ -241,6 +250,27 @@ function _resolve_vec_lanes(val::LLVM.Value,
     end
     if val isa LLVM.UndefValue
         return [UNDEF_LANE for _ in 1:got_n]
+    end
+    # Path E (Bennett-q3fa): ConstantVector — a constant vector LLVM cannot
+    # hold as ConstantDataVector because some lanes are poison/undef, e.g. the
+    # insertelement base `<i32 poison, i32 7, i32 poison, i32 poison>` of
+    # `x -> (x, 7, x, x)`. Lanes decode per element; poison/undef keep the
+    # sentinel semantics above (fail loud only when OBSERVED / computed on).
+    if val isa LLVM.ConstantVector
+        elts = collect(LLVM.operands(val))
+        length(elts) == got_n || throw(DimensionMismatch(
+            "ir_extract.jl: ConstantVector $(string(val)) has $(length(elts)) " *
+            "elements, expected $got_n"))
+        out = Vector{IROperand}(undef, got_n)
+        for (i, elt) in enumerate(elts)
+            out[i] = elt isa LLVM.ConstantInt ? iconst(_const_int_as_int(elt)) :
+                     elt isa LLVM.PoisonValue ? POISON_LANE :
+                     elt isa LLVM.UndefValue  ? UNDEF_LANE :
+                     error("ir_extract.jl: ConstantVector lane $(i - 1) of " *
+                           "$(string(val)) is not an integer constant, poison " *
+                           "or undef: $(string(elt))")
+        end
+        return out
     end
     error("ir_extract.jl: cannot resolve vector lanes for $(string(val)) :: " *
           "$vt — not an SSA vector, ConstantDataVector, ConstantAggregateZero, " *
@@ -506,7 +536,7 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
         new_lanes = copy(base_lanes)
         new_lanes[idx + 1] = _operand(elem, names)
         lanes[inst.ref] = new_lanes
-        return nothing
+        return VEC_LANES_ONLY
     end
 
     # shufflevector — pure SSA plumbing.
@@ -531,7 +561,7 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
             end
         end
         lanes[inst.ref] = out
-        return nothing
+        return VEC_LANES_ONLY
     end
 
     # extractelement — rename via add-zero (see consensus §Choice 4).
@@ -776,7 +806,7 @@ function _convert_vector_instruction(inst::LLVM.Instruction,
                     "<$n_src x i$w_from> → <$n x i$w_to>")
             src_lanes = _resolve_vec_lanes(src, lanes, names, n)
             lanes[inst.ref] = copy(src_lanes)
-            return nothing
+            return VEC_LANES_ONLY
         end
         if src_shape !== nothing && dst_shape === nothing
             # vector → scalar: must be <N x i1> → iN (bit-pack).
