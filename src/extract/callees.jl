@@ -150,7 +150,11 @@ end
 # Same-world repeats (the intra-compile `lower_call!` reuse, back-to-back
 # compiles) still hit. Each cache is also size-bounded, and `f` is untyped so
 # callable structs / `Type` constructors are accepted like `extract_parsed_ir`.
-const _parsed_ir_cache = Dict{Tuple{Any, Type, Bool, Symbol, Int}, ParsedIR}()
+# Bennett-sfq8: an `IdDict` — keys compare by `===`. A `Dict` compares `f` by
+# `isequal`, which equates callables of different types (`Int8(0)`,
+# `UInt64(0)`, `0.0`, `false`), so a callable `false` was handed the IR of a
+# callable `Int8(0)`. Egality also separates distinct `Type` callables.
+const _parsed_ir_cache = IdDict{Tuple{Any, Type, Bool, Symbol, Int}, ParsedIR}()
 const _parsed_ir_cache_lock = ReentrantLock()
 const _parsed_ir_cache_world = Ref{Tuple{UInt, UInt}}((0, 0))   # `_cache_stamp()` it was filled at
 const _PARSED_IR_CACHE_MAX = 256

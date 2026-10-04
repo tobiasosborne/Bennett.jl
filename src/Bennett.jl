@@ -319,11 +319,18 @@ _capture_ok(T::Type) = _is_type_singleton_field(T) ||
     (T isa DataType && isconcretetype(T) && !ismutabletype(T) &&
      fieldcount(T) > 0 && all(_capture_ok, fieldtypes(T)))
 
-"True when the state of callable `f` may be bound into (or tabulated by) a
-circuit: `f` is a Type, has no fields, or its state passes `_capture_ok`."
-_callable_state_ok(f) = f isa Type || fieldcount(typeof(f)) == 0 ||
+"""True when the state of callable `f` may be bound into (or tabulated by) a
+circuit: `f` is a Type, a zero-size singleton (no state), or its state passes
+`_capture_ok`. Bennett-sfq8: "no state" is zero SIZE, not zero fields —
+`fieldcount` is 0 for every primitive type, so a callable `Ptr` (or `Int8`)
+carries bits and must go through `_capture_ok` (which refuses a pointer); a
+mutable fieldless struct or a `String` is not a singleton either."""
+_callable_state_ok(f) = f isa Type || Base.issingletontype(typeof(f)) ||
     _capture_ok(typeof(f))
 
+# A pointer anywhere in the state (`Ptr`, `Core.LLVMPtr`, also inside a tuple or
+# nested struct): its pointee can change after compilation. Checked first, so
+# the primitive-type guard below only stops the recursion at non-pointer bits.
 _has_ptr_leaf(T::Type) = T <: Ptr || T <: Core.LLVMPtr ||
     (!isprimitivetype(T) && any(_has_ptr_leaf, fieldtypes(T)))
 
@@ -333,11 +340,11 @@ _has_ptr_leaf(T::Type) = T <: Ptr || T <: Core.LLVMPtr ||
 function _capture_bytes!(buf::Vector{UInt8}, x, off::Int)
     T = typeof(x)
     if isprimitivetype(T)
-        U = Dict(1 => UInt8, 2 => UInt16, 4 => UInt32, 8 => UInt64,
-                 16 => UInt128)[sizeof(T)]
-        u = reinterpret(U, x)
-        for i in 0:sizeof(T)-1
-            buf[off + i + 1] = (u >> (8i)) % UInt8
+        # Bennett-sfq8: any byte width (a 24- or 40-bit primitive too), in
+        # memory order — the order `simulate` loads the `#self#` input in.
+        bytes = reinterpret(NTuple{sizeof(T), UInt8}, x)
+        for i in 1:sizeof(T)
+            buf[off + i] = bytes[i]
         end
     else
         for i in 1:fieldcount(T)
@@ -360,12 +367,13 @@ that is not an immutable plain-bits value.
 function _callable_state_bytes(f)
     _callable_state_ok(f) || throw(ArgumentError(
         "reversible_compile: callable $(typeof(f)) holds state that is not an " *
-        "immutable plain-bits value (" *
-        join(("$n::$(fieldtype(typeof(f), n))" for n in fieldnames(typeof(f))), ", ") *
-        "). A mutable callable, Ref, array, or variable reassigned after " *
+        "immutable plain-bits value without pointers (" *
+        (fieldcount(typeof(f)) == 0 ? "the $(typeof(f)) object itself" :
+         join(("$n::$(fieldtype(typeof(f), n))" for n in fieldnames(typeof(f))), ", ")) *
+        "). A pointer, mutable callable, Ref, array, or variable reassigned after " *
         "capture (Core.Box) can change after compilation, so it cannot be " *
         "bound into the circuit (nor frozen into a table); pass it as an " *
-        "explicit argument instead (Bennett-o9sv, Bennett-2op8)"))
+        "explicit argument instead (Bennett-o9sv, Bennett-2op8, Bennett-sfq8)"))
     T = typeof(f)
     (f isa Type || sizeof(T) == 0) && return nothing
     return _capture_bytes!(zeros(UInt8, sizeof(T)), f, 0)

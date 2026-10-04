@@ -136,6 +136,8 @@ runfile("test_o9sv_closure_captures.jl")
 runfile("test_0ysp_tabulate_mutable_callable.jl")
 # Bennett-2op8: callable-struct / Fix1 / Fix2 state follows the closure rule on every strategy.
 runfile("test_2op8_callable_state.jl")
+# Bennett-sfq8: callable primitives (Ptr refused, Int8/P24 bound) + parsed-IR cache keyed on typeof(f).
+runfile("test_sfq8_callable_primitive_state.jl")
 runfile("test_y986_loop_header_dispatch.jl")
 runfile("test_gboa_dirty_bit_hygiene.jl")
 runfile("test_d77b_fcmp_predicates.jl")
