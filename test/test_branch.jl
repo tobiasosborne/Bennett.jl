@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Multi-block branching" begin
     @testset "Nested if/else (q)" begin
         function q(x::Int8)

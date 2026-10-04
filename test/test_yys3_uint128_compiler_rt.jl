@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Bennett-yys3 / U163 — UInt128 vs manual 128-bit helpers (premise check)" begin
 
     # ---- Investigation summary (Bennett-yys3, 2026-04-27) ----

@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Value-level EAGER cleanup (PRS15 Algorithm 2)" begin
     # U28 / Bennett-epwy: `fold_constants` is on by default. The fold rewrites
     # the gate list and invalidates `lr.gate_groups`, which `value_eager_bennett`

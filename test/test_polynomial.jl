@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Polynomial: g(x::Int8) = x*x + Int8(3)*x + Int8(1)" begin
     g(x::Int8) = x * x + Int8(3) * x + Int8(1)
     circuit = reversible_compile(g, Int8)

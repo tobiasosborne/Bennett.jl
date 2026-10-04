@@ -1,3 +1,4 @@
+using Test, Bennett
 using Random
 
 @testset "Soft-float library" begin

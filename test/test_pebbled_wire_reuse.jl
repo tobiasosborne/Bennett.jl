@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Pebbled Bennett with wire reuse" begin
     # U28 / Bennett-epwy: `fold_constants` is on by default. The fold
     # rewrites the gate list and invalidates `lr.gate_groups`, which the

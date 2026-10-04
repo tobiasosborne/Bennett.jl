@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Bennett-bjdg / U80 — precise errors for constant-operand kinds" begin
 
     # Pre-bjdg: `_operand` (src/ir_extract.jl:2780-2797) handled

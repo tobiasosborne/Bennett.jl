@@ -1,3 +1,4 @@
+using Test, Bennett
 using Random
 
 @testset "SHA-256 round function benchmark" begin

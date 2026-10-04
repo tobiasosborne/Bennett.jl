@@ -1,3 +1,4 @@
+using Test
 # Bennett-2hhx / U136 — IEEE 754 roundToIntegralTiesToEven (soft_round).
 #
 # Bit-exact equivalent to Base.round(::Float64), the default rounding mode

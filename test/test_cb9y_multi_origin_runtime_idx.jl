@@ -1,3 +1,4 @@
+using Test, Bennett
 using LLVM
 
 # Bennett-cb9y (Bennett-dnh phase 1b): multi-origin pointer × runtime

@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Bennett-xiqt / U133 — subnormal flush-to-zero boundary regression guard" begin
 
     # ---- Investigation summary (Bennett-xiqt / U133, 2026-04-27) ----

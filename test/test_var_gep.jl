@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Variable-index GEP (dynamic array access)" begin
 
     # ================================================================

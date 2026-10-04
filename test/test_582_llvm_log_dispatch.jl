@@ -1,3 +1,4 @@
+using Test, Bennett
 # Bennett-582: direct dispatch for `llvm.log` / `llvm.log2` / `llvm.log10`
 # as IRCall to the matching soft_log{,2,10} primitive.
 #

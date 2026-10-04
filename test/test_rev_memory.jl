@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Reversible memory operations" begin
 
     @testset "MUX array_get: 4 elements" begin

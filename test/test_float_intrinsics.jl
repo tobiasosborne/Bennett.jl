@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Float utility intrinsics" begin
 
     @testset "copysign(Float64, Float64)" begin

@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Int64 arithmetic" begin
     f(x::Int64) = x + Int64(1)
     circuit = reversible_compile(f, Int64)

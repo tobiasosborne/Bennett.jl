@@ -1,3 +1,4 @@
+using Test, Bennett
 using LLVM
 
 # Bennett-nj6c (Bennett-dnh phase 1a): runtime-indexed alloca access on

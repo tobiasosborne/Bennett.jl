@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Two args: m(x::Int8, y::Int8) = x*y + x - y" begin
     m(x::Int8, y::Int8) = x * y + x - y
     circuit = reversible_compile(m, Int8, Int8)

@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Bennett-gboa / U139 — zero-ancilla in-place op dirty-bit contracts" begin
 
     # The pre-fix issue (review 07_arithmetic_bugs.md F8): zero-ancilla

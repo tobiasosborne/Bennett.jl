@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "extractvalue + switch + freeze" begin
 
     # extractvalue: return individual elements from a tuple

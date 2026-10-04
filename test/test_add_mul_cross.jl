@@ -1,3 +1,4 @@
+using Test, Bennett
 # Bennett-kv7b / U65 (#05 F9): cross-product of add × mul strategy
 # kwargs. test_add_dispatcher.jl and test_mul_dispatcher.jl each
 # exercise their own kwarg in isolation; neither tested an `f` that

@@ -1,3 +1,4 @@
+using Test, Bennett
 using Random
 
 # Bennett-stwr: `compute_ssa_liveness` (per-name last-use index) was deleted —

@@ -1,3 +1,4 @@
+using Test, Bennett
 # Bennett-i2ca / U55: pin that the new `bennett(lr; strategy=...)` API
 # reaches every existing variant and produces byte-identical gate
 # sequences vs the legacy `*_bennett` aliases. The aliases are kept as

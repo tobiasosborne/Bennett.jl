@@ -1,3 +1,4 @@
+using Bennett
 # Bennett-doh6 / U158 — docs/make.jl was missing, blocking Documenter.jl
 # build + executable jldoctest fences (Bennett-wlf6 / U145). Static-
 # inspection regression: scaffold files exist, declare the canonical

@@ -1,3 +1,4 @@
+using Test, Bennett
 using Random
 
 @testset "soft_fmul library" begin

@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Constant folding during lowering" begin
 
     # ================================================================

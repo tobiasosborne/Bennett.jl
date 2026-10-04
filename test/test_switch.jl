@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Switch instruction (dynamic NTuple indexing)" begin
 
     @testset "simple switch: select from 3 cases" begin

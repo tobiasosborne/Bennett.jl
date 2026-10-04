@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Bennett-ys0d / U134 — soft_exp accuracy contract" begin
 
     # ---- Investigation summary (Bennett-ys0d / U134, 2026-04-27) ----

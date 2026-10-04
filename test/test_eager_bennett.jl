@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "EAGER Bennett cleanup" begin
 
     @testset "compute_wire_mod_paths" begin

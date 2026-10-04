@@ -1,3 +1,4 @@
+using Test
 @testset "Bennett-tpg0 / U135 — _sf_normalize_to_bit52 zero-input contract" begin
 
     # Pre-tpg0: `_sf_normalize_to_bit52` (src/softfloat/softfloat_common.jl)

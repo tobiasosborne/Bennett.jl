@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Compare+select: k(x::Int8) = x > 10 ? x+1 : x+2" begin
     k(x::Int8) = x > Int8(10) ? x + Int8(1) : x + Int8(2)
     circuit = reversible_compile(k, Int8)

@@ -1,3 +1,4 @@
+using Test, Bennett
 using Random
 
 @testset "Float64 polynomial (end-to-end)" begin

@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Int16 arithmetic" begin
     f(x::Int16) = x * x + Int16(3) * x + Int16(1)
     circuit = reversible_compile(f, Int16)

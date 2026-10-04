@@ -1,3 +1,4 @@
+using Test, Bennett
 # Bennett-1pb: direct dispatch for `llvm.sqrt` / `llvm.exp` / `llvm.exp2`
 # as IRCall to the matching soft_* primitive.
 #

@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "LLVM intrinsics coverage" begin
 
     @testset "ctpop (count_ones)" begin

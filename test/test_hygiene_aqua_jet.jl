@@ -1,3 +1,4 @@
+using Test, Bennett
 # Bennett-gk1h / U210: package hygiene tests via Aqua.jl + JET.jl.
 #
 # Aqua.jl checks: method ambiguities, unbound type parameters, undefined

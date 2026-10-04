@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Tuple return (insertvalue/aggregate)" begin
     @testset "Swap pair" begin
         swap_pair(a::Int8, b::Int8) = (b, a)

@@ -1,3 +1,4 @@
+using Test
 @testset "Bennett-qmk6 / U82 + Bennett-dq8l / U81 — precise _type_width error dispatch" begin
 
     # Pre-fix: `_type_width` (src/ir_extract.jl:2849) handled IntegerType,

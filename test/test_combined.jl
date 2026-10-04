@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Combined: controlled + branching" begin
     @testset "Controlled nested-if" begin
         function q(x::Int8)

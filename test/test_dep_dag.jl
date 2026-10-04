@@ -1,3 +1,4 @@
+using Test, Bennett
 # Bennett-11xt / U23: each compiled circuit below now carries a
 # `verify_reversibility` call (+ simulate sanity) so the DAG extraction
 # is rooted in a circuit that actually satisfies Bennett's invariants.

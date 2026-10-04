@@ -1,3 +1,4 @@
+using Test, Bennett
 using LLVM
 
 # Bennett-4eu: indirectbr is a Bennett hard stop. The static-CFG model

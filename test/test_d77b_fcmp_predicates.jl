@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Bennett-d77b / U132 — full LLVM fcmp predicate coverage" begin
 
     # Pre-d77b: only 4 of 14 LLVM fcmp predicates had soft_fcmp_*

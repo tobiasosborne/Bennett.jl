@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Path-predicate phi resolution" begin
 
     # Simple if/else (baseline)

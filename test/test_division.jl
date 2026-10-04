@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Integer division and remainder" begin
 
     # Bennett-4lij: each testset compiles ONE circuit and runs ~2k independent

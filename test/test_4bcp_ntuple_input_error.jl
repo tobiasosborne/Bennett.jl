@@ -1,3 +1,4 @@
+using Test, Bennett
 # Bennett-4bcp / U102 — actionable error for NTuple-typed arg ambiguity.
 #
 # `NTuple{N,T}` is `Tuple{T,T,...,T}`, so `reversible_compile(f, NTuple{2,Int8})`

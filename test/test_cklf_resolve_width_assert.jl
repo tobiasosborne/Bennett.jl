@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Bennett-cklf / U128 — resolve! SSA-path width contract" begin
 
     # Pre-cklf: `resolve!` (src/lower.jl:195) silently discarded the caller's

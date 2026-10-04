@@ -1,3 +1,4 @@
+using Test, Bennett
 # Bennett-cs2f / U42 — ported from the legacy `parse_ir` regex parser
 # (deleted 2026-04-25) to `extract_parsed_ir` (LLVM.jl C-API walker, the
 # canonical extractor since v0.2).  The diagnostic `extract_ir` text

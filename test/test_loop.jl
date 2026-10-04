@@ -1,3 +1,4 @@
+using Test, Bennett
 using Random
 
 # Bennett-kv7b / U65 (#05 F19) — loop tests were Int8-only. Extending

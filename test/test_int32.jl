@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Int32 arithmetic" begin
     f(x::Int32) = x * Int32(7) + Int32(42)
     circuit = reversible_compile(f, Int32)

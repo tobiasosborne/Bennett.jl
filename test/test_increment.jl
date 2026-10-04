@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Increment: f(x::Int8) = x + Int8(3)" begin
     f(x::Int8) = x + Int8(3)
     circuit = reversible_compile(f, Int8)

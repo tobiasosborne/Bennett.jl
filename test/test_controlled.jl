@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Controlled circuits" begin
     @testset "Controlled increment" begin
         f(x::Int8) = x + Int8(3)

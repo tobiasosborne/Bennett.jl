@@ -1,3 +1,4 @@
+using Test, Bennett
 # Bennett-emv: direct dispatch for `llvm.pow.f64` and `llvm.powi.f64.i32`
 # as IRCall to soft_pow / soft_powi.
 #

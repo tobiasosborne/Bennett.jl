@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "General function call inlining" begin
 
     @testset "user-defined helper function" begin

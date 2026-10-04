@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Bitwise: h(x::Int8) = (x & Int8(0x0f)) | (x >> 2)" begin
     h(x::Int8) = (x & Int8(0x0f)) | (x >> 2)
     circuit = reversible_compile(h, Int8)

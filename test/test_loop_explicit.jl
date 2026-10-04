@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Explicit loops (bounded unrolling)" begin
     @testset "Collatz steps" begin
         function collatz_steps(x::Int8)

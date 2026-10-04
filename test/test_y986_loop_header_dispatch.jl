@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Bennett-y986 / U05-followup-2 — loop-header dispatch fix" begin
 
     # Pre-y986: src/lower.jl:944-950 hard-coded a 4-type cascade

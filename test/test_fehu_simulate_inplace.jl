@@ -1,3 +1,4 @@
+using Test, Bennett
 # Bennett-fehu / U105 — simulate!(buffer, circuit, inputs) in-place variant.
 #
 # Hot-loop callers pre-allocate one Vector{Bool} of length circuit.n_wires

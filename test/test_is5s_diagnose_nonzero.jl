@@ -1,3 +1,4 @@
+using Test, Bennett
 # Bennett-is5s / U131 — diagnose_nonzero(circuit, inputs).
 #
 # Runs the circuit forward without throwing on Bennett-invariant

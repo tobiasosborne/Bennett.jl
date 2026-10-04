@@ -1,3 +1,4 @@
+using Test, Bennett
 using Random
 
 @testset "Float circuits (soft-float → reversible)" begin

@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Pebbling strategies" begin
 
     @testset "Knill recursion base cases" begin

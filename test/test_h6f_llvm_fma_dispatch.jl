@@ -1,3 +1,4 @@
+using Test, Bennett
 # Bennett-h6f: direct dispatch for `llvm.fma.f64` and `llvm.fmuladd.f64`
 # as `IRCall(soft_fma)`.
 #

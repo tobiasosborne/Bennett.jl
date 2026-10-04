@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Bennett-salb / U119 — divide-by-zero + signed overflow contract" begin
 
     @testset "Public soft_udiv throws DivideError on b=0" begin

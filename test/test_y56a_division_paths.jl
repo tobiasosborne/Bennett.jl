@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Bennett-y56a / U118 — integer division path consistency" begin
 
     # ---- Investigation summary (Bennett-y56a, 2026-04-27) ----

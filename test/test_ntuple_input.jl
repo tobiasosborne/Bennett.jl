@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "NTuple input (pointer parameters)" begin
 
     # Pack a tuple of Int8s into a single integer for simulate

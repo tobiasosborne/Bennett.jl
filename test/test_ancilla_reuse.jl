@@ -1,3 +1,4 @@
+using Test, Bennett
 @testset "Ancilla reuse (eager cleanup baseline)" begin
 
     # Compare ancilla count for a chain of operations.
