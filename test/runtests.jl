@@ -1149,6 +1149,10 @@ runfile("test_qcso_compose.jl")
 # no longer trips it, and re-routes input-aliased (pass-through) outputs
 # through Toffoli(ctrl, w, fresh) so ctrl=0 yields 0. Exhaustive Int8.
 runfile("test_q9pi_compose_controlled_guards.jl")
+# Bennett-7c5u — n-ary compose(c1, ..., cn): c1..cn forward, intermediates
+# uncomputed once in reverse; gate count linear in n (left-folding binary
+# compose stays exponential, documented). Guards carried per stage.
+runfile("test_7c5u_nary_compose.jl")
 # Bennett-zmw3 / U111 — robustness bounds: resolve!() mask at W=64 no
 # longer relies on Julia shift saturation; constant-shift path now
 # rejects k < 0 and k > W with a clear error; variable-shift mod-W
