@@ -291,24 +291,18 @@ julia> verify_reversibility(c)
 true
 ```
 """
-# ---- Bennett-o9sv: closure captures ----------------------------------------
-# Julia passes a capturing closure's own object as a hidden leading `#self#`
-# pointer parameter; the IR walker turns it into an extra circuit input
-# (`x -> x - k` compiled to input widths [8, 8]). A closure's captures are
-# invisible at the call site, so they are bound into the circuit instead:
-# an isbits closure is immutable and holds its captured values inline, so
-# binding them at compile time is exact. Anything that can change after
-# compilation (Ref, mutable struct, array, a reassigned variable boxed as
-# `Core.Box`) is rejected loudly. Callable structs are NOT closures: their
-# fields stay circuit inputs (Bennett-4ddk, test_4ddk_compile_cache_soundness).
-
-"True for a compiler-generated closure type (anonymous function, do-block or
-local named function): an IMMUTABLE `Function` subtype whose name starts with `#`.
-A user `mutable struct var\"#X\" <: Function` is a callable struct, not a closure
-(Bennett-u9cc): its fields stay circuit inputs and are never bound."
-_is_closure_type(T::DataType) = T <: Function && !ismutabletype(T) &&
-    startswith(String(nameof(T)), "#")
-_is_closure_type(::Any) = false
+# ---- Bennett-o9sv / Bennett-2op8: callable state -------------------------
+# Julia passes a callable's own object as a hidden leading `#self#` pointer
+# parameter; the IR walker turns it into an extra circuit input
+# (`x -> x - k` and `Base.Fix2(-, k)` compiled to input widths [8, 8]). That
+# state is invisible at the call site, so ONE rule applies to every callable
+# with fields — closure captures, callable-struct fields, `Base.Fix1` /
+# `Base.Fix2`, `ComposedFunction`: immutable plain-bits state is bound into the
+# circuit as constants (exact: it cannot change after compilation), and
+# anything that can change (mutable callable, Ref, array, a reassigned
+# variable boxed as `Core.Box`) is rejected loudly. The rule runs before every
+# strategy, so the circuit interface is the declared arguments on each
+# (Bennett-gft0: `:tabulate` used to bind a field `:expression` exposed).
 
 # Bennett-o9sv follow-up: a closure created inside a function that takes a type
 # (`T -> x -> x + zero(T)`) stores `T` as an 8-byte DataType pointer in a field
@@ -317,11 +311,18 @@ _is_closure_type(::Any) = false
 _is_type_singleton_field(FT) = FT isa DataType && FT.name === Type.body.name &&
     !(FT.parameters[1] isa TypeVar)
 
-# True when closure type `T` holds only plain-bits state and fields of
-# `_is_type_singleton_field` type (checked recursively through captured closures).
+# True when type `T` holds only plain-bits state and fields of
+# `_is_type_singleton_field` type, checked recursively through immutable
+# structs (a mutable type, Ref, array or Core.Box anywhere fails).
 _capture_ok(T::Type) = _is_type_singleton_field(T) ||
     (isbitstype(T) && !_has_ptr_leaf(T)) ||
-    (_is_closure_type(T) && isconcretetype(T) && all(_capture_ok, fieldtypes(T)))
+    (T isa DataType && isconcretetype(T) && !ismutabletype(T) &&
+     fieldcount(T) > 0 && all(_capture_ok, fieldtypes(T)))
+
+"True when the state of callable `f` may be bound into (or tabulated by) a
+circuit: `f` is a Type, has no fields, or its state passes `_capture_ok`."
+_callable_state_ok(f) = f isa Type || fieldcount(typeof(f)) == 0 ||
+    _capture_ok(typeof(f))
 
 _has_ptr_leaf(T::Type) = T <: Ptr || T <: Core.LLVMPtr ||
     (!isprimitivetype(T) && any(_has_ptr_leaf, fieldtypes(T)))
@@ -349,37 +350,39 @@ function _capture_bytes!(buf::Vector{UInt8}, x, off::Int)
 end
 
 """
-    _closure_capture_bytes(f) -> Union{Nothing, Vector{UInt8}}
+    _callable_state_bytes(f) -> Union{Nothing, Vector{UInt8}}
 
-Bennett-o9sv: `nothing` unless `f` is a closure with captured state; then the
-closure object's bytes (the value of the hidden `#self#` input). Throws an
-`ArgumentError` for a capture that is not an immutable plain-bits value.
+Bennett-o9sv / Bennett-2op8: `nothing` unless the callable `f` (closure,
+callable struct, `Base.Fix1`/`Fix2`, ...) holds state; then the object's bytes
+(the value of the hidden `#self#` input). Throws an `ArgumentError` for state
+that is not an immutable plain-bits value.
 """
-function _closure_capture_bytes(f)
+function _callable_state_bytes(f)
+    _callable_state_ok(f) || throw(ArgumentError(
+        "reversible_compile: callable $(typeof(f)) holds state that is not an " *
+        "immutable plain-bits value (" *
+        join(("$n::$(fieldtype(typeof(f), n))" for n in fieldnames(typeof(f))), ", ") *
+        "). A mutable callable, Ref, array, or variable reassigned after " *
+        "capture (Core.Box) can change after compilation, so it cannot be " *
+        "bound into the circuit (nor frozen into a table); pass it as an " *
+        "explicit argument instead (Bennett-o9sv, Bennett-2op8)"))
     T = typeof(f)
-    (_is_closure_type(T) && sizeof(T) > 0) || return nothing
-    caps = join(("$n::$(fieldtype(T, n))" for n in fieldnames(T)), ", ")
-    _capture_ok(T) || throw(ArgumentError(
-        "reversible_compile: closure $f captures state that is not an " *
-        "immutable plain-bits value ($caps). A Ref, mutable struct, array, or " *
-        "variable reassigned after capture (Core.Box) can change after " *
-        "compilation, so it cannot be bound into the circuit; pass it as an " *
-        "explicit argument instead (Bennett-o9sv)"))
+    (f isa Type || sizeof(T) == 0) && return nothing
     return _capture_bytes!(zeros(UInt8, sizeof(T)), f, 0)
 end
 
 """
-    _bind_closure_capture(c, bytes, n_args) -> ReversibleCircuit
+    _bind_callable_state(c, bytes, n_args) -> ReversibleCircuit
 
-Bennett-o9sv: turn the leading `#self#` input of `c` (the closure object,
+Bennett-o9sv: turn the leading `#self#` input of `c` (the callable object,
 `8 * length(bytes)` wires, LSB-first per byte as `simulate` loads it) into
 ancillae preset to `bytes` by NOT gates and cleared by the same NOT gates at
 the end — exact, because every input wire is preserved by the circuit.
 """
-function _bind_closure_capture(c::ReversibleCircuit, bytes::Vector{UInt8},
+function _bind_callable_state(c::ReversibleCircuit, bytes::Vector{UInt8},
                                n_args::Int)
     nb = 8 * length(bytes)
-    # A closure holding a `Type{X}` field is not isbits, and Julia then often
+    # A callable holding a `Type{X}` field is not isbits, and Julia then often
     # also passes a `.roots.#self#` GC-roots pointer right after `#self#` (not
     # when the type is the only field): a 64-bit input that is never read (the
     # type is a compile-time constant); bound to zero.
@@ -388,14 +391,14 @@ function _bind_closure_capture(c::ReversibleCircuit, bytes::Vector{UInt8},
     lead = roots ? 2 : 1
     (length(c.input_widths) == n_args + lead && c.input_widths[1] == nb &&
      (!roots || c.input_widths[2] == nr)) || error(
-        "reversible_compile: capturing closure compiled to input widths " *
-        "$(c.input_widths); expected a leading $nb-bit closure input" *
+        "reversible_compile: callable with state compiled to input widths " *
+        "$(c.input_widths); expected a leading $nb-bit callable-object input" *
         (roots ? " and a 64-bit roots input" : "") * " then " *
         "$n_args argument(s) (Bennett-o9sv)")
     self_w = c.input_wires[1:nb+nr]
     isempty(intersect(self_w, c.output_wires)) || error(
-        "reversible_compile: closure input wires overlap the outputs; cannot " *
-        "bind the captured values (Bennett-o9sv)")
+        "reversible_compile: callable-object input wires overlap the outputs; " *
+        "cannot bind its state (Bennett-o9sv)")
     nots = ReversibleGate[NOTGate(self_w[i]) for i in 1:nb
                           if (bytes[(i - 1) >> 3 + 1] >> ((i - 1) & 7)) & 0x01 == 0x01]
     return ReversibleCircuit(c.n_wires, vcat(nots, c.gates, nots),
@@ -430,28 +433,6 @@ function _with_julia_return_type(c::ReversibleCircuit, @nospecialize(R))
     return ReversibleCircuit(c.n_wires, c.gates, c.input_wires, c.output_wires,
                              c.ancilla_wires, c.input_widths, c.output_elem_widths,
                              c.loop_check_wires; output_elem_unsigned=uns)
-end
-
-# Bennett-0ysp: tabulate evaluates `f` natively and stores the results, so it
-# freezes all of `f`'s state. Sound only when that state cannot change: a
-# Type, or an immutable callable whose state is plain bits (or closure captures
-# `_capture_ok` accepts). A mutable callable, or one holding a Ref / array /
-# mutable field, keeps the expression path, where fields stay circuit inputs.
-function _tabulate_state_ok(f)
-    f isa Type && return true
-    T = typeof(f)
-    ismutabletype(T) && return false
-    return (isbitstype(T) && !_has_ptr_leaf(T)) || _capture_ok(T)
-end
-
-function _check_tabulate_state(f)
-    _tabulate_state_ok(f) || throw(ArgumentError(
-        "reversible_compile: strategy=:tabulate cannot compile $(typeof(f)): " *
-        "its state is mutable or not an immutable plain-bits value, and a " *
-        "table would freeze it at compile time (it can change afterwards). " *
-        "Use strategy=:expression, where the fields stay circuit inputs, or " *
-        "pass the state as an explicit argument (Bennett-0ysp, Bennett-u9cc)"))
-    return nothing
 end
 
 const _TUPLE_OVERLOAD_KWARGS = (:optimize, :max_loop_iterations,
@@ -576,15 +557,15 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
         throw(ArgumentError("reversible_compile: unknown strategy :$strategy; " *
               "supported: :auto, :tabulate, :expression"))
 
-    # Bennett-o9sv: validated before either tabulate exit, so a mutable
-    # capture is never frozen into a QROM table either.
-    capture = _closure_capture_bytes(f)
+    # Bennett-o9sv / Bennett-2op8: validated before either tabulate exit, so
+    # mutable state is never frozen into a QROM table either (Bennett-0ysp).
+    capture = _callable_state_bytes(f)
     if capture !== nothing && (bit_width > 0 || target === :reversible_vm)
         throw(ArgumentError(
-            "reversible_compile: a closure with captured values is not " *
-            "supported with " *
+            "reversible_compile: a callable with bound state (closure captures " *
+            "or fields) is not supported with " *
             (bit_width > 0 ? "bit_width=$bit_width" : "target=:reversible_vm") *
-            " (Bennett-o9sv); pass the captured values as explicit arguments"))
+            " (Bennett-o9sv, Bennett-2op8); pass the state as explicit arguments"))
     end
 
     # Explicit tabulate: evaluate f classically on all 2^W inputs and emit as
@@ -602,7 +583,6 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     # output signedness (see `_with_julia_return_type`).
     ret_type = Core.Compiler.return_type(f, arg_types)
     if strategy === :tabulate && target !== :reversible_vm
-        _check_tabulate_state(f)   # Bennett-0ysp
         lr, reason = _tabulate_circuit(f, arg_types, bit_width, auto_self_reversing)
         lr === nothing && throw(ArgumentError(
             "reversible_compile: strategy=:tabulate not applicable — $reason"))
@@ -625,8 +605,8 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
 
     # Bennett-33zr: same `:reversible_vm` carve-out as the explicit-tabulate
     # branch above — the :auto cost model must not divert a VM compile to QROM.
-    # Bennett-0ysp: never divert a mutable-state callable to a table.
-    if strategy === :auto && target !== :reversible_vm && _tabulate_state_ok(f) &&
+    # (Bennett-0ysp: mutable state was rejected above, never tabulated.)
+    if strategy === :auto && target !== :reversible_vm &&
        _tabulate_auto_picks(parsed, arg_types, bit_width)
         lr, _ = _tabulate_circuit(f, arg_types, bit_width, auto_self_reversing)
         # Bennett-iwj6: `nothing` means the cost model picked a shape the
@@ -657,12 +637,13 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
         fold_constants, target, auto_self_reversing,
         mem=lower_mem, persistent_impl, hashcons,
         _julia_return_type=ret_type)
-    # Bennett-o9sv: the (cached) circuit takes the closure object as its
-    # leading input; bind it to this closure's captured values. Bound outside
-    # the compile cache, so same-type closures never share a bound circuit.
+    # Bennett-o9sv / Bennett-2op8: the (cached) circuit takes the callable
+    # object as its leading input; bind it to this object's state. Bound
+    # outside the compile cache, so same-type callables never share a bound
+    # circuit.
     # (The tabulate exits above evaluate `f` natively and need no binding.)
     capture === nothing && return c
-    return _bind_closure_capture(c, capture, length(arg_types.parameters))
+    return _bind_callable_state(c, capture, length(arg_types.parameters))
 end
 
 const _PARSED_OVERLOAD_KWARGS = (:max_loop_iterations, :compact_calls,

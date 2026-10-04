@@ -9,8 +9,8 @@
 #   - captures that can change after compilation (Ref, mutable struct, array,
 #     a reassigned variable boxed as Core.Box) are rejected loudly, on every
 #     strategy, as is narrowing (`bit_width`) and `target=:reversible_vm`.
-# Callable structs keep the Bennett-4ddk field-as-input behaviour (pinned in
-# test_4ddk_compile_cache_soundness.jl).
+# Bennett-2op8: callable structs and Base.Fix1/Fix2 now follow the same rule
+# (test_2op8_callable_state.jl).
 
 using Test
 using Bennett
@@ -171,23 +171,18 @@ end
                                                       target=:reversible_vm)
     end
 
-    @testset "Bennett-u9cc: a mutable #-named Function is not a closure" begin
+    @testset "Bennett-u9cc: a mutable #-named Function is never bound" begin
         f = var"#MutableCapture_u9cc"(Int8(3))
-        @test !Bennett._is_closure_type(typeof(f))
         @test !Bennett._capture_ok(typeof(f))
-        # callable-struct path: the field stays an explicit circuit input
-        c = reversible_compile(f, Int8; strategy=:expression)
-        @test c.input_widths == [8, 8]
-        @test verify_reversibility(c)
-        bad = [(x, k) for x in typemin(Int8):typemax(Int8), k in Int8[-128, -1, 0, 3, 7, 127]
-               if simulate(c, (k, x)) != var"#MutableCapture_u9cc"(k)(x)]
-        @test isempty(bad)
-        # nested inside an otherwise-immutable real closure: rejected
+        @test !Bennett._callable_state_ok(f)
+        # Bennett-2op8: a mutable callable is rejected on every strategy (its
+        # field used to stay a circuit input on :expression), as is a real
+        # closure that captures one.
         r = var"#MutableCapture_u9cc"(Int8(3))
         g = x -> r(x)
-        for strategy in (:auto, :expression, :tabulate)
+        for h in (f, g), strategy in (:auto, :expression, :tabulate)
             err = try
-                reversible_compile(g, Int8; strategy)
+                reversible_compile(h, Int8; strategy)
                 nothing
             catch e
                 e

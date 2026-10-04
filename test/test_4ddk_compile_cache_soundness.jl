@@ -74,11 +74,13 @@ end
         c = reversible_compile(Inc4ddk(), Int8)
         @test reversible_compile(Inc4ddk(), Int8) === c
         _check_all_int8(c, x -> x + Int8(1))
-        # A functor with a field: the field is a circuit input, not a constant.
-        ca = reversible_compile(Add4ddk(Int8(3)), Int8)
-        @test verify_reversibility(ca)
-        for k in Int8[-128, -1, 0, 3, 127], x in typemin(Int8):typemax(Int8)
-            @test simulate(ca, (k, x)) == x + k
+        # A functor with a field: the field is bound as a constant (Bennett-2op8;
+        # before, it was an extra circuit input), per value of the field.
+        for k in Int8[-128, -1, 0, 3, 127]
+            ca = reversible_compile(Add4ddk(k), Int8)
+            @test ca.input_widths == [8]
+            @test verify_reversibility(ca)
+            @test all(simulate(ca, x) == x + k for x in typemin(Int8):typemax(Int8))
         end
     end
 

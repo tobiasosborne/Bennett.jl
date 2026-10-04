@@ -5,9 +5,9 @@
 # after `c.k = 7`. Bennett-u9cc fixed the closure-capture binding on the
 # expression path only.
 #
-# Invariant: no strategy bakes in state of a mutable callable. `:tabulate`
-# refuses it loudly; `:expression` / `:auto` keep the u9cc callable-struct
-# behaviour (the field stays an explicit circuit input, never a constant).
+# Invariant: no strategy bakes in state of a mutable callable. Bennett-2op8:
+# every strategy now refuses it loudly (`:expression` / `:auto` used to keep
+# the field as an explicit circuit input).
 
 using Test
 using Bennett
@@ -35,21 +35,11 @@ end
 const KS_0ysp = Int8[-128, -1, 0, 3, 7, 127]
 
 @testset "Bennett-0ysp: tabulate never bakes in mutable callable state" begin
-    @testset "tabulate refuses mutable state ($(nameof(typeof(f))))" for f in
+    @testset "every strategy refuses mutable state ($(nameof(typeof(f))), $strategy)" for f in
             (var"#Mut0ysp"(Int8(3)), PlainMut0ysp(Int8(3)),
-             HoldsRef0ysp(Ref(Int8(3))))
-        @test_throws r"strategy=:tabulate.*mutable.*Bennett-0ysp" reversible_compile(
-            f, Int8; strategy=:tabulate)
-    end
-
-    @testset "expression/auto: field stays an input ($strategy)" for strategy in (:expression, :auto)
-        f = var"#Mut0ysp"(Int8(3))
-        c = reversible_compile(f, Int8; strategy)
-        @test c.input_widths == [8, 8]
-        @test verify_reversibility(c)
-        bad = [(x, k) for x in typemin(Int8):typemax(Int8), k in KS_0ysp
-               if simulate(c, (k, x)) != var"#Mut0ysp"(k)(x)]
-        @test isempty(bad)
+             HoldsRef0ysp(Ref(Int8(3)))), strategy in (:tabulate, :expression, :auto)
+        @test_throws r"immutable plain-bits.*Bennett-2op8" reversible_compile(
+            f, Int8; strategy)
     end
 
     @testset "immutable callable compiles on every strategy ($strategy, k=$k)" for
