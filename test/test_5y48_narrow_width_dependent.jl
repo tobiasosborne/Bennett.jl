@@ -180,3 +180,70 @@ end
         @test verify_reversibility(c)
     end
 end
+
+# Bennett-f66g: overflow-checking and saturating intrinsics are width-dependent
+# too (the flag / clamp threshold is the source width).  Hand-written i8 IR,
+# extracted with ptr_cells=true (the only mode that accepts them today; the
+# plain extraction refuses every one of these upstream).
+@testset "Bennett-f66g: overflow / saturating intrinsics refuse narrowing" begin
+    dl = "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128\"\n"
+    ovf(n) = dl * "declare {i8,i1} @llvm.$n.with.overflow.i8(i8, i8)\n" *
+        "define i8 @f(i8 %x) {\n %r = call {i8,i1} @llvm.$n.with.overflow.i8(i8 %x, i8 16)\n" *
+        " %o = extractvalue {i8,i1} %r, 1\n %z = zext i1 %o to i8\n ret i8 %z\n}\n"
+    sat(n) = dl * "declare i8 @llvm.$n.i8(i8, i8)\n" *
+        "define i8 @f(i8 %x) {\n %r = call i8 @llvm.$n.i8(i8 %x, i8 3)\n ret i8 %r\n}\n"
+    load(src; kw...) = (path = tempname() * ".ll"; write(path, src);
+        Bennett.extract_parsed_ir_from_ll(path; entry_function="f", kw...))
+    # native oracles at the source width 8 (flag as 0/1; clamp)
+    s8(x) = x >= 128 ? x - 256 : x
+    oracles = Dict(
+        "uadd.with.overflow" => x -> x + 16 > 255 ? 1 : 0,
+        "sadd.with.overflow" => x -> (v = s8(x) + 16; v > 127 || v < -128) ? 1 : 0,
+        "umul.with.overflow" => x -> x * 16 > 255 ? 1 : 0,
+        "smul.with.overflow" => x -> (v = s8(x) * 16; v > 127 || v < -128) ? 1 : 0,
+        "uadd.sat" => x -> min(x + 3, 255),
+        "usub.sat" => x -> max(x - 3, 0),
+        "sadd.sat" => x -> clamp(s8(x) + 3, -128, 127) & 255,
+        "ssub.sat" => x -> clamp(s8(x) - 3, -128, 127) & 255,
+        "ushl.sat" => x -> min(x << 3, 255),
+        "sshl.sat" => x -> clamp(s8(x) << 3, -128, 127) & 255)
+    for n in ("uadd.with.overflow", "sadd.with.overflow", "umul.with.overflow",
+              "smul.with.overflow", "uadd.sat", "usub.sat", "sadd.sat", "ssub.sat",
+              "ushl.sat", "sshl.sat")
+        @testset "$n" begin
+            src = endswith(n, "overflow") ? ovf(n[1:findfirst('.', n)-1]) : sat(n)
+            # the plain (non-ptr_cells) extraction refuses it upstream
+            @test_throws Exception load(src)
+            p = load(src; ptr_cells=true)
+            @test length(p.width_dependent_ops) == 1 &&
+                  occursin("llvm.$(n)", first(p.width_dependent_ops))
+            for W in (4, 7)
+                err = try Bennett._narrow_ir(p, W); nothing catch e; e end
+                @test err isa ArgumentError && occursin("Bennett-5y48", err.msg) &&
+                      occursin("llvm.$(n)", err.msg)
+            end
+            if endswith(n, "overflow")
+                q = Bennett._narrow_ir(p, 8)   # W == S: nothing re-typed
+                c = Bennett.reversible_compile(q)
+                @test all(x -> Int(simulate(c, x)) & 255 == oracles[n](x), 0:255)
+                @test verify_reversibility(c)
+            else
+                # ptr_cells extraction keeps a sat intrinsic as an opaque call
+                # with no lowering: it never compiles (nor narrows) at any width.
+                @test_throws Exception Bennett.reversible_compile(p)
+            end
+        end
+    end
+    @testset "ssub / usub .with.overflow are refused at extraction" begin
+        for n in ("ssub", "usub")
+            @test_throws Exception load(ovf(n); ptr_cells=true)
+        end
+    end
+    @testset "the review witness: umul.with.overflow flag of 8 at W = 7" begin
+        p = load(ovf("umul"); ptr_cells=true)
+        c8 = Bennett.reversible_compile(Bennett._narrow_ir(p, 8))
+        @test simulate(c8, 8) == 0                 # 128 fits in 8 bits
+        err = try Bennett._narrow_ir(p, 7); nothing catch e; e end
+        @test err isa ArgumentError && occursin("llvm.umul.with.overflow.i8", err.msg)
+    end
+end

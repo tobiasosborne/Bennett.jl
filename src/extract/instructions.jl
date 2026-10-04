@@ -4994,20 +4994,32 @@ function _handle_memset_arm(cname::AbstractString, inst::LLVM.Instruction,
     return out
 end
 
-# Bennett-5y48: the integer intrinsics whose expansion below bakes the source
-# width w into shift amounts and constants (ctlz/cttz: the zero result `w` and
-# `w - 1 - i`; bitreverse: `shl w - 1 - i`; bswap: byte positions; fshl/fshr:
-# the amount mod w and the complementary `w - k`).  Re-typing such an
-# expansion to another width W computes neither the W-bit operation nor
-# anything else meaningful, so bit-width narrowing must refuse it — and it
-# cannot tell the expansion from source shifts afterwards.  The extractor
-# therefore records every such call on `ParsedIR.width_dependent_ops`.
+# Bennett-5y48 / Bennett-f66g: the integer intrinsics whose MEANING depends on
+# the bit width w.  Two kinds.  (1) Expansions that bake w into shift amounts
+# and constants (ctlz/cttz: the zero result `w` and `w - 1 - i`; bitreverse:
+# `shl w - 1 - i`; bswap: byte positions; fshl/fshr: the amount mod w and the
+# complementary `w - k`).  (2) Overflow-checking (`*.with.overflow.`) and
+# saturating (`*.sat.`) arithmetic, whose overflow flag / clamp bound is the
+# w-bit threshold: re-typed to W it is a threshold fixed at the SOURCE width
+# (Bennett-f66g: `umul.with.overflow.i8(x, 16)` flag for x = 8 is 0, the 7-bit
+# multiply 8 * 16 = 128 overflows).  Re-typing either kind to another width W
+# computes neither the W-bit operation nor anything meaningful, so bit-width
+# narrowing must refuse it — and it cannot tell the result from source
+# comparisons afterwards.  The extractor therefore records every such call on
+# `ParsedIR.width_dependent_ops`.  Listing an intrinsic the extractor refuses
+# anyway is harmless (the extraction error comes first).
 # NOT listed, because their expansion re-typed to W IS the W-bit operation:
 # umax/umin/smax/smin and abs (compare + select + `0 - x`), and ctpop (the
 # sum of bits `(x >> i) & 1`; every term with i >= W is a shift the narrowing
 # refuses or a 0).  A new expansion that reads `w` must be classified here.
 const _WIDTH_DEPENDENT_INTRINSICS = ("llvm.ctlz.", "llvm.cttz.", "llvm.bitreverse.",
-                                     "llvm.bswap.", "llvm.fshl.", "llvm.fshr.")
+                                     "llvm.bswap.", "llvm.fshl.", "llvm.fshr.",
+                                     "llvm.sadd.with.overflow.", "llvm.uadd.with.overflow.",
+                                     "llvm.ssub.with.overflow.", "llvm.usub.with.overflow.",
+                                     "llvm.smul.with.overflow.", "llvm.umul.with.overflow.",
+                                     "llvm.sadd.sat.", "llvm.uadd.sat.",
+                                     "llvm.ssub.sat.", "llvm.usub.sat.",
+                                     "llvm.sshl.sat.", "llvm.ushl.sat.")
 
 """
     _width_dependent_intrinsics(func) -> Set{String}
