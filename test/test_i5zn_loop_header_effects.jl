@@ -798,12 +798,11 @@ _i5zn_errmsg(f) = try f(); "no error" catch e; sprint(showerror, e) end
     end
 
     @testset "S5 exit-block phi over a held header value — fold=$fold" for fold in _I5ZN_FOLDS
-        # K ≥ 3 only: at K = 2 the inputs that SKIP the loop (x < 0) are refused
-        # by the s0tn guard although the header never runs — the guard is not
-        # gated by the header's path predicate (Bennett-n9o8, a separate bead;
-        # loud, not a wrong answer). The below-trip-count side is covered by
-        # the other fixtures.
-        @test _i5zn_check(_i5zn_s5_exit_phi(), (3, 4, 7); fold) == 0
+        # K = 2 is below the trip count for x ≥ 0 with x & 3 == 3 (loud), while
+        # the inputs that SKIP the loop (x < 0) must be answered: the s0tn
+        # guard is gated by the header's path predicate (Bennett-n9o8; pre-fix
+        # they were refused although the header never runs).
+        @test _i5zn_check(_i5zn_s5_exit_phi(), (2, 3, 4, 7); fold) > 0
     end
 
     @testset "S6 control: pure header value is not held — fold=$fold" for fold in _I5ZN_FOLDS

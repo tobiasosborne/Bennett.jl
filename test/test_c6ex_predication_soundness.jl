@@ -712,7 +712,9 @@ _c6ex_bi() = Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}()
              _c6ex_pre3, _c6ex_i8n(8), 3533),
             ("cl f K8", () -> reversible_compile(_c6ex_cl, Int8, Int8; optimize=false,
                                                  max_loop_iterations=8, kw...),
-             _c6ex_cl, _c6ex_i8n(8), 3463),
+             # Bennett-n9o8: 3463 → 3467 — the loop sits under `if x > 0`, so its
+             # s0tn guard is gated by the header predicate (+2 forward gates).
+             _c6ex_cl, _c6ex_i8n(8), 3467),
             ("cont f K8", () -> reversible_compile(_c6ex_cont, Int8, Int8; optimize=false,
                                                    max_loop_iterations=8, kw...),
              _c6ex_cont, _c6ex_i8n(8), 3539),
@@ -730,7 +732,9 @@ _c6ex_bi() = Dict{Symbol,Tuple{Vector{Int},Symbol,Symbol}}()
              _c6ex_brbody, _c6ex_i8n(4), 774),
             ("collatz t K20", () -> reversible_compile(_c6ex_collatz, Int8;
                                                        max_loop_iterations=20, kw...),
-             _c6ex_collatz, _C6EX_I8, 12903),
+             # Bennett-n9o8: 12903 → 12907 — optimize=true rotates the loop behind
+             # an `n > 1` guard; the s0tn guard is gated by the header predicate.
+             _c6ex_collatz, _C6EX_I8, 12907),
             ("CE1 .ll", () -> reversible_compile(_c6ex_ll(_C6EX_CE1, "ce1"); kw...),
              _c6ex_ce1_ref, _C6EX_I8, 320),
             ("H12 .ll K4", () -> reversible_compile(_c6ex_ll(_C6EX_H12, "h12");

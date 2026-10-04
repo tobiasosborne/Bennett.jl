@@ -160,10 +160,15 @@
         # conjoins into the header path predicate, the loop-carried phi MUX
         # select and the check-only convergence pass, doubled by Bennett's
         # reverse pass. The non-loop pins in this file (T4) are unmoved.
+        # Bennett-n9o8 (2026-10-04): 14913/2492/9355 → 14917/2494/9355. At
+        # optimize=true LLVM rotates the loop behind an entry guard, so the
+        # header is not reached on every path and the s0tn guard is gated by
+        # its path predicate: NOT + CNOT + Toffoli in place of one CNOT
+        # (+2 gates, +1 Toffoli forward; doubled by the reverse pass; no ancilla).
         c = reversible_compile(collatz_steps, Int8; max_loop_iterations=20)
         gc = gate_count(c)
-        @test gc.total == 14913
-        @test gc.Toffoli == 2492
+        @test gc.total == 14917
+        @test gc.Toffoli == 2494
         @test ancilla_count(c) == 9355
         for x in Int8(1):Int8(30)
             @test simulate(c, Int8, x) == collatz_steps(x)

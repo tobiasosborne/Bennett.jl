@@ -642,6 +642,36 @@ function _loop_publish_ptr!(vw, ptr_provenance::Dict{Symbol,Vector{PtrOrigin}},
 end
 
 """
+    _loop_header_always_reached(hlabel, block_map, entry_label) -> Bool
+
+Bennett-n9o8: true iff every path from the entry that RETURNS passes through
+loop header `hlabel`, so its path predicate is identically 1 and gating the
+s0tn convergence guard by it would be the identity. Walks the CFG from the
+entry without entering `hlabel`; reaching an `IRRet` block means some execution
+skips the loop. Edges to `:__unreachable__` are not completing paths (no
+lowered predicate either). Conservative: an unknown entry (the
+`Symbol("")` sentinel) or an unrecognised terminator returns false, which
+merely keeps the (always sound) gating.
+"""
+function _loop_header_always_reached(hlabel::Symbol, block_map, entry_label::Symbol)
+    haskey(block_map, entry_label) || return false
+    entry_label === hlabel && return true
+    seen = Set{Symbol}([entry_label])
+    stack = Symbol[entry_label]
+    while !isempty(stack)
+        t = block_map[pop!(stack)].terminator
+        t isa IRRet && return false
+        t isa IRBranch || return false
+        for s in branch_targets(t)
+            (s === :__unreachable__ || s === hlabel || s in seen) && continue
+            haskey(block_map, s) || return false
+            push!(seen, s); push!(stack, s)
+        end
+    end
+    return true
+end
+
+"""
     lower_loop!(gates, wa, vw, header_block, block_map, back_edges, K, preds, branch_info; <ctx kwargs>)
 
 Unroll a loop K times. The header block has phi nodes for loop-carried
@@ -1044,8 +1074,26 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
     # (forward block). `bennett`'s copy-out then copies `conv_w` into a
     # fourth-class loop-check wire that survives the reverse pass;
     # `simulate` errors loud when it reads 0 (overflow).
+    #
+    # Bennett-n9o8: the guard may fire only on an execution that REACHES the
+    # header. When `header_pred` = 0 (the loop sits in an untaken arm) the
+    # unrolled body still ran — branchlessly — on its seed values, so
+    # `conv_cond` is garbage there. Report converged := ¬header_pred ∨ conv_cond
+    # = 1 ⊕ header_pred ⊕ (header_pred ∧ conv_cond), written straight into
+    # `conv_w` (3 gates, no ancilla). When every returning path from the entry
+    # passes through the header, `header_pred` is identically 1 and the gating
+    # is the identity, so it is skipped and such loops keep their gate counts
+    # (see `_loop_header_always_reached`). (The values leaving a skipped loop
+    # are already masked by the header's edge predicates in the exit-block phi
+    # resolution.)
     conv_w = allocate!(wa, 1)[1]
-    push!(gates, CNOTGate(conv_cond[1], conv_w))
+    if _loop_header_always_reached(hlabel, block_map, opts.entry_label)
+        push!(gates, CNOTGate(conv_cond[1], conv_w))
+    else
+        push!(gates, NOTGate(conv_w))
+        push!(gates, CNOTGate(header_pred, conv_w))
+        push!(gates, ToffoliGate(header_pred, conv_cond[1], conv_w))
+    end
     push!(opts.loop_guards, LoopGuard(conv_w, hlabel, K))
 
     push!(get!(preds, exit_label, Symbol[]), hlabel)
