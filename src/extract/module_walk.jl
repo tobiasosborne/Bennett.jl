@@ -952,7 +952,9 @@ offset/padding via `LLVM.offsetof(dl, struct_ty, i)` and total size via
 
 Returns `(nothing, provenance)` (hard-reject; provenance unchanged) if
 ANY field has a type or operand-shape Bennett.jl can't materialise:
-  - FloatType / VectorType / opaque / IntegerType wider than 64
+  - FloatType / VectorType / opaque / IntegerType wider than 64 or not a
+    whole number of bytes (an array field's elements are placed at the
+    DataLayout allocation stride, `store_size` bytes each — Bennett-ciss)
   - PointerType with non-zero addrspace (Bennett-land-addrspace follow-up)
   - PointerType with size != 8 bytes (Bennett-land-ptrsize32 follow-up)
   - PointerType with operand identity `(:addr, K)` (inttoptr-of-const) —
@@ -1023,14 +1025,17 @@ function _flatten_struct_to_bytes(init::LLVM.ConstantStruct,
 
         if field_ty isa LLVM.IntegerType
             w = LLVM.width(field_ty)
-            (w in (8, 16, 32, 64)) || return (nothing, Tuple{Int,Int}[])
+            # Bennett-ciss: any whole-byte width <= 64 (i24, i40, ... too);
+            # exactly `store_size` bytes are written, the rest of the
+            # allocation (DataLayout padding) stays zero.
+            (w % 8 == 0 && 8 <= w <= 64) || return (nothing, Tuple{Int,Int}[])
             # ConstantAggregateZero on a sub-int field is just zero —
             # bytes already zero, nothing to do.
             if field_val isa LLVM.ConstantAggregateZero
                 # no-op
             elseif field_val isa LLVM.ConstantInt
                 raw = UInt64(LLVM.API.LLVMConstIntGetZExtValue(field_val.ref))
-                nb = div(w, 8)
+                nb = Int(LLVM.storage_size(dl, field_ty))
                 for k in 0:(nb - 1)
                     bytes[field_off + k + 1] = UInt8((raw >> (8 * k)) & 0xff)
                 end
@@ -1042,9 +1047,15 @@ function _flatten_struct_to_bytes(init::LLVM.ConstantStruct,
             elem_ty = LLVM.eltype(field_ty)
             elem_ty isa LLVM.IntegerType || return (nothing, Tuple{Int,Int}[])
             ew = LLVM.width(elem_ty)
-            (ew in (8, 16, 32, 64)) || return (nothing, Tuple{Int,Int}[])
+            (ew % 8 == 0 && 8 <= ew <= 64) || return (nothing, Tuple{Int,Int}[])
             arrlen = Int(LLVM.API.LLVMGetArrayLength(field_ty.ref))
-            nb_per = div(ew, 8)
+            # Bennett-ciss: element k sits at `k * alloc_size(elem)` (the
+            # DataLayout allocation stride, e.g. 8 for i32 under `i32:64`, 4
+            # for i24) and occupies `store_size(elem)` bytes; padding stays
+            # zero. Pre-ciss the stride was `ew ÷ 8` (the store size), so a
+            # padded element type shifted every later element.
+            stride = Int(LLVM.abi_size(dl, elem_ty))
+            nb_per = Int(LLVM.storage_size(dl, elem_ty))
 
             # Bennett-fpa0: kind-checked element read. A non-ConstantInt
             # element (undef / poison / ConstantExpr) or an unexpected
@@ -1053,7 +1064,7 @@ function _flatten_struct_to_bytes(init::LLVM.ConstantStruct,
             elems === nothing && return (nothing, Tuple{Int,Int}[])
             for k in 0:(arrlen - 1)
                 raw = elems[k + 1]
-                base = field_off + k * nb_per
+                base = field_off + k * stride
                 for b in 0:(nb_per - 1)
                     bytes[base + b + 1] = UInt8((raw >> (8 * b)) & 0xff)
                 end
@@ -1135,6 +1146,82 @@ function _flatten_struct_to_bytes(init::LLVM.ConstantStruct,
     end
 
     return (bytes, ptr_prov)
+end
+
+# ---------------------------------------------------------------------------
+# Bennett-0cnv: synthetic pointer bytes are never an integer.
+#
+# A ptr field of a ConstantStruct global is materialised (Bennett-land) as a
+# SYNTHETIC compile-time address, recorded in `synth_ptr_provenance` as
+# `(global, byte_offset, byte_width)`. Those bytes exist only so a pointer-
+# typed read can recover WHICH global the field names; they are not the
+# native address, so an integer- (or float-) typed read of them has no native
+# answer Bennett can produce. Every read path that pulls bytes of a global
+# straight out of its byte image — a constant- or runtime-index GEP + load
+# (`IRVarGEP` → QROM), a direct `load` of the global or of a constant-
+# expression GEP of it — calls `_check_synth_ptr_read` and is refused loudly
+# when its byte range overlaps a pointer range. (The memcpy-from-global path
+# keeps its own alloca-level guard, `Bennett-land-ptrload`.) Pointer-typed
+# reads are left to that provenance machinery; an unread global costs nothing.
+
+# Sorted `(lo, hi)` half-open byte ranges of `gname` holding pointer bytes.
+_synth_ptr_ranges(prov::Set{Tuple{Symbol, Int, Int}}, gname::Symbol) =
+    sort!([(o, o + w) for (g, o, w) in prov if g === gname])
+
+_fmt_byte_ranges(rs) = join(("[$a, $b)" for (a, b) in rs), ", ")
+
+"""
+    _check_synth_ptr_read(inst, gname, prov, lo, nbytes)
+
+Bennett-0cnv. Refuse (`_ir_error` on `inst`) a non-pointer read of bytes
+`[lo, lo + nbytes)` of constant global `gname` that overlaps a pointer byte
+range recorded in `prov`; `lo === nothing` is a RUNTIME offset, refused
+whenever `gname` has any pointer range. No-op for a global without one.
+"""
+function _check_synth_ptr_read(inst::LLVM.Instruction, gname::Symbol,
+                               prov::Set{Tuple{Symbol, Int, Int}},
+                               lo::Union{Int, Nothing}, nbytes::Int)
+    rs = _synth_ptr_ranges(prov, gname)
+    isempty(rs) && return nothing
+    why = "bytes $(_fmt_byte_ranges(rs)) of @$gname hold a pointer field " *
+          "materialised as a SYNTHETIC compile-time address (Bennett-land), " *
+          "not the native address, so reading them as an integer has no " *
+          "native answer; refused rather than returning the synthetic bytes " *
+          "(Bennett-0cnv)"
+    lo === nothing && _ir_error(inst,
+        "non-pointer read of constant global @$gname at a runtime byte " *
+        "offset may overlap a pointer field: " * why)
+    hi = lo + nbytes
+    for (a, b) in rs
+        (lo < b && a < hi) && _ir_error(inst,
+            "non-pointer read of bytes [$lo, $hi) of constant global " *
+            "@$gname overlaps a pointer field: " * why)
+    end
+    return nothing
+end
+
+"""
+    _check_synth_ptr_gep_loads(gep, gname, prov, byte_off)
+
+Bennett-0cnv. For a GEP off constant global `gname` at constant byte offset
+`byte_off` (`nothing` = runtime index), check every non-pointer `load` that
+reads through it with `_check_synth_ptr_read` (width = the loaded type's
+DataLayout store size).
+"""
+function _check_synth_ptr_gep_loads(gep::LLVM.Instruction, gname::Symbol,
+                                    prov::Set{Tuple{Symbol, Int, Int}},
+                                    byte_off::Union{Int, Nothing})
+    any(p -> p[1] === gname, prov) || return nothing
+    dl = _inst_datalayout(gep)
+    for use in LLVM.uses(gep)
+        u = LLVM.user(use)
+        u isa LLVM.LoadInst || continue
+        ty = LLVM.value_type(u)
+        ty isa LLVM.PointerType && continue
+        _check_synth_ptr_read(u, gname, prov, byte_off,
+                              Int(LLVM.storage_size(dl, ty)))
+    end
+    return nothing
 end
 
 """

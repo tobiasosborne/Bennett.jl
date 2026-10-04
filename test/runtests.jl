@@ -1090,6 +1090,9 @@ runfile("test_8kno_extract_const_globals_narrowing.jl")
 # Bennett-omhx — alias-referencing const-global initializers: excluded/resolved
 # by value kind, never by exception text; unread costs nothing, read is loud.
 runfile("test_omhx_const_global_alias_init.jl")
+# Bennett-0cnv + Bennett-ciss — const-global byte image: synthetic pointer bytes
+# are never read as an integer; array elements sit at the DataLayout stride.
+runfile("test_0cnv_const_global_ptr_bytes_and_stride.jl")
 # Bennett-f6qa / U97 — every error("...") in lower.jl starts with a
 # recognised function-or-helper prefix; pebbling/pebbled_groups budget
 # wording unified to "insufficient pebbles — need at least N".

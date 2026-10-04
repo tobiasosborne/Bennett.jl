@@ -7447,6 +7447,10 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 "type $(src_type) not supported; cannot infer elem_width " *
                 "(Bennett-plb7 / U13)")
             ew = _var_gep_packed_width(inst, src_type)
+            # Bennett-0cnv: no integer read of a pointer field's synthetic bytes.
+            _check_synth_ptr_gep_loads(inst, gname, synth_ptr_provenance,
+                ops[2] isa LLVM.ConstantInt ?
+                    _const_int_as_int(ops[2]) * div(ew, 8) : nothing)
             if ops[2] isa LLVM.ConstantInt
                 # Compile-time index into a constant table — still synthesizable
                 # as IRVarGEP with a constant-kind index.
@@ -7509,6 +7513,13 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                     ew_arr = _var_gep_packed_width(inst, elem_ty_arr)
                     base_sym_arr = is_local_arr ? names[base.ref] :
                                    Symbol(LLVM.name(base))
+                    # Bennett-0cnv: no integer read of a pointer field's
+                    # synthetic bytes (global base only).
+                    is_global_arr && !is_local_arr &&
+                        _check_synth_ptr_gep_loads(inst, base_sym_arr,
+                            synth_ptr_provenance,
+                            ops[3] isa LLVM.ConstantInt ?
+                                _const_int_as_int(ops[3]) * div(ew_arr, 8) : nothing)
                     idx_op_arr = ops[3] isa LLVM.ConstantInt ?
                         iconst(_const_int_as_int(ops[3])) :
                         _operand(ops[3], names)
@@ -7707,6 +7718,21 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                         "ABI shape). Got $(n_uses == 0 ? "zero uses" : " " *
                         "a non-memcpy use") instead. (Bennett-land-ptrload)")
                 end
+            end
+        end
+
+        # Bennett-0cnv: a non-pointer load DIRECTLY of a constant global, or of
+        # a constant-expression GEP of one, must not read a pointer field's
+        # synthetic bytes. (GEP-instruction bases are checked at the GEP.)
+        if !isempty(synth_ptr_provenance) && !haskey(names, ptr.ref) &&
+           !(LLVM.value_type(inst) isa LLVM.PointerType)
+            groot = _global_root_and_offset(ptr)
+            if groot !== nothing
+                (gref0, goff0) = groot
+                _check_synth_ptr_read(inst, Symbol(LLVM.name(LLVM.Value(gref0))),
+                    synth_ptr_provenance, goff0,
+                    Int(LLVM.storage_size(_inst_datalayout(inst),
+                                          LLVM.value_type(inst))))
             end
         end
 
