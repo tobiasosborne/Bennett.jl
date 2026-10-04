@@ -894,7 +894,8 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
                                # _collect_loop_body_blocks; this path is for
                                # a callee-with-loop inlined inside a loop body.)
                                opts.loop_guards,
-                               opts.persistent_writes)   # Bennett-9378
+                               opts.persistent_writes,   # Bennett-9378
+                               opts.lower_opts)          # Bennett-0a6f
 
         # (a1) Lower header's non-phi instructions through the canonical
         # dispatcher. `header_body_insts` is in source order (collected at
@@ -1042,7 +1043,7 @@ function lower_loop!(gates, wa, vw, header::IRBasicBlock, block_map,
                            Ref(false),
                            opts.mem, opts.persistent_impl, opts.hashcons,
                            opts.persistent_info, opts.loop_guards,
-                           opts.persistent_writes)
+                           opts.persistent_writes, opts.lower_opts)
     for inst in header_body_insts
         _lower_inst!(conv_ctx, inst, hlabel)
     end

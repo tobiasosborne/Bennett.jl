@@ -493,7 +493,8 @@ function _emit_persistent_set_unconditional!(ctx::LoweringCtx, inst::IRStore,
                   [state_w, k_w, v_w],
                   state_w)
     lower_call!(ctx.gates, ctx.wa, ctx.vw, call;
-                compact=ctx.compact_calls)
+                compact=ctx.compact_calls, loop_guards=ctx.loop_guards,
+                callee_opts=ctx.lower_opts)   # Bennett-0a6f
 
     # Rebind alloca's wire map to the post-call state. Subsequent loads through
     # the same alloca pointer see the updated state. (Bennett's reverse pass
@@ -580,7 +581,8 @@ function _lower_store_via_persistent_guarded!(ctx::LoweringCtx, inst::IRStore,
                   [state_w, k_w, v_w],
                   state_w)
     lower_call!(ctx.gates, ctx.wa, ctx.vw, call;
-                compact=ctx.compact_calls)
+                compact=ctx.compact_calls, loop_guards=ctx.loop_guards,
+                callee_opts=ctx.lower_opts)   # Bennett-0a6f
     post_state = ctx.vw[new_state_dest]
     length(post_state) == state_w ||
         throw(AssertionError("_lower_store_via_persistent_guarded!: post_state has " *
@@ -644,7 +646,8 @@ function _lower_load_via_persistent!(ctx::LoweringCtx, inst::IRLoad,
                   [state_w, k_w],
                   v_w)
     lower_call!(ctx.gates, ctx.wa, ctx.vw, call;
-                compact=ctx.compact_calls)
+                compact=ctx.compact_calls, loop_guards=ctx.loop_guards,
+                callee_opts=ctx.lower_opts)   # Bennett-0a6f
     # ctx.vw[inst.dest] now holds the V wires (set by lower_call!).
     return nothing
 end
@@ -1156,7 +1159,8 @@ for (N, W) in _MUX_SHAPES_NW
 
             call = IRCall(tmp_sym, $soft_load,
                           [ssa(arr_sym), ssa(idx_sym)], [64, 64], 64)
-            lower_call!(ctx.gates, ctx.wa, ctx.vw, call; compact=ctx.compact_calls)
+            lower_call!(ctx.gates, ctx.wa, ctx.vw, call; compact=ctx.compact_calls,
+                        loop_guards=ctx.loop_guards, callee_opts=ctx.lower_opts)   # Bennett-0a6f
 
             ctx.vw[inst.dest] = ctx.vw[tmp_sym][1:$W]
             return nothing
@@ -1216,7 +1220,8 @@ for (N, W) in _MUX_SHAPES_NW
                               [ssa(arr_sym), ssa(idx_sym), ssa(val_sym), ssa(pred_sym)],
                               [64, 64, 64, 64], 64)
             end
-            lower_call!(ctx.gates, ctx.wa, ctx.vw, call; compact=ctx.compact_calls)
+            lower_call!(ctx.gates, ctx.wa, ctx.vw, call; compact=ctx.compact_calls,
+                        loop_guards=ctx.loop_guards, callee_opts=ctx.lower_opts)   # Bennett-0a6f
 
             ctx.vw[alloca_dest] = ctx.vw[res_sym][1:$packed_bits]
             return nothing

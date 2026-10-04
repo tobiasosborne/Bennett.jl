@@ -111,6 +111,33 @@ LoweringResult(gates, n_wires, input_wires, output_wires,
                    input_widths, output_elem_widths, gate_groups,
                    self_reversing, LoopGuard[])
 
+"""
+    LowerOptions
+
+The resolved keyword options of one `lower(parsed; ...)` call (Bennett-0a6f).
+Every field is a `lower()` kwarg with the same default, so `LowerOptions()`
+is exactly "`lower` with defaults". `mul` is stored AFTER `lower()` resolves
+`mul=:auto` + `target=:depth` to `:qcla_tree`.
+
+`lower()` builds one and threads it through `BlockLoweringOpts` →
+`LoweringCtx` → `lower_call!`, which lowers each inlined callee under the
+same options (see `_callee_lower_kwargs`), so an explicit strategy applies to
+the whole circuit, not only to the caller's own instructions.
+"""
+Base.@kwdef struct LowerOptions
+    max_loop_iterations::Int = 0
+    use_inplace::Bool = true
+    fold_constants::Bool = true
+    compact_calls::Bool = false
+    add::Symbol = :auto
+    mul::Symbol = :auto
+    target::Symbol = :gate_count
+    auto_self_reversing::Bool = true
+    mem::Symbol = :auto
+    persistent_impl::Symbol = :linear_scan
+    hashcons::Symbol = :none
+end
+
 """Bundles shared lowering state for instruction dispatch."""
 struct LoweringCtx
     gates::Vector{ReversibleGate}
@@ -196,6 +223,10 @@ struct LoweringCtx
     # `_count_persistent_write!` rejects a slab whose count exceeds
     # `impl.max_n` (the impls' capacity counts writes, not live keys).
     persistent_writes::Dict{Symbol, Int}
+    # Bennett-0a6f: the enclosing `lower()` call's resolved options. NOT the
+    # per-block `add`/`mul` above (a loop body forces `add=:ripple` for the
+    # caller's own adds); `lower_call!` lowers callees under these.
+    lower_opts::LowerOptions
 end
 
 # Bennett-tbm6 (2026-04-27): the 11-arg / 12-arg / 13-arg backward-compat
@@ -249,6 +280,8 @@ Base.@kwdef struct BlockLoweringOpts
     persistent_info::Dict{Symbol, Any}                   = Dict{Symbol, Any}()
     # Bennett-9378: per-function persistent-slab write counter (see LoweringCtx).
     persistent_writes::Dict{Symbol, Int}                 = Dict{Symbol, Int}()
+    # Bennett-0a6f: see `LoweringCtx.lower_opts`.
+    lower_opts::LowerOptions                             = LowerOptions()
 end
 
 # Dispatched instruction lowering — Julia selects the method by inst type
@@ -260,7 +293,8 @@ _lower_inst!(ctx::LoweringCtx, inst::IRBinOp, ::Symbol) =
     lower_binop!(ctx.gates, ctx.wa, ctx.vw, inst;
                  inplace_targets=ctx.inplace_targets,
                  add=ctx.add, mul=ctx.mul,
-                 last_inst_self_reversing=ctx.last_inst_self_reversing)
+                 last_inst_self_reversing=ctx.last_inst_self_reversing,
+                 callee_opts=ctx.lower_opts)   # Bennett-0a6f: div/rem callee
 
 _lower_inst!(ctx::LoweringCtx, inst::IRICmp, ::Symbol) =
     lower_icmp!(ctx.gates, ctx.wa, ctx.vw, inst)
@@ -298,7 +332,8 @@ _lower_inst!(ctx::LoweringCtx, inst::IRInsertBits, ::Symbol) =
 
 _lower_inst!(ctx::LoweringCtx, inst::IRCall, ::Symbol) =
     lower_call!(ctx.gates, ctx.wa, ctx.vw, inst; compact=ctx.compact_calls,
-                loop_guards=ctx.loop_guards)   # Bennett-s0tn
+                loop_guards=ctx.loop_guards,   # Bennett-s0tn
+                callee_opts=ctx.lower_opts)    # Bennett-0a6f
 
 _lower_inst!(::LoweringCtx, inst::IRInst, ::Symbol) =
     error("_lower_inst!: unhandled IR instruction type: $(typeof(inst)) — $(inst)")

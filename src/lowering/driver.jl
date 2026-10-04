@@ -201,6 +201,10 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
     if mul === :auto && target === :depth
         mul = :qcla_tree
     end
+    # Bennett-0a6f: the resolved options, threaded to every inlined callee.
+    lower_opts = LowerOptions(; max_loop_iterations, use_inplace, fold_constants,
+                              compact_calls, add, mul, target, auto_self_reversing,
+                              mem, persistent_impl, hashcons)
     _bvmd_reject_normalised_alloca!(parsed)
     wa = WireAllocator()
     gates = ReversibleGate[]
@@ -366,6 +370,7 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
             hashcons       = hashcons,
             persistent_info = persistent_info,
             persistent_writes = persistent_writes,
+            lower_opts     = lower_opts,   # Bennett-0a6f
         )
 
         if label in loop_headers
@@ -621,7 +626,8 @@ function lower_block_insts!(gates, wa, vw, block, preds, branch_info, block_orde
                       opts.mem, opts.persistent_impl, opts.hashcons,
                       opts.persistent_info,
                       opts.loop_guards,   # Bennett-s0tn loop-guard accumulator
-                      opts.persistent_writes)   # Bennett-9378 slab write counter
+                      opts.persistent_writes,   # Bennett-9378 slab write counter
+                      opts.lower_opts)          # Bennett-0a6f callee options
     for inst in block.instructions
         _ws = wa.next_wire
         _gs = length(gates) + 1

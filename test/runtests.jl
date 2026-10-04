@@ -979,6 +979,7 @@ runfile("test_xlsz_kwargs_unified.jl")
 # Bennett-4fri / U30 — mul dispatcher `target=:depth` promotes `:auto`
 # to `qcla_tree` (O(log² n) Toffoli-depth).
 runfile("test_4fri_mul_target.jl")
+runfile("test_0a6f_callee_compile_options.jl")  # Bennett-0a6f / jgyx: callees lowered under caller options
 # Bennett-spa8 / U27 — add dispatcher `:auto` → `:ripple` (Cuccaro
 # is strictly worse post-Bennett copy-out at every measured width).
 runfile("test_spa8_add_auto_ripple.jl")

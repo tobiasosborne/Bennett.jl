@@ -72,29 +72,61 @@ function _assert_arg_widths_match(inst::IRCall, arg_types::Type{<:Tuple})::Nothi
     return nothing
 end
 
+# Bennett-0a6f / Bennett-jgyx: loop-bound policy for an inlined callee.
+# Every registered library callee with a loop (soft_udiv/urem, soft_fdiv,
+# soft_fsqrt, the inverse-trig / hyperbolic soft-floats, …) has a static trip
+# count that fits 64 unrolled iterations — the bound the registry has always
+# been lowered and tested with. The caller's `max_loop_iterations` sizes the
+# CALLER's loops, so a small caller bound (say 10) must not starve a 64-trip
+# library loop (it would trip the loop guard on every input), while a larger
+# caller bound IS honoured so a callee loop needing > 64 iterations can
+# compile (jgyx). Hence max(caller, 64); unset (0) gives 64 as before.
+const _CALLEE_MIN_LOOP_ITERATIONS = 64
+_callee_loop_bound(caller_K::Int) = max(caller_K, _CALLEE_MIN_LOOP_ITERATIONS)
+
+# Bennett-0a6f: the `lower()` kwargs an inlined callee is lowered with — the
+# caller's resolved options, loop bound per `_callee_loop_bound`. Spelled out
+# field by field so each field's callee semantics is an explicit decision: a
+# new `LowerOptions` field must be added here too (test_0a6f checks that every
+# field is forwarded).
+_callee_lower_kwargs(o::LowerOptions) = (
+    max_loop_iterations = _callee_loop_bound(o.max_loop_iterations),
+    use_inplace = o.use_inplace, fold_constants = o.fold_constants,
+    compact_calls = o.compact_calls, add = o.add, mul = o.mul,
+    target = o.target, auto_self_reversing = o.auto_self_reversing,
+    mem = o.mem, persistent_impl = o.persistent_impl, hashcons = o.hashcons)
+
 """
-    lower_call!(gates, wa, vw, inst::IRCall)
+    lower_call!(gates, wa, vw, inst::IRCall; compact=false, loop_guards=LoopGuard[],
+                callee_opts=LowerOptions())
 
 Inline a function call by pre-compiling the callee into a sub-circuit and
 inserting its forward gates with wire remapping. The callee's inputs are
 connected via CNOT-copy from the caller's argument wires, and the callee's
 output wires become the caller's result wires.
+
+The callee is lowered under `callee_opts` — the caller's resolved `lower()`
+options (Bennett-0a6f), with the loop bound from `_callee_loop_bound`. The
+default `LowerOptions()` is `lower`'s own defaults. The callee IR cache
+(`_extract_parsed_ir_cached`) sits BEFORE lowering and is option-free, so a
+callee lowered under different options is never served from a cache.
 """
 function lower_call!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                      vw::Dict{Symbol,Vector{Int}}, inst::IRCall;
                      compact::Bool=false,
-                     loop_guards::Vector{LoopGuard}=LoopGuard[])
+                     loop_guards::Vector{LoopGuard}=LoopGuard[],
+                     callee_opts::LowerOptions=LowerOptions())
     # Pre-compile the callee function. Bennett-atf4: arg types derived from
     # methods() not hardcoded UInt64 — unblocks aggregate callees.
     arg_types = _callee_arg_types(inst)
     _assert_arg_widths_match(inst, arg_types)
     callee_parsed = _extract_parsed_ir_cached(inst.callee, arg_types)
-    # Bennett-s0tn: the hardcoded max_loop_iterations=64 here is a known
-    # smell (filed as a follow-up bead). If the callee has a data-dependent
-    # loop, its `loop_guards` reference callee-numbered convergence wires;
-    # they MUST be remapped (via `wmap`) and appended to the caller's
-    # accumulator below — never silently dropped.
-    callee_lr = lower(callee_parsed; max_loop_iterations=64)
+    # Bennett-s0tn: if the callee has a data-dependent loop, its
+    # `loop_guards` reference callee-numbered convergence wires; they MUST be
+    # remapped (via `wmap`) and appended to the caller's accumulator below —
+    # never silently dropped. Bennett-0a6f / jgyx: lowered under the caller's
+    # options, not defaults + a hard-coded 64 (see `_callee_lower_kwargs`).
+    callee_lr = lower(callee_parsed; _callee_lower_kwargs(callee_opts)...)
 
     if compact
         # Apply Bennett to callee: forward + copy output + reverse.

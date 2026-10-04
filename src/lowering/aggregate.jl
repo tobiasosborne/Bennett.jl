@@ -48,7 +48,8 @@ a follow-up against `lower_divrem!` directly.
 """
 function lower_divrem!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                        vw::Dict{Symbol,Vector{Int}}, inst::IRBinOp,
-                       a::Vector{Int}, b::Vector{Int}, W::Int)
+                       a::Vector{Int}, b::Vector{Int}, W::Int;
+                       callee_opts::LowerOptions=LowerOptions())   # Bennett-0a6f
     # Widen a and b to 64 bits (zero-extend for unsigned, sign-extend for signed)
     signed = inst.op in (:sdiv, :srem)
     a64 = allocate!(wa, 64)
@@ -98,7 +99,7 @@ function lower_divrem!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     # Register the widened operands in vw
     vw[Symbol("__div_a64_$(inst.dest)")] = a64
     vw[Symbol("__div_b64_$(inst.dest)")] = b64
-    lower_call!(gates, wa, vw, call_inst)
+    lower_call!(gates, wa, vw, call_inst; callee_opts)   # Bennett-0a6f
 
     result64 = vw[call_dest]
 

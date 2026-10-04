@@ -232,7 +232,8 @@ end
 function lower_binop!(gates, wa, vw, inst::IRBinOp;
                       inplace_targets::Set{Symbol}=Set{Symbol}(),
                       add::Symbol=:auto, mul::Symbol=:auto,
-                      last_inst_self_reversing::Ref{Bool}=Ref(false))
+                      last_inst_self_reversing::Ref{Bool}=Ref(false),
+                      callee_opts::LowerOptions=LowerOptions())   # Bennett-0a6f
     # Bennett-5qrn / U57: trivial-identity peephole. Short-circuits before
     # `resolve!` so neither the constant operand nor the heavy adder/multiplier
     # allocates ancilla wires. See helper docs above.
@@ -319,7 +320,7 @@ function lower_binop!(gates, wa, vw, inst::IRBinOp;
         elseif inst.op == :or;  lower_or!(gates, wa, a, b, W)
         elseif inst.op == :xor; lower_xor!(gates, wa, a, b, W)
         elseif inst.op in (:udiv, :urem, :sdiv, :srem)
-            lower_divrem!(gates, wa, vw, inst, a, b, W)
+            lower_divrem!(gates, wa, vw, inst, a, b, W; callee_opts)
         else throw(ArgumentError("lower_binop!: unknown binop :$(inst.op) (supported: $_IR_BINOP_OPS)"))
         end
     end
