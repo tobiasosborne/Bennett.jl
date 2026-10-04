@@ -216,6 +216,7 @@ runfile("test_19jw_float64_tuple_route.jl")
 runfile("test_czox_softfloat_dispatch_divergence.jl")
 runfile("test_iffz_softfloat_generated_unresolved.jl")
 runfile("test_blnv_softfloat_wrapper_divergence.jl")
+runfile("test_dlp8_softfloat_asymmetric_methods.jl")
 # Bennett-8aes: SoftFloat methods ordinary Float64 code uses (mixed ordered
 # comparisons, isnan & co, isequal/isless, mixed min/max, fma/muladd, x^n).
 runfile("test_8aes_softfloat_missing_methods.jl")

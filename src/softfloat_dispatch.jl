@@ -327,8 +327,13 @@ end
 # "same method, same length"), two typed bodies of different length, and, in
 # user methods, a splat / `invoke` whose argument types differ or a call
 # whose argument types are not concrete and may select a user method (the
-# walk cannot see what either side picks at run time). The Float64 overload
-# refuses an unresolved f; the Tuple overload does not delegate it.
+# walk cannot see what either side picks at run time). Bennett-dlp8: a call
+# (or f itself) that selects a method under one typing and none under the
+# other (no method / ambiguous: a MethodError) is "unresolved"; it was
+# skipped, so `g(x::SoftFloat)` alone compiled where native Julia throws. A
+# call with no method under both typings throws on both and is skipped.
+# The Float64 overload refuses an unresolved f; the Tuple overload does not
+# delegate it.
 const _SFD_UNRESOLVED = "unresolved: "
 
 _sfd_is_user(m::Method) = !(Base.moduleroot(m.module) in (Base, Core, Bennett))
@@ -361,12 +366,35 @@ function _sfd_argtype(ci, @nospecialize(a))
     return Core.Compiler.widenconst(t)
 end
 
-# Every method a call signature can select (one for a concrete signature);
-# `nothing` when none matches (that call throws a MethodError).
+# Every method a call signature can select (one for a concrete signature).
+# Bennett-dlp8: `Method[]` when none can be selected — no method matches, or
+# (concrete signature) the call is ambiguous; either way the call throws a
+# MethodError. `nothing` only when the method-table query itself fails
+# (`_methods_by_ftype` returns `nothing` / `false`): the walk cannot tell.
 function _sfd_methods(@nospecialize(sig))
     ms = Base._methods_by_ftype(sig, -1, Base.get_world_counter())
-    (ms === nothing || ms === false || isempty(ms)) && return nothing
+    (ms === nothing || ms === false) && return nothing
     return Method[mm.method for mm in ms]
+end
+
+# Bennett-dlp8: compare method availability under the two typings. `nothing`
+# when both select some method(s) (the caller compares them) or both select
+# none (the call throws a MethodError on both — the same behaviour, so not a
+# divergence); otherwise an "unresolved" verdict: a lookup failed, or one
+# typing selects a method and the other none, so the trace would return a
+# value where native Julia throws a MethodError, or the reverse.
+function _sfd_availability(@nospecialize(stF), @nospecialize(stS), mF, mS, site::String)
+    (mF === nothing || mS === nothing) && return _sfd_unresolved(
+        "the method lookup for $site failed for " *
+        "$(mF === nothing ? stF : stS)")
+    isempty(mF) == isempty(mS) && return nothing
+    return isempty(mF) ?
+        _sfd_unresolved("$site has no unique method for Float64 arguments " *
+            "($stF; natively a MethodError) but selects $(_sfd_show(mS)) on " *
+            "the SoftFloat trace (Bennett-dlp8)") :
+        _sfd_unresolved("$site selects $(_sfd_show(mF)) natively but has no " *
+            "unique method on the SoftFloat trace ($stS; a MethodError there) " *
+            "(Bennett-dlp8)")
 end
 
 _sfd_call(@nospecialize(s)) =
@@ -482,12 +510,17 @@ function _sfd_walk(@nospecialize(sigF), @nospecialize(sigS), m::Method, visited)
                 aF = rF; aS = rS
             end
             aF[1] <: Core.Builtin && continue
-            (aF[1] === Union{} || aS[1] === Union{}) && continue
+            (aF[1] === Union{}) != (aS[1] === Union{}) && return _sfd_unresolved(
+                "call $i in $m invokes a callable through a builtin that never " *
+                "returns under only one of the Float64 / SoftFloat typings")
+            aF[1] === Union{} && continue
             stF = Tuple{aF...}; stS = Tuple{aS...}
             stF == stS && continue
         end
-        mF = _sfd_methods(stF); mF === nothing && continue
-        mS = _sfd_methods(stS); mS === nothing && continue
+        mF = _sfd_methods(stF); mS = _sfd_methods(stS)
+        r = _sfd_availability(stF, stS, mF, mS, "call $i in $m")
+        r === nothing || return r
+        isempty(mF) && continue   # MethodError under both typings
         user && !(Base.isdispatchtuple(stF) && Base.isdispatchtuple(stS)) &&
             (any(_sfd_is_user, mF) || any(_sfd_is_user, mS)) &&
             return _sfd_unresolved(
@@ -519,7 +552,9 @@ function _softfloat_dispatch_divergence(f, N::Int)
     sigF = Tuple{Core.Typeof(f), ntuple(_ -> Float64, N)...}
     sigS = Tuple{Core.Typeof(f), ntuple(_ -> SoftFloat, N)...}
     mF = _sfd_methods(sigF); mS = _sfd_methods(sigS)
-    (mF === nothing || mS === nothing) && return nothing
+    r = _sfd_availability(sigF, sigS, mF, mS, "$f")
+    r === nothing || return r
+    isempty(mF) && return nothing   # no method either way: the trace throws loudly
     if mF != mS
         (any(_sfd_is_user, mF) || any(_sfd_is_user, mS)) &&
             return "$f selects $(_sfd_show(mF)) for Float64 arguments but " *
