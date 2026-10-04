@@ -211,7 +211,7 @@ end
             @test isempty(e8_host_mismatches(f, X1))
         end
         # Non-literal and other literal powers route to soft_pow_julia
-        # (bit-exact vs Base.:^ on the host; compiling it is Bennett-bie9).
+        # (bit-exact vs Base.:^ on the host; compiles since Bennett-bie9).
         safe(f) = (args...) -> try f(args...) catch e; e isa DomainError ? nothing : rethrow() end
         # Skipped: a negative base whose odd power underflows, where
         # soft_pow_julia returns +0.0 for Base's -0.0 (Bennett-u1zi).

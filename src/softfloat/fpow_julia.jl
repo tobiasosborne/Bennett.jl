@@ -199,6 +199,11 @@ const _PJ_T_LOG_TAB = (
     (UInt64(0x3fd57bf753c8d037), UInt64(0x3d1fadedee5d40ef)),  # i=127, lc=2.8137e-14
     (UInt64(0x3fd5d5bddf596036), UInt64(0xbd0a0b2a08a465dc)),  # i=128, lc=-1.15657e-14
 )
+# Bennett-bie9: the circuit indexes two flat `NTuple{128,UInt64}` columns,
+# not the tuple-of-pairs above — a dynamic index into the nested tuple is a
+# GEP on a `[2 x i64]`-element global, which ir_extract refuses (Bennett-plb7).
+const _PJ_T_LOG_T    = map(first, _PJ_T_LOG_TAB)
+const _PJ_T_LOG_TAIL = map(last,  _PJ_T_LOG_TAB)
 
 # ── _log_ext: Julia-faithful 68-bit-precision log ─────────────────────
 # Returns (loghi_bits, loglo_bits). Inlined into _pj_pow_body_float
@@ -222,9 +227,8 @@ end
 
     # idx = (tmp >> 45) & 127 + 1
     idx = Int(((tmp_s >> 45) & Int64(127)) + Int64(1))
-    t_entry = getfield(_PJ_T_LOG_TAB, idx)
-    t_bits   = getfield(t_entry, 1)
-    logctail = getfield(t_entry, 2)
+    t_bits   = getfield(_PJ_T_LOG_T,    idx)
+    logctail = getfield(_PJ_T_LOG_TAIL, idx)
     invc, logc = _pj_log_tab_unpack(t_bits)
 
     # r = fma(z, invc, -1.0)
@@ -375,7 +379,7 @@ end
 
 # ── pow_body(x::Float64, n::Integer) — integer-y compensated squaring ──
 # Port of base/math.jl line 1218. Loop bound: |n| ≤ 24576 < 2^15
-# (16 iterations max).
+# (at most 14 squaring steps — see `_PJ_POW_INT_STEPS` below).
 #
 # CRITICAL: Julia's `pow_body(::Float64, ::Integer)` is `@noinline`, so its
 # `muladd` calls are emitted as `fmul contract; fadd contract` and NOT
@@ -387,57 +391,66 @@ end
 # `muladd`), and `fma` always emits `@llvm.fma.f64` (one rounding).
 @inline _pj_two_round(a::UInt64, b::UInt64, c::UInt64) = soft_fadd(soft_fmul(a, b), c)
 
-function _pj_pow_body_int(x::UInt64, n::Int64)::UInt64
-    n == Int64(3) && return soft_fmul(soft_fmul(x, x), x)  # literal_pow compatibility
+# Bennett-bie9: Julia's body is a data-dependent `while n > 1` loop with
+# early returns; LLVM kept that out of line as `j__pj_pow_body_int_*`, an
+# unregistered (and LLVM-mangled) callee, so `soft_pow_julia` could not be
+# compiled. This port is straight-line instead: the loop runs a FIXED
+# `_PJ_POW_INT_STEPS` times, each step's updates committed via `ifelse` only
+# while `n > 1` (inactive steps leave the state untouched, so the result is
+# bit-identical to the loop), and the `n == 3` / `n == -2` early returns
+# become final selects. Steps needed = floor(log2 max|n|) over the caller's
+# range [_PJ_POW_INT_LO, _PJ_POW_INT_HI] (checked at load below).
+const _PJ_POW_INT_STEPS = 14
+let m = max(_PJ_POW_INT_HI, -_PJ_POW_INT_LO)
+    (m >> _PJ_POW_INT_STEPS) <= 1 ||
+        error("_PJ_POW_INT_STEPS=$(_PJ_POW_INT_STEPS) too small for |n| ≤ $m (Bennett-bie9)")
+end
 
-    y    = _PJ_POW_ONE       # 1.0 bits
-    xnlo = _PJ_POW_NZERO     # -0.0 bits
-    ynlo = _PJ_POW_ZERO      #  0.0 bits
+@inline function _pj_pow_body_int(x0::UInt64, n0::Int64)::UInt64
+    # n < 0: x = 1/x, n = -n; if isfinite(x): xnlo = -fma(x, rx, -1.) * rx.
+    # `fma` here is the IEEE FMA intrinsic (one rounding) — Julia's verbatim
+    # `fma(x, rx, -1.)` call, NOT a `muladd`.
+    n_neg     = n0 < Int64(0)
+    rx        = soft_fdiv(_PJ_POW_ONE, x0)
+    x0_finite = (x0 & _PJ_POW_SIGN_STRIP) < _PJ_POW_INF
+    xnlo_neg  = soft_fneg(soft_fmul(soft_fma(x0, rx, _PJ_LOG_NEG_ONE), rx))
 
-    if n < Int64(0)
-        rx = soft_fdiv(_PJ_POW_ONE, x)
-        n == Int64(-2) && return soft_fmul(rx, rx)
-        # if isfinite(x): xnlo = -fma(x, rx, -1.) * rx
-        # `fma` here is the IEEE FMA intrinsic (one rounding) — this is
-        # Julia's verbatim `fma(x, rx, -1.)` call, NOT a `muladd`.
-        abs_x = x & _PJ_POW_SIGN_STRIP
-        x_finite = abs_x < _PJ_POW_INF
-        xnlo_f = soft_fneg(soft_fmul(soft_fma(x, rx, _PJ_LOG_NEG_ONE), rx))
-        xnlo   = ifelse(x_finite, xnlo_f, xnlo)
-        x = rx
-        n = -n
-    end
+    x    = ifelse(n_neg, rx, x0)
+    xnlo = ifelse(n_neg & x0_finite, xnlo_neg, _PJ_POW_NZERO)  # -0.0 bits
+    n    = ifelse(n_neg, -n0, n0)
+    y    = _PJ_POW_ONE                                          # 1.0 bits
+    ynlo = _PJ_POW_ZERO                                         # 0.0 bits
 
-    while n > Int64(1)
-        if (n & Int64(1)) > Int64(0)
-            # err = muladd(y, xnlo, x*ynlo) — two-rounding (see header note)
-            err = _pj_two_round(y, xnlo, soft_fmul(x, ynlo))
-            # (y, ynlo) = two_mul(x, y) — one-rounding FMA per Julia
-            y_new    = soft_fmul(x, y)
-            ynlo_new = soft_fma(x, y, soft_fneg(y_new))
-            y    = y_new
-            ynlo = soft_fadd(ynlo_new, err)
-        end
+    Base.Cartesian.@nexprs 14 _ -> begin   # 14 == _PJ_POW_INT_STEPS
+        active = n > Int64(1)
+        odd    = active & ((n & Int64(1)) != Int64(0))
+        # err = muladd(y, xnlo, x*ynlo) — two-rounding (see header note)
+        err_y    = _pj_two_round(y, xnlo, soft_fmul(x, ynlo))
+        # (y, ynlo) = two_mul(x, y) — one-rounding FMA per Julia
+        y_new    = soft_fmul(x, y)
+        ynlo_new = soft_fadd(soft_fma(x, y, soft_fneg(y_new)), err_y)
+        y    = ifelse(odd, y_new, y)
+        ynlo = ifelse(odd, ynlo_new, ynlo)
         # err = x*2*xnlo (two regular multiplies)
-        err = soft_fmul(soft_fmul(x, _PJ_POW_TWO_F64), xnlo)
+        err_x    = soft_fmul(soft_fmul(x, _PJ_POW_TWO_F64), xnlo)
         # (x, xnlo) = two_mul(x, x) — one-rounding FMA
         x_new    = soft_fmul(x, x)
-        xnlo_new = soft_fma(x, x, soft_fneg(x_new))
-        x    = x_new
-        xnlo = soft_fadd(xnlo_new, err)
-        n  >>>= 1
+        xnlo_new = soft_fadd(soft_fma(x, x, soft_fneg(x_new)), err_x)
+        x    = ifelse(active, x_new, x)
+        xnlo = ifelse(active, xnlo_new, xnlo)
+        n    = ifelse(active, n >>> 1, n)
     end
 
     # err = muladd(y, xnlo, x*ynlo) — two-rounding
     err = _pj_two_round(y, xnlo, soft_fmul(x, ynlo))
     # ifelse(isfinite(x) & isfinite(err), muladd(x, y, err), x*y) — two-rounding
-    abs_x   = x   & _PJ_POW_SIGN_STRIP
-    abs_err = err & _PJ_POW_SIGN_STRIP
-    x_finite   = abs_x   < _PJ_POW_INF
-    err_finite = abs_err < _PJ_POW_INF
-    muladd_path = _pj_two_round(x, y, err)
-    fall_path   = soft_fmul(x, y)
-    return ifelse(x_finite & err_finite, muladd_path, fall_path)
+    x_finite   = (x   & _PJ_POW_SIGN_STRIP) < _PJ_POW_INF
+    err_finite = (err & _PJ_POW_SIGN_STRIP) < _PJ_POW_INF
+    result = ifelse(x_finite & err_finite, _pj_two_round(x, y, err), soft_fmul(x, y))
+    # Julia's early returns: n == 3 (literal_pow compatibility), n == -2.
+    result = ifelse(n0 == Int64(3),  soft_fmul(soft_fmul(x0, x0), x0), result)
+    result = ifelse(n0 == Int64(-2), soft_fmul(rx, rx),                result)
+    return result
 end
 
 # ── soft_pow_julia: outer ^(::Float64, ::Float64) wrapper ─────────────
