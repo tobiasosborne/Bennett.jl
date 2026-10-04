@@ -91,6 +91,7 @@ runfile("test_softftan.jl")
 runfile("test_6gxm_large_argument_trig.jl")
 runfile("test_softfatan.jl")
 runfile("test_softfatan2.jl")
+runfile("test_vke7_atan2_bit_exact.jl")   # Bennett-vke7: bit-exact π - (z - PI_LO)
 runfile("test_softfasin.jl")
 runfile("test_softfacos.jl")
 # Bennett-m2bv: soft_tanh primitive (Tier C1.6 hyperbolic completion).
