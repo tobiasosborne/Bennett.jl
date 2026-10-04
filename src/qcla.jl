@@ -76,7 +76,7 @@ function lower_add_qcla!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     # Conservative upper bound 9W avoids ≥3 reallocations on the canonical
     # i32/i64 paths (~200/450 gates) and ~7 on the multi-thousand-gate
     # parallel-adder-tree composition.
-    sizehint!(gates, length(gates) + 9 * W)
+    _grow_hint!(gates, length(gates) + 9 * W)
 
     p_offsets = _qcla_level_offsets(W, T)     # 0-based block starts per level
     Ptm = (t, m) -> Xflat[p_offsets[t] + m]

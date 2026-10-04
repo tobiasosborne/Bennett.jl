@@ -1,10 +1,31 @@
+"""
+    _grow_hint!(v, n)
+
+Reserve capacity for `n` elements in `v` WITHOUT ever shrinking it — the
+incremental "about to push k more gates" hint used by the arithmetic
+emitters. Bennett-bie9: `sizehint!` shrinks by default (`shrink=true` since
+Julia 1.11), so `sizehint!(gates, length(gates) + k)` on a vector whose
+capacity already exceeds that (push!'s geometric slack, or a multiplier's
+larger hint) reallocates DOWN to exactly `length + k`, copying the whole
+gate vector. Called once per add / multiply, that made lowering quadratic in
+the total gate count (the soft-float `^` circuit spent >90% of `lower` in
+those copies and never finished). Never shrinking restores amortised-linear
+growth; the gates emitted are unchanged. On Julia < 1.11 (no `shrink`
+keyword; its `sizehint!` also shrinks) the hint is skipped.
+"""
+@static if VERSION >= v"1.11"
+    @inline _grow_hint!(v::Vector, n::Integer) = sizehint!(v, n; shrink=false)
+else
+    @inline _grow_hint!(v::Vector, ::Integer) = v
+end
+
 """Ripple-carry full adder: result = a + b  (mod 2^W)."""
 function lower_add!(gates::Vector{ReversibleGate}, wa::WireAllocator,
                     a::Vector{Int}, b::Vector{Int}, W::Int)
     result = allocate!(wa, W)
     carry  = allocate!(wa, W)
     # Bennett-5kio / U109: 3 CNOTs per i + 2 Toffolis for i<W = 5W - 2 gates.
-    sizehint!(gates, length(gates) + 5 * W)
+    _grow_hint!(gates, length(gates) + 5 * W)
     for i in 1:W
         push!(gates, CNOTGate(a[i], result[i]))
         push!(gates, CNOTGate(b[i], result[i]))
@@ -90,7 +111,7 @@ function lower_add_cuccaro!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     # Allocate single ancilla X (initial carry c_0 = 0)
     X = allocate!(wa, 1)
     # 6W - 5 gates after the Bennett-gsxe §3.5 optimisation (was 6W - 4).
-    sizehint!(gates, length(gates) + 6 * W)
+    _grow_hint!(gates, length(gates) + 6 * W)
 
     # MAJ gate: CNOT(c,b); CNOT(c,a); Toffoli(a,b,c)
     # Transforms (c_i, b_i, a_i) → (c_i ⊕ a_i, b_i ⊕ a_i, c_{i+1})
@@ -173,7 +194,7 @@ function lower_sub!(gates::Vector{ReversibleGate}, wa::WireAllocator,
     not_b = allocate!(wa, W)
     # Bennett-5kio / U109: 2W gates for ~b; carry_in = 1 NOTGate; then
     # adder body 5W - 2 gates ⇒ ~7W total.
-    sizehint!(gates, length(gates) + 7 * W + 1)
+    _grow_hint!(gates, length(gates) + 7 * W + 1)
     for i in 1:W
         push!(gates, CNOTGate(b[i], not_b[i]))
         push!(gates, NOTGate(not_b[i]))

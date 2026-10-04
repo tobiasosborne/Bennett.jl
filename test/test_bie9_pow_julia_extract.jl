@@ -40,9 +40,8 @@ end
         @test pir isa Bennett.ParsedIR
     end
 
-    # NOT YET a compile test: `reversible_compile(^, Float64, Float64;
-    # max_loop_iterations = 64)` (the bound is needed for the inlined
-    # `soft_fdiv` 56-step loop, which LLVM only partially unrolls here) did
-    # not finish within 25 min wall / 2.3 GB RSS on 2026-10-04 — tracked as a
-    # follow-up to Bennett-bie9.
+    # The compile test is test/test_bie9_pow_julia_compile.jl. (Before the
+    # adder/multiplier `sizehint!` shrink fix, `reversible_compile(^, Float64,
+    # Float64; max_loop_iterations = 64)` did not finish in 25 min: lowering
+    # copied the whole gate vector on every add / multiply.)
 end

@@ -206,7 +206,10 @@ end
 # Powers. Literal exponents mirror Base's Float64 `literal_pow` (intfuncs.jl):
 # 0..3, -1, -2 expand to `*` / `inv` and compile today. Every other power goes
 # through `^(SoftFloat, SoftFloat)` = soft_pow_julia, bit-exact vs Base.:^ on
-# the host, and compiles (Bennett-bie9: straight-line integer-power body).
+# the host. It extracts (Bennett-bie9: straight-line integer-power body) and
+# `reversible_compile(^, Float64, Float64; max_loop_iterations=64)` compiles
+# (the inlined soft_fdiv keeps its division loop, so the bound is required;
+# 28.8M gates — test/test_bie9_pow_julia_compile.jl).
 @inline Base.literal_pow(::typeof(^), x::SoftFloat, ::Val{0}) = one(x)
 @inline Base.literal_pow(::typeof(^), x::SoftFloat, ::Val{1}) = x
 @inline Base.literal_pow(::typeof(^), x::SoftFloat, ::Val{2}) = x * x
