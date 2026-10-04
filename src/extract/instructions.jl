@@ -4566,10 +4566,9 @@ Returns `false` (conservative non-fresh) when:
     (or a GEP thereof) appearing in any argument position
 
 This is the predicate-12 gate for the c≠0 path in
-`_handle_memset_arm`. The c==0 path takes a separate fast-track that
-preserves pre-9nwt benign-allowlist behaviour for unaudited Julia
-frontend code paths (acknowledged §1 hazard for c=0 non-fresh; tracked
-under Bennett-8bys-uncompute).
+`_handle_memset_arm`, and (Bennett-ni9i) the certificate that lets the
+c==0 path drop a zero-fill memset as a no-op (`_memset_dst_certified_zero`);
+a c==0 memset on a non-fresh dst is refused.
 """
 function _alloca_is_fresh(alloca_ref::_LLVMRef, memset_inst::LLVM.Instruction)::Bool
     alloca_inst = LLVM.Instruction(alloca_ref)
@@ -4651,19 +4650,41 @@ function _broadcast_byte_to_width(c::Int, ew::Int)::Int
 end
 
 """
+    _memset_dst_certified_zero(dst_v, memset_inst) -> Bool
+
+Bennett-ni9i: `true` iff the memset destination is certified to hold only
+zero bytes at `memset_inst` — it roots (directly or via const-offset GEP,
+`_alloca_root_ref`) at an alloca that is fresh per `_alloca_is_fresh`.
+Only then may a zero-fill memset be dropped as a no-op.
+"""
+function _memset_dst_certified_zero(dst_v::LLVM.Value, memset_inst::LLVM.Instruction)::Bool
+    root = _alloca_root_ref(dst_v)
+    root === nothing && return false
+    return _alloca_is_fresh(root, memset_inst)
+end
+
+# Bennett-ni9i: human-readable reason for a failed `_memset_dst_certified_zero`.
+function _memset_dst_uncertified_reason(dst_v::LLVM.Value)::String
+    _alloca_root_ref(dst_v) !== nothing && return "alloca-rooted but not " *
+        "fresh (a prior write to it, or the alloca is in a different basic block)"
+    dst_v isa LLVM.Argument && return "a function argument (caller-owned memory)"
+    LLVM.API.LLVMIsAGlobalVariable(dst_v.ref) != C_NULL && return "a global variable"
+    return "not alloca-rooted (heap, loaded, phi/select or otherwise unknown provenance)"
+end
+
+"""
     _handle_memset_arm(cname, inst, names, counter, ops) -> Vector{IRInst}
 
 Bennett-9nwt Phase 2: const-c const-N memset on alloca-i8-backed
 destination. Two green cases:
 
-  - Case A (c == 0, any dst): silent drop (`IRInst[]`). Preserves
-    pre-9nwt benign-allowlist behaviour for Julia GC-frame zeroing
-    patterns. NO alloca/freshness check on this path; tightening would
-    risk regressing unaudited Julia frontend output. Acknowledged §1
-    hazard for c=0 on non-fresh dst — tracked under
-    Bennett-8bys-uncompute. Also covers *volatile* c=0 memsets
-    (Bennett-8su4): Julia's heap-allocating frontend zero-inits the GC
-    frame with a volatile c=0 memset, which drops here as a no-op.
+  - Case A (c == 0, certified-zero dst): drop (`IRInst[]`). The dst must
+    root at an alloca that is fresh per `_alloca_is_fresh` (the model
+    zero-initialises allocas); any other c == 0 dst is refused
+    (Bennett-ni9i — previously ANY dst was dropped, silently keeping
+    live data). Also covers *volatile* c=0 memsets (Bennett-8su4):
+    Julia's heap-allocating frontend zero-inits the fresh GC-frame
+    alloca with a volatile c=0 memset, which drops here as a no-op.
 
   - Case C (c != 0, fresh alloca-i8 dst): emit N byte-granular
     `IRPtrOffset + IRStore(ConstOperand(c), 8)` pairs.
@@ -4680,7 +4701,8 @@ Predicate cascade (earliest mismatch → most actionable error):
   5. byte count N (3rd op) is ConstantInt
   6. N >= 0
   7. N == 0 → return `IRInst[]` (LangRef no-op)
-  8. c == 0 → return `IRInst[]` (case A — preserve broad tolerance)
+  8. c == 0 → return `IRInst[]` iff dst certified zero (fresh alloca),
+     else fail loud (case A — Bennett-ni9i)
   8b. isvolatile value == 0 (volatile c!=0 rejected; volatile c=0
       already dropped at step 8 — Bennett-8su4)
   9. dst is named SSA in `names`
@@ -4764,21 +4786,41 @@ function _handle_memset_arm(cname::AbstractString, inst::LLVM.Instruction,
     # Predicate 7: N == 0 is a legal no-op regardless of c, dst, freshness.
     N == 0 && return IRInst[]
 
-    # Predicate 8: c == 0 → case A. Silent drop, preserves pre-9nwt benign
-    # behaviour. Intentionally NO alloca / freshness check here —
-    # tightening risks regressing unaudited Julia frontend output, and the
-    # benign-list it replaces also did no such check. The c=0 non-fresh
-    # silent miscompile is an acknowledged hazard tracked in
-    # Bennett-8bys-uncompute.
+    # Predicate 8: c == 0 → case A. The memset is dropped ONLY when its
+    # destination is certified already-zero: it roots (directly or via
+    # const-offset GEP) at an alloca that is fresh per `_alloca_is_fresh` —
+    # the wire model zero-initialises allocas, so zero-filling untouched
+    # alloca bytes is a genuine no-op. Every other c == 0 destination
+    # (written-to or cross-block alloca, argument, global, heap/GC pointer)
+    # is refused loud: dropping it would keep stale data where native code
+    # reads 0 (Bennett-ni9i, Astra F2: `store 42; memset(0); load` → 42).
+    # Bennett-ni9i audit (2026-10-04): every c=0, N>0 memset that reached
+    # this arm from the memset/heap/GC/VM test files was a fresh alloca —
+    # Julia's GC-frame zero-init (`alloca [K x ptr]` + volatile memset right
+    # after it) included. Real zeroing of live memory (destructive stores
+    # through the memory model) is Bennett-zmry / Bennett-8bys-uncompute.
     c_int = _const_int_as_int(c_v) & 0xFF
-    c_int == 0 && return IRInst[]
+    if c_int == 0
+        _memset_dst_certified_zero(dst_v, inst) || _ir_error(inst,
+            "$(cname): zero-fill memset destination is not certified " *
+            "already-zero, so the memset cannot be dropped as a no-op. A " *
+            "c=0 memset is a no-op only on an alloca with no IR-visible " *
+            "write between the alloca and the memset in the same basic " *
+            "block (`_alloca_is_fresh`); this destination is " *
+            "$(_memset_dst_uncertified_reason(dst_v)). Zeroing live memory " *
+            "needs destructive overwrite through the memory model, which is " *
+            "not implemented (Bennett-zmry / Bennett-8bys-uncompute). " *
+            "(Bennett-ni9i)")
+        return IRInst[]
+    end
 
     # Predicate 8b: volatile value check (relocated here from before
-    # predicate 4 — Bennett-8su4). A c==0 or N==0 memset is already
-    # dropped above (predicates 7/8) and emits zero IRInsts regardless of
-    # volatility, so volatility is moot for it — this lets Julia's
-    # volatile c=0 GC-frame zero-init memset through. Control only
-    # reaches here when c!=0, so volatile c!=0 still fails loud.
+    # predicate 4 — Bennett-8su4). An N==0 memset is already dropped
+    # (predicate 7) and a c==0 one already dropped-if-certified or refused
+    # (predicate 8, Bennett-ni9i); both emit zero IRInsts regardless of
+    # volatility, so volatility is moot for them — this lets Julia's
+    # volatile c=0 GC-frame zero-init memset (fresh alloca) through.
+    # Control only reaches here when c!=0, so volatile c!=0 still fails loud.
     _const_int_as_int(vol_v) == 0 || _ir_error(inst,
         "$(cname): volatile memset is not supported. Bennett.jl's " *
         "reversible model has no observable side-effect ordering for " *
@@ -5564,8 +5606,8 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
     end
     # Bennett-hao Phase 2 (Bennett-9nwt): const-c const-N memset on
     # alloca-i8-backed dst lowers to byte-granular IRPtrOffset+IRStore
-    # pairs with ConstOperand(c) at width=8. c=0 takes a separate
-    # silent-drop fast path that preserves pre-9nwt benign behaviour.
+    # pairs with ConstOperand(c) at width=8. c=0 is dropped only on a
+    # certified-zero (fresh alloca) dst, refused otherwise (Bennett-ni9i).
     if startswith(cname, "llvm.memset.")
         return _handle_memset_arm(cname, inst, names, counter, ops, dest, ptr_cells)
     end

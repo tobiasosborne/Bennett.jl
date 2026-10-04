@@ -258,6 +258,9 @@ runfile("test_9nwt_memset_const.jl")
 # (`llvm.memset(... i8 0 ... i1 true)`) passes through as a no-op.
 # Volatile c!=0 still rejects.
 runfile("test_8su4_volatile_c0_memset.jl")
+# Bennett-ni9i: a zero-fill memset is dropped only on a certified-zero
+# (fresh alloca) dst; any other dst is refused (was: silently dropped).
+runfile("test_ni9i_memset_zero_fill_certified.jl")
 # Bennett-munq (Bennett-8bys sub-bead 1): extract `[N x i8]` ArrayType
 # allocas as IRAlloca(elem_w=8, n_elems=N). Unblocks t5_tr2_hashmap.ll
 # corpus for the existing 37mt/9nwt paths.
