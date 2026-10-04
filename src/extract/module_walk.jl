@@ -103,6 +103,39 @@ function _assert_dead_block_no_live_escape(bb::LLVM.BasicBlock,
     return nothing
 end
 
+# Bennett-t5u1: certificate for deleting an sret `ret void` return funnel
+# (Bennett-jghk `sret_drop_block`) wholesale. Every instruction in it must be
+#   * the block's own `ret void` terminator (replaced by the predecessors'
+#     synthesised value-bearing IRRets), or
+#   * an instruction the sret synthesis already accounts for (`suppressed` /
+#     `call_return_suppressed` / consumed-sret `suppressed`), or
+#   * a side-effect-free value (`_is_pure_value_ref`: pure-opcode allowlist,
+#     non-volatile non-atomic loads). The funnel has no successors, so such a
+#     value's uses are confined to the funnel itself — it is dead once the
+#     block goes.
+# Anything else — a store (to any memory, sret slot included), a call (the sret
+# pointer escaping to a callee that mutates it), a fence, an integer div — is
+# an effect the deletion would silently erase: `_ir_error` naming the function,
+# block and instruction.
+function _assert_sret_funnel_inert(bb::LLVM.BasicBlock, func::LLVM.Function,
+                                   label, sret_writes, consumed_sret)
+    term_ref = LLVM.terminator(bb).ref
+    for inst in LLVM.instructions(bb)
+        r = inst.ref
+        r == term_ref && continue
+        (r in sret_writes.suppressed || r in sret_writes.call_return_suppressed ||
+         r in consumed_sret.suppressed) && continue
+        _is_pure_value_ref(r) && continue
+        _ir_error(inst,
+            "sret return funnel @$(LLVM.name(func)):%$label holds an instruction " *
+            "that is not certified inert; the funnel is deleted wholesale at sret " *
+            "synthesis, so this effect would be silently dropped and the returned " *
+            "aggregate could change (Bennett-t5u1: only `ret void`, sret-accounted " *
+            "instructions and side-effect-free values may sit in the funnel).")
+    end
+    return nothing
+end
+
 # Guard 2 (surprise guard, Rule 1): a dead block is EXPECTED iff it has 0
 # predecessors (an orphan `after_throw`/`after_noret` trap stub — Julia emits
 # `call @llvm.trap; unreachable` skeletons with no incoming edge) OR it contains
@@ -530,6 +563,12 @@ function _module_to_parsed_ir_on_func_walk(mod::LLVM.Module, func::LLVM.Function
         sret_call_return_block = sret_writes !== nothing &&
                                  haskey(sret_writes.block_call_returns, bb.ref)
         if sret_drop_block
+            # Bennett-t5u1: the funnel is deleted WHOLESALE, so it may hold only
+            # instructions whose omission provably changes nothing (see
+            # `_assert_sret_funnel_inert`). A store / call / other effect here
+            # (e.g. `call @mutate(ptr %sret)`, `store ... @global`) would be
+            # silently erased and the returned aggregate changed — refuse loud.
+            _assert_sret_funnel_inert(bb, func, label, sret_writes, consumed_sret)
             continue   # store-free `ret void` funnel — dropped (Bennett-jghk)
         end
 
