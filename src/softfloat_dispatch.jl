@@ -309,8 +309,13 @@ end
 # user Bool constant (`x isa Float64`) that differs. Same-method calls with
 # different argument types are walked recursively (this reaches user code
 # called through Base, e.g. `map(g, (x,))`); identical signatures are pruned.
-# Calls the walk cannot resolve (splats via Core._apply_iterate, non-unique
-# matches on abstract types) are not descended into.
+# Non-unique matches on abstract types are not descended into. Bennett-blnv:
+# a builtin that invokes a callable (`Core._apply_iterate` — the splat inside
+# `Base.splat(g)` and `g ∘ h` —, `invokelatest`, `invoke`, ...) whose argument
+# types differ is resolved to the call it performs (splat of fixed-length
+# tuples, `invokelatest(g, args...)`) and checked as that call, or else is
+# "unresolved" — in Base methods too, which were previously skipped, so
+# `Base.splat(g)((x,))` silently compiled the generic `g`.
 # Bennett-iffz: statement correspondence is only an assumption, so whenever
 # it cannot be established the verdict is "unresolved" (a String starting
 # with `_SFD_UNRESOLVED`), never `nothing` and never an internal error:
@@ -370,6 +375,42 @@ _sfd_show(ms::Vector{Method}) = join((sprint(show, m) for m in ms), " | ")
 
 const _SFD_MAX_NODES = 5_000
 
+# Bennett-blnv: builtins that call a callable passed to them. Each is either
+# resolved to the argument types of the call it performs or "unresolved".
+const _SFD_CALLING_BUILTINS = Tuple(typeof(getglobal(Core, n)) for n in
+    (:_apply_iterate, :invokelatest, :_call_latest, :invoke, :invoke_in_world,
+     :_call_in_world, :_call_in_world_total, :finalizer, :applicable,
+     :modifyfield!, :modifyglobal!, :memoryrefmodify!)
+    if isdefined(Core, n))
+
+_sfd_builtin_name(@nospecialize(b)) =
+    isdefined(b, :instance) ? "Core.$(nameof(b.instance))" : string(b)
+
+# For a builtin call with argument types `a`: `nothing` when the builtin does
+# not invoke a callable; the argument types of the call it performs for a
+# splat of fixed-length tuples (`_apply_iterate(iterate, g, (x,), (y, z))` is
+# `g(x, y, z)`) and for `invokelatest(g, args...)`; `:unresolved` otherwise
+# (splat of a Vector / Vararg tuple, `invoke`, world-age calls, ...).
+function _sfd_builtin_callee(a::Vector{Any})
+    b = a[1]
+    b in _SFD_CALLING_BUILTINS || return nothing
+    if isdefined(Core, :invokelatest) && b === typeof(Core.invokelatest) ||
+       isdefined(Core, :_call_latest) && b === typeof(Core._call_latest)
+        length(a) >= 2 || return :unresolved
+        return Any[a[2:end]...]
+    elseif b === typeof(Core._apply_iterate)
+        (length(a) >= 3 && a[2] === typeof(iterate)) || return :unresolved
+        out = Any[a[3]]
+        for t in a[4:end]
+            (t isa DataType && t <: Tuple && !Base.isvatuple(t)) ||
+                return :unresolved
+            append!(out, t.parameters)
+        end
+        return out
+    end
+    return :unresolved
+end
+
 function _sfd_walk(@nospecialize(sigF), @nospecialize(sigS), m::Method, visited)
     (sigF, sigS) in visited && return nothing
     push!(visited, (sigF, sigS))
@@ -419,12 +460,28 @@ function _sfd_walk(@nospecialize(sigF), @nospecialize(sigS), m::Method, visited)
         aF[1] === Union{} && continue
         stF = Tuple{aF...}; stS = Tuple{aS...}
         if aF[1] <: Core.Builtin
-            user && stF != stS &&
-                aF[1] in (typeof(Core._apply_iterate), typeof(Core.invoke)) &&
+            stF == stS && continue
+            user && aF[1] in (typeof(Core._apply_iterate), typeof(Core.invoke)) &&
                 return _sfd_unresolved(
                     "call $i in $m is a splat or invoke whose argument types " *
                     "differ between Float64 and SoftFloat")
-            continue
+            # Bennett-blnv: a builtin that invokes a callable (a splat in
+            # Base.splat / ComposedFunction, invokelatest, ...) is replaced by
+            # the call it performs, or refused — in Base methods too.
+            while aF[1] <: Core.Builtin
+                rF = _sfd_builtin_callee(aF); rS = _sfd_builtin_callee(aS)
+                rF === nothing && rS === nothing && break
+                (rF isa Vector && rS isa Vector) || return _sfd_unresolved(
+                    "call $i in $m invokes a callable through " *
+                    "$(_sfd_builtin_name(aF[1])) with argument types that " *
+                    "differ between Float64 and SoftFloat, and the walk " *
+                    "cannot resolve the call it performs (Bennett-blnv)")
+                aF = rF; aS = rS
+            end
+            aF[1] <: Core.Builtin && continue
+            (aF[1] === Union{} || aS[1] === Union{}) && continue
+            stF = Tuple{aF...}; stS = Tuple{aS...}
+            stF == stS && continue
         end
         mF = _sfd_methods(stF); mF === nothing && continue
         mS = _sfd_methods(stS); mS === nothing && continue
