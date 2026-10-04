@@ -179,6 +179,11 @@ _corpus = [
         "non-integer source",                    # Bennett-plb7 / U13
         "width 128 bits encountered",            # Bennett-l9cl / U09
         "inline-asm", "call ptr asm", "call i64 asm",  # Bennett-5oyt / U15
+        # Bennett-1zow (f5e7a04): an alloca of an unmodelled type that has uses
+        # is refused at the alloca instead of being silently skipped. The raw
+        # (un-preprocessed) IR of an allocating function carries Julia's GC
+        # frame, `alloca [N x ptr]` (here `cond_pair:raw`).
+        "Bennett-1zow",
     )
     unexpected = filter(skipped) do msg
         !any(kw -> occursin(kw, msg), allowlist)
