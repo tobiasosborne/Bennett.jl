@@ -16,11 +16,14 @@
 # function's Julia-level idiom (Julia's own `bitreverse` / `bitrotate` are
 # masks and shifts folded for S) as such an intrinsic.
 #
-# KNOWN HOLE (pinned below with @test_broken): a Julia-level width-dependent
-# idiom that LLVM folds away entirely — the review's witness
-# `ifelse(bitreverse(x) == 0, 1, 0)`: the optimised IR is `x == 0` (no
-# intrinsic), the unoptimised IR holds Julia's S-bit masks, and the
-# unoptimised narrowing (preferred since Bennett-sl4h) re-types them.
+# The review's witness `ifelse(bitreverse(x) == 0, 1, 0)` is a Julia-level
+# width-dependent idiom that LLVM folds away entirely: the optimised IR is
+# `x == 0` (no intrinsic), the unoptimised IR holds Julia's S-bit masks.
+# Under optimize=true both readings are narrowed and compared (Bennett-5y48
+# differential, test_5y48_differential_narrowing.jl): they disagree, so the
+# compile is refused.  KNOWN HOLE (pinned below with @test_broken): under
+# optimize=false only the unoptimised IR is narrowed, and it is re-typed
+# literally — accepted and wrong at W = 4..7.
 #
 # THE ORACLE (independent of src/) is the W-bit operation on the W-bit input
 # pattern p (read signed for Int8): reverse W bits, count W-bit leading /
@@ -65,7 +68,7 @@ const Y48_OPS = [
 # recognition (a right circuit turned into a refusal, listed in the report).
 y48_literal(T, p, W) = ((p << 1) & y48_wmask(W)) | (W > 7 ? (p >> 7) : 0)
 
-# The cells that are still accepted-and-wrong (KNOWN HOLE above).
+# The cells that are still accepted-and-wrong under optimize=false (KNOWN HOLE above).
 const Y48_HOLES = Set(["bitreverse==0"])
 
 const Y48_FUNS = Dict{Tuple{String, DataType}, Function}()
@@ -102,7 +105,7 @@ end
         for (name, _, orc0) in Y48_OPS, T in (Int8, UInt8), W in 2:7, opt in (false, true)
             orc = orc0 === nothing ? y48_literal : orc0
             r = y48_cell(Y48_FUNS[(name, T)], T, W, opt, orc)
-            if r === :wrong && name in Y48_HOLES
+            if r === :wrong && name in Y48_HOLES && !opt
                 counts[:hole] += 1
                 @test_broken r !== :wrong
                 continue
@@ -164,9 +167,14 @@ end
               occursin("llvm.bitreverse.i8", err.msg)
     end
 
-    @testset "KNOWN HOLE: the review witness (LLVM folds the idiom away)" begin
+    @testset "the review witness (LLVM folds the idiom away)" begin
         f = Y48_FUNS[("bitreverse==0", UInt8)]
-        c = reversible_compile(f, UInt8; bit_width=7)
+        # optimize=true: the two readings disagree — refused (Bennett-5y48 differential)
+        err = try reversible_compile(f, UInt8; bit_width=7); nothing catch e; e end
+        @test err isa ArgumentError && occursin("Bennett-5y48 / Bennett-sl4h", err.msg) &&
+              occursin("narrow to different 7-bit functions", err.msg)
+        # optimize=false: KNOWN HOLE — the unoptimised IR alone, re-typed literally
+        c = reversible_compile(f, UInt8; bit_width=7, optimize=false)
         nbad = count(p -> simulate(c, UInt8, UInt8(p)) != (p == 0 ? 1 : 0), 0:127)
         @test_broken nbad == 0
         @test verify_reversibility(c)

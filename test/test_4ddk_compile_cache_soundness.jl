@@ -89,7 +89,10 @@ end
         cs = [reversible_compile(g4ddk, Int8; bit_width=4, strategy=:expression)
               for _ in 1:10]
         @test all(c -> c === cs[1], cs)
-        @test length(Bennett._compile_cache) == 1
+        # Bennett-5y48 (differential): both readings of `x + 1` narrow, so the
+        # compile cache holds the unoptimised- and the optimised-IR circuits
+        # (the result is the first), and the cross-check verdict is cached.
+        @test length(Bennett._compile_cache) == 2
         @test verify_reversibility(cs[1])
         # A different width is a different circuit.
         c3 = reversible_compile(g4ddk, Int8; bit_width=3, strategy=:expression)

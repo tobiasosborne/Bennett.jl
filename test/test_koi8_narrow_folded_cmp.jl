@@ -145,19 +145,23 @@ end
     # `x * 16 == 0` folds to `(x & 15) == 0`, true iff 16 | x at 8 bits.  In
     # W = 6 modular arithmetic x * 16 == 0 iff 4 | x.  Every operand and
     # constant of the folded IR is narrowable, so no local rule sees it;
-    # unoptimised IR narrows the source's own multiply and is right — and
-    # since Bennett-sl4h optimize=true narrows the unoptimised IR first.  (The
-    # hole that remains — unoptimised IR refused AND an S-bit fold in the
-    # optimised IR — is pinned in test_sl4h_narrow_unoptimised.jl.)
+    # unoptimised IR narrows the source's own multiply and is right.  Since
+    # Bennett-5y48 (differential) optimize=true narrows BOTH readings and
+    # compares them: they disagree at x = 4, so the compile is REFUSED (the
+    # accepted cost of the cross-check; optimize=false still compiles it).
+    # (The single-reading hole — unoptimised IR refused AND an S-bit fold in
+    # the optimised IR — is pinned in test_sl4h_narrow_unoptimised.jl.)
     oracle(p) = mod(16 * k8_wsign(p, 6), 64) == 0 ? 1 : 0
-    for optimize in (false, true)
-        c, err = k8_compile(k8_mul16, Int8; W=6, optimize)
-        @test err === nothing   # the unoptimised IR narrows: never refused
-        @test c !== nothing && verify_reversibility(c)
-        nbad = c === nothing ? -1 :
-            count(p -> (Int(simulate(c, Int8, k8_in(Int8, p))) & 63) != oracle(p), 0:63)
-        @test nbad == 0     # Bennett-sl4h: was @test_broken for optimize=true
-    end
+    c, err = k8_compile(k8_mul16, Int8; W=6, optimize=false)
+    @test err === nothing   # the unoptimised IR narrows: never refused
+    @test c !== nothing && verify_reversibility(c)
+    nbad = c === nothing ? -1 :
+        count(p -> (Int(simulate(c, Int8, k8_in(Int8, p))) & 63) != oracle(p), 0:63)
+    @test nbad == 0
+    c1, err1 = k8_compile(k8_mul16, Int8; W=6, optimize=true)
+    @test c1 === nothing && k8_is_refusal(err1) &&
+          occursin("Bennett-5y48 / Bennett-sl4h", err1.msg) &&
+          occursin("First differing input (argument bit patterns, 6-bit): (0x4,)", err1.msg)
 end
 
 @testset "generated corpus: $(length(K8_CASES)) source predicates x W x optimize" begin

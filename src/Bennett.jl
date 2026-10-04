@@ -130,11 +130,10 @@ Per-overload applicability (Bennett-u71l / U161):
   `bit_width` raises `ArgumentError`. The same rejection applies to the
   `Tuple{Float64}` route of the Tuple overload (Bennett-iwj6) — a Float64
   argument cannot be narrowed on either path.
-- `bit_width = W` (W ≠ the source width) with `optimize = true` narrows the
-  UNOPTIMISED IR when the allowlist accepts it (the same circuit as
-  `optimize = false`), and falls back to the optimised IR only when it does
-  not — where a fold relying on a source-width fact can still be narrowed
-  wrongly (Bennett-sl4h); see `reversible_compile`.
+- `bit_width = W` (W ≠ the source width) with `optimize = true` narrows both
+  the unoptimised and the optimised IR and, when both are accepted, refuses
+  the compile if their circuits disagree (Bennett-5y48 / Bennett-sl4h); see
+  `reversible_compile`.
 
 `add`, `mul`, `target`, `mem`, `persistent_impl`, `hashcons` and
 `max_loop_iterations` are domain-checked by ONE shared validator
@@ -281,12 +280,19 @@ cast into a second scalar width (`Int16(x)`), a bit count, an aggregate
 (tuple) return, memory, a call, or a loop — throws `ArgumentError` rather
 than returning a circuit that computes something else (Bennett-mrhg).
 With `optimize=true` (the default) and `W` different from the source width,
-the UNOPTIMISED IR is narrowed first — LLVM's folds are only valid at the
-source width (`x * 16 == 0` becomes `(x & 15) == 0`, wrong at 6 bits) — and
-the circuit is then the `optimize=false` one; only if the allowlist (or
-extraction) refuses that IR is the optimised IR narrowed, with extra checks on
-folded comparisons. Limitation: on that fallback a fold relying on a
-source-width arithmetic fact can still be narrowed wrongly (Bennett-sl4h).
+BOTH the unoptimised and the optimised IR are narrowed (Bennett-5y48 /
+Bennett-sl4h): LLVM's folds are only valid at the source width (`x * 16 == 0`
+becomes `(x & 15) == 0`, wrong at 6 bits), and Julia library code in the
+unoptimised IR is written for the source width (`bitreverse`'s masks). If
+both are accepted, both are compiled and their circuits compared — on every
+input when the narrowed inputs total at most 16 bits (agreement proved), on a
+fixed deterministic sample of about 4096 inputs above that (agreement SAMPLED,
+not proved); a disagreement is an `ArgumentError` naming the first differing
+input, agreement returns the unoptimised-IR circuit (the `optimize=false`
+one). If only one is accepted it is used unchecked — Limitation: such a
+single reading can still be wrong (a fold relying on a source-width fact when
+the unoptimised IR is refused; a width-dependent idiom LLVM folds away when the
+optimised IR is refused). `optimize=false` narrows the unoptimised IR alone.
 
 # Example
 
@@ -642,8 +648,21 @@ function reversible_compile(f, arg_types::Type{<:Tuple};
     # plausible-looking wrong circuit.
     # Bennett-4ddk: narrowed through the parsed-IR cache, so identical
     # narrowed compiles share one `ParsedIR` and hence one compile-cache entry.
+    # Bennett-5y48 (differential): under `optimize=true` both the unoptimised
+    # and the optimised IR are narrowed; when both are accepted, both are
+    # compiled and compared (`_narrow_differential_compile`) and a
+    # disagreement is a refusal.  (`capture` is `nothing` here: bound state is
+    # rejected with `bit_width` above.)
     if bit_width > 0
-        parsed = _extract_parsed_ir_cached(f, arg_types; optimize, mem, bit_width)
+        cand = optimize ? _narrow_candidates(f, arg_types, mem, bit_width) :
+               _extract_parsed_ir_cached(f, arg_types; optimize, mem, bit_width)
+        if cand isa Tuple
+            return _narrow_differential_compile(cand[1], cand[2], bit_width,
+                (; max_loop_iterations, compact_calls, add, mul, fold_constants,
+                   target, auto_self_reversing, mem=lower_mem, persistent_impl,
+                   hashcons, _julia_return_type=ret_type))
+        end
+        parsed = cand
     end
     # Bennett-uiaq: route the final lower+bennett through the ParsedIR
     # overload so the Bennett-sr8v compile cache (keyed on `parsed` + all
@@ -870,6 +889,7 @@ end
 
 # ---- Per-task implementations (Bennett-19g6 / U91 modular layout) ----
 include("narrow.jl")               # _narrow_ir allowlist + _narrow_inst per IR node type
+include("narrow_differential.jl")  # Bennett-5y48: optimised-vs-unoptimised narrowing cross-check
 include("callees.jl")              # _CALLEES_* groups + register_callee! loop
 include("softfloat_dispatch.jl")   # SoftFloat struct + Float64 reversible_compile
 include("precompile.jl")           # PrecompileTools.@compile_workload

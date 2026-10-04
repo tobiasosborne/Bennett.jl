@@ -9,11 +9,20 @@
 # narrowable, so narrowing that IR accepted a wrong circuit.  The unoptimised IR
 # holds the source's own multiply, which narrows correctly.
 #
+# Bennett-5y48 (differential): since then optimize=true narrows BOTH readings
+# and, when both are accepted, refuses the compile if their circuits disagree
+# (test_5y48_differential_narrowing.jl).  `x * 16 == 0` is such a case: the
+# unoptimised reading is right, the optimised one wrong, so optimize=true now
+# REFUSES it (optimize=false still compiles it right) — the accepted cost of
+# cross-checking; the cells are pinned below (SL4H_DIFF_REFUSED).
+#
 # INVARIANTS, over a generated corpus x T in {Int8, UInt8} x W in {2,3,4,6,7,8}:
-#   (1) where the unoptimised narrowing is accepted, optimize=true uses it: the
-#       same ParsedIR (one cache entry) and the same gate list as optimize=false;
+#   (1) where the unoptimised narrowing is accepted, optimize=true uses it (the
+#       same gate list as optimize=false) or refuses with the Bennett-5y48
+#       differential message (exactly the pinned cells);
 #   (2) monotonicity: every cell the pre-sl4h path (optimised IR through
-#       `_narrow_ir(...; optimized=true)`) accepted is still accepted;
+#       `_narrow_ir(...; optimized=true)`) accepted is still accepted, except
+#       the pinned differential refusals;
 #   (3) an accepted circuit is right on all 2^W input patterns and passes
 #       verify_reversibility;
 #   (4) a refusal is the narrowing ArgumentError (Bennett-mrhg).
@@ -111,6 +120,14 @@ function sl4h_compile(f, T, W, optimize)
 end
 sl4h_is_refusal(e) = e isa ArgumentError && occursin("refusing to narrow", e.msg) &&
                      occursin("Bennett-mrhg", e.msg)
+sl4h_is_diff(e) = sl4h_is_refusal(e) && occursin("Bennett-5y48 / Bennett-sl4h", e.msg) &&
+                  occursin("narrow to different", e.msg)
+# Corpus cells whose two readings disagree (unoptimised right, optimised fold
+# wrong): refused at optimize=true since Bennett-5y48 (differential).
+const SL4H_DIFF_REFUSED = sort([
+    "Int8 x * 16 == 0 @W=6", "Int8 x * 16 == 0 @W=7", "Int8 x * 4 == 0 @W=7",
+    "Int8 x << 2 != 0 @W=7", "UInt8 x * 0x10 == 0x00 @W=6", "UInt8 x * 0x10 == 0x00 @W=7",
+    "UInt8 x * 0x04 == 0x00 @W=7", "UInt8 x * 0x04 < 0x03 @W=7", "UInt8 x << 2 != 0x00 @W=7"])
 
 "W-bit patterns on which circuit `c` disagrees with the W-bit oracle."
 function sl4h_mismatches(c, ex, T, W)
@@ -206,28 +223,31 @@ sl4h_sext_ult(x::Int8) = Int8(reinterpret(UInt64, Int64(x)) < UInt64(100))
 
 @testset "witness: x * 16 == 0 at bit_width=6" begin
     oracle(v) = sl4h_wz(6, 16v) ? 1 : 0
-    for optimize in (false, true)
-        c, err = sl4h_compile(sl4h_mul16, Int8, 6, optimize)
-        @test err === nothing
-        @test c !== nothing && verify_reversibility(c)
-        @test c !== nothing && sl4h_nbad(c, Int8, 6, oracle) == 0
-    end
-    # the cell the optimised IR got wrong: x = 4 (4 * 16 = 64 == 0 mod 64)
-    c, _ = sl4h_compile(sl4h_mul16, Int8, 6, true)
-    @test c !== nothing && Int(simulate(c, Int8, Int8(4))) == 1
+    c, err = sl4h_compile(sl4h_mul16, Int8, 6, false)
+    @test err === nothing
+    @test c !== nothing && verify_reversibility(c)
+    @test c !== nothing && sl4h_nbad(c, Int8, 6, oracle) == 0
+    @test c !== nothing && Int(simulate(c, Int8, Int8(4))) == 1  # 4 * 16 == 0 mod 64
+    # optimize=true: the optimised reading `(x & 15) == 0` disagrees (at x = 4)
+    # with the unoptimised one — refused (Bennett-5y48 differential)
+    c1, err1 = sl4h_compile(sl4h_mul16, Int8, 6, true)
+    @test c1 === nothing && sl4h_is_diff(err1)
 end
 
 @testset "parsed-IR cache: shared entry on success, nothing cached on refusal" begin
     Bennett._clear_parsed_ir_cache!()
-    # unoptimised attempt accepted: both flags give the very same ParsedIR,
-    # which holds the source's multiply, not the optimiser's mask
+    # Bennett-5y48 (differential): each flag's entry is ITS reading — the
+    # optimize=false entry holds the source's multiply, the optimize=true entry
+    # the optimiser's mask (the compile cross-checks the two)
     p1 = Bennett._extract_parsed_ir_cached(sl4h_mul16, Tuple{Int8};
                                            optimize=true, bit_width=6)
     p0 = Bennett._extract_parsed_ir_cached(sl4h_mul16, Tuple{Int8};
                                            optimize=false, bit_width=6)
-    @test p0 === p1
+    @test p0 !== p1
     @test any(i -> i isa Bennett.IRBinOp && i.op === :mul,
-              (i for b in p1.blocks for i in b.instructions))
+              (i for b in p0.blocks for i in b.instructions))
+    @test !any(i -> i isa Bennett.IRBinOp && i.op === :mul,
+               (i for b in p1.blocks for i in b.instructions))
     # unoptimised attempt refused (`Int8(x == 5 ? 1 : 0)` merges in an i64
     # phi): the fallback result is cached under the optimize=true key only, and
     # the refused optimize=false attempt left no entry behind.  (`x == 5` itself
@@ -272,7 +292,7 @@ end
 @testset "generated corpus: $(length(SL4H_CASES)) programs x W x optimize" begin
     n_acc = 0; n_unopt = 0; n_ref = 0
     differ = String[]; lost = String[]; wrong = String[]; unclean = String[]
-    bad_err = String[]
+    bad_err = String[]; diffref = String[]
     for (T, desc, ex, f) in SL4H_CASES, W in SL4H_WS
         cell = "$T $desc @W=$W"
         c0, e0 = sl4h_compile(f, T, W, false)
@@ -281,8 +301,14 @@ end
             e === nothing || sl4h_is_refusal(e) ||
                 push!(bad_err, "$cell: $(sprint(showerror, e))")
         end
+        # Bennett-5y48 differential refusal: the unoptimised reading is right
+        if e1 !== nothing && sl4h_is_diff(e1)
+            push!(diffref, cell)
+            (e0 === nothing && isempty(sl4h_mismatches(c0, ex, T, W))) ||
+                push!(wrong, "$cell: differential refusal with a wrong unoptimised reading")
+        end
         # (2) monotonicity against the pre-sl4h path
-        e1 !== nothing && sl4h_old_accepts(f, T, W) && push!(lost, cell)
+        e1 !== nothing && !sl4h_is_diff(e1) && sl4h_old_accepts(f, T, W) && push!(lost, cell)
         # (1) the unoptimised narrowing is accepted => optimize=true builds the
         # same circuit.  (Gates, not ParsedIR identity: this corpus overflows
         # the bounded parsed-IR cache, so an entry can be evicted and rebuilt
@@ -291,6 +317,7 @@ end
             n_unopt += 1
             (e1 === nothing && c0.gates == c1.gates &&
              c0.input_widths == c1.input_widths && c0.output_wires == c1.output_wires) ||
+             (e1 !== nothing && sl4h_is_diff(e1)) ||
                 push!(differ, cell)
         end
         if e1 !== nothing
@@ -310,6 +337,7 @@ end
     foreach(m -> println("    LOST ", m), first(lost, 10))
     foreach(m -> println("    BAD ERR ", m), first(bad_err, 5))
     @test isempty(differ)    # (1) unoptimised accepted => optimize=true is that circuit
+    @test sort(diffref) == SL4H_DIFF_REFUSED   # (1) ... or the pinned differential refusals
     @test isempty(lost)      # (2) nothing the pre-sl4h path accepted is refused
     @test isempty(wrong)     # (3) accepted => right on every W-bit input
     @test isempty(unclean)   # (3) ... and every ancilla returns to zero
@@ -432,17 +460,22 @@ end
     end
 end
 
-@testset "former residual hole: fallback + S-bit fold, now the sound path" begin
+@testset "former residual hole: both readings accepted, they disagree -> refused" begin
+    # Bennett-sl4h (a) made the unoptimised reading accept these (and it is
+    # right); the optimised reading holds the S-bit fold and is wrong, so the
+    # Bennett-5y48 differential refuses them at optimize=true.
     for (f, T, Ws, oracle) in (
             (sl4h_hole,  Int8,  (6,),      (v, W) -> ((v == 5) | sl4h_wz(W, 16v)) ? 1 : 0),
             (sl4h_hole5, Int8,  (5, 6, 7), (v, W) -> sl4h_wz(W, 16v) ? 1 : 0),
             (sl4h_holeu, UInt8, (5,),      (v, W) -> ((v > 2) | sl4h_wz(W, 16v)) ? 1 : 0)),
         W in Ws
         @test sl4h_unopt_pir(f, T, W) !== nothing     # no fallback any more
-        c, err = sl4h_compile(f, T, W, true)
+        c, err = sl4h_compile(f, T, W, false)          # the unoptimised reading: right
         @test err === nothing
         @test c !== nothing && verify_reversibility(c)
         @test c !== nothing && sl4h_nbad(c, T, W, v -> oracle(v, W)) == 0
+        c1, err1 = sl4h_compile(f, T, W, true)
+        @test c1 === nothing && sl4h_is_diff(err1)
     end
 end
 

@@ -211,9 +211,12 @@ entry). On a hit returns the previously-built `ParsedIR` by identity.
 `ParsedIR` is immutable and the lowering pipeline only reads from it, so
 sharing across compiles is safe.
 
-Bennett-sl4h: a narrowed `optimize=true` entry is built by `_narrow_hybrid`
-(unoptimised IR first, the optimised IR as the fallback), so the two
-`optimize` values are separate keys that may hold different IR.
+Bennett-sl4h / Bennett-5y48: a narrowed `optimize=false` entry is
+`_narrow_unoptimised` (the unoptimised IR narrowed), a narrowed `optimize=true`
+entry is the OPTIMISED IR narrowed (`_narrow_ir(...; optimized=true)`).  The
+`optimize=true, bit_width=W` compile reads BOTH entries and cross-checks them
+(`_narrow_candidates`, `_narrow_differential_compile`); never lower the
+`optimize=true` entry alone for a user compile.
 
 The key is `(f, arg_types, optimize, mem, bit_width)`; the cache is emptied
 whenever the world counter moves (Bennett-4ddk) or the callee registry changes
@@ -229,7 +232,8 @@ function _extract_parsed_ir_cached(f, arg_types::Type{<:Tuple};
         w = _cache_world_gate!(_parsed_ir_cache, _parsed_ir_cache_world)
         haskey(_parsed_ir_cache, key) && return _parsed_ir_cache[key]
         pir = bit_width == 0 ? extract_parsed_ir(f, arg_types; optimize, mem) :
-              optimize       ? _narrow_hybrid(f, arg_types, mem, bit_width) :
+              optimize       ? _narrow_ir(_extract_parsed_ir_cached(f, arg_types; optimize, mem),
+                                          bit_width; optimized=true) :
             _narrow_unoptimised(f, arg_types, mem, bit_width)
         return _cache_insert_bounded!(_parsed_ir_cache, key, pir,
                                       _PARSED_IR_CACHE_MAX, w)
@@ -237,68 +241,11 @@ function _extract_parsed_ir_cached(f, arg_types::Type{<:Tuple};
 end
 
 """
-    _narrow_hybrid(f, arg_types, mem, W) -> ParsedIR
-
-The `bit_width=W, optimize=true` narrowing (Bennett-sl4h).  LLVM's folds are
-only valid at the source width S (`x * 16 == 0` becomes `(x & 15) == 0`,
-wrong at 6 bits, and no local rule tells it from a plain mask), so at `W != S`
-the UNOPTIMISED IR is narrowed first: it holds the source's own operations,
-so an accepted narrowing is sound by construction, and the result is the very
-`ParsedIR` the `optimize=false` compile uses (same cache entry).  If that
-attempt is refused, the result is exactly the pre-sl4h path — the optimised IR
-through `_narrow_ir(...; optimized=true)` and its folded-comparison checks —
-whatever that path does (accept or throw).  At `W == S` nothing is re-typed
-and the folds are valid, so the optimised path is used directly (no gate-count
-cost for an identity narrowing).
-
-Which failures of the unoptimised attempt fall back (`_narrow_attempt_refused`):
-`ArgumentError` (every narrowing refusal: `_narrow_reject` and the g7d6
-metadata check) and `ErrorException` (extraction refusals: `_ir_error` and the
-extractor's raw `error(...)` calls — memory, calls, the gq1z global-alias
-refusal, ... — which only the unoptimised IR may contain).  `_ir_error` raises
-a plain `ErrorException`, and the extractor raises deliberate refusals through
-raw `error(...)` too, so a refusal cannot be told from an accidental
-`error(...)` without matching message text; we chose to let EVERY
-`ErrorException` fall back.  The optimised path then re-checks the program
-from scratch, so nothing is accepted that the pre-sl4h path did not accept.
-Everything else — `InterruptException`, `MethodError`, `BoundsError`,
-`KeyError`, `AssertionError`, ... — is a bug, not a refusal, and propagates.
-A refused attempt caches nothing for this key (the exception skips the
-insertion); only the returned result is cached, under the `optimize=true` key.
-
-Bennett-5y48: the unoptimised attempt is `_narrow_unoptimised`, which refuses
-width-dependent intrinsics and the Julia idioms LLVM recognises as them; the
-optimised path refuses the intrinsics too (`_narrow_ir`).
-
-LIMITATION (Bennett-5y48 stays open): a Julia-level width-dependent idiom that
-LLVM folds away is narrowed literally from the unoptimised IR —
-`ifelse(bitreverse(x) == 0, 1, 0)` re-types Julia's S-bit masks.
-
-LIMITATION (Bennett-sl4h stays open): on the fallback a fold that relies on an
-S-bit arithmetic fact can still be narrowed into a wrong circuit — a program
-whose unoptimised IR is refused AND whose optimised IR holds such a fold.
-"""
-function _narrow_hybrid(f, arg_types::Type{<:Tuple}, mem::Symbol, W::Int)::ParsedIR
-    unopt = try
-        S = _narrow_source_width(_extract_parsed_ir_cached(f, arg_types;
-                                                           optimize=false, mem))
-        S == W ? nothing :
-            _extract_parsed_ir_cached(f, arg_types; optimize=false, mem, bit_width=W)
-    catch e
-        e isa InterruptException && rethrow()
-        _narrow_attempt_refused(e) || rethrow()
-        nothing
-    end
-    unopt === nothing || return unopt
-    return _narrow_ir(_extract_parsed_ir_cached(f, arg_types; optimize=true, mem),
-                      W; optimized=true)
-end
-
-"""
     _narrow_unoptimised(f, arg_types, mem, W) -> ParsedIR
 
-The `bit_width=W, optimize=false` narrowing — and `_narrow_hybrid`'s first
-attempt, which goes through the same cache entry.  `_narrow_ir` refuses an
+The `bit_width=W, optimize=false` narrowing — and the unoptimised reading
+`U` of the `optimize=true` cross-check (`_narrow_candidates`), which goes
+through the same cache entry.  `_narrow_ir` refuses an
 intrinsic the extractor expanded for the source width S
 (`ParsedIR.width_dependent_ops`).  Bennett-5y48: Julia's own `bitreverse` and
 `bitrotate` are Julia code whose masks and shift amounts were folded for S
@@ -309,7 +256,9 @@ refused when the OPTIMISED IR records a width-dependent intrinsic.  If the
 optimised IR cannot be extracted (an extraction refusal) there is nothing to
 read and the narrowing stands (the pre-5y48 result).  LIMITATION: an idiom
 LLVM folds away or does not recognise (`bitreverse(x) == 0` folds to
-`x == 0`) is not seen — see the LIMITATION in `_narrow_hybrid`.
+`x == 0`) is not seen here; under `optimize=true` the cross-check against the
+optimised reading catches it (`_narrow_differential_compile`), under
+`optimize=false` it is narrowed literally (LIMITATION, Bennett-5y48).
 """
 function _narrow_unoptimised(f, arg_types::Type{<:Tuple}, mem::Symbol, W::Int)::ParsedIR
     raw = _extract_parsed_ir_cached(f, arg_types; optimize=false, mem)
@@ -331,8 +280,15 @@ function _narrow_unoptimised(f, arg_types::Type{<:Tuple}, mem::Symbol, W::Int)::
     return pir
 end
 
-"""A refusal of `_narrow_hybrid`'s unoptimised attempt, which falls back to
-the optimised path; any other exception is a bug and propagates."""
+"""A refusal of one reading of a narrowing (Bennett-sl4h / Bennett-5y48):
+`ArgumentError` (every narrowing refusal: `_narrow_reject` and the g7d6
+metadata check) and `ErrorException` (extraction refusals: `_ir_error` and the
+extractor's raw `error(...)` calls — memory, calls, the gq1z global-alias
+refusal, ...).  A refusal cannot be told from an accidental `error(...)`
+without matching message text, so EVERY `ErrorException` counts; the other
+reading is then used on its own.  Everything else — `InterruptException`,
+`MethodError`, `BoundsError`, `KeyError`, `AssertionError`, ... — is a bug,
+not a refusal, and propagates."""
 _narrow_attempt_refused(e) = e isa ArgumentError || e isa ErrorException
 
 """Empty the `_parsed_ir_cache`. For tests; registry changes invalidate the
