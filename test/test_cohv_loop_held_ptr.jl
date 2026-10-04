@@ -277,7 +277,13 @@ const _COHV_KS = 1:5     # trip counts 0..3 → header visits 1..4
 # Gate totals of the pure escaping-pointer fixture (load exit fold=false, store
 # exit fold=true, K=4) measured on main BEFORE Bennett-cohv: a pointer that is
 # not load-tainted is never held, so these must not move.
-const _COHV_PURE_PIN = (10021, 6459)
+# Bennett-0a6f (0abc3d1, 2026-10-04) moved the FIRST pin 10021 → 12653, by
+# design: an inlined callee is now lowered under its caller's options, so the
+# explicit `fold_constants=false` of that cell reaches the runtime-index MUX
+# callee as well (git bisect over 2ab3748..5c8f465: 0abc3d1 is the first commit
+# with 12653; the fold=true pin, 6459, did not move). Nothing about holding
+# changed: the pointer is still not held (see the hold-set testset above).
+const _COHV_PURE_PIN = (12653, 6459)
 
 @testset "Bennett-cohv: an escaping loop-header pointer keeps its exit-visit address" begin
 
