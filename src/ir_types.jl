@@ -239,9 +239,9 @@ struct IRPtrOffset <: IRInst
     # (`target=:reversible_vm`) can recover the ELEMENT INDEX from the
     # byte-valued offset: `index = offset_bytes ÷ (elem_width ÷ 8)`. Without
     # it, a non-i64 array's byte offset would be mis-divided (a latent silent
-    # miscompile). All 8 construction sites pass the in-scope element bit
-    # width; the legacy non-integer-source GEP branch (instructions.jl ~2147,
-    # U16 out of scope) passes 8 as the raw-index unit placeholder.
+    # miscompile). All construction sites pass the in-scope element bit
+    # width; the single-index GEP arm's stamp rule for every source type
+    # (aggregates: the byte unit 8) is `_single_gep_stride_stamp` (Bennett-0ucg).
     elem_width::Int     # source element bit width (BVM element-index recovery)
 end
 

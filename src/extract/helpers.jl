@@ -274,6 +274,44 @@ and a custom layout (`e-i32:64`) can pad even a power-of-two integer.
 _gep_stride_bytes(dl::LLVM.DataLayout, ty::LLVM.LLVMType) = Int(LLVM.abi_size(dl, ty))
 
 """
+    _single_gep_stride_stamp(gep::LLVM.Instruction) -> (ty, stride_bytes, elem_bits)
+
+The ONE rule for a single-index `getelementptr ty, ptr %b, iN k` (Bennett-0ucg,
+completing Bennett-edt9). INVARIANT: the GEP's recorded `offset_bytes` is the
+native byte offset `k × stride_bytes`, `stride_bytes = getTypeAllocSize(ty)`
+under the module's DataLayout, for EVERY source type class — so every spelling
+of one native address records the same number. No class stores a raw index.
+
+`elem_bits` is the `IRPtrOffset.elem_width` cell stamp (BennettVM recovers the
+cell as `offset_bytes ÷ (elem_bits ÷ 8)`):
+  * integer `iW`        → `W` (the GEP arm refuses sub-byte / unpacked widths);
+  * float / pointer     → `8 × stride` (a packed scalar: cell = element index);
+  * array/struct/vector → `8`, the BYTE unit (cell = byte offset). An aggregate
+    step is not one cell of any fixed scale, so it is stamped byte-granular and
+    the bvmd stream check (`_check_scale_coherence!`) compares it against the
+    allocation root's own scale exactly like a `gep i8`.
+A scalable vector has no static stride and an unsized type none at all:
+refused loud, never guessed.
+"""
+function _single_gep_stride_stamp(inst::LLVM.Instruction)
+    tyref = LLVM.API.LLVMGetGEPSourceElementType(inst)
+    # Checked on the raw ref: LLVM.jl cannot even wrap a scalable vector type.
+    LLVM.API.LLVMGetTypeKind(tyref) == LLVM.API.LLVMScalableVectorTypeKind &&
+        _ir_error(inst, "getelementptr over a scalable vector type: its " *
+            "allocation size is a runtime multiple of vscale, so no static " *
+            "byte offset exists (Bennett-0ucg)")
+    LLVM.API.LLVMTypeIsSized(tyref) != 0 || _ir_error(inst,
+        "getelementptr over an unsized source element type: no allocation " *
+        "stride (Bennett-0ucg)")
+    ty = LLVM.LLVMType(tyref)
+    stride = _gep_stride_bytes(_inst_datalayout(inst), ty)
+    ty isa LLVM.IntegerType && return (ty, stride, Int(LLVM.width(ty)))
+    (ty isa LLVM.FloatingPointType || ty isa LLVM.PointerType) &&
+        return (ty, stride, 8 * stride)
+    return (ty, stride, 8)
+end
+
+"""
     _var_gep_packed_width(inst, ty::LLVM.IntegerType) -> Int
 
 Element bit width for an `IRVarGEP` over integer elements of type `ty`.

@@ -334,10 +334,11 @@ end
     _const_gep_stamp(gepval) -> Union{Nothing, Int}
 
 Bennett-bvmd: the `elem_width` the SINGLE-INDEX constant GEP arm emits for
-`gepval`, computed by the arm's own rule (source element bit width for an
-integer source type, else the legacy raw-index unit of 8 — Bennett-vz5n / U12,
-Bennett-qal5 / U16). Used by p06b's (P5) so the scan compares against what is
-ACTUALLY emitted rather than re-deriving a granularity.
+`gepval`, computed by the arm's own rule — the SAME function the arm calls,
+`_single_gep_stride_stamp` (Bennett-0ucg: integer width, `8·stride` for a
+float / pointer, the byte unit 8 for an aggregate). Used by p06b's (P5) so the
+scan compares against what is ACTUALLY emitted rather than re-deriving a
+granularity.
 
 Returns `nothing` for a shape the arm does not emit an `IRPtrOffset` for.
 """
@@ -448,17 +449,14 @@ function _check_scale_coherence!(blocks::Vector{IRBasicBlock},
     end
 
     # ---- resolve every offset node to its allocation root, once ----
-    # `resolved[i] = (node, blk, idx, root_ref, scale, cap, what, raw)`.
-    # `raw` marks the RAW-INDEX node class: a 2-op GEP whose source element type
-    # is NOT an integer emits `IRPtrOffset(dest, base, RAW_INDEX, 8)` — the
-    # legacy U16 branch (`instructions.jl:4810-4815`), where `offset_bytes` is
-    # NOT a byte offset at all and `8` is a placeholder unit, not a granularity.
-    # (SC) is UNEVALUABLE on such a node: comparing cells needs a byte offset.
-    # They are therefore excluded from both the re-stamp trigger and the
-    # enforcement rather than acted on with a meaningless number. The underlying
-    # raw-index blind spot is pre-existing and separately filed.
+    # `resolved[i] = (node, blk, idx, root_ref, scale, cap, what)`.
+    # Every single-index GEP node carries a TRUE byte offset with a meaningful
+    # stamp (Bennett-0ucg: `_single_gep_stride_stamp`), so (SC) is evaluable on
+    # every node. The former RAW-INDEX class (non-integer source element types,
+    # which stored the raw index under a placeholder stamp 8) and its exclusion
+    # from the trigger and the enforcement are gone.
     resolved = Tuple{IRInst, IRBasicBlock, Int, Union{Nothing,_LLVMRef},
-                     Int, Int, String, Bool}[]
+                     Int, Int, String}[]
     for blk in blocks, (idx, node) in enumerate(blk.instructions)
         (node isa IRPtrOffset || node isa IRVarGEP) || continue
         base_op = node.base
@@ -473,14 +471,7 @@ function _check_scale_coherence!(blocks::Vector{IRBasicBlock},
         (rroot !== nothing && rroot in suppressed) && continue
         rs = _root_scale(bv, names, ptr_cells)
         rs === nothing && continue
-        raw = let gv = get(by_name, node.dest, nothing)
-            gv !== nothing && gv isa LLVM.Instruction &&
-            LLVM.opcode(gv) == LLVM.API.LLVMGetElementPtr &&
-            length(LLVM.operands(gv)) == 2 &&
-            !(LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(gv.ref))
-              isa LLVM.IntegerType)
-        end
-        push!(resolved, (node, blk, idx, rroot, rs[1], rs[2], rs[3], raw))
+        push!(resolved, (node, blk, idx, rroot, rs[1], rs[2], rs[3]))
     end
 
     # ---- ADMISSION: use-directed BYTE-NORMALISATION of the RESERVATION ----
@@ -520,7 +511,7 @@ function _check_scale_coherence!(blocks::Vector{IRBasicBlock},
     # is unsound: `alloca i32, i32 8` + `gep i32 …, 3` is coherent TODAY at
     # scale 4 and `alloca i64, i32 4` + `gep i64 …, 2` at scale 8 — both would
     # BECOME violations under a scale of 1. Preconditions: every node off the
-    # root is byte-stamped and non-raw-index, and at least one genuinely
+    # root is byte-stamped, and at least one genuinely
     # disagrees. A MIXED object is normalised by nothing and REFUSED loudly —
     # `bennettvm-jb6w`'s hazard, made loud. `elem_width != 64` allocas (the
     # typed-array tier) and RUNTIME-count allocas are never touched; dynamic-`n`
@@ -528,9 +519,8 @@ function _check_scale_coherence!(blocks::Vector{IRBasicBlock},
     # in BennettVM, so it stays filed on `Bennett-z2ia`.
     all_byte = Dict{_LLVMRef, Bool}()
     needs = Dict{_LLVMRef, Bool}()
-    for (node, _blk, _idx, rroot, scale, _cap, _what, raw) in resolved
+    for (node, _blk, _idx, rroot, scale, _cap, _what) in resolved
         rroot === nothing && continue
-        raw && continue                      # (SC) is unevaluable — see above
         ew = node.elem_width
         all_byte[rroot] = get(all_byte, rroot, true) && ew == 8
         if node isa IRPtrOffset && ew != 8 * scale && ew >= 8 && ew % 8 == 0 &&
@@ -561,8 +551,7 @@ function _check_scale_coherence!(blocks::Vector{IRBasicBlock},
     end
 
     # ---- ENFORCEMENT ----
-    for (node, _blk, _idx, rroot, scale0, cap0, what0, raw) in resolved
-        raw && continue                      # (SC) is unevaluable — see above
+    for (node, _blk, _idx, rroot, scale0, cap0, what0) in resolved
         norm = rroot !== nothing && rroot in normalised
         scale = norm ? 1 : scale0
         cap = norm ? (cap0 < 0 ? -1 : 8 * cap0) : cap0
@@ -641,8 +630,7 @@ function _const_gep_stamp(gepval::LLVM.Value)::Union{Nothing,Int}
      LLVM.opcode(gepval) == LLVM.API.LLVMGetElementPtr) || return nothing
     ops = LLVM.operands(gepval)
     length(ops) == 2 || return nothing
-    sty = LLVM.LLVMType(LLVM.API.LLVMGetGEPSourceElementType(gepval.ref))
-    return sty isa LLVM.IntegerType ? Int(LLVM.width(sty)) : 8
+    return _single_gep_stride_stamp(gepval)[3]
 end
 
 # ============================================================================
@@ -7260,56 +7248,43 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
                 # LLVMGetGEPSourceElementType and multiplying by `width÷8`
                 # keeps the consumer semantics (`offset_bytes * 8 == bit_offset`)
                 # correct for every integer stride.
-                # Non-integer source types (struct/array/float/vector) fall
-                # through to the pre-existing raw-index behaviour — their
-                # correctness gap is tracked separately under U16
-                # (multi-index struct GEPs). For integer strides the fix
-                # here is unconditional; other paths are unchanged.
                 raw_idx = _const_int_as_int(ops[2])
-                src_ty_ref_const = LLVM.API.LLVMGetGEPSourceElementType(inst)
-                src_type_const = LLVM.LLVMType(src_ty_ref_const)
                 # `offset` is the byte offset (circuit-backend semantics);
                 # `elem_bits` is the source element bit width threaded into the
                 # additive IRPtrOffset.elem_width field so the cell-addressed
                 # BennettVM can recover the element index (Bennett-xv0u /
-                # bennettvm-b5x). For the integer branch it is the true element
-                # width; for the legacy non-integer branch (U16 out of scope)
-                # offset is the raw index, so 8 is its raw-index unit (1 byte).
+                # bennettvm-b5x); see `_single_gep_stride_stamp` for each
+                # source type class's stamp.
                 #
                 # Bennett-edt9 (Astra F13): the stride is the DataLayout's
                 # ALLOCATION size, not `width ÷ 8` — `gep i24, ptr %p, i64 1`
                 # steps 4 bytes (Julia: `unsafe_load(Ptr{U24}(p), 2)`), and a
                 # `float`/`double` source steps 4/8 bytes, not the raw index
                 # (Julia: `unsafe_load(Ptr{Float32}(p), 2)`).
-                offset, elem_bits = if src_type_const isa LLVM.IntegerType
-                    ew_c = Int(LLVM.width(src_type_const))
-                    ew_c >= 8 || _ir_error(inst,
+                #
+                # Bennett-0ucg: ONE rule for every source type class
+                # (`_single_gep_stride_stamp`, helpers.jl) — offset = index ×
+                # allocation size, so `gep ptr, %p, 1` (8), `gep [2 x i64], %a,
+                # 1` (16) and `gep i8, %a, 16` record the same native byte. The
+                # former struct/array/vector/pointer branch stored the RAW
+                # index. `raw_idx` is the sign-extended constant (`i32 -1`
+                # steps back one element, LLVM GEP semantics).
+                src_type_const, stride_bytes, elem_bits = _single_gep_stride_stamp(inst)
+                if src_type_const isa LLVM.IntegerType
+                    elem_bits >= 8 || _ir_error(inst,
                         "constant-index GEP with sub-byte source element " *
-                        "width $(ew_c) bits not supported (Bennett-vz5n / U12)")
-                    stride_bytes = _gep_stride_bytes(_inst_datalayout(inst),
-                                                     src_type_const)
+                        "width $(elem_bits) bits not supported (Bennett-vz5n / U12)")
                     # BennettVM recovers the cell as `offset ÷ (elem_width ÷ 8)`,
                     # which is only the element index when the stride is
                     # exactly `elem_width ÷ 8` (no allocation padding).
-                    (ptr_cells && 8 * stride_bytes != ew_c) && _ir_error(inst,
+                    (ptr_cells && 8 * stride_bytes != elem_bits) && _ir_error(inst,
                         "constant-index GEP over $(src_type_const) under " *
                         "ptr_cells: allocation stride $(stride_bytes) bytes " *
-                        "≠ element width $(ew_c) bits ÷ 8, so the cell index " *
+                        "≠ element width $(elem_bits) bits ÷ 8, so the cell index " *
                         "`offset_bytes ÷ (elem_width ÷ 8)` is not expressible " *
                         "(Bennett-edt9)")
-                    (raw_idx * stride_bytes, ew_c)
-                elseif src_type_const isa LLVM.FloatingPointType
-                    stride_bytes = _gep_stride_bytes(_inst_datalayout(inst),
-                                                     src_type_const)
-                    (raw_idx * stride_bytes, 8 * stride_bytes)
-                else
-                    # Struct / array / vector / pointer base: legacy raw-index
-                    # behaviour. Silent-pass, tracked in U16 / Bennett-0ucg. elem_width=8 is
-                    # the legacy raw-index unit (offset is the raw index, U16
-                    # out of scope — BennettVM only receives the integer-source
-                    # `mem=:vm` GEPs, never this branch).
-                    (raw_idx, 8)
                 end
+                offset = raw_idx * stride_bytes
                 return IRPtrOffset(dest, ssa(names[base.ref]), offset, elem_bits)
             else
                 # Variable-index GEP → IRVarGEP (MUX-tree selection at lowering time)

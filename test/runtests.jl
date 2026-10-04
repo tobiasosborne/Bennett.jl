@@ -539,6 +539,9 @@ runfile("test_vz5n_gep_offset_bytes.jl")
 # Bennett-edt9 — GEP strides are the DataLayout allocation size (i24 → 4,
 # float → 4), not width ÷ 8 / the raw index; unpacked IRVarGEP strides fail loud.
 runfile("test_edt9_gep_alloc_stride.jl")
+# Bennett-0ucg — every single-index GEP (struct/array/vector/pointer sources too)
+# records index × allocation size; no source type stores a raw index.
+runfile("test_0ucg_gep_aggregate_stride.jl")
 # Bennett-plb7 / U13 — variable-index GEP fails loud on non-integer source
 # element types (was: silent default to elem_width = 8).
 runfile("test_plb7_irvargep_elem_width.jl")
