@@ -130,6 +130,11 @@ Per-overload applicability (Bennett-u71l / U161):
   `bit_width` raises `ArgumentError`. The same rejection applies to the
   `Tuple{Float64}` route of the Tuple overload (Bennett-iwj6) — a Float64
   argument cannot be narrowed on either path.
+- `bit_width = W` (W ≠ the source width) with `optimize = true` narrows the
+  UNOPTIMISED IR when the allowlist accepts it (the same circuit as
+  `optimize = false`), and falls back to the optimised IR only when it does
+  not — where a fold relying on a source-width fact can still be narrowed
+  wrongly (Bennett-sl4h); see `reversible_compile`.
 
 `add`, `mul`, `target`, `mem`, `persistent_impl`, `hashcons` and
 `max_loop_iterations` are domain-checked by ONE shared validator
@@ -275,6 +280,13 @@ division or remainder, a source-width limit guard such as `typemin(Int8)`, a
 cast into a second scalar width (`Int16(x)`), a bit count, an aggregate
 (tuple) return, memory, a call, or a loop — throws `ArgumentError` rather
 than returning a circuit that computes something else (Bennett-mrhg).
+With `optimize=true` (the default) and `W` different from the source width,
+the UNOPTIMISED IR is narrowed first — LLVM's folds are only valid at the
+source width (`x * 16 == 0` becomes `(x & 15) == 0`, wrong at 6 bits) — and
+the circuit is then the `optimize=false` one; only if the allowlist (or
+extraction) refuses that IR is the optimised IR narrowed, with extra checks on
+folded comparisons. Limitation: on that fallback a fold relying on a
+source-width arithmetic fact can still be narrowed wrongly (Bennett-sl4h).
 
 # Example
 

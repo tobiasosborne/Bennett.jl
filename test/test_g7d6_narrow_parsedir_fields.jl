@@ -115,8 +115,17 @@ end
             end
         end
     end
-    @test g7d6_rejection(() -> reversible_compile(g7d6_sw, Int8; bit_width=4,
-                             optimize=true, strategy=:expression)) !== nothing
+    # The optimised IR's lookup table is refused ...
+    @test g7d6_rejection(() -> Bennett._narrow_ir(extract_parsed_ir(g7d6_sw,
+                             Tuple{Int8}; optimize=true), 4; optimized=true)) !== nothing
+    # ... and since Bennett-sl4h optimize=true narrows the unoptimised compare
+    # chain instead (was: refused at W = 4): accepted and right
+    let c = reversible_compile(g7d6_sw, Int8; bit_width=4, optimize=true,
+                               strategy=:expression)
+        @test verify_reversibility(c)
+        @test all((simulate(c, Int8, g7d6_in(pp)) & g7d6_wmask(4)) == oracle_sw(pp, 4)
+                  for pp in 0:g7d6_wmask(4))
+    end
 
     @testset "pointer argument: refused (opt=$opt)" for opt in (false, true)
         p = extract_parsed_ir(g7d6_ptr, Tuple{Ptr{Int8}}; optimize=opt)

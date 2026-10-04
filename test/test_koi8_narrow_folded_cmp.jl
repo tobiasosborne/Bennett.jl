@@ -121,37 +121,42 @@ end
         c, err = k8_compile(k8_union, UInt8; W, optimize=true)
         @test c === nothing && k8_is_refusal(err)
     end
-    # Int8 `x < 0` as an integer becomes `lshr x, 7`, which at W = 7 is 0.
-    c, err = k8_compile(k8_signbit, Int8; W=7, optimize=true)
-    @test c === nothing && k8_is_refusal(err) && occursin("Bennett-koi8", err.msg)
-    c, err = k8_compile(k8_signbit, Int8; W=7, optimize=false)
-    @test err === nothing
-    @test c !== nothing && verify_reversibility(c) &&
-          isempty(k8_mismatches(c, k8_signbit, Int8, 7))
+    # Int8 `x < 0` as an integer becomes `lshr x, 7`, which at W = 7 is 0:
+    # the optimised IR is refused by the koi8 check ...
+    err = try
+        Bennett._narrow_ir(Bennett.extract_parsed_ir(k8_signbit, Tuple{Int8};
+                                                     optimize=true), 7; optimized=true)
+        nothing
+    catch e
+        e
+    end
+    @test err !== nothing && k8_is_refusal(err) && occursin("Bennett-koi8", err.msg)
+    # ... and since Bennett-sl4h both flags narrow the unoptimised IR instead
+    # (was: optimize=true refused): accepted and right
+    for optimize in (false, true)
+        c, err = k8_compile(k8_signbit, Int8; W=7, optimize)
+        @test err === nothing
+        @test c !== nothing && verify_reversibility(c) &&
+              isempty(k8_mismatches(c, k8_signbit, Int8, 7))
+    end
 end
 
-@testset "residual hole (Bennett-sl4h): folds that use S-bit arithmetic facts" begin
+@testset "S-bit arithmetic-fact fold (Bennett-sl4h): x * 16 == 0 at W = 6" begin
     # `x * 16 == 0` folds to `(x & 15) == 0`, true iff 16 | x at 8 bits.  In
     # W = 6 modular arithmetic x * 16 == 0 iff 4 | x.  Every operand and
     # constant of the folded IR is narrowable, so no local rule sees it;
-    # unoptimised IR narrows the source's own multiply and is right.
+    # unoptimised IR narrows the source's own multiply and is right — and
+    # since Bennett-sl4h optimize=true narrows the unoptimised IR first.  (The
+    # hole that remains — unoptimised IR refused AND an S-bit fold in the
+    # optimised IR — is pinned in test_sl4h_narrow_unoptimised.jl.)
     oracle(p) = mod(16 * k8_wsign(p, 6), 64) == 0 ? 1 : 0
     for optimize in (false, true)
         c, err = k8_compile(k8_mul16, Int8; W=6, optimize)
-        if err !== nothing
-            # the narrowing contract allows refusing this program: it must be a
-            # loud narrowing refusal, and then there is nothing wrong to pin
-            @test err isa ArgumentError
-            @test err isa ArgumentError && k8_is_refusal(err)
-            @test optimize      # unoptimised IR narrows correctly: never refused
-            continue
-        end
+        @test err === nothing   # the unoptimised IR narrows: never refused
         @test c !== nothing && verify_reversibility(c)
         nbad = c === nothing ? -1 :
             count(p -> (Int(simulate(c, Int8, k8_in(Int8, p))) & 63) != oracle(p), 0:63)
-        # Bennett-sl4h: with optimize=true the accepted circuit is wrong; only
-        # that single aggregated correctness assertion is pinned broken
-        optimize ? (@test_broken nbad == 0) : (@test nbad == 0)
+        @test nbad == 0     # Bennett-sl4h: was @test_broken for optimize=true
     end
 end
 

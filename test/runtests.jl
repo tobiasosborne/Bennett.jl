@@ -384,6 +384,10 @@ runfile("test_6p8j_narrow_cmp_consts.jl")
 # ordering, an add-then-ult or a shift by S-1; a generated corpus of source
 # predicates checks every accepted narrowing against the source function.
 runfile("test_koi8_narrow_folded_cmp.jl")
+# Bennett-sl4h — bit_width + optimize=true narrows the UNOPTIMISED IR first and
+# falls back to the optimised IR only when it is refused; the remaining hole
+# (fallback + a fold using an S-bit arithmetic fact) is pinned @test_broken.
+runfile("test_sl4h_narrow_unoptimised.jl")
 # Bennett-g7d6 — the narrowed ParsedIR decides every field explicitly: the
 # metadata fields (globals / memssa / synth_ptr_provenance) are reset only while
 # no narrowed node can read them; constant-table functions are refused.

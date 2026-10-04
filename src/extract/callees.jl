@@ -211,6 +211,10 @@ entry). On a hit returns the previously-built `ParsedIR` by identity.
 `ParsedIR` is immutable and the lowering pipeline only reads from it, so
 sharing across compiles is safe.
 
+Bennett-sl4h: a narrowed `optimize=true` entry is built by `_narrow_hybrid`
+(unoptimised IR first, the optimised IR as the fallback), so the two
+`optimize` values are separate keys that may hold different IR.
+
 The key is `(f, arg_types, optimize, mem, bit_width)`; the cache is emptied
 whenever the world counter moves (Bennett-4ddk) or the callee registry changes
 (Bennett-7q9z), and holds at most
@@ -224,14 +228,67 @@ function _extract_parsed_ir_cached(f, arg_types::Type{<:Tuple};
     lock(_parsed_ir_cache_lock) do
         w = _cache_world_gate!(_parsed_ir_cache, _parsed_ir_cache_world)
         haskey(_parsed_ir_cache, key) && return _parsed_ir_cache[key]
-        pir = bit_width > 0 ?
-            _narrow_ir(_extract_parsed_ir_cached(f, arg_types; optimize, mem),
-                       bit_width; optimized=optimize) :
-            extract_parsed_ir(f, arg_types; optimize, mem)
+        pir = bit_width == 0 ? extract_parsed_ir(f, arg_types; optimize, mem) :
+              optimize       ? _narrow_hybrid(f, arg_types, mem, bit_width) :
+            _narrow_ir(_extract_parsed_ir_cached(f, arg_types; optimize=false, mem),
+                       bit_width; optimized=false)
         return _cache_insert_bounded!(_parsed_ir_cache, key, pir,
                                       _PARSED_IR_CACHE_MAX, w)
     end
 end
+
+"""
+    _narrow_hybrid(f, arg_types, mem, W) -> ParsedIR
+
+The `bit_width=W, optimize=true` narrowing (Bennett-sl4h).  LLVM's folds are
+only valid at the source width S (`x * 16 == 0` becomes `(x & 15) == 0`,
+wrong at 6 bits, and no local rule tells it from a plain mask), so at `W != S`
+the UNOPTIMISED IR is narrowed first: it holds the source's own operations,
+so an accepted narrowing is sound by construction, and the result is the very
+`ParsedIR` the `optimize=false` compile uses (same cache entry).  If that
+attempt is refused, the result is exactly the pre-sl4h path — the optimised IR
+through `_narrow_ir(...; optimized=true)` and its folded-comparison checks —
+whatever that path does (accept or throw).  At `W == S` nothing is re-typed
+and the folds are valid, so the optimised path is used directly (no gate-count
+cost for an identity narrowing).
+
+Which failures of the unoptimised attempt fall back (`_narrow_attempt_refused`):
+`ArgumentError` (every narrowing refusal: `_narrow_reject` and the g7d6
+metadata check) and `ErrorException` (extraction refusals: `_ir_error` and the
+extractor's raw `error(...)` calls — memory, calls, the gq1z global-alias
+refusal, ... — which only the unoptimised IR may contain).  `_ir_error` raises
+a plain `ErrorException`, and the extractor raises deliberate refusals through
+raw `error(...)` too, so a refusal cannot be told from an accidental
+`error(...)` without matching message text; we chose to let EVERY
+`ErrorException` fall back.  The optimised path then re-checks the program
+from scratch, so nothing is accepted that the pre-sl4h path did not accept.
+Everything else — `InterruptException`, `MethodError`, `BoundsError`,
+`KeyError`, `AssertionError`, ... — is a bug, not a refusal, and propagates.
+A refused attempt caches nothing for this key (the exception skips the
+insertion); only the returned result is cached, under the `optimize=true` key.
+
+LIMITATION (Bennett-sl4h stays open): on the fallback a fold that relies on an
+S-bit arithmetic fact can still be narrowed into a wrong circuit — a program
+whose unoptimised IR is refused AND whose optimised IR holds such a fold.
+"""
+function _narrow_hybrid(f, arg_types::Type{<:Tuple}, mem::Symbol, W::Int)::ParsedIR
+    unopt = try
+        S = _narrow_source_width(_extract_parsed_ir_cached(f, arg_types;
+                                                           optimize=false, mem))
+        S == W ? nothing :
+            _extract_parsed_ir_cached(f, arg_types; optimize=false, mem, bit_width=W)
+    catch e
+        _narrow_attempt_refused(e) || rethrow()
+        nothing
+    end
+    unopt === nothing || return unopt
+    return _narrow_ir(_extract_parsed_ir_cached(f, arg_types; optimize=true, mem),
+                      W; optimized=true)
+end
+
+"""A refusal of `_narrow_hybrid`'s unoptimised attempt, which falls back to
+the optimised path; any other exception is a bug and propagates."""
+_narrow_attempt_refused(e) = e isa ArgumentError || e isa ErrorException
 
 """Empty the `_parsed_ir_cache`. For tests; registry changes invalidate the
 cache on their own (Bennett-7q9z), except direct edits of the registry Dicts."""

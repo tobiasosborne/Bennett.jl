@@ -208,16 +208,28 @@ end
     # Bennett-koi8 refuses a comparison of a computed (add) value in
     # optimised IR; unoptimised IR is the source's own two compares.
     for W in (4, 6)
-        c, err = p6_compile(p6_band, Int8; W, optimize=true)
-        @test c === nothing && p6_is_refusal(err)
-        @test occursin("Bennett-koi8", err.msg)
+        err = try
+            Bennett._narrow_ir(Bennett.extract_parsed_ir(p6_band, Tuple{Int8};
+                                                         optimize=true), W; optimized=true)
+            nothing
+        catch e
+            e
+        end
+        @test err !== nothing && p6_is_refusal(err)
+        @test err !== nothing && occursin("Bennett-koi8", err.msg)
     end
-    # unoptimised, at a W where 9 and 12 are signed W-bit values
-    c, err = p6_compile(p6_band, Int8; W=6, optimize=false)
-    @test err === nothing
-    @test c !== nothing && verify_reversibility(c) &&
-          all((Int(simulate(c, Int8, p6_in(Int8, p))) & 63) ==
-              (9 <= p6_wsign(p, 6) <= 12 ? 1 : 0) for p in 0:63)
+    # W = 4: 12 is no signed 4-bit value, so the unoptimised IR is refused too
+    c, err = p6_compile(p6_band, Int8; W=4, optimize=true)
+    @test c === nothing && p6_is_refusal(err)
+    # at a W where 9 and 12 are signed W-bit values the unoptimised IR narrows,
+    # and since Bennett-sl4h optimize=true uses it (was: refused) — right
+    for optimize in (false, true)
+        c, err = p6_compile(p6_band, Int8; W=6, optimize)
+        @test err === nothing
+        @test c !== nothing && verify_reversibility(c) &&
+              all((Int(simulate(c, Int8, p6_in(Int8, p))) & 63) ==
+                  (9 <= p6_wsign(p, 6) <= 12 ? 1 : 0) for p in 0:63)
+    end
 end
 
 @testset "hand-built IR: unsigned spelling, i1 compares, non-i8 constants" begin
