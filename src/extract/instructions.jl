@@ -4955,12 +4955,11 @@ end
 # dispatch was lifted out of `_convert_instruction`'s 836-line body into
 # this helper. Order of `if startswith(cname, "...")` branches is LOAD-
 # BEARING — `llvm.minnum` / `llvm.minimum` and `llvm.maxnum` / `llvm.maximum`
-# share handlers via prefix-match, and the floor/ceil/trunc/rint
-# branch is INTENTIONALLY a no-op (it lets the registered-callee path in
-# `_convert_instruction` pick up `soft_floor` / `soft_ceil` / etc. via
-# the SoftFloat dispatch). `llvm.round.` and `llvm.roundeven.` have
-# explicit dispatch arms (Bennett-mq6f) because they semantically
-# diverge — `llvm.round` is round-half-AWAY (`soft_round_away`) while
+# share handlers via prefix-match. `llvm.floor.` / `llvm.ceil.` /
+# `llvm.trunc.` / `llvm.rint.` dispatch to `soft_floor` / `soft_ceil` /
+# `soft_trunc` / `soft_round` (Bennett-1qws). `llvm.round.` and
+# `llvm.roundeven.` have explicit dispatch arms (Bennett-mq6f) because
+# they semantically diverge — `llvm.round` is round-half-AWAY (`soft_round_away`) while
 # `llvm.roundeven` is banker's (`soft_round`). Returns `nothing` if no intrinsic matched —
 # the call site then proceeds to the registered-callee lookup and the
 # benign-allowlist guard. Per CLAUDE.md §2 this is part of the 3+1-mandated
@@ -5259,19 +5258,31 @@ function _handle_intrinsic(cname::AbstractString, inst::LLVM.Instruction,
             "(Bennett-mq6f)")
         return IRCall(dest, soft_round_away, [_operand(ops[1], names)], [w], w)
     end
-    # llvm.floor / llvm.ceil / llvm.trunc / llvm.rint
-    # Intentionally NO return: the registered-callee path in
-    # `_convert_instruction` picks these up via SoftFloat dispatch
-    # (`soft_floor` / `soft_ceil` / `soft_trunc` are registered callees).
-    # Falling through to the next `if` keeps the original semantics.
-    # Bennett-mq6f: `llvm.round.` and `llvm.roundeven.` are no longer
-    # part of this no-op arm — both have explicit dispatch above (with
-    # different rounding modes). `llvm.rint.` defaults to round-to-nearest-
-    # ties-to-even per IEEE 754; the callee registry serves that via
-    # `soft_round` (banker's).
-    if startswith(cname, "llvm.floor.") || startswith(cname, "llvm.ceil.") ||
-       startswith(cname, "llvm.trunc.") || startswith(cname, "llvm.rint.")
-        # No-op: handled by callee registry
+    # Bennett-1qws: `llvm.floor.f64` / `llvm.ceil.f64` / `llvm.trunc.f64` /
+    # `llvm.rint.f64` dispatch explicitly to their soft primitives. Before
+    # 1qws this was an EMPTY conditional whose comment claimed the callee
+    # registry would pick these up — it never did (the registry is keyed on
+    # `soft_*` names, not `llvm.*` intrinsic names), so every Julia
+    # `floor` / `ceil` / `trunc` / `round(x)` on a plain Float64 value was
+    # rejected as "no registered callee handler". (The SoftFloat-typed route
+    # calls `soft_floor` etc. directly and never emits these intrinsics.)
+    #
+    # `llvm.rint` rounds in the CURRENT dynamic rounding mode. The circuit
+    # has no FP environment, so we assume the default mode,
+    # round-to-nearest ties-to-even (IEEE 754 roundTiesToEven) — the mode
+    # Julia always runs in (`round(x, RoundNearest)` emits `llvm.rint`).
+    # Under that mode `rint` == `roundeven` == `soft_round` (banker's,
+    # Bennett-2hhx). The inexact flag `rint` may raise is unobservable here.
+    for (pfx, fn) in (("llvm.floor.", soft_floor), ("llvm.ceil.", soft_ceil),
+                      ("llvm.trunc.", soft_trunc), ("llvm.rint.", soft_round))
+        if startswith(cname, pfx)
+            w = _iwidth(ops[1])
+            w == 64 || _ir_error(inst,
+                "$(chop(pfx)): only f64 supported (got width=$w); native " *
+                "f32/f16 paths are not bit-exact (CLAUDE.md §13). " *
+                "(Bennett-1qws)")
+            return IRCall(dest, fn, [_operand(ops[1], names)], [w], w)
+        end
     end
     # Bennett-p19b: native dispatch for IEEE 754-2019 minimumNumber /
     # maximumNumber (LLVM 19+ `llvm.minimumnum.*` / `llvm.maximumnum.*`).

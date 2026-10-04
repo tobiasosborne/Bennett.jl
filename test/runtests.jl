@@ -1205,6 +1205,9 @@ runfile("test_b2fs_tabulate_tuple_unpack.jl")
 # NaN propagation against Base.floor/ceil/trunc; soft_fdiv's dead
 # `_overflow_result` binding replaced with `_`.
 runfile("test_ardf_floor_ceil_nan.jl")
+# Bennett-1qws — llvm.{floor,ceil,trunc,rint}.f64 dispatch to soft_floor /
+# soft_ceil / soft_trunc / soft_round (rint: default RNE mode); f32 refused.
+runfile("test_1qws_llvm_floor_ceil_trunc_rint.jl")
 # Bennett-kh6n — trailing-`.` prefix discipline for scalar LLVM intrinsic
 # name matching in src/extract/instructions.jl: a bare `startswith(cname,
 # "llvm.minimum")` silently swallows sibling intrinsics like
