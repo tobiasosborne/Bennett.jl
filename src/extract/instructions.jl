@@ -4388,7 +4388,10 @@ function _handle_memcpy_global_src(cname::AbstractString, inst::LLVM.Instruction
         "with no initializer — tracked in Bennett-doih-external " *
         "(covered by Bennett-zxhg); (c) the initializer is an opaque " *
         "kind (GlobalAlias, ConstantVector, etc.) — tracked in " *
-        "Bennett-doih-opaque (covered by Bennett-zxhg). Check " *
+        "Bennett-doih-opaque (covered by Bennett-zxhg); (d) an array " *
+        "element is `undef` / `poison` / a constant expression " *
+        "(`ptrtoint`, `getelementptr`) / a pointer, or the array is " *
+        "nested — never zero-filled (Bennett-fpa0). Check " *
         "`parsed.globals` to see what was extracted. (Bennett-doih)")
     (gdata, gw) = globals[gname]
 

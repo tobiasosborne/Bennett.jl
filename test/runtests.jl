@@ -288,6 +288,10 @@ runfile("test_doih_memcpy_global_src.jl")
 # in the dict → G5 in _handle_memcpy_global_src fires the precise
 # `Bennett-zxhg-ptrfield` breadcrumb (the t5_tr2_hashmap.ll:153 case).
 runfile("test_zxhg_struct_global.jl")
+# Bennett-fpa0: const-array elements read only via the accessor their kind
+# supports (pre-fix: LLVMGetElementAsConstant on a ConstantArray → SIGSEGV);
+# undef/poison/constexpr elements drop the global (G5 on read), never zero-fill.
+runfile("test_fpa0_const_array_accessor_kind.jl")
 # Bennett-land (Bennett-zxhg follow-up, 2026-05-16): ptr-typed ConstantStruct
 # field materialisation via synthetic 64-bit LE addresses. `_ptr_identity` →
 # `(:named, ref)` / `(:null, 0)` lower to `0x1000_0000_0000_0000 | counter`;

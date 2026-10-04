@@ -888,6 +888,49 @@ function _assign_synthetic_addr!(addr_assigned::Dict{Symbol, UInt64},
 end
 
 """
+    _const_int_array_elements(arr::LLVM.Value, n::Int) -> Union{Vector{UInt64}, Nothing}
+
+Bennett-fpa0. Zero-extended elements of a length-`n` integer-array constant,
+read ONLY through the accessor the value kind supports:
+
+  - `ConstantAggregateZero` → `n` zeros (genuinely zero);
+  - `ConstantDataArray` (a `ConstantDataSequential`) → `LLVMGetElementAsConstant`;
+  - plain `ConstantArray` → its operands (`LLVMGetOperand`).
+
+`LLVMGetElementAsConstant` is valid ONLY on a `ConstantDataSequential`; on a
+plain `ConstantArray` LLVM reads garbage and SIGSEGVs the Julia process (the
+pre-fpa0 crash). Every element must be a plain `ConstantInt`: an `undef` /
+`poison` / constant-expression (`ptrtoint`, `getelementptr`) / pointer element,
+a nested aggregate, a length mismatch, or any other initializer kind returns
+`nothing` — never a zero-filled stand-in. Callers drop the whole global on
+`nothing`, so a later READ of it fails loud (memcpy G5) while an unread global
+costs nothing.
+"""
+function _const_int_array_elements(arr::LLVM.Value, n::Int)::Union{Vector{UInt64}, Nothing}
+    arr isa LLVM.ConstantAggregateZero && return zeros(UInt64, n)
+    ref = arr.ref
+    out = Vector{UInt64}(undef, n)
+    if LLVM.API.LLVMIsAConstantDataSequential(ref) != C_NULL
+        Int(LLVM.API.LLVMGetArrayLength(LLVM.value_type(arr).ref)) == n || return nothing
+        for k in 0:(n - 1)
+            elt = LLVM.API.LLVMGetElementAsConstant(ref, k)
+            LLVM.API.LLVMIsAConstantInt(elt) != C_NULL || return nothing
+            out[k + 1] = UInt64(LLVM.API.LLVMConstIntGetZExtValue(elt))
+        end
+    elseif LLVM.API.LLVMIsAConstantArray(ref) != C_NULL
+        Int(LLVM.API.LLVMGetNumOperands(ref)) == n || return nothing
+        for k in 0:(n - 1)
+            elt = LLVM.API.LLVMGetOperand(ref, k)
+            LLVM.API.LLVMIsAConstantInt(elt) != C_NULL || return nothing
+            out[k + 1] = UInt64(LLVM.API.LLVMConstIntGetZExtValue(elt))
+        end
+    else
+        return nothing
+    end
+    return out
+end
+
+"""
 Bennett-zxhg helper (Bennett-land extension). Flatten a `ConstantStruct`
 initializer into a flat little-endian `Vector{UInt8}` honoring ABI
 offset/padding via `LLVM.offsetof(dl, struct_ty, i)` and total size via
@@ -904,6 +947,9 @@ ANY field has a type or operand-shape Bennett.jl can't materialise:
   - nested ConstantStruct that itself returns `nothing`
   - field operand of an unexpected kind (e.g. `undef`, ConstantExpr that's
     not a ConstantInt/ConstantDataArray/ConstantStruct/ConstantAggregateZero)
+  - an array field with any element that is not a plain ConstantInt
+    (`undef` / `poison` / `ptrtoint` …), read kind-checked via
+    `_const_int_array_elements` (Bennett-fpa0)
 
 Otherwise returns `(bytes, new_provenance_entries)` where
 `new_provenance_entries::Vector{Tuple{Int,Int}}` is the list of
@@ -979,23 +1025,17 @@ function _flatten_struct_to_bytes(init::LLVM.ConstantStruct,
             arrlen = Int(LLVM.API.LLVMGetArrayLength(field_ty.ref))
             nb_per = div(ew, 8)
 
-            if field_val isa LLVM.ConstantAggregateZero
-                # bytes already zero
-            elseif field_val isa LLVM.ConstantDataArray ||
-                   field_val isa LLVM.ConstantArray
-                for k in 0:(arrlen - 1)
-                    elt_ref = LLVM.API.LLVMGetElementAsConstant(field_val.ref, k)
-                    elt = LLVM.Value(elt_ref)
-                    raw = elt isa LLVM.ConstantInt ?
-                        UInt64(LLVM.API.LLVMConstIntGetZExtValue(elt.ref)) :
-                        UInt64(0)
-                    base = field_off + k * nb_per
-                    for b in 0:(nb_per - 1)
-                        bytes[base + b + 1] = UInt8((raw >> (8 * b)) & 0xff)
-                    end
+            # Bennett-fpa0: kind-checked element read. A non-ConstantInt
+            # element (undef / poison / ConstantExpr) or an unexpected
+            # initializer kind drops the WHOLE global (G5 fires on a read).
+            elems = _const_int_array_elements(field_val, arrlen)
+            elems === nothing && return (nothing, Tuple{Int,Int}[])
+            for k in 0:(arrlen - 1)
+                raw = elems[k + 1]
+                base = field_off + k * nb_per
+                for b in 0:(nb_per - 1)
+                    bytes[base + b + 1] = UInt8((raw >> (8 * b)) & 0xff)
                 end
-            else
-                return (nothing, Tuple{Int,Int}[])
             end
 
         elseif field_ty isa LLVM.StructType
@@ -1158,13 +1198,14 @@ function _extract_const_globals(mod::LLVM.Module, ptr_cells::Bool=false)
             elem_width = LLVM.width(elem_ty)
             1 <= elem_width <= 64 || continue
             n = Int(LLVM.API.LLVMGetArrayLength(ty.ref))
-            data = Vector{UInt64}(undef, n)
-            for i in 0:(n-1)
-                elt_ref = LLVM.API.LLVMGetElementAsConstant(init.ref, i)
-                elt = LLVM.Value(elt_ref)
-                data[i+1] = elt isa LLVM.ConstantInt ?
-                    UInt64(LLVM.API.LLVMConstIntGetZExtValue(elt.ref)) : UInt64(0)
-            end
+            # Bennett-fpa0: kind-checked read (pre-fix: a non-ConstantInt
+            # element silently became 0). An integer ConstantDataArray holds
+            # only ConstantInts, so `nothing` here is an LLVM-invariant breach.
+            data = _const_int_array_elements(init, n)
+            data === nothing && error(
+                "_extract_const_globals: integer ConstantDataArray @$(LLVM.name(g)) " *
+                "has an element that is not a ConstantInt — refusing to zero-fill " *
+                "it (Bennett-fpa0)")
             out[Symbol(LLVM.name(g))] = (data, elem_width)
 
         elseif init isa LLVM.ConstantStruct
