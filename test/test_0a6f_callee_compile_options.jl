@@ -54,12 +54,14 @@ end
                     (max_loop_iterations = 64,))   # defaults → pre-fix callee lowering
     end
 
-    @testset "Float64 mul: default pinned, qcla_tree / :depth reach soft_fmul" begin
+    @testset "Float64 mul: default pinned, qcla_tree reaches soft_fmul; :depth never deeper" begin
         c0 = reversible_compile(fm, Float64, Float64)
         @test counts(c0) == (149456, 38884, 3104)      # pre-fix default — must not move
         cq = reversible_compile(fm, Float64, Float64; mul=:qcla_tree)
         cd = reversible_compile(fm, Float64, Float64; target=:depth)
-        @test counts(cq) == counts(cd)                 # target=:depth resolves to mul=:qcla_tree
+        # Bennett-bnfk: target=:depth keeps shift_add (qcla_tree is deeper
+        # here), so the callee-lowered circuit equals the default.
+        @test counts(cd) == counts(c0)
         # The strategy now reaches soft_fmul's 64-bit multiplies (pre-fix:
         # identical to default). qcla_tree costs ~3x the Toffolis, as it does
         # on plain Int64; it does NOT lower toffoli_depth at this width (nor

@@ -30,16 +30,17 @@ using Bennett
         @test_throws ArgumentError Bennett.lower(parsed; target=:wire_count)
     end
 
-    @testset "lower() :auto + target=:depth pre-resolves mul to qcla_tree" begin
-        # Per Bennett-4fri / U30, `target=:depth` rewrites `mul=:auto` to
-        # `:qcla_tree` before dispatch. End-to-end visible via gate count.
+    @testset "lower() :auto + target=:depth keeps shift_add (Bennett-bnfk)" begin
+        # Bennett-4fri / U30 made `target=:depth` rewrite `mul=:auto` to
+        # `:qcla_tree`; Bennett-bnfk reverted that (qcla_tree is deeper at
+        # every lowerable width once compiled). Same gates as the default;
+        # an explicit `mul=:qcla_tree` still differs.
         parsed = extract_parsed_ir((a, b) -> a * b, Tuple{Int8, Int8})
         lr_gc    = Bennett.lower(parsed; target=:gate_count)
         lr_depth = Bennett.lower(parsed; target=:depth)
-        # qcla_tree has more Toffolis than shift_add at W=8 — must differ.
-        nT_gc    = count(g -> g isa Bennett.ToffoliGate, lr_gc.gates)
-        nT_depth = count(g -> g isa Bennett.ToffoliGate, lr_depth.gates)
-        @test nT_gc != nT_depth
+        lr_qt    = Bennett.lower(parsed; mul=:qcla_tree)
+        @test lr_depth.gates == lr_gc.gates
+        @test lr_qt.gates != lr_gc.gates
     end
 
     @testset "lower(parsed; max_loop_iterations) demands explicit unroll for loops" begin

@@ -15,6 +15,14 @@ Bennett-gsxe §3.5 optimisation):
   cuccaro: 408 total / T-depth 122
   ripple : 346 total / T-depth 62
 
+Bennett-bnfk: `target=:depth` keeps `:auto` → `:ripple` too. The bare QCLA
+adder is shallower from W=16 up (`(x,y)->x+y`, total / Toffolis / depth:
+W=8 ripple 82/26/14 vs qcla 110/54/16; W=16 170/58/30 vs 240/128/20; W=32
+346/122/62 vs 506/282/24; W=64 698/250/126 vs 1044/596/28), but inside a
+real consumer it is deeper: `reversible_compile(+, Float64, Float64;
+add=:qcla)` (soft_fadd's i64 adds) has Toffoli depth 3022 vs 2796 with
+ripple (Bennett-0a6f). Ask for `add=:qcla` explicitly to get it.
+
 Bennett-stwr: the dead `op2_dead` / `liveness_enabled` arguments were
 dropped. Whether an explicit `:cuccaro` add overwrites an operand in place
 or runs on a CNOT copy is decided per add by `_lower_add_cuccaro_inplace!`
@@ -33,17 +41,36 @@ end
     _pick_mul_strategy(user_choice, W; target=:gate_count) -> Symbol
 
 Resolve `mul=:auto|:shift_add|:qcla_tree` into a concrete strategy.
-Explicit choices bypass the heuristic entirely.
+Explicit choices bypass the heuristic entirely (and ignore `target`).
 
-For `:auto`:
-- `target=:gate_count` (default): shift-and-add. Wins on total Toffoli
-  count and wire budget at every supported width.
-- `target=:depth`: `qcla_tree` (Sun-Borissov 2023). O(log² n) Toffoli
-  depth vs shift-and-add's O(n); depth drops ~3-6× at W=32/64.
-  Costs ~5× more total Toffoli and ~2.5× more wires.
+For `:auto` the answer is `:shift_add` under BOTH targets, at every width
+Bennett can lower (W <= 64; i128 constants are refused, Bennett-l9cl).
+`target=:depth` therefore changes nothing for multiplication today.
 
-Bennett-4fri / U30: the `target` arm closes the "qcla_tree is never
-picked by :auto" gap.
+Bennett-bnfk invariant: `target=:depth` never resolves `:auto` to a strategy
+whose measured `toffoli_depth` is higher than the one `target=:gate_count`
+resolves to. Measured on the compiled `(x, y) -> x * y` (forward + copy +
+uncompute; `toffoli_depth` with CNOT dependencies, Bennett-u3b2), as
+total gates / Toffolis / Toffoli depth:
+
+    W   shift_add             qcla_tree
+    8   380 / 144 / 36        3024 / 1210 / 112
+   16   1644 / 664 / 84       12940 / 5506 / 176
+   32   6860 / 2856 / 180     52984 / 23346 / 256
+   64   28044 / 11848 / 372   213430 / 95972 / 352
+
+qcla_tree is deeper at W <= 32. At W = 64 the bare multiply is 5% shallower
+(352 vs 372) for 8x the Toffolis, but inside a real W = 64 consumer it is
+deeper: `reversible_compile(*, Float64, Float64; mul=:qcla_tree)` lowers
+soft_fmul's four i64 multiplies to Toffoli depth 3382 vs 3104 with
+shift_add (Bennett-0a6f measurement). Toffoli depth does not compose — the
+schoolbook's ripple stages overlap with neighbouring instructions, the
+tree's uncompute does not — so no width qualifies and the crossover is
+"never" within W <= 64. Re-measure before adding one if i128 lowering lands.
+Ask for `mul=:qcla_tree` explicitly to get the tree.
+
+Bennett-4fri / U30 added the `target` arm (then: `:depth` → qcla_tree at
+every W, justified by the pre-u3b2 metric that skipped CNOTs).
 
 Bennett-tbm6 (2026-04-27): `:karatsuba` removed. The implementation
 was vestigial at every supported width (W ≤ 64) — see src/multiplier.jl:35
@@ -53,10 +80,12 @@ beyond what `ir_extract` lowers today.
 """
 function _pick_mul_strategy(user_choice::Symbol, W::Int;
                             target::Symbol=:gate_count)
+    target in (:gate_count, :depth) ||
+        throw(ArgumentError("_pick_mul_strategy: unknown target :$target (supported: :gate_count, :depth)"))
     user_choice === :shift_add && return :shift_add
     user_choice === :qcla_tree && return :qcla_tree
     user_choice === :auto || throw(ArgumentError("_pick_mul_strategy: unknown choice :$user_choice (supported: :auto, :shift_add, :qcla_tree)"))
-    target === :depth && return :qcla_tree
+    # Bennett-bnfk: no width W <= 64 favours qcla_tree on Toffoli depth (table above).
     return :shift_add
 end
 

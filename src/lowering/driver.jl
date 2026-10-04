@@ -167,8 +167,9 @@ function _validate_compile_options(; add::Symbol, mul::Symbol, target::Symbol,
         throw(ArgumentError("$origin: unknown hashcons :$hashcons; supported: $(_syms(_VALID_HASHCONS))"))
     # Bennett-4fri / U30: `target` selects the objective the `:auto`
     # dispatchers optimise for. `:gate_count` (default) preserves the
-    # pre-U30 choices; `:depth` switches `mul=:auto` to `qcla_tree`
-    # (O(log² n) T-depth vs shift-and-add's O(n)). `target_domain` is
+    # pre-U30 choices; `:depth` resolves each `:auto` strategy to one that is
+    # never deeper (Bennett-bnfk: today the same as `:gate_count` at every
+    # lowerable width — see `_pick_mul_strategy`). `target_domain` is
     # `_VALID_TARGET_ENTRY` on the entry points, which also admit the
     # `:reversible_vm` backend selector they intercept themselves.
     target in target_domain ||
@@ -195,12 +196,10 @@ function lower(parsed::ParsedIR; max_loop_iterations::Int=0, use_inplace::Bool=t
                hashcons::Symbol = :none)
     _validate_compile_options(; add, mul, target, mem, persistent_impl, hashcons,
                               max_loop_iterations, origin="lower")
-    # Pre-resolve `mul=:auto` when the user asks for depth-optimised
-    # output. Downstream sees this as an explicit choice — no ctx field
-    # needed and no per-call-site threading beyond the existing `mul`.
-    if mul === :auto && target === :depth
-        mul = :qcla_tree
-    end
+    # Bennett-bnfk: `target=:depth` no longer pre-resolves `mul=:auto` to
+    # `:qcla_tree` — qcla_tree is deeper than shift_add at every lowerable
+    # width once used in a real circuit (measurements in `_pick_mul_strategy`).
+    # `:auto` is resolved per operation by `_pick_mul_strategy`.
     # Bennett-0a6f: the resolved options, threaded to every inlined callee.
     lower_opts = LowerOptions(; max_loop_iterations, use_inplace, fold_constants,
                               compact_calls, add, mul, target, auto_self_reversing,

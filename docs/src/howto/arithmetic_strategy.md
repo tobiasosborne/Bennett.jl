@@ -14,9 +14,12 @@ operation in the function — it is not per-call-site.
    Toffoli count and ancilla budget. This is the right choice for simulation
    and for NISQ-scale resource estimates.
 2. **Want the shallowest circuit (FTQC / fault-tolerant)? Set `target=:depth`,
-   or name a depth-optimal primitive directly.** `target=:depth` flips
-   `mul=:auto` to the Sun-Borissov QCLA-tree multiplier. For addition, ask for
-   `add=:qcla` explicitly. Depth (and hence T-depth, since
+   or name a depth-optimal primitive directly.** `target=:depth` never picks a
+   deeper strategy than the default; today it resolves `add=:auto` and
+   `mul=:auto` exactly as `target=:gate_count` does, because at every
+   lowerable width the QCLA variants are deeper once compiled into a real
+   circuit (Bennett-bnfk; see `_pick_mul_strategy`). Name `add=:qcla` or
+   `mul=:qcla_tree` explicitly to get them. Depth (and hence T-depth, since
    `t_depth = toffoli_depth × k`) drops at the cost of more total gates and
    ancillae.
 3. **Want a specific primitive? Name it.** `add=:ripple|:cuccaro|:qcla`,
@@ -88,7 +91,7 @@ verify_reversibility(c)  # true
 | --- | --- | --- | --- | --- |
 | `:shift_add` | `lower_mul_wide!` (`src/multiplier.jl`) | `O(W²)` | `O(W)` (empirical) | Schoolbook shift-and-add |
 | `:qcla_tree` | `lower_mul_qcla_tree!` (`src/mul_qcla_tree.jl`) | `≈ 5×` shift-add | `O(log² W)` | Sun–Borissov 2026, [arXiv:2604.09847](https://arxiv.org/abs/2604.09847); self-reversing |
-| `:auto` | → `:shift_add` (`target=:gate_count`) / `:qcla_tree` (`target=:depth`) | — | — | `_pick_mul_strategy` |
+| `:auto` | → `:shift_add` (both targets, Bennett-bnfk) | — | — | `_pick_mul_strategy` |
 | `:karatsuba` | **removed — throws `ArgumentError`** | — | — | Bennett-tbm6 (2026-04-27) |
 
 ## Recipe: depth matters (FTQC)
@@ -115,16 +118,15 @@ CNOT gates (fixed in Bennett-u3b2). The bare primitive tracks the paper's
 `3·log²n + 7·log n + 14` formula (`128` vs `124` at `W=32`), but uncomputation
 doubles it in the compiled circuit, so the crossover lies at larger `W`.
 
-You do not have to name the multiplier by hand. Setting `target=:depth`
-flips `mul=:auto` from shift-and-add to `qcla_tree` (pre-resolved in
-`src/lowering/driver.jl`), so the depth-optimal multiplier is selected
-automatically:
+`target=:depth` does NOT select `qcla_tree` for you (Bennett-bnfk). The
+compiled tree is deeper than shift-and-add at W ≤ 32, and although the bare
+W=64 multiply is 5% shallower (352 vs 372), inside soft_fmul's i64
+multiplies it is deeper (Float64 `*`: 3382 vs 3104), so `target=:depth`
+resolves `mul=:auto` to shift-and-add at every lowerable width:
 
 ```julia
-# target=:depth promotes mul=:auto → :qcla_tree, producing the same
-# 256-Toffoli-depth circuit as mul=:qcla_tree above.
 c = reversible_compile((x, y) -> x * y, Int32, Int32; target=:depth)
-verify_reversibility(c)  # true
+toffoli_depth(c)  # same as the default compile
 ```
 
 `target ∈ {:gate_count (default), :depth, :reversible_vm}`. Only `:gate_count`

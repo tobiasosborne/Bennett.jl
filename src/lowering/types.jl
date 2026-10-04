@@ -116,8 +116,9 @@ LoweringResult(gates, n_wires, input_wires, output_wires,
 
 The resolved keyword options of one `lower(parsed; ...)` call (Bennett-0a6f).
 Every field is a `lower()` kwarg with the same default, so `LowerOptions()`
-is exactly "`lower` with defaults". `mul` is stored AFTER `lower()` resolves
-`mul=:auto` + `target=:depth` to `:qcla_tree`.
+is exactly "`lower` with defaults". `add` / `mul` are stored as given
+(`:auto` stays `:auto`; it is resolved per operation and width by
+`_pick_add_strategy` / `_pick_mul_strategy`, Bennett-bnfk).
 
 `lower()` builds one and threads it through `BlockLoweringOpts` →
 `LoweringCtx` → `lower_call!`, which lowers each inlined callee under the

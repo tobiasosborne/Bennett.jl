@@ -169,7 +169,8 @@ reversible-VM backend.
 | `mul=:qcla_tree` | QCLA adder tree | O(log²W) **Toffoli-depth** | Sun–Borissov 2026 |
 
 `add=:auto` always lowers to ripple (its tight Toffoli count is the regression baseline);
-`mul=:auto` is `:shift_add` at `target=:gate_count` and `:qcla_tree` at `target=:depth`.
+`mul=:auto` is `:shift_add` under both `target=:gate_count` and `target=:depth` (Bennett-bnfk:
+the compiled `:qcla_tree` is deeper at every lowerable width; ask for it explicitly).
 Head-to-head on `(x,y) -> x*y` at `Int32`: `:qcla_tree` reaches **Toffoli-depth 56**
 versus schoolbook's **180** (≈ 3× shallower), trading more Toffolis for depth — the right
 call under fault-tolerant cost models.
