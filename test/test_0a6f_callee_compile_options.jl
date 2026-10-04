@@ -10,7 +10,8 @@ using Bennett: register_callee!, LoopGuard
 # `reversible_compile(f, Float64; target=:depth)` produced the byte-identical
 # circuit to the default (Astra B-tests-api F18: 149,456 gates both ways).
 #
-# Loop-bound policy (`Bennett._callee_loop_bound`): max(caller bound, 64).
+# Loop-bound policy (`Bennett._callee_loop_bound`): always 64, whatever the
+# caller's max_loop_iterations (which governs the caller's own loops only).
 
 fm(x, y) = x * y
 fa(x, y) = x + y
@@ -32,10 +33,9 @@ end
 
 @testset "Bennett-0a6f: callees lowered under the caller's compile options" begin
     @testset "loop-bound policy" begin
-        @test Bennett._callee_loop_bound(0) == 64      # unset → library default
-        @test Bennett._callee_loop_bound(10) == 64     # small caller bound never starves a library loop
-        @test Bennett._callee_loop_bound(64) == 64
-        @test Bennett._callee_loop_bound(200) == 200   # Bennett-jgyx: larger bound honoured
+        for K in (0, 10, 64, 200, 256)                 # independent of the caller's bound
+            @test Bennett._callee_loop_bound(K) == 64
+        end
         # every LowerOptions field reaches the callee, under the same name
         o = Bennett.LowerOptions(max_loop_iterations=7, use_inplace=false,
                                  fold_constants=false, compact_calls=true, add=:qcla,
@@ -105,9 +105,7 @@ end
 end
 
 # A registered callee whose data-dependent loop needs > 64 iterations (Collatz
-# step count of 27 is 111, capped at 110 so every UInt16 input fits K=120). Pre-fix the callee was always unrolled K=64, so the
-# caller's max_loop_iterations=120 never reached it and simulate tripped the
-# loop guard reporting K=64 (Bennett-jgyx).
+# step count of 27 is 111, capped at 110).
 @noinline function _0a6f_collatz(x::UInt16)
     steps = UInt16(0)
     val = x
@@ -120,15 +118,44 @@ end
 register_callee!(_0a6f_collatz)
 _0a6f_caller(x::UInt16) = _0a6f_collatz(x) + UInt16(1)
 
-@testset "Bennett-jgyx: caller loop bound above 64 reaches the callee" begin
+# Bennett-0a6f follow-up: the caller's max_loop_iterations governs the
+# caller's loops only; an inlined callee is always unrolled 64 times, so its
+# gate count does not depend on the caller's bound.
+@testset "a callee's gate count does not depend on the caller's max_loop_iterations" begin
+    xs = Int8[-128, -127, -1, 0, 1, 7, 100, 127]
+    ys = Int8[-128, -127, -3, -1, 1, 3, 100, 127]      # non-zero divisors, extremes
+    for K in (0, 64, 256)
+        kw = K == 0 ? (;) : (; max_loop_iterations=K)
+        t = @elapsed c = reversible_compile((x, y) -> x ÷ y, Int8, Int8; kw...)
+        @test counts(c)[1:2] == (1596238, 164892)
+        K == 256 && @info "Int8 ÷ compile at max_loop_iterations=256" seconds=t
+        for x in xs, y in ys
+            (x == typemin(Int8) && y == Int8(-1)) && continue   # overflow, poison
+            @test simulate(c, (x, y)) == x ÷ y
+        end
+        @test verify_reversibility(c; n_tests=2)
+    end
+
+    # A callee needing > 64 iterations is NOT given the caller's larger bound:
+    # its guard (K == 64) fires loudly for a deep input (Bennett-jgyx open).
     @test any(i -> i isa Bennett.IRCall && i.callee === _0a6f_collatz,
               (i for b in Bennett.extract_parsed_ir(_0a6f_caller, Tuple{UInt16}).blocks
                  for i in b.instructions))
     c = reversible_compile(_0a6f_caller, UInt16; max_loop_iterations=120)
-    @test all(lg -> lg.K == 120, c.loop_check_wires)
     @test !isempty(c.loop_check_wires)
-    for x in UInt16[1, 2, 7, 27, 97]                 # 27, 97 hit the 110-step cap (> 64)
+    @test all(lg -> lg.K == 64, c.loop_check_wires)
+    for x in UInt16[1, 2, 7, 9]                      # <= 64 steps
         @test simulate(c, x) == _0a6f_caller(x)
     end
-    @test verify_reversibility(c; n_tests=3)
+    @test_throws ErrorException simulate(c, UInt16(27))   # 111 steps > 64
+end
+
+# Float64 sqrt: soft_fsqrt is inlined by LLVM into the CALLER's own IR (no
+# IRCall survives), so its unrolled loop IS the caller's and legitimately
+# scales with max_loop_iterations — not callee-bound-independent.
+@testset "Float64 sqrt: its loop is the caller's, so it scales with the caller's bound" begin
+    @test_throws ArgumentError reversible_compile(sqrt, Float64)
+    c64 = reversible_compile(sqrt, Float64; max_loop_iterations=64)
+    @test counts(c64)[1:2] == (724785, 155006)
+    @test gate_count(reversible_compile(sqrt, Float64; max_loop_iterations=70)).total > 724785
 end

@@ -72,20 +72,19 @@ function _assert_arg_widths_match(inst::IRCall, arg_types::Type{<:Tuple})::Nothi
     return nothing
 end
 
-# Bennett-0a6f / Bennett-jgyx: loop-bound policy for an inlined callee.
-# Every registered library callee with a loop (soft_udiv/urem, soft_fdiv,
-# soft_fsqrt, the inverse-trig / hyperbolic soft-floats, …) has a static trip
-# count that fits 64 unrolled iterations — the bound the registry has always
-# been lowered and tested with. The caller's `max_loop_iterations` sizes the
-# CALLER's loops, so a small caller bound (say 10) must not starve a 64-trip
-# library loop (it would trip the loop guard on every input), while a larger
-# caller bound IS honoured so a callee loop needing > 64 iterations can
-# compile (jgyx). Hence max(caller, 64); unset (0) gives 64 as before.
-const _CALLEE_MIN_LOOP_ITERATIONS = 64
-_callee_loop_bound(caller_K::Int) = max(caller_K, _CALLEE_MIN_LOOP_ITERATIONS)
+# Bennett-0a6f / Bennett-jgyx: loop bound of an inlined callee. A named
+# constant, whatever the caller passes: an unrolled iteration costs its gates
+# whether or not it executes, every registered library callee with a loop
+# (soft_udiv/urem, soft_fdiv, the inverse-trig / hyperbolic soft-floats, …) is
+# sized to fit 64, and the caller's `max_loop_iterations` is about the CALLER's
+# own loops — letting it leak in made Int8 `÷` at max_loop_iterations=256 about
+# 4x bigger and 18x slower to compile. A callee needing more than 64
+# iterations is a loud capability limit tracked in Bennett-jgyx.
+const _CALLEE_LOOP_ITERATIONS = 64
+_callee_loop_bound(::Int) = _CALLEE_LOOP_ITERATIONS
 
 # Bennett-0a6f: the `lower()` kwargs an inlined callee is lowered with — the
-# caller's resolved options, loop bound per `_callee_loop_bound`. Spelled out
+# caller's resolved options, except the loop bound (`_callee_loop_bound`). Spelled out
 # field by field so each field's callee semantics is an explicit decision: a
 # new `LowerOptions` field must be added here too (test_0a6f checks that every
 # field is forwarded).
