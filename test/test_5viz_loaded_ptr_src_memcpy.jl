@@ -595,9 +595,10 @@ const _5VIZ_BYTEDST_LL = _5viz_fx("v5_bytedst", "%g", _5VIZ_CP;
         end
         @test msg != ""                        # walls 12+ remain
         # WALL 12, POSITIVE — pinned on what the message actually says.
-        @test occursin("Bennett-p06b", msg)
-        @test occursin("_p06b_cell_ptr_target_kind", msg)
-        @test occursin("SILENTLY SKIPS", msg)
+        # Bennett-1zow MOVED wall 12 one hop earlier: the alloca arm no longer
+        # skips the live `alloca { ptr, ptr }`, it refuses it (same root cause).
+        @test occursin("Bennett-1zow", msg)
+        @test occursin("{ ptr, ptr }", msg)
         # WALL 11 IS CLEARED — a 37mt/8bys src reject at the corpus is now a
         # REGRESSION. This negative is STRONGER than the operand-name pair it
         # replaces, because it does not depend on which operand the prefix

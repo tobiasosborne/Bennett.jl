@@ -76,7 +76,9 @@ done:
 @"jl_global#5.jit" = alias i8, ptr @"jl_global#5"
 define i8 @julia_w(i8 %x) {
 entry:
-  %s = alloca ptr, align 8
+  ; Bennett-1zow: an `i64` slot (modelled), not `alloca ptr` — gate-off a ptr
+  ; slot is an unmodelled alloca refused AT the alloca, before this store.
+  %s = alloca i64, align 8
   store ptr @"jl_global#5.jit", ptr %s, align 8
   ret i8 %x
 }

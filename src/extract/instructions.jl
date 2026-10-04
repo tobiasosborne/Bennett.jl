@@ -108,12 +108,14 @@ allocation (hostile review round 2, defect N1, executed witness
 `scratchpad/h1_e2e.jl`: EXPECTED 999, ACTUAL 42). A mirrored predicate is a
 latent miscompile with a docstring; a shared one cannot drift.
 
-NOTE — the arm's ArrayType branch genuinely UNDER-RESERVES for
-`alloca [K x iM], i32 N`: it reserves K cells and ignores N. That is a
-pre-existing bug in the arm, NOT fixed here (fixing it would change gate-off
-behaviour); it is filed as **Bennett-uiqq** (P2). This helper reports what the
-arm ACTUALLY reserves, so p06b stays sound in the meantime — and p06b
-additionally refuses `N != 1` outright rather than trusting the under-reservation.
+Bennett-uiqq (FIXED): the ArrayType branch used to reserve K cells for
+`alloca [K x iM], i32 N`, discarding N. It now reserves `K·N` (constant N,
+overflow-checked) or `%n` (runtime count, K == 1 only); every other count
+returns `nothing`. p06b still refuses `N != 1` on an ArrayType target
+(`_p06b_alloca_cells`) — now merely conservative, no longer required.
+
+`nothing` no longer means "skip": the alloca arm turns it into a loud refusal
+(Bennett-1zow) unless the alloca is provably dead.
 """
 function _alloca_reservation(inst::LLVM.Instruction,
                              names::Dict{_LLVMRef, Symbol},
@@ -123,9 +125,29 @@ function _alloca_reservation(inst::LLVM.Instruction,
     if elem_ty isa LLVM.ArrayType
         inner = LLVM.eltype(elem_ty)
         inner isa LLVM.IntegerType || return nothing
-        # The count operand is DELIBERATELY not consulted — that is what the
-        # arm does (Bennett-uiqq tracks the under-reservation).
-        return (Int(LLVM.width(inner)), iconst(Int(LLVM.length(elem_ty))))
+        # Bennett-uiqq: LLVM reserves `count × alloc-size([K x iM])` = K·count
+        # cells. The count operand used to be DISCARDED (`alloca [1 x i64],
+        # i32 4` reserved ONE cell). A constant count is multiplied in
+        # (overflow-checked); a runtime count is expressible only when K == 1
+        # (then it IS the cell count, exactly as for a scalar alloca). Anything
+        # else — runtime count with K > 1, a negative count — returns
+        # `nothing`, which the arm REFUSES (it no longer skips).
+        # `LLVM.length` goes through the 32-bit `LLVMGetArrayLength` and
+        # TRUNCATES a length ≥ 2^32 (`[2^62 x i8]` read as 0); use the 64-bit
+        # entry point and refuse a length that does not fit an Int.
+        k64 = LLVM.API.LLVMGetArrayLength2(elem_ty)
+        k64 <= typemax(Int) || throw(OverflowError("array length $(k64)"))
+        k = Int(k64)
+        w = Int(LLVM.width(inner))
+        isempty(ops) && return (w, iconst(k))
+        if ops[1] isa LLVM.ConstantInt
+            cnt = _const_int_as_int(ops[1])
+            cnt < 0 && return nothing
+            n = Base.Checked.checked_mul(k, cnt)  # OverflowError -> arm refuses
+            return (w, iconst(n))
+        end
+        k == 1 && haskey(names, ops[1].ref) && return (w, ssa(names[ops[1].ref]))
+        return nothing
     end
     n_elems_op = if !isempty(ops) && ops[1] isa LLVM.ConstantInt
         iconst(_const_int_as_int(ops[1]))
@@ -140,6 +162,42 @@ function _alloca_reservation(inst::LLVM.Instruction,
         return (Int(LLVM.width(elem_ty)), n_elems_op)
     end
     return nothing
+end
+
+# Bennett-1zow: the ONLY certificate under which the alloca arm may emit nothing
+# for an alloca `_alloca_reservation` cannot model — the alloca has NO use, so
+# omitting it provably changes no output and no effect. (A transitively-dead
+# user chain is NOT certified here: the user instructions would still be
+# converted and would then reference the un-registered name.)
+_alloca_dead_certified(inst::LLVM.Instruction)::Bool =
+    LLVM.API.LLVMGetFirstUse(inst.ref) == C_NULL
+
+# Bennett-1zow / uiqq: why `_alloca_reservation` returned `nothing` for a LIVE
+# alloca — named by function, alloca and type.
+function _alloca_unmodelled_msg(inst::LLVM.Instruction, nm::Symbol,
+                                ptr_cells::Bool)::String
+    et = LLVM.LLVMType(LLVM.API.LLVMGetAllocatedType(inst.ref))
+    ops = LLVM.operands(inst)
+    fname = LLVM.name(LLVM.parent(LLVM.parent(inst)))
+    head = "alloca `%$(nm)` (allocated type `$(string(et))`) in function `$(fname)`"
+    if et isa LLVM.ArrayType && LLVM.eltype(et) isa LLVM.IntegerType
+        cnt = isempty(ops) ? "" : string(ops[1])
+        return "Bennett-uiqq: $(head) has count operand `$(cnt)`, which " *
+               "cannot be expressed as a cell reservation: LLVM reserves " *
+               "count × $(LLVM.length(et)) cells, and only a constant " *
+               "non-negative count (any array length) or a runtime count with " *
+               "array length 1 is modelled. Refusing rather than " *
+               "under-reserving (CLAUDE.md §1)."
+    end
+    why = et isa LLVM.PointerType ?
+        "a pointer slot reserves cells only under the closed-world cell " *
+        "model (`ptr_cells=true`; here ptr_cells=$(ptr_cells))" :
+        "only integer, `[K x iN]` and (under `ptr_cells=true`) pointer " *
+        "allocated types reserve cells"
+    return "Bennett-1zow: $(head) is not modelled — $(why). Its result has " *
+           "a use, so skipping it would leave an SSA name that no IRAlloca " *
+           "reserved for that consumer (only a use-less alloca is skipped). " *
+           "Refusing (CLAUDE.md §1)."
 end
 
 # ============================================================================
@@ -8359,10 +8417,28 @@ function _convert_instruction(inst::LLVM.Instruction, names::Dict{_LLVMRef, Symb
         # `nothing` for already fell through to a `return nothing`.
         # SHARING rather than mirroring is load-bearing: the mirror this
         # replaced drifted on the ArrayType count operand and produced a silent
-        # clobber (hostile review N1). The arm's own under-reservation for
-        # `alloca [K x iM], i32 N` is Bennett-uiqq, deliberately NOT fixed here.
-        r_alloca = _alloca_reservation(inst, names, ptr_cells)
-        r_alloca === nothing && return nothing
+        # clobber (hostile review N1). Bennett-uiqq: the ArrayType count
+        # operand is now multiplied in (see `_alloca_reservation`).
+        r_alloca = try
+            _alloca_reservation(inst, names, ptr_cells)
+        catch e
+            e isa OverflowError || rethrow()
+            _ir_error(inst, "Bennett-uiqq: alloca reservation (array length × " *
+                      "count) overflows Int64 in function " *
+                      "`$(LLVM.name(LLVM.parent(LLVM.parent(inst))))`.")
+        end
+        if r_alloca === nothing
+            # Bennett-1zow: `module_walk.jl` registered `dest` BEFORE this arm
+            # ran, so the old `return nothing` left a DANGLING SSA name that no
+            # IRAlloca reserved. Only a provably dead alloca may be skipped, and
+            # its name is then UN-REGISTERED (the Bennett-3vf2 pattern) so no
+            # consumer can mistake it for a materialised slot. All else refuses.
+            if _alloca_dead_certified(inst)
+                delete!(names, inst.ref)
+                return nothing
+            end
+            _ir_error(inst, _alloca_unmodelled_msg(inst, dest, ptr_cells))
+        end
         return IRAlloca(dest, r_alloca[1], r_alloca[2])
     end
 

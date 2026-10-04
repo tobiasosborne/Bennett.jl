@@ -306,11 +306,13 @@ fdict_utzc(k::Int8, v::Int8) = (d = Dict{Int8,Int8}(); d[k] = v; d[k])
                    pir_on.blocks)
 
         # (d2) GATE OFF: fixture (a)'s dead block is NOT pruned (the pruner is
-        # ptr_cells-gated) — the U114 aggregate box-store still walls
-        # byte-identically to pre-utzc.
+        # ptr_cells-gated) — the dead block's `alloca { ptr, ptr }` box is
+        # still walked and walls. (Bennett-1zow: it walls AT the alloca now —
+        # an unmodelled live alloca is refused, not skipped — one instruction
+        # before the U114 aggregate box-store that used to catch it.)
         msg = _utzc_err(_UTZC_A_PRUNE, "a_prune"; ptr_cells=false)
-        @test occursin("U114", msg)
-        @test occursin("store of non-integer type", msg)
+        @test occursin("Bennett-1zow", msg)
+        @test occursin("{ ptr, ptr }", msg)
         @test !occursin("__unreachable__", msg)
     end
 end

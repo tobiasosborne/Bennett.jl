@@ -711,9 +711,10 @@ entry:
         # doih G8's own formula. WALL 12 is `Bennett-p06b`'s OWN reject: the
         # `alloca { ptr, ptr }` whose allocated type the alloca arm SILENTLY SKIPS, so
         # nothing ever reserved the cells that aggregate store would write.
-        @test occursin("Bennett-p06b", msg)
-        @test occursin("_p06b_cell_ptr_target_kind", msg)   # names the predicate
-        @test occursin("SILENTLY SKIPS", msg)
+        # Bennett-1zow MOVED wall 12 one hop earlier: the alloca arm no longer
+        # skips the live `alloca { ptr, ptr }`, it refuses it (same root cause).
+        @test occursin("Bennett-1zow", msg)
+        @test occursin("{ ptr, ptr }", msg)
         # ┌────────── THE `.mem` SUFFIX TRAP — MEASURED, DO NOT SHORTEN ───────────┐
         # │ The wall-11 discriminator INVERTS here: a `Bennett-37mt` / `-8bys` src  │
         # │ reject at the corpus is now a REGRESSION. This negative is STRONGER     │

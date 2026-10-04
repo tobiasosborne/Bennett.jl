@@ -147,12 +147,13 @@ declare void @free(ptr)
         @test occursin("dq8l", msg) || occursin("U81", msg)
     end
 
-    @testset "GATE OFF — alloca ptr is silently skipped (no IRAlloca)" begin
-        # Gate-off, `alloca ptr` returns nothing; the matching `store ptr`
-        # then hits the U114 store wall (store of non-integer type).
+    @testset "GATE OFF — live alloca ptr is refused (Bennett-1zow)" begin
+        # Gate-off, `alloca ptr` used to return nothing (a silent skip leaving
+        # a dangling name) and the matching `store ptr` then hit the U114
+        # store wall. Bennett-1zow: it is now refused AT the alloca.
         msg = _extract_err(_ND45_ALLOCAPTR_LL, "nd45_allocaptr")
-        @test occursin("U114", msg)
-        @test occursin("store of non-integer type", msg)
+        @test occursin("Bennett-1zow", msg)
+        @test occursin("allocated type `ptr`", msg)
     end
 
     # ============================================================

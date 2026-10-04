@@ -328,9 +328,14 @@ end
         # the alloca arm SILENTLY SKIPS (no IRAlloca) while module_walk.jl has
         # already registered the dest symbol — so a naive registration-only
         # guard emits stores into a cell nothing ever reserved.
+        #
+        # Bennett-1zow: the arm no longer skips — a live `alloca { ptr, ptr }`
+        # is refused AT THE ALLOCA, before p06b's store certification is ever
+        # reached. Same root cause, earlier and more precise refusal.
         msg = _p06b_msg("p06b_alloca_struct_target")
-        @test occursin("Bennett-p06b", msg)
+        @test occursin("Bennett-1zow", msg)
         @test occursin("alloca", msg)
+        @test occursin("{ ptr, ptr }", msg)
         for f in _P06B_FORBIDDEN
             @test !occursin(f, msg)
         end
@@ -635,7 +640,9 @@ end
     # ==================================================================
     @testset "(h) no p06b message collides with another marker's negative" begin
         for entry in ("p06b_hdr_literal", "p06b_2x32", "p06b_i64_i8",
-                      "p06b_i8_i64", "p06b_alloca_struct_target",
+                      "p06b_i8_i64",
+                      # (Bennett-1zow: `p06b_alloca_struct_target` LEFT this
+                      # sweep — the alloca arm now refuses it first; see (g2).)
                       "p06b_arg_target",
                       "p06b_phi_target", "p06b_select_target",
                       "p06b_granularity", "p06b_zeroinit_value",
@@ -671,6 +678,15 @@ end
     @testset "(i) ArrayType store and volatile store are untouched" begin
         for pc in (true, false)
             msg = _p06b_msg("p06b_array_store"; ptr_cells=pc)
+            if !pc
+                # Bennett-1zow: gate-off, the `alloca ptr, i32 2` slot is an
+                # UNMODELLED allocated type (pointer slots reserve cells only
+                # under ptr_cells) with live uses — refused at the alloca,
+                # before the 9fke insertvalue refusal below is reached.
+                @test occursin("Bennett-1zow", msg)
+                @test !occursin("Bennett-p06b", msg)
+                continue
+            end
             # Bennett-9fke: the fixture builds its `[2 x ptr]` with a LIVE
             # `insertvalue`, which the cc0.3 catch used to drop silently; it is
             # now refused at extraction, before the ArrayType store refusal
@@ -799,9 +815,13 @@ end
             # doih G8's own formula. WALL 12 is `Bennett-p06b`'s OWN reject: the
             # `alloca { ptr, ptr }` whose allocated type the alloca arm SILENTLY SKIPS, so
             # nothing ever reserved the cells that aggregate store would write.
-            @test occursin("Bennett-p06b", msg)
-            @test occursin("_p06b_cell_ptr_target_kind", msg)   # names the predicate
-            @test occursin("SILENTLY SKIPS", msg)
+            # MOVED by Bennett-1zow: the alloca arm no longer skips a live
+            # unmodelled alloca, so wall 12 is now refused AT the
+            # `alloca { ptr, ptr }` itself (same root cause, one hop earlier),
+            # not at p06b's aggregate-store target certification.
+            @test occursin("Bennett-1zow", msg)
+            @test occursin("alloca", msg)
+            @test occursin("{ ptr, ptr }", msg)
             # ┌────────── THE `.mem` SUFFIX TRAP — MEASURED, DO NOT SHORTEN ───────────┐
             # │ The wall-11 discriminator INVERTS here: a `Bennett-37mt` / `-8bys` src  │
             # │ reject at the corpus is now a REGRESSION. This negative is STRONGER     │
@@ -818,9 +838,8 @@ end
             @test !occursin("Bennett-5viz", msg)       # 5viz must not be the new wall
             # NOTE FOR WHOEVER CLEARS WALL 12 — all four points MEASURED on the wall-12
             # text itself, not forecast:
-            #   * wall 12's own message contains NEITHER `Bennett-1zow` NOR
-            #     `_p06b_granularity_violation`, so a marker written against either tag
-            #     would never fire. Pin what IS there.
+            #   * wall 12's own message (since Bennett-1zow) is the alloca-arm
+            #     refusal and names `Bennett-1zow`, not p06b. Pin what IS there.
             #   * wall 13 is a SECOND 37mt/8bys memcpy reject (`memcpy operand alloca has
             #     non-integer element type` — corpus site #5's `alloca { ptr, ptr }` src,
             #     still `Bennett-8bys` territory), so `!occursin("Bennett-37mt")` will have

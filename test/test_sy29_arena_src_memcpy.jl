@@ -597,9 +597,10 @@ top:
         # reject at this corpus is now a REGRESSION of EITHER, with no operand
         # name needed to tell them apart. Wall 12 is `Bennett-p06b`'s own
         # `alloca { ptr, ptr }` silent-skip reject at `%L16`.
-        @test occursin("Bennett-p06b", msg)
-        @test occursin("_p06b_cell_ptr_target_kind", msg)
-        @test occursin("SILENTLY SKIPS", msg)
+        # Bennett-1zow MOVED wall 12 one hop earlier: the alloca arm no longer
+        # skips the live `alloca { ptr, ptr }`, it refuses it (same root cause).
+        @test occursin("Bennett-1zow", msg)
+        @test occursin("{ ptr, ptr }", msg)
         @test !occursin("Bennett-37mt", msg)
         # KEEP THE `.mem` SUFFIX — wall 12's message DOES contain
         # `new::Array.ref` (it quotes `store { ptr, ptr } %"new::Array.ref", …`)

@@ -48,6 +48,18 @@ top:
 }
 """
 
+# Bennett-1zow: the same non-integer-element GEP off a constant GLOBAL base, so
+# the GEP refusal stays exercised now that the alloca form refuses at the alloca.
+const NONINT_ELEM_GLOBAL_IR = """
+@farr = private constant [4 x double] zeroinitializer
+define double @julia_farr_gep_g(i32 %i) {
+top:
+  %q = getelementptr [4 x double], ptr @farr, i32 0, i32 %i
+  %v = load double, ptr %q
+  ret double %v
+}
+"""
+
 # (c) The now-SUPPORTED shape (bead `bennettvm-416r.4`): a two-index array GEP on
 # a const global INTEGER array read at a runtime index. Must extract cleanly.
 const GLOBAL_ARRAY_IR = """
@@ -62,7 +74,8 @@ top:
 
 @testset "Bennett-qal5 multi-index GEP fail-loud" begin
     for (ir, fn) in [(MULTIDIM_IR, "julia_multidim_gep"),
-                     (NONINT_ELEM_IR, "julia_farr_gep")]
+                     (NONINT_ELEM_IR, "julia_farr_gep"),
+                     (NONINT_ELEM_GLOBAL_IR, "julia_farr_gep_g")]
         mktempdir() do dir
             path = joinpath(dir, "gep.ll")
             write(path, ir)
@@ -71,11 +84,20 @@ top:
                 @test false  # must raise
             catch e
                 msg = sprint(showerror, e)
+                if fn == "julia_farr_gep"
+                    # Bennett-1zow: the `alloca [4 x double]` base is an
+                    # unmodelled live alloca, refused AT the alloca before the
+                    # GEP is reached. The non-integer-element GEP refusal is
+                    # covered by the global-base variant below.
+                    @test occursin("Bennett-1zow", msg)
+                    @test occursin("[4 x double]", msg)
+                else
                 @test occursin("getelementptr", lowercase(msg))
                 # Either cites multi-index / unknown base / structural reason.
                 @test occursin("multi", lowercase(msg)) ||
                       occursin("U16", msg) ||
                       occursin("unknown", lowercase(msg))
+                end
             end
         end
     end

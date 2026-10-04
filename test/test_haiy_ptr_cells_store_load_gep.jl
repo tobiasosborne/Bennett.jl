@@ -110,11 +110,14 @@ end
     # ============================================================
     # (a) GATE OFF — the Julia-path fail-louds fire byte-identically.
     # ============================================================
-    @testset "GATE OFF — store ptr still rejects at U114" begin
+    @testset "GATE OFF — the ptr slot rejects (Bennett-1zow, was U114)" begin
+        # Bennett-1zow: gate-off, `alloca ptr` is an unmodelled allocated type
+        # with a live use, so it is refused AT the alloca — one instruction
+        # before the U114 `store ptr` wall that used to catch it.
         msg = _extract_err(_HAIY_STORELOAD_LL, "haiy_storeload")
-        @test occursin("Bennett-lgzx", msg)
-        @test occursin("store of non-integer type", msg)
-        @test occursin("U114", msg)
+        @test occursin("Bennett-1zow", msg)
+        @test occursin("allocated type `ptr`", msg)
+        @test occursin("ptr_cells=false", msg)
     end
 
     @testset "GATE OFF — two-index struct GEP still rejects at U16" begin

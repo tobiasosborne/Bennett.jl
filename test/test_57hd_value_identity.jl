@@ -1225,9 +1225,10 @@ end
         # SKIPS, so nothing ever reserved the cells the aggregate store at `%L16`
         # would write. THE `!occursin("SILENTLY SKIPS")` LINE THIS GATE USED TO
         # CARRY IS NOW THIS POSITIVE — it flipped, it was not deleted.
-        @test occursin("Bennett-p06b", msg)
-        @test occursin("_p06b_cell_ptr_target_kind", msg)
-        @test occursin("SILENTLY SKIPS", msg)
+        # Bennett-1zow MOVED wall 12 one hop earlier: the alloca arm no longer
+        # skips the live `alloca { ptr, ptr }`, it refuses it (same root cause).
+        @test occursin("Bennett-1zow", msg)
+        @test occursin("{ ptr, ptr }", msg)
         # ┌────────── THE `.mem` SUFFIX TRAP — MEASURED, DO NOT SHORTEN ───────────┐
         # │ The wall-11 discriminator INVERTS: a `Bennett-37mt` / `-8bys` src      │
         # │ reject at the corpus is now a REGRESSION, and this negative is         │
