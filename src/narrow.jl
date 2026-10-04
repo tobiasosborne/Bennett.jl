@@ -207,10 +207,20 @@ function _narrow_ir(parsed::ParsedIR, W::Int; optimized::Bool=true)
             _narrow_check_folded_cmp(inst, S, W, faithful)
         end
     end
+    # Bennett-sl4h (a): Julia's promotion idiom in UNOPTIMISED IR only (in
+    # optimised IR the extended value can be folded arithmetic that the koi8
+    # checks above, which read iS compares, would never see).
+    promo = optimized ? Dict{Symbol, IRCast}() : _narrow_promotions(parsed, S, W)
     new_args = [(name, W) for (name, _) in parsed.args]
     new_blocks = IRBasicBlock[]
     for block in parsed.blocks
-        new_insts = IRInst[_narrow_inst(inst, S, W) for inst in block.instructions]
+        new_insts = IRInst[]
+        for inst in block.instructions
+            # an admitted promotion disappears: every use is rewritten below
+            inst isa IRCast && haskey(promo, inst.dest) && continue
+            push!(new_insts, isempty(promo) ? _narrow_inst(inst, S, W) :
+                             _narrow_promoted_use(inst, promo, S, W))
+        end
         new_term = _narrow_inst(block.terminator, S, W)
         push!(new_blocks, IRBasicBlock(block.label, new_insts, new_term))
     end
@@ -411,6 +421,152 @@ function _narrow_cmp_consts(inst::IRICmp, W::Int)
         return cs == c ? op : ConstOperand(cs)
     end
     return narrow_op(inst.op1, "op1"), narrow_op(inst.op2, "op2")
+end
+
+# ---- Julia's integer promotion in unoptimised IR (Bennett-sl4h (a)) ---------
+#
+# Comparing an iS value against an UNTYPED literal (`x == 5`, `x > 2`) makes
+# Julia promote x to Int64: `%e = sext/zext iS %x to iN` then `icmp pred %e, c`
+# at iN.  The W-bit model of that program extends the W-bit p instead:
+# ext_W->N(p) (sext for sext, zext for zext — the extension names the reading;
+# in the W-bit model every iS type is its W-bit counterpart).  An extension is
+# ADMITTED when from_width == S, W < N <= 64, its operand is an SSA iS value,
+# and EVERY use of it is
+#   (1) an iN `icmp` against a constant, or against another admitted extension
+#       of the same kind from iS, or
+#   (2) a `trunc` back to iS: trunc_N->W(ext_W->N(p)) = p, so it becomes a
+#       same-width copy of p.
+# Any other use (iN arithmetic, an iN phi, a store, a call, a return) leaves
+# the extension in place, where `_narrow_inst(::IRCast)` refuses it.  The
+# admitted extension is dropped and its compares are rewritten as below.
+#
+# Case table.  p a W-bit pattern; image I = the values ext_W->N(p) takes, in
+# signed iN readings: sext -> smin(W)..smax(W), zext -> 0..umax(W) (N > W, so
+# zext values are non-negative); cs = the constant's signed iN reading;
+# m = min(W, S).  "6p8j" = the bound `_narrow_cmp_consts` gives a TYPED iS
+# literal (it is applied to the iS compare built here, so an untyped literal
+# is admitted exactly where the typed one is):
+#   kind  pred      cs                         narrowed            why exact
+#   sext  eq/ne     in I, 6p8j (0..smax(W))    eq/ne p, cs         sext injective
+#   sext  signed    in I, 6p8j (smin..smax(m)) spred p, cs         sext keeps signed order
+#   sext  unsigned  in I, 6p8j (0..smax(m))    upred p, cs         sext is monotone from
+#                                                                  W-unsigned to N-unsigned
+#                                                                  order, and cs = sext(cs)
+#   zext  eq/ne     in I, 6p8j                 eq/ne p, cs         zext injective
+#   zext  unsigned  in I, 6p8j (0..smax(m))    upred p, cs         zext keeps unsigned order
+#   zext  signed    in I, 6p8j (0..smax(m))    UNSIGNED pred p, cs zext(p) >= 0 at N > W: the
+#                                                                  iN signed order is the
+#                                                                  W-bit unsigned order
+#   any   any       in I, outside 6p8j         REFUSED             (as the typed literal)
+#   any   any       in I, outside iS's image   REFUSED             (only at W > S)
+#   sext/zext any   NOT in I, I on one side    constant: `uge p,0` the iN compare has the
+#                   of cs in pred's order      (true) / `ult p,0`  same truth value on every
+#                                              (false)             element of I
+#   sext  unsigned  NOT in I                   REFUSED             I straddles cs in the
+#                                                                  unsigned order (not constant)
+#   ext/ext same kind, any pred                pred p, q (zext +   as the constant rows
+#                                              signed -> unsigned)
+#   sext/zext mixed pair, or a non-ext iN operand: not admitted (refused).
+
+_narrow_unsigned_pred(p::Symbol) =
+    p === :slt ? :ult : p === :sle ? :ule : p === :sgt ? :ugt : p === :sge ? :uge : p
+
+function _narrow_promotions(parsed::ParsedIR, S::Int, W::Int)
+    promo = Dict{Symbol, IRCast}()
+    insts = IRInst[i for b in parsed.blocks
+                   for i in Iterators.flatten((b.instructions, (b.terminator,)))]
+    # A non-scalar node refuses the whole narrowing anyway; do not reason
+    # about which names it reads.
+    all(i -> i isa _NARROW_SCALAR_NODES, insts) || return promo
+    for i in insts
+        i isa IRCast && i.op in (:sext, :zext) && i.from_width == S &&
+            W < i.to_width <= 64 && i.operand isa SSAOperand &&
+            (promo[i.dest] = i)
+    end
+    isempty(promo) && return promo
+    admitted(i, name) = begin
+        e = promo[name]
+        N = e.to_width
+        if i isa IRICmp
+            i.width == N || return false
+            other = i.op1 isa SSAOperand && i.op1.name === name ? i.op2 : i.op1
+            other isa ConstOperand && return true
+            other isa SSAOperand && haskey(promo, other.name) || return false
+            o = promo[other.name]
+            return o.op === e.op && o.from_width == e.from_width && o.to_width == N
+        end
+        return i isa IRCast && i.op === :trunc && i.from_width == N &&
+               i.to_width == S && (i.operand::SSAOperand).name === name
+    end
+    changed = true
+    while changed      # dropping one extension can strand its ext/ext partner
+        changed = false
+        for i in insts, name in _ssa_operands(i)
+            haskey(promo, name) && !admitted(i, name) || continue
+            delete!(promo, name)
+            changed = true
+        end
+    end
+    return promo
+end
+
+# Narrow `inst` when it may read an admitted promotion.
+function _narrow_promoted_use(inst::IRInst, promo, S::Int, W::Int)
+    if inst isa IRCast && inst.operand isa SSAOperand && haskey(promo, inst.operand.name)
+        return IRCast(inst.dest, :trunc, promo[inst.operand.name].operand, W, W)
+    end
+    inst isa IRICmp || return _narrow_inst(inst, S, W)
+    is_p(op) = op isa SSAOperand && haskey(promo, op.name)
+    (is_p(inst.op1) || is_p(inst.op2)) || return _narrow_inst(inst, S, W)
+    e = promo[(is_p(inst.op1) ? inst.op1 : inst.op2).name]
+    N = e.to_width
+    x = e.operand
+    pred = inst.predicate
+    kind = e.op
+    what = "comparison `$(inst.dest)` (:$pred) of the i$N $kind of `$(x.name)`"
+    signed = pred in _NARROW_SIGNED_PREDS
+    newpred = kind === :zext && signed ? _narrow_unsigned_pred(pred) : pred
+    if is_p(inst.op1) && is_p(inst.op2)          # ext/ext of the same kind
+        return _narrow_inst(IRICmp(inst.dest, newpred, promo[inst.op1.name].operand,
+                                   promo[inst.op2.name].operand, S), S, W)
+    end
+    c = (is_p(inst.op1) ? inst.op2 : inst.op1)::ConstOperand
+    _narrow_smin(N) <= c.value <= _narrow_umax(N) || _narrow_reject(
+        "$what tests the constant $(c.value), which is not an i$N value")
+    cs = Int128(_narrow_sval(c.value, N))
+    lo, hi = kind === :sext ? (_narrow_smin(W), _narrow_smax(W)) : (0, _narrow_umax(W))
+    if lo <= cs <= hi
+        # In the image: the iS compare a typed literal gives, then the 6p8j
+        # bounds of `_narrow_inst(::IRICmp)` — rows 1-6 of the table.
+        slo, shi = kind === :sext ? (_narrow_smin(S), _narrow_smax(S)) : (0, _narrow_umax(S))
+        slo <= cs <= shi || _narrow_reject(
+            "$what tests the constant $cs, which no i$S value $(kind)s to: at " *
+            "W=$W > S=$S an untyped literal outside the source type has no " *
+            "typed-literal meaning")
+        k = ConstOperand(_narrow_sval(Int(cs), S))
+        op1, op2 = is_p(inst.op1) ? (x, k) : (k, x)
+        return _narrow_inst(IRICmp(inst.dest, newpred, op1, op2, S), S, W)
+    end
+    # Not in the image: constant iff the image lies on one side of the
+    # constant in the predicate's order.
+    kind === :sext && pred in (:ult, :ule, :ugt, :uge) && _narrow_reject(
+        "$what tests the constant $cs, outside the W=$W image of the " *
+        "sign extension: in the unsigned order that image is two runs around " *
+        "the constant, so the comparison is not constant and has no " *
+        "W-bit-constant form")
+    # Every image element is on the same side of the constant (eq/ne: never
+    # equal), so the predicate evaluated at `lo` is its value on all of them.
+    # Keys in the predicate's order: the image values are their own keys in
+    # both orders (sext+unsigned was refused; zext values are non-negative);
+    # the constant's unsigned key is cs + 2^N when cs < 0.
+    ck = pred in (:ult, :ule, :ugt, :uge) && cs < 0 ? cs + (Int128(1) << N) : cs
+    a, b = is_p(inst.op1) ? (Int128(lo), ck) : (ck, Int128(lo))
+    truth = pred === :eq ? a == b : pred === :ne ? a != b :
+            pred in (:slt, :ult) ? a < b : pred in (:sle, :ule) ? a <= b :
+            pred in (:sgt, :ugt) ? a > b : pred in (:sge, :uge) ? a >= b :
+            _narrow_reject("$what has the unknown predicate :$pred")
+    # a W-bit compare with that constant truth value on every input
+    return IRICmp(inst.dest, truth ? :uge : :ult, x, ConstOperand(0), W)
 end
 
 # ---- folded comparisons in optimised IR (Bennett-koi8) ----------------------

@@ -17,8 +17,10 @@
 #   (3) an accepted circuit is right on all 2^W input patterns and passes
 #       verify_reversibility;
 #   (4) a refusal is the narrowing ArgumentError (Bennett-mrhg).
-# NOT FIXED (pinned @test_broken below): a program whose unoptimised IR is
-# refused AND whose optimised IR holds a fold that uses an S-bit arithmetic fact.
+# STILL OPEN: a program whose unoptimised IR is refused AND whose optimised IR
+# holds a fold that uses an S-bit arithmetic fact.  Bennett-sl4h (a) closed the
+# pinned witnesses (Julia's promotion idiom now narrows unoptimised); the i64
+# phi and the overshift arm still force the fallback.
 #
 # THE ORACLE (independent of src/) interprets the source expression in W-bit
 # modular arithmetic: x is the W-bit input read in T's signedness, every
@@ -168,6 +170,38 @@ const SL4H_IDIOMS = (
 # so the fallback narrows the optimised IR, where `x * 16 == 0` is `(x & 15) == 0`
 sl4h_hole(x::Int8) = ifelse((x == 5) | (x * Int8(16) == Int8(0)), Int8(1), Int8(0))
 
+# ---- Bennett-sl4h (a): Julia's promotion idiom narrows in unoptimised IR ----
+# `x pred c` with an UNTYPED literal is `icmp pred (sext/zext iS x to i64), c`.
+# The extension whose every use is such a compare (or a trunc back to iS) is
+# dropped and the compare re-typed (case table in src/narrow.jl).  Oracle: the
+# W-bit value v of x in T's signedness, compared as an integer against the
+# literal the source wrote (Julia's mixed-type comparisons are mathematical).
+
+const SL4H_LITS = (-130, -129, -128, -9, -8, -1, 0, 1, 5, 7, 8, 15, 16, 127, 128, 255, 256)
+const SL4H_PROMO = Tuple{DataType,Symbol,Int,Function}[]
+let n = 0
+    for T in (Int8, UInt8), op in SL4H_CMP, c in SL4H_LITS
+        fname = Symbol("sl4h_lit_", n += 1)
+        f = @eval $fname(x::$T) = ifelse($op(x, $c), $(T(1)), $(T(0)))
+        push!(SL4H_PROMO, (T, op, c, f))
+    end
+end
+
+sl4h_trunc_back(x::Int8)  = ifelse(Int(x) < 3, Int(x) % Int8, Int8(0))
+sl4h_trunc_backu(x::UInt8) = ifelse(Int(x) > 1, Int(x) % UInt8, 0x00)
+
+# the former residual hole: the untyped literal no longer forces the fallback
+sl4h_hole5(x::Int8)  = Int8(x * Int8(16) == 0)
+sl4h_holeu(x::UInt8) = ifelse((x > 2) | (x * 0x10 == 0x00), 0x01, 0x00)
+
+const SL4H_EXTEXT = Dict{Tuple{DataType,Symbol},Function}()
+for T in (Int8, UInt8), op in SL4H_CMP
+    SL4H_EXTEXT[(T, op)] = @eval (x::$T, y::$T) -> $T($op(Int(x), Int(y)))
+end
+sl4h_arith64(x::Int8) = Int8((Int(x) + 1) % Int8 == 0)
+sl4h_sext_vs_zext(x::Int8, y::Int8) = Int8(Int(x) < Int(y % UInt8))
+sl4h_sext_ult(x::Int8) = Int8(reinterpret(UInt64, Int64(x)) < UInt64(100))
+
 @testset "Bennett-sl4h — bit_width narrows the unoptimised IR first" begin
 
 @testset "witness: x * 16 == 0 at bit_width=6" begin
@@ -194,17 +228,18 @@ end
     @test p0 === p1
     @test any(i -> i isa Bennett.IRBinOp && i.op === :mul,
               (i for b in p1.blocks for i in b.instructions))
-    # unoptimised attempt refused (`x == 5` promotes to i64): the fallback
-    # result is cached under the optimize=true key only, and the refused
-    # optimize=false attempt left no entry behind
+    # unoptimised attempt refused (`Int8(x == 5 ? 1 : 0)` merges in an i64
+    # phi): the fallback result is cached under the optimize=true key only, and
+    # the refused optimize=false attempt left no entry behind.  (`x == 5` itself
+    # narrows unoptimised since Bennett-sl4h (a).)
     Bennett._clear_parsed_ir_cache!()
-    q1 = Bennett._extract_parsed_ir_cached(sl4h_eq5, Tuple{Int8};
+    q1 = Bennett._extract_parsed_ir_cached(sl4h_ieq5, Tuple{Int8};
                                            optimize=true, bit_width=6)
-    @test haskey(Bennett._parsed_ir_cache, (sl4h_eq5, Tuple{Int8}, true, :auto, 6))
-    @test !haskey(Bennett._parsed_ir_cache, (sl4h_eq5, Tuple{Int8}, false, :auto, 6))
-    @test q1 === Bennett._extract_parsed_ir_cached(sl4h_eq5, Tuple{Int8};
+    @test haskey(Bennett._parsed_ir_cache, (sl4h_ieq5, Tuple{Int8}, true, :auto, 6))
+    @test !haskey(Bennett._parsed_ir_cache, (sl4h_ieq5, Tuple{Int8}, false, :auto, 6))
+    @test q1 === Bennett._extract_parsed_ir_cached(sl4h_ieq5, Tuple{Int8};
                                                    optimize=true, bit_width=6)
-    @test_throws ArgumentError Bennett._extract_parsed_ir_cached(sl4h_eq5, Tuple{Int8};
+    @test_throws ArgumentError Bennett._extract_parsed_ir_cached(sl4h_ieq5, Tuple{Int8};
                                                    optimize=false, bit_width=6)
     # W == S re-types nothing: the optimised path, as before sl4h
     for f in (sl4h_mul16, sl4h_eq5)
@@ -283,24 +318,132 @@ end
     @test n_unopt >= 300
 end
 
-@testset "residual hole (Bennett-sl4h, still open): fallback + S-bit fold" begin
-    # `(x == 5) | (x * 16 == 0)` at W = 6.  The untyped literal 5 makes the
-    # unoptimised IR compare an i64 sext of x — refused — so optimize=true
-    # falls back to the optimised IR, where `x * 16 == 0` is `(x & 15) == 0`
-    # (16 | x, an 8-bit fact) and passes every local check.  The W-bit
-    # meaning is 4 | x, so the circuit is wrong at x = 4, 8, 12, ... .
-    oracle(v) = ((v == 5) | sl4h_wz(6, 16v)) ? 1 : 0
-    @test sl4h_unopt_pir(sl4h_hole, Int8, 6) === nothing   # precondition: fallback
-    c, err = sl4h_compile(sl4h_hole, Int8, 6, true)
-    @test err === nothing                                  # measured: accepted
-    @test c !== nothing && verify_reversibility(c)
-    nbad = c === nothing ? -1 : sl4h_nbad(c, Int8, 6, oracle)
-    # Bennett-sl4h: the accepted circuit is WRONG (12 of 64 patterns, measured
-    # 2026-10-04); closing needs the unoptimised IR of `x == 5` to narrow
-    # (allowlist work in the bead NOTES) so the fallback can be dropped.
-    @test_broken nbad == 0
-    # optimize=false refuses it outright (sound)
-    @test sl4h_compile(sl4h_hole, Int8, 6, false)[2] !== nothing
+@testset "promotion grid: T x pred x untyped literal x W in 2:7" begin
+    tally = Dict(:acc => 0, :ref => 0, :wrong => 0)
+    tally1 = Dict(:acc => 0, :ref => 0, :wrong => 0)
+    wrong = String[]; unclean = String[]; bad_err = String[]; differ = String[]
+    for (T, op, c, f) in SL4H_PROMO, W in 2:7
+        cell = "$T x $op $c @W=$W"
+        oracle(v) = getfield(Base, op)(v, c) ? 1 : 0
+        c0, e0 = sl4h_compile(f, T, W, false)
+        c1, e1 = sl4h_compile(f, T, W, true)
+        for (circ, err, t) in ((c0, e0, tally), (c1, e1, tally1))
+            if err !== nothing
+                sl4h_is_refusal(err) || push!(bad_err, "$cell: $(sprint(showerror, err))")
+                t[:ref] += 1
+                continue
+            end
+            t[:acc] += 1
+            verify_reversibility(circ) || push!(unclean, cell)
+            if sl4h_nbad(circ, T, W, oracle) != 0
+                t[:wrong] += 1
+                push!(wrong, cell)
+            end
+        end
+        # unoptimised accepted => optimize=true is that very circuit
+        e0 === nothing && !(e1 === nothing && c0.gates == c1.gates) &&
+            push!(differ, cell)
+    end
+    println("  sl4h promotion grid ($(length(SL4H_PROMO)) programs x 6 W): ",
+            "optimize=false $(tally[:acc]) accepted / $(tally[:ref]) refused / ",
+            "$(tally[:wrong]) wrong; optimize=true $(tally1[:acc]) / $(tally1[:ref]) / ",
+            "$(tally1[:wrong])")
+    foreach(m -> println("    WRONG ", m), first(wrong, 20))
+    foreach(m -> println("    BAD ERR ", m), first(bad_err, 5))
+    @test isempty(wrong)
+    @test isempty(unclean)
+    @test isempty(bad_err)
+    @test isempty(differ)
+    @test tally[:acc] >= 600        # non-vacuity (measured at landing: see worklog)
+end
+
+@testset "promotion: both sides extended (ext/ext), all 2^(2W) inputs" begin
+    n_acc = 0
+    for T in (Int8, UInt8), op in SL4H_CMP, W in (2, 3, 4)
+        f = SL4H_EXTEXT[(T, op)]
+        pir = Bennett.extract_parsed_ir(f, Tuple{T, T}; optimize=false)
+        casts = [i for b in pir.blocks for i in b.instructions if i isa Bennett.IRCast &&
+                 i.op in (:sext, :zext) && i.to_width == 64]
+        @test length(casts) == 2                       # the shape under test
+        c, err = try
+            reversible_compile(f, T, T; bit_width=W, optimize=false), nothing
+        catch e
+            e isa ArgumentError || rethrow(); nothing, e
+        end
+        @test err === nothing
+        err === nothing || continue
+        n_acc += 1
+        @test verify_reversibility(c)
+        nbad = count(((p, q),) -> (Int(simulate(c, T, (sl4h_in(T, p), sl4h_in(T, q)))) &
+                                   sl4h_wmask(W)) !=
+                                  Int(getfield(Base, op)(sl4h_norm(T, p, W), sl4h_norm(T, q, W))),
+                     Iterators.product(0:sl4h_wmask(W), 0:sl4h_wmask(W)))
+        @test nbad == 0
+    end
+    @test n_acc == 2 * 6 * 3
+end
+
+@testset "promotion: trunc back to iS is the identity" begin
+    for (f, T, oracle) in ((sl4h_trunc_back, Int8, v -> v < 3 ? v : 0),
+                           (sl4h_trunc_backu, UInt8, v -> v > 1 ? v : 0)), W in (3, 4, 6, 7)
+        pir = Bennett.extract_parsed_ir(f, Tuple{T}; optimize=false)
+        @test any(i -> i isa Bennett.IRCast && i.op === :trunc && i.from_width == 64,
+                  (i for b in pir.blocks for i in b.instructions))
+        for optimize in (false, true)
+            c, err = sl4h_compile(f, T, W, optimize)
+            @test err === nothing
+            @test c !== nothing && verify_reversibility(c)
+            @test c !== nothing && sl4h_nbad(c, T, W, oracle) == 0
+        end
+    end
+end
+
+@testset "promotion: uses outside the allowlist keep the refusal" begin
+    msg = "second data domain"
+    # i64 arithmetic on the promoted value
+    @test_throws msg reversible_compile(sl4h_arith64, Int8;
+                                        bit_width=4, optimize=false)
+    # i64 phi (Int8(x == 5 ? 1 : 0)), iseven's i64 srem, the overshift guard
+    for (f, T) in ((sl4h_ieq5, Int8), (sl4h_even, Int8))
+        @test sl4h_unopt_pir(f, T, 6) === nothing
+    end
+    # sext compared to a zext: not a same-kind pair
+    @test_throws msg reversible_compile(sl4h_sext_vs_zext,
+                                        Int8, Int8; bit_width=4, optimize=false)
+    # an unsigned order on a sign extension, constant outside its W-bit image:
+    # the image straddles the constant, so no constant fold exists
+    @test_throws "two runs around" reversible_compile(sl4h_sext_ult, Int8;
+        bit_width=4, optimize=false)
+end
+
+@testset "ordinary idioms: which path they take now" begin
+    for (desc, f, T, oracle) in SL4H_IDIOMS, W in (4, 6)
+        p0 = sl4h_unopt_pir(f, T, W)
+        unopt = p0 !== nothing
+        println("  idiom $desc @W=$W: ", unopt ? "unoptimised path" : "fallback")
+        # x == 5 and UInt8 x > 2 narrow unoptimised now; iseven (i64 srem),
+        # the i64 phi and the overshift arm still fall back
+        @test unopt == (desc in ("x == 5", "UInt8 x > 2"))
+        if unopt
+            c0 = reversible_compile(f, T; bit_width=W, optimize=false)
+            c1 = reversible_compile(f, T; bit_width=W, optimize=true)
+            @test c0.gates == c1.gates
+        end
+    end
+end
+
+@testset "former residual hole: fallback + S-bit fold, now the sound path" begin
+    for (f, T, Ws, oracle) in (
+            (sl4h_hole,  Int8,  (6,),      (v, W) -> ((v == 5) | sl4h_wz(W, 16v)) ? 1 : 0),
+            (sl4h_hole5, Int8,  (5, 6, 7), (v, W) -> sl4h_wz(W, 16v) ? 1 : 0),
+            (sl4h_holeu, UInt8, (5,),      (v, W) -> ((v > 2) | sl4h_wz(W, 16v)) ? 1 : 0)),
+        W in Ws
+        @test sl4h_unopt_pir(f, T, W) !== nothing     # no fallback any more
+        c, err = sl4h_compile(f, T, W, true)
+        @test err === nothing
+        @test c !== nothing && verify_reversibility(c)
+        @test c !== nothing && sl4h_nbad(c, T, W, v -> oracle(v, W)) == 0
+    end
 end
 
 end # @testset Bennett-sl4h
