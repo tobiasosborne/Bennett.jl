@@ -233,7 +233,15 @@ function _tabulate_build_table(f, arg_types::Type{<:Tuple},
 
     for raw_idx in 0:(L - 1)
         args = _unpack_args(UInt64(raw_idx), input_widths, arg_T)
-        y = f(args...)
+        # Bennett-vtv9: a table needs f's value on EVERY input.
+        y = try
+            f(args...)
+        catch e
+            throw(ArgumentError(
+                "reversible_compile: strategy=:tabulate not applicable — $f " *
+                "throws for input $args ($(sprint(showerror, e))); a table " *
+                "needs a value for every input (Bennett-vtv9)"))
+        end
         y isa Integer || error("tabulate: f returned $(typeof(y)); only Integer " *
                                "returns are supported for tabulate strategy")
         table[raw_idx + 1] = _result_to_uint64(y) & mask_out
@@ -346,6 +354,79 @@ function lower_tabulate(f, arg_types::Type{<:Tuple},
 end
 
 """
+    _tabulate_impurity(f, arg_types) -> String
+
+Bennett-vtv9: `""` when `f` on `arg_types` is certified a pure function of
+its arguments, else the reason it is not. A table is `f` evaluated at compile
+time, so any external state `f` reads is frozen into it (a global
+`Ref` read gave circuit 4, native 10 after the `Ref` changed), and any
+external effect happens at compile time instead of at run time. The callable's
+OWN state is handled by `_callable_state_bytes` (Bennett-o9sv / 2op8 / sfq8);
+this covers state reached through globals and impure calls.
+
+The certificate is Julia's effect analysis (`Base.infer_effects`):
+
+  * `effect_free` — no store to global state, no impure or foreign call
+    (`rand()`, `time_ns()`, I/O, `ccall`);
+  * `consistent` (same result for egal arguments), OR `inaccessiblememonly`
+    (touches no externally reachable mutable memory). The second arm admits
+    a pure function whose only inconsistency is memory it allocates itself (a
+    local `Vector` is not `consistent` because fresh memory starts undefined);
+    a global `Ref` / `Vector` / `Dict` / mutable struct or a non-const global
+    variable fails both arms.
+
+When the effects fail, `f` is still certified if `strategy=:expression`
+compiles it (see the comment in the body) — the analysis is conservative and
+cannot see through e.g. `reinterpret` of a primitive type.
+
+Uncertified (accepted by the `inaccessiblememonly` arm): results that depend
+on locally allocated memory read before it is written, or on a local object's
+identity (`objectid`). Refused although pure: code neither the effect
+analysis nor the expression path can see through (e.g. one that formats a
+`String`).
+"""
+function _tabulate_impurity(f, arg_types::Type{<:Tuple})
+    C = Base.Compiler
+    eff = try
+        Base.infer_effects(f, arg_types)
+    catch e
+        return "the effects of $f on $arg_types could not be inferred " *
+               "($(sprint(showerror, e))), so it is not certified free of " *
+               "external state (Bennett-vtv9)"
+    end
+    classes = String[]
+    C.is_effect_free(eff) || push!(classes,
+        "has a side effect or calls an impure function (a store to global " *
+        "state, rand(), time(), I/O, a foreign call)")
+    (C.is_consistent(eff) || C.is_inaccessiblememonly(eff)) || push!(classes,
+        "reads mutable or non-constant global state (a global Ref / Vector / " *
+        "Dict / mutable struct, or a non-const global variable)")
+    isempty(classes) && return ""
+    # Second certificate: the compiler's own expression path. It models every
+    # value f computes from its IR and refuses a load from / store to Julia
+    # global memory and any call it cannot resolve, so if it compiles f, f is
+    # a function of its arguments (and its bound callable state) as far as
+    # this compiler can tell — no less sound than `strategy=:expression`.
+    # Needed for pure code effect analysis cannot see through: `reinterpret`
+    # of a primitive type goes through a memcpy foreigncall (every effect
+    # tainted) that LLVM optimises away (Bennett-sfq8 P24 / P40 callables).
+    expr_err = try
+        reversible_compile(f, arg_types; strategy=:expression)
+        nothing
+    catch e
+        e isa InterruptException && rethrow()
+        e
+    end
+    expr_err === nothing && return ""
+    return "$f on $arg_types " * join(classes, " and ") * " (Julia effects: " *
+           "$eff), and strategy=:expression does not certify it either (" *
+           first(split(sprint(showerror, expr_err), '\n')) * "). A table " *
+           "evaluates f once at compile time, so that state would be frozen " *
+           "into the circuit; pass the state as an explicit argument " *
+           "(Bennett-vtv9)"
+end
+
+"""
     _tabulate_circuit(f, arg_types, bit_width, auto_self_reversing)
         -> (LoweringResult, String) | (nothing, String)
 
@@ -363,6 +444,8 @@ function _tabulate_circuit(f, arg_types::Type{<:Tuple}, bit_width::Int,
                             auto_self_reversing::Bool)
     ok, reason = _tabulate_applicable(arg_types, bit_width)
     ok || return (nothing, reason)
+    impure = _tabulate_impurity(f, arg_types)
+    isempty(impure) || return (nothing, impure)
     out_width, why = _tabulate_out_width(f, arg_types, bit_width)
     out_width > 0 || return (nothing, why)
     widths = _tabulate_input_widths(arg_types, bit_width)

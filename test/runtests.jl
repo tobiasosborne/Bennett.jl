@@ -134,6 +134,8 @@ runfile("test_7q9z_registry_cache_invalidation.jl")
 # Bennett-o9sv: closure captures bind as constants (isbits) or are rejected loudly.
 runfile("test_o9sv_closure_captures.jl")
 runfile("test_0ysp_tabulate_mutable_callable.jl")
+# Bennett-vtv9: tabulate refuses global / impure state (effects or expression-path certificate).
+runfile("test_vtv9_tabulate_global_state.jl")
 # Bennett-2op8: callable-struct / Fix1 / Fix2 state follows the closure rule on every strategy.
 runfile("test_2op8_callable_state.jl")
 # Bennett-sfq8: callable primitives (Ptr refused, Int8/P24 bound) + parsed-IR cache keyed on typeof(f).
