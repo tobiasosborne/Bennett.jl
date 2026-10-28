@@ -274,6 +274,86 @@ contract of the differential oracle (freeze → poison → NaN/fmuladd/
 addresses), i.e. "what does *equals native* mean", which only closed
 when the project's own soft-float became the determinism mechanism.
 
+**ISA spec round 1 — NO-GO** (opus 250 s, muse 322 s, codex 1284 s):
+all `revise`, mean 2.12, C3 = 1.33; 17 + 16 + 9 blockers, heavily
+overlapping. The diagnosis was right and draft 0.1 was structurally
+wrong in five places: (1) the step machine was described over linear
+SSA, which cannot hold lifted values re-executed B times → 0.2 has a
+**register-file sublanguage** (`lift.*`, one location written per step
+by out-of-place compute + `qexch`, displaced value into the frame); (2)
+the fault register design was non-injective (zero-test on a caller
+register that may be nonzero, and the forward XOR got reversed) →
+internal `faulted`/`code`, `fault` jumps to HALT so first-fault-wins is
+automatic, commit XORs outside the reversed prefix, numeric codes now
+normative; (3) HALT had no self-loop (halted branches restarted at 0);
+(4) oracles weren't restricted to permutation gates; (5) heap/depth
+counters were classical though per-branch. Plus: gate matrices, phase-
+exact decomposition legality, adjoint table, unconditional allocation,
+basis-diagonal validity rules with transfer rules, memory forms + data
+images, R history table + device models + entropy tape, resource kinds
++ timing model, SHA-256 content identity + EBNF, frame descriptors,
+launch C ABI with run_id/suspend/reverse-per-tier, sched C ABI, machine-
+readable certificate. Draft 0.2 is ~2× the length. Round 2 launched.
+Lesson: a spec draft written in one sitting from the vision gets the
+*shape* right and the *injectivity* wrong; the council caught every
+non-injective step within one round, which is what it is for.
+
+**ISA spec round 2 — NO-GO** (opus 319 s, muse 407 s, codex 1565 s):
+all `revise`, mean 2.83 (from 2.12); 17 + 9 + 8 blockers on ten themes,
+all accepted → draft 0.3 (1007 lines): per-instruction step table with
+read/write/flag/succ/inverse columns and a frame derived from the widest
+write set; `lproc` procedures with activation records on a MONOTONIC
+stack (records are history, sp only grows — that is what makes
+recursion + prefix reversal consistent); reference body = the dialect's
+versioned *sequence* per source instruction, F_B defined on it alone,
+object holds only the reference body; byte-cell memory + allocation
+table + `lift.boundscheck`; interface regions (`mem … in|mut`) for
+persistent quantum memory; borrowed wires only inside permutation-only
+**borrow frames** whose realised permutation must factor as P'⊗I
+(both members gave counterexamples to my previous "basis restoration"
+rule: `cx b a; s a; cx b a` applies S to b); provenance transfer table
+over versions with cell versioning; inherited **control context**; MBU
+only in-window, empty context, `mbu:true`; closed-window MBU prohibited
+this draft; R history: `br` records prior block-param values, `ret`
+records the whole activation (the "SSA keeps operands live" row was
+wrong under loops); JCS-canonical JSON target files with a closed cost-
+expression language; interface hash vs closure hash, SCC rule, program-
+point ids; full EBNF + a complete example object `inc8` whose interface
+hash c9303119… was computed by python from the stated canonical-bytes
+rule. Round 3 launched.
+
+**Repo bootstrap** (maintainer: "Repo structure sounds all good … send
+out some sonnets and haikus to build the folders and repos"): three
+sonnet agents creating 13 independent local git repos under
+`~/Projects/bennett-workspace/` (meta `bennett`, two spec repos, five
+Rust runtime repos, plugin/targets/runtimes/arith/conformance), each
+with LICENSE (AGPL-3.0), CLAUDE.md carrying the non-negotiables, SPEC_
+VERSIONS.toml, pre-push hook, worklog/001, HANDOFF.md. No GitHub remotes
+until the maintainer names the org and visibility. Bennett.jl v2 stays
+in THIS repo (new major; v1 to a `v1` branch, tag `v1-final`);
+BennettVM.jl to be archived.
+
+**ISA spec round 3 — NO-GO** (opus 358 s, muse 477 s, codex 1884 s):
+all `revise`, mean 3.04; 14 + 10 + 5 blockers → draft 0.4 (1148 lines).
+Highlights: row classes (assignment vs direct) with explicit step
+inverse; index-space flattening + `lift.label`; activation record
+layout; counters widened beyond size exponents; `lift.free` matched on
+base only (my previous version controlled a flip on its own target —
+non-invertible); null region + pinned pre-entries for globals and
+mapped interface regions (my previous layout made every global access
+fault); borrow frames by the **toggling lemma** V;W;V⁻¹;W (my V;W;V⁻¹
+rule was unsound: `cx b y; cx y z; cx b y` leaks b into z); R tier =
+retained dynamic SSA instances; run record as a tree; hostcall; JSON
+expression AST for targets; full schemas; semantic hash envelope;
+complete C header; hierarchical schedule; certificate domains/samplers/
+witnesses; second worked example `sum_db` with hashes computed by a
+script implementing the envelope rule (H1 05a871bb…, H3 5ced2c33…, H2
+f059b9fd…). Round 4 launched. Maintainer picked org **bennett-quantum**
+(free; `bennett-lang` is an empty 2026-08-19 account that is not his —
+no verification mail, no local gh login, no transcripts); remotes
+script `bennett/scripts/create-remotes.sh` committed in the meta repo,
+waiting for the org to be created in the web UI (no API exists).
+
 **Not done.** No tests run; no src/test change; nothing committed or
 pushed this session yet (maintainer still iterating). BennettVM untouched.
 

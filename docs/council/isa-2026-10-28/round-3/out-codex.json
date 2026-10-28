@@ -1,0 +1,147 @@
+{
+ "criteria": [
+  {
+   "id": "C1",
+   "score": 3,
+   "evidence": "The state and activation-record model are substantially clearer (\u00a7\u00a73.2\u20133.7). However, the procedure instruction-address space is unspecified, and Ac-bit/Sc-bit cursors cannot represent full occupancy of their respective 2^Ac/2^Sc regions.",
+   "change": "Define one complete initialization and transition model, including procedure addressing, activation records, terminal outcomes, and independently sized counters."
+  },
+  {
+   "id": "C2",
+   "score": 3,
+   "evidence": "The per-instruction table is useful, but its special reversible updates conflict with \u00a73.6's universal compute-and-exchange rule. The stated inverse of lift.free is false, and several typing, memory-argument, and result-placement rules remain unspecified.",
+   "change": "Give every opcode a complete typed transition and matched inverse, distinguishing displaced assignments from direct reversible updates."
+  },
+  {
+   "id": "C3",
+   "score": 2,
+   "evidence": "The fixed reference body, XOR oracle interface, exact gate boundaries, and inherited control context are sound decisions. Nevertheless, the prescribed machine does not yet establish prefix reversal, and the provenance table is unsound for predicated exchange and incomplete for memory-dependent calls.",
+   "change": "Repair the concrete transitions and make cleanup depend on a checked computation record with complete versioned dependencies."
+  },
+  {
+   "id": "C4",
+   "score": 3,
+   "evidence": "JCS, control-count legality, occupancy intervals, and explicit import maps improve the contract (\u00a78). Expression evaluation, class-dependent gate entries, decomposition definitions, and several aggregation and validation rules still require implementers to invent conventions.",
+   "change": "Specify a typed target schema with unambiguous expression evaluation, operand-class matching, executable decomposition definitions, and resource aggregation."
+  },
+  {
+   "id": "C5",
+   "score": 2,
+   "evidence": "The document names the required cross-repository contracts, but the advertised opaque-object accessors are absent, schedules cannot identify all executed operations, and symbol identity excludes execution-relevant data and layout.",
+   "change": "Complete the public headers and serialized schemas, and bind executable identities and schedules to all semantic inputs."
+  },
+  {
+   "id": "C6",
+   "score": 2,
+   "evidence": "The intended theorem statements mostly have appropriate shapes, including the corrected borrowed-system requirement and T5. The reference interpreter still delegates to incomplete transitions, while certificate payloads do not determine independently executable checkers.",
+   "change": "Make the transition system and claim-checking rules sufficiently explicit that the conformance suites follow without additional semantic decisions."
+  },
+  {
+   "id": "C7",
+   "score": 3,
+   "evidence": "The reference-body decision, coherent-control restrictions, and borrowed-system factorization now closely follow the north star. Persistent quantum-memory access and binary substitutability remain incomplete, so the promised independent implementations still cannot meet at the published boundary.",
+   "change": "Finish the memory, launch, scheduling, and certificate contracts required by north-star \u00a74.4."
+  },
+  {
+   "id": "C8",
+   "score": 3,
+   "evidence": "The organization supports implementation work, and the example's advertised hash is correct under its explicitly stated no-final-LF convention. However, that convention conflicts with the function-byte grammar, and several supposedly normative formats remain schema sketches.",
+   "change": "Replace the remaining sketches with internally consistent schemas and complete examples covering procedures, memory, and scheduling."
+  }
+ ],
+ "blocking": [
+  {
+   "id": "B1",
+   "section": "\u00a7\u00a73.6, 4.2, 5.2, 14.1\u201314.3",
+   "problem": "The step construction still does not consistently implement its table. Section 3.6 requires every write to use compute-and-exchange with displaced history, whereas oracle_call, perm_call, free, and several call/return updates specify direct reversible operations and different inverses. In particular, repeating lift.free cannot undo it: the forward operation clears live_i, so its repeated live-entry search no longer finds that allocation. Success is also inconsistent: qjump n is not prohibited, reaches HALT with faulted=0, and commits success without lift.retval; larger constant targets have no dispatch predicate.",
+   "fix": "Define each row as an atomic old-state transition with an explicit outcome and a complete reversible realization. Distinguish assignments that retain displaced values from direct permutations that do not; give both their complete scratch-cleaning inverses. For free, retain the selected allocation identity and undo the live-bit change without repeating the forward live-entry validation. Validate all direct and indirect targets, and require that only lift.retval produces a successful terminal outcome. Prohibit jumps to HALT, or introduce an explicit terminal-outcome field; I recommend prohibiting such jumps."
+  },
+  {
+   "id": "B2",
+   "section": "\u00a7\u00a73.2, 3.6\u20133.7, 4.2 lift.call/lift.ret/lift.alloc, 7.2",
+   "problem": "The procedure model lacks a defined mapping from separately serialized lprocs to the oracle's pc range, an exact activation-record layout/R_f, input-to-location initialization, and root-return behavior. Its counters also have a concrete representational contradiction: atop:wire[Ac] can never equal 2^Ac, and sp:wire[Sc] cannot hold the allowed full-stack endpoint 2^Sc. The full-width-comparison instruction does not prevent wrapping when those accepted values are stored.",
+   "fix": "Define canonical procedure/instruction addresses over the linked lifted closure, exact activation records, parameter/result bindings, initial fp/depth, and invalid-return behavior. Separate address-index widths from occupancy-counter widths: a capacity of 2^A needs an occupancy counter of at least A+1 bits, with additional widening for prospective increments. Validate all launch limits against actual region capacities before execution. Either reject lift.ret outside a procedure statically or give it a named underflow fault; I recommend static rejection where provable and a defined fault otherwise."
+  },
+  {
+   "id": "B3",
+   "section": "\u00a7\u00a74.2, 4.7, 5.1, 7.1\u20137.2",
+   "problem": "The memory model still admits different machines. Two zero-size allocations return the same base and remain live, contradicting free's unique-match rule. The classical initial bump address, initial live records for globals, and separation of globals from a heap starting at zero are unspecified. Heap limits are not explicitly bounded by the byte region. Finally, lifted accesses address only the implicit mem region, while lifted call forms provide no interface-memory arguments; adding mem parameters therefore does not define how a lifted oracle accesses caller-owned regions.",
+   "fix": "Specify initial memory, reserved ranges, allocator state, and allocation-table contents from the layout, including the classical bump base. Define zero-size allocation so free is unambiguous: reserve a distinct address for each allocation, or introduce allocation identities with a deterministic free rule; I recommend distinct reserved addresses. Require allocations and whole accesses to fit the physical region, and require each bounds check to match the access's address version and length. Define address-to-region translation or explicit region operands, and carry memory arguments through every applicable lifted call form."
+  },
+  {
+   "id": "B4",
+   "section": "\u00a7\u00a73.3, 4.1\u20134.2, 4.6\u20134.7, 5.1, 9.4",
+   "problem": "The instruction typing and ownership contract remains incomplete. Named regions have no specified consume-and-reproduce ownership/version rule comparable to bundles. Several classical forms and conversions are blank; operand-width compatibility and location aliasing are unstated. load.iN permits widths for which N/8 is not an integer, and measurement can produce an iN outside the declared 1\u2013128-bit classical type range. Lifted call forms also omit classical and memory arguments supported by callee signatures.",
+   "fix": "Publish a typed operand/result schema for every opcode, including literal rules, permitted aliasing, conversion widths, memory widths, and measurement limits or chunking. Treat a region as one owned value with explicit implicit-version threading through accesses and calls, or define an equivalent exclusive-reference discipline; I recommend the same consume-and-reproduce convention used for bundles. Make all call forms carry the complete declared interface and require signature agreement."
+  },
+  {
+   "id": "B5",
+   "section": "\u00a7\u00a76.1\u20136.3; T5; suite F",
+   "problem": "The new transfer table still cannot justify T5. A predicated qexch does not simply swap provenance: its output is selected between the old operands and depends on the predicate. oracle_call omits dependencies on interface memory, and action-call rules omit mutable-memory effects. Consequently, a copied oracle result can retain an apparently open window after its actual memory dependency changes. Several initialization, control, and cleanup-transfer cases are also absent.",
+   "fix": "Define transfer functions over immutable value versions, active control context, and conservative memory read/write sets for every operation. Predicated exchange must include both possible operands and its predicate unless a stronger checked relation is available. Calls must expose memory and wire dependency/effect summaries. Bind each cleanup to the exact computing sequence and the versions needed by its inverse, rather than inferring safe cleanup from the perm label alone. Retain the corrected logical-amplitude interpretation of T5."
+  },
+  {
+   "id": "B6",
+   "section": "\u00a75.5; \u00a76.1; suite F",
+   "problem": "The matched nested cleanup now permits a nonzero fault register, but its version rule is contradictory. The first call changes tgt, so a second call cannot both consume the current target and have the same target operand version as the first call. Requiring the two calls' operand versions to match also does not describe the corresponding returned fr version.",
+   "fix": "Define a matched cleanup invocation that consumes the first invocation's returned tgt/fr versions and requires its original input and memory values to remain available unchanged. The two calls share a dynamic invocation identity, token, and callee identity; their target versions are predecessor/successor-related, not identical. Alternatively remove explicit second-call cleanup and retain the result until prefix reversal. I recommend the explicit matched form."
+  },
+  {
+   "id": "B7",
+   "section": "\u00a7\u00a73.4, 7.3\u20137.4, 9.4; T4",
+   "problem": "The R model still does not define dynamic SSA instances in loops: the same static non-parameter definition executes repeatedly, but is declared immutable within one activation. It is unclear which instances survive or how reversal resolves them. LIFO call identity also does not establish the corresponding return state when intervening CC operations modify shared memory or quantum registers. Device operations introduce array types absent from the ISA, and ENTROPY_EXHAUSTED has no defined fault-code representation.",
+   "fix": "Define dynamic SSA environments explicitly, retaining each executed definition until reversal or specifying a checked recomputation scheme; I recommend retained dynamic instances as the reference model. Record complete invocation boundaries and require return-state dependency versions to match, or reverse the intervening suffix first. Specify fault-prefix reversal. Give device arguments/results an expressible representation, versioned operation signatures, fault encodings, and exact state-restoration rules, including allocation-table entry creation and block-sector presence."
+  },
+  {
+   "id": "B8",
+   "section": "\u00a78",
+   "problem": "The target format is not yet independently interpretable. The expression grammar gives no precedence or associativity, JSON encoding, table declaration/epsilon-decade convention, or behavior for eps=0. The gate schema does not encode the claimed general function of operand-class tuples, parameters, and control count. Named decomposition schemes have no normative definitions or resolution mechanism. Custom resource aggregation and validation of rates, durations, weights, and matching entries are also incomplete.",
+   "fix": "Use a closed JSON expression AST, or fully specify textual parsing and arithmetic; I recommend the AST. Define table indexing, exact-mode expressions, errors, and numeric evaluation. Give gate realizations explicit operand-class patterns, arity/control/parameter constraints, and deterministic matching rules. Resolve decompositions to specified templates or versioned definitions. Define aggregation for every resource kind, treatment of classical/effect time, and validation of nonnegative finite costs and objectives."
+  },
+  {
+   "id": "B9",
+   "section": "\u00a7\u00a79.1, 12\u201313, 16",
+   "problem": "The interchange grammar remains incomplete and inconsistent. Metadata field schemas are largely prose placeholders; jsonline requires an object although coverage is an array. Output syntax is not reconciled between \u00a74, the optional assignment production, and the example's trailing destination operands. Section ordering, duplicates, nested instruction numbering, and several lexical choices remain undefined. The example hash is correct without a final LF, but the grammar includes that LF in the function's final instruction line. Exact large integers in domains and budgets also need an encoding compatible with JCS's binary64 number model. [RFC 8785 \u00a73.1](https://www.rfc-editor.org/rfc/rfc8785#section-3.1)",
+   "fix": "Complete the instruction grammar and concrete schemas for every metadata section, with required fields, types, extension handling, canonical ordering, and duplicate rejection. Choose one destination syntax and one precise final-newline/hash convention. Encode integers beyond the exact supported JSON-number range as canonical decimal or hexadecimal strings. Update the complete example to satisfy the initialization/result rules and publish its exact object bytes and hashes."
+  },
+  {
+   "id": "B10",
+   "section": "\u00a7\u00a79.2\u20139.3, 11\u201312",
+   "problem": "Function-byte hashing still omits semantic inputs outside the function text, including ptr_width, ISA semantics, data images, and layout. Changing a local region's image can therefore change F_B without changing interface_hash or reference_program_hash. SCC member derivation does not specify raw-versus-hex hash representation or index encoding. schedule_hash and params_hash also lack exact definitions.",
+   "fix": "Hash a versioned semantic envelope containing the body, complete signature, relevant layout/images, semantic versions, and dependency identities. Retain separate relocatable and resolved identities, but bind executable certificates and caches to the resolved semantic closure. Define SCC substitution and member derivation byte-for-byte with domain tags and encoded indices. Define every remaining hash's exact input and serialization, excluding self-referential certificate fields."
+  },
+  {
+   "id": "B11",
+   "section": "\u00a710; \u00a7\u00a77.4, 9.4",
+   "problem": "Launch reversal remains ambiguous and can duplicate inversions: R history records Q calls, while the run record retains every Q invocation, and reverse instructs both reversal of R segments and inversion of each Q invocation. Eligibility tracks quantum registers but not shared classical memory, devices, or intervening host services. There is no CC instruction that raises HOST_REQUEST, no response-to-result binding, and no complete close/handle-invalidation rules for measured or failed runs.",
+   "fix": "Define an invocation tree or another ownership rule under which every operation is reversed exactly once; I recommend R records owning their nested Q inversions. Track dependency versions for all shared state and define exclusive ownership during active runs. Specify the host-service request instruction, response types, suspension/resumption transitions, and reversal policy for such requests. Define close transitions for completed, failed, and reversed runs, plus measurement consumption and handle invalidation. Restrict reversal where required dependencies or reversible records are absent."
+  },
+  {
+   "id": "B12",
+   "section": "\u00a7\u00a710\u201311, 17",
+   "problem": "The promised versioned constructors/accessors are not present. A caller cannot construct an array of opaque bennett_arg objects, inspect results, construct a scheduler request, or release returned objects from the declarations given. Status/handle definitions and ownership lifetimes are absent. There is also a concrete C namespace collision: bennett_estimate and bennett_coverage are used as both unqualified type names and function names.",
+   "fix": "Publish a complete versioned C header with opaque-type declarations, argument/request builders, accessors, destruction functions, status values, handle types, buffer lengths, and ownership/lifetime rules. Use a builder handle or an array of pointers instead of requiring caller allocation of incomplete opaque elements. Rename the colliding types or functions. Opaque internal layouts may remain deferred."
+  },
+  {
+   "id": "B13",
+   "section": "\u00a7\u00a79.2, 9.4, 11",
+   "problem": "A stored schedule cannot yet be executed verbatim. A static block/instruction point does not distinguish loop iterations, nested invocations, prefix reversal, or the many dispatch/history/decomposition gates generated from one reference instruction. Entry fields have no per-kind semantics or completeness/default rules. Variant=controlled does not bind the number of inherited controls, although legality, cost, and scratch requirements depend on it; the same-descriptor assertion does not establish a valid common bound.",
+   "fix": "Define either identifiers for expanded execution occurrences or a hierarchical schedule language with normative expansion; I recommend the hierarchical form. Identify invocation, iteration, forward/reverse phase, and generated operations where choices differ. Specify every entry kind and validate dependency order, realizations, accuracy, and capacity. Bind schedules to the resolved closure, all classical parameters and bounds, and the complete control context. Parameterize frame requirements accordingly or prove a declared common upper bound."
+  },
+  {
+   "id": "B14",
+   "section": "\u00a7\u00a712, 14.3, 15",
+   "problem": "The certificate remains insufficient to implement the promised independent checker. Domain ranges do not encode all of D, particularly interface memory and borrowed systems; endpoints and product construction are unspecified. The sampler lacks seed expansion and domain-mapping rules. Structural claims lack executable proof payloads and subclaim references, while interval_arithmetic/rational_exact name method families rather than checkable witnesses. Error totals are untyped despite mixing operator and diamond bounds. Exact measurement-assisted realizations also need a channel claim, rather than being accepted solely through a permutation execution claim.",
+   "fix": "Define complete claim schemas and versioned checking rules: exact domains including memory/borrowed values, deterministic sampling, structural proof witnesses with explicit assumptions and subclaim identities, and rigorous numerical-bound witnesses. Type every local/inclusive error by metric and variant, apply operator-to-channel conversion once at the stated boundary, and derive multiplicities from the realized schedule. Require channel validation for measurement-assisted implementations and phase-sensitive operator validation for controlled unitary variants. Add witness formats for any supported minimality claims."
+  }
+ ],
+ "suggestions": [
+  "Add small normative traces for full-capacity allocation, recursive return, invalid jumps, memory-dependent cleanup, and mixed CC/R/Q reversal.",
+  "Add a launch conformance class to \u00a71.2 and explicitly assign suite G.",
+  "Consider renaming interface_hash to relocatable_body_hash: it includes implementation content, not just an interface.",
+  "Restate the unconditional image-initialization exception in \u00a75.3 so controlled-region readers need not reconcile it with the phrase 'every gate'."
+ ],
+ "verdict": "revise",
+ "path_to_accept": "Preserve the architecture. Complete four sets of changes: (1) repair and close the transition, procedure, memory, ownership, cleanup, and R semantics in B1\u2013B7; (2) make targets, serialization, and semantic identities unambiguous in B8\u2013B10; (3) provide a complete launch state machine, usable public headers, and executable schedule contract in B11\u2013B13; (4) define independently checkable certificates and typed error composition in B14. No implementation, mechanization, binary object encoding, or performance result is required for acceptance.",
+ "summary": "The principal architectural decisions are now sound, but the normative machine and interchange contracts remain incomplete. Confirmed false premises include lift.free being its own specified inverse, Ac/Sc-bit cursors representing their full region capacities, and predicated exchange simply swapping provenance. The example hash itself is correct under its stated no-final-LF convention.\n\nRound-2 disposition, using the original reviewer IDs; 'partial' means unresolved and maps to this review's blockers. Codex: B1 partial \u2192 B1/B2; B2 partial \u2192 B2; B3 resolved; B4 partial \u2192 B3; B5 partial \u2192 B4; B6 resolved at instruction-semantics level; B7 resolved at semantic level; B8 partial \u2192 B5; B9 partial \u2192 B6; B10 partial \u2192 B14, with exact gate boundaries, finite angles, and the factor-two conversion resolved; B11 partial \u2192 B7/B11; B12 partial \u2192 B8; B13 partial \u2192 B9; B14 partial \u2192 B10; B15 partial \u2192 B11; B16 partial \u2192 B12/B13; B17 partial \u2192 B14.\n\nMuse: B1 partial \u2192 B1/B2; B2 partial \u2192 B3; B3 partial \u2192 B3/B4, with local-region lifetime and image restoration resolved; B4 resolved at semantic level; B5 partial \u2192 B5; B6 partial \u2192 B7; B7 partial \u2192 B9/B10/B13; B8 partial \u2192 B8; B9 partial \u2192 B11/B12.\n\nOpus: B1 resolved; B2 partial \u2192 B1/B2; B3 resolved; B4 resolved at semantic level; B5 partial \u2192 B7; B6 partial \u2192 B3; B7 resolved; B8 partial \u2192 B10/B13. The resolved borrowed-system mathematics still needs the general certificate machinery identified separately in B14."
+}

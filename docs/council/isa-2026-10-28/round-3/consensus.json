@@ -1,0 +1,205 @@
+{
+ "agree": false,
+ "verdicts": {
+  "codex": "revise",
+  "muse": "revise",
+  "opus": "revise"
+ },
+ "blocking": {
+  "codex": [
+   {
+    "id": "B1",
+    "section": "\u00a7\u00a73.6, 4.2, 5.2, 14.1\u201314.3",
+    "problem": "The step construction still does not consistently implement its table. Section 3.6 requires every write to use compute-and-exchange with displaced history, whereas oracle_call, perm_call, free, and several call/return updates specify direct reversible operations and different inverses. In particular, repeating lift.free cannot undo it: the forward operation clears live_i, so its repeated live-entry search no longer finds that allocation. Success is also inconsistent: qjump n is not prohibited, reaches HALT with faulted=0, and commits success without lift.retval; larger constant targets have no dispatch predicate.",
+    "fix": "Define each row as an atomic old-state transition with an explicit outcome and a complete reversible realization. Distinguish assignments that retain displaced values from direct permutations that do not; give both their complete scratch-cleaning inverses. For free, retain the selected allocation identity and undo the live-bit change without repeating the forward live-entry validation. Validate all direct and indirect targets, and require that only lift.retval produces a successful terminal outcome. Prohibit jumps to HALT, or introduce an explicit terminal-outcome field; I recommend prohibiting such jumps."
+   },
+   {
+    "id": "B2",
+    "section": "\u00a7\u00a73.2, 3.6\u20133.7, 4.2 lift.call/lift.ret/lift.alloc, 7.2",
+    "problem": "The procedure model lacks a defined mapping from separately serialized lprocs to the oracle's pc range, an exact activation-record layout/R_f, input-to-location initialization, and root-return behavior. Its counters also have a concrete representational contradiction: atop:wire[Ac] can never equal 2^Ac, and sp:wire[Sc] cannot hold the allowed full-stack endpoint 2^Sc. The full-width-comparison instruction does not prevent wrapping when those accepted values are stored.",
+    "fix": "Define canonical procedure/instruction addresses over the linked lifted closure, exact activation records, parameter/result bindings, initial fp/depth, and invalid-return behavior. Separate address-index widths from occupancy-counter widths: a capacity of 2^A needs an occupancy counter of at least A+1 bits, with additional widening for prospective increments. Validate all launch limits against actual region capacities before execution. Either reject lift.ret outside a procedure statically or give it a named underflow fault; I recommend static rejection where provable and a defined fault otherwise."
+   },
+   {
+    "id": "B3",
+    "section": "\u00a7\u00a74.2, 4.7, 5.1, 7.1\u20137.2",
+    "problem": "The memory model still admits different machines. Two zero-size allocations return the same base and remain live, contradicting free's unique-match rule. The classical initial bump address, initial live records for globals, and separation of globals from a heap starting at zero are unspecified. Heap limits are not explicitly bounded by the byte region. Finally, lifted accesses address only the implicit mem region, while lifted call forms provide no interface-memory arguments; adding mem parameters therefore does not define how a lifted oracle accesses caller-owned regions.",
+    "fix": "Specify initial memory, reserved ranges, allocator state, and allocation-table contents from the layout, including the classical bump base. Define zero-size allocation so free is unambiguous: reserve a distinct address for each allocation, or introduce allocation identities with a deterministic free rule; I recommend distinct reserved addresses. Require allocations and whole accesses to fit the physical region, and require each bounds check to match the access's address version and length. Define address-to-region translation or explicit region operands, and carry memory arguments through every applicable lifted call form."
+   },
+   {
+    "id": "B4",
+    "section": "\u00a7\u00a73.3, 4.1\u20134.2, 4.6\u20134.7, 5.1, 9.4",
+    "problem": "The instruction typing and ownership contract remains incomplete. Named regions have no specified consume-and-reproduce ownership/version rule comparable to bundles. Several classical forms and conversions are blank; operand-width compatibility and location aliasing are unstated. load.iN permits widths for which N/8 is not an integer, and measurement can produce an iN outside the declared 1\u2013128-bit classical type range. Lifted call forms also omit classical and memory arguments supported by callee signatures.",
+    "fix": "Publish a typed operand/result schema for every opcode, including literal rules, permitted aliasing, conversion widths, memory widths, and measurement limits or chunking. Treat a region as one owned value with explicit implicit-version threading through accesses and calls, or define an equivalent exclusive-reference discipline; I recommend the same consume-and-reproduce convention used for bundles. Make all call forms carry the complete declared interface and require signature agreement."
+   },
+   {
+    "id": "B5",
+    "section": "\u00a7\u00a76.1\u20136.3; T5; suite F",
+    "problem": "The new transfer table still cannot justify T5. A predicated qexch does not simply swap provenance: its output is selected between the old operands and depends on the predicate. oracle_call omits dependencies on interface memory, and action-call rules omit mutable-memory effects. Consequently, a copied oracle result can retain an apparently open window after its actual memory dependency changes. Several initialization, control, and cleanup-transfer cases are also absent.",
+    "fix": "Define transfer functions over immutable value versions, active control context, and conservative memory read/write sets for every operation. Predicated exchange must include both possible operands and its predicate unless a stronger checked relation is available. Calls must expose memory and wire dependency/effect summaries. Bind each cleanup to the exact computing sequence and the versions needed by its inverse, rather than inferring safe cleanup from the perm label alone. Retain the corrected logical-amplitude interpretation of T5."
+   },
+   {
+    "id": "B6",
+    "section": "\u00a75.5; \u00a76.1; suite F",
+    "problem": "The matched nested cleanup now permits a nonzero fault register, but its version rule is contradictory. The first call changes tgt, so a second call cannot both consume the current target and have the same target operand version as the first call. Requiring the two calls' operand versions to match also does not describe the corresponding returned fr version.",
+    "fix": "Define a matched cleanup invocation that consumes the first invocation's returned tgt/fr versions and requires its original input and memory values to remain available unchanged. The two calls share a dynamic invocation identity, token, and callee identity; their target versions are predecessor/successor-related, not identical. Alternatively remove explicit second-call cleanup and retain the result until prefix reversal. I recommend the explicit matched form."
+   },
+   {
+    "id": "B7",
+    "section": "\u00a7\u00a73.4, 7.3\u20137.4, 9.4; T4",
+    "problem": "The R model still does not define dynamic SSA instances in loops: the same static non-parameter definition executes repeatedly, but is declared immutable within one activation. It is unclear which instances survive or how reversal resolves them. LIFO call identity also does not establish the corresponding return state when intervening CC operations modify shared memory or quantum registers. Device operations introduce array types absent from the ISA, and ENTROPY_EXHAUSTED has no defined fault-code representation.",
+    "fix": "Define dynamic SSA environments explicitly, retaining each executed definition until reversal or specifying a checked recomputation scheme; I recommend retained dynamic instances as the reference model. Record complete invocation boundaries and require return-state dependency versions to match, or reverse the intervening suffix first. Specify fault-prefix reversal. Give device arguments/results an expressible representation, versioned operation signatures, fault encodings, and exact state-restoration rules, including allocation-table entry creation and block-sector presence."
+   },
+   {
+    "id": "B8",
+    "section": "\u00a78",
+    "problem": "The target format is not yet independently interpretable. The expression grammar gives no precedence or associativity, JSON encoding, table declaration/epsilon-decade convention, or behavior for eps=0. The gate schema does not encode the claimed general function of operand-class tuples, parameters, and control count. Named decomposition schemes have no normative definitions or resolution mechanism. Custom resource aggregation and validation of rates, durations, weights, and matching entries are also incomplete.",
+    "fix": "Use a closed JSON expression AST, or fully specify textual parsing and arithmetic; I recommend the AST. Define table indexing, exact-mode expressions, errors, and numeric evaluation. Give gate realizations explicit operand-class patterns, arity/control/parameter constraints, and deterministic matching rules. Resolve decompositions to specified templates or versioned definitions. Define aggregation for every resource kind, treatment of classical/effect time, and validation of nonnegative finite costs and objectives."
+   },
+   {
+    "id": "B9",
+    "section": "\u00a7\u00a79.1, 12\u201313, 16",
+    "problem": "The interchange grammar remains incomplete and inconsistent. Metadata field schemas are largely prose placeholders; jsonline requires an object although coverage is an array. Output syntax is not reconciled between \u00a74, the optional assignment production, and the example's trailing destination operands. Section ordering, duplicates, nested instruction numbering, and several lexical choices remain undefined. The example hash is correct without a final LF, but the grammar includes that LF in the function's final instruction line. Exact large integers in domains and budgets also need an encoding compatible with JCS's binary64 number model. [RFC 8785 \u00a73.1](https://www.rfc-editor.org/rfc/rfc8785#section-3.1)",
+    "fix": "Complete the instruction grammar and concrete schemas for every metadata section, with required fields, types, extension handling, canonical ordering, and duplicate rejection. Choose one destination syntax and one precise final-newline/hash convention. Encode integers beyond the exact supported JSON-number range as canonical decimal or hexadecimal strings. Update the complete example to satisfy the initialization/result rules and publish its exact object bytes and hashes."
+   },
+   {
+    "id": "B10",
+    "section": "\u00a7\u00a79.2\u20139.3, 11\u201312",
+    "problem": "Function-byte hashing still omits semantic inputs outside the function text, including ptr_width, ISA semantics, data images, and layout. Changing a local region's image can therefore change F_B without changing interface_hash or reference_program_hash. SCC member derivation does not specify raw-versus-hex hash representation or index encoding. schedule_hash and params_hash also lack exact definitions.",
+    "fix": "Hash a versioned semantic envelope containing the body, complete signature, relevant layout/images, semantic versions, and dependency identities. Retain separate relocatable and resolved identities, but bind executable certificates and caches to the resolved semantic closure. Define SCC substitution and member derivation byte-for-byte with domain tags and encoded indices. Define every remaining hash's exact input and serialization, excluding self-referential certificate fields."
+   },
+   {
+    "id": "B11",
+    "section": "\u00a710; \u00a7\u00a77.4, 9.4",
+    "problem": "Launch reversal remains ambiguous and can duplicate inversions: R history records Q calls, while the run record retains every Q invocation, and reverse instructs both reversal of R segments and inversion of each Q invocation. Eligibility tracks quantum registers but not shared classical memory, devices, or intervening host services. There is no CC instruction that raises HOST_REQUEST, no response-to-result binding, and no complete close/handle-invalidation rules for measured or failed runs.",
+    "fix": "Define an invocation tree or another ownership rule under which every operation is reversed exactly once; I recommend R records owning their nested Q inversions. Track dependency versions for all shared state and define exclusive ownership during active runs. Specify the host-service request instruction, response types, suspension/resumption transitions, and reversal policy for such requests. Define close transitions for completed, failed, and reversed runs, plus measurement consumption and handle invalidation. Restrict reversal where required dependencies or reversible records are absent."
+   },
+   {
+    "id": "B12",
+    "section": "\u00a7\u00a710\u201311, 17",
+    "problem": "The promised versioned constructors/accessors are not present. A caller cannot construct an array of opaque bennett_arg objects, inspect results, construct a scheduler request, or release returned objects from the declarations given. Status/handle definitions and ownership lifetimes are absent. There is also a concrete C namespace collision: bennett_estimate and bennett_coverage are used as both unqualified type names and function names.",
+    "fix": "Publish a complete versioned C header with opaque-type declarations, argument/request builders, accessors, destruction functions, status values, handle types, buffer lengths, and ownership/lifetime rules. Use a builder handle or an array of pointers instead of requiring caller allocation of incomplete opaque elements. Rename the colliding types or functions. Opaque internal layouts may remain deferred."
+   },
+   {
+    "id": "B13",
+    "section": "\u00a7\u00a79.2, 9.4, 11",
+    "problem": "A stored schedule cannot yet be executed verbatim. A static block/instruction point does not distinguish loop iterations, nested invocations, prefix reversal, or the many dispatch/history/decomposition gates generated from one reference instruction. Entry fields have no per-kind semantics or completeness/default rules. Variant=controlled does not bind the number of inherited controls, although legality, cost, and scratch requirements depend on it; the same-descriptor assertion does not establish a valid common bound.",
+    "fix": "Define either identifiers for expanded execution occurrences or a hierarchical schedule language with normative expansion; I recommend the hierarchical form. Identify invocation, iteration, forward/reverse phase, and generated operations where choices differ. Specify every entry kind and validate dependency order, realizations, accuracy, and capacity. Bind schedules to the resolved closure, all classical parameters and bounds, and the complete control context. Parameterize frame requirements accordingly or prove a declared common upper bound."
+   },
+   {
+    "id": "B14",
+    "section": "\u00a7\u00a712, 14.3, 15",
+    "problem": "The certificate remains insufficient to implement the promised independent checker. Domain ranges do not encode all of D, particularly interface memory and borrowed systems; endpoints and product construction are unspecified. The sampler lacks seed expansion and domain-mapping rules. Structural claims lack executable proof payloads and subclaim references, while interval_arithmetic/rational_exact name method families rather than checkable witnesses. Error totals are untyped despite mixing operator and diamond bounds. Exact measurement-assisted realizations also need a channel claim, rather than being accepted solely through a permutation execution claim.",
+    "fix": "Define complete claim schemas and versioned checking rules: exact domains including memory/borrowed values, deterministic sampling, structural proof witnesses with explicit assumptions and subclaim identities, and rigorous numerical-bound witnesses. Type every local/inclusive error by metric and variant, apply operator-to-channel conversion once at the stated boundary, and derive multiplicities from the realized schedule. Require channel validation for measurement-assisted implementations and phase-sensitive operator validation for controlled unitary variants. Add witness formats for any supported minimality claims."
+   }
+  ],
+  "muse": [
+   {
+    "fix": "Classify each row as either assignment (compute into disp, then exchange) or direct reversible update (executed directly under at_k, no disp). Add faulted/code to the write and inverse columns for every conditional-fault row: under flag, faulted ^= 1 and code ^= row code, reversed by the same controlled XOR using the retained flag. State that lift.parmov first computes all destinations into disp_1..disp_m and only then performs all exchanges.",
+    "id": "B1",
+    "problem": "Section 3.6 prescribes out-of-place compute into disp_j followed by qexch for every written location or cell. That does not implement lift.oracle_call, lift.perm_call, lift.retval, lift.free or fault, which are XOR or in-place operations. Conditional-fault rows also write faulted/code, but those writes are absent from their write sets and several inverses are given as '-' or only 'exch back', so the fault side effect has no specified reversal. lift.parmov can also fail on cycles if compute and exchange are interleaved per destination. Two executors can therefore build different step permutations and frame layouts.",
+    "section": "3.6, 4.2, 5.2"
+   },
+   {
+    "fix": "State a flattening rule for blocks and lproc bodies into one instruction-index space. Define the record layout field by field, including location order, padding of narrower locations into stack cells, parameter locations, and a stored destination-location identifier. Add a frame successor field: lift.ret first copies ret_index into it before mutating fp, then XORs the saved result value into the destination by comparisons against the stored identifier. State whether interface names are read-only pseudo-locations in oracle bodies or add an explicit regs mapping from each input and lproc parameter to its location; remove the duplicate entry copy if bodies read inputs directly.",
+    "id": "B2",
+    "problem": "The index space of the step machine is undefined for multi-block bodies and multiple lprocs: no rule concatenates blocks and lproc bodies, assigns lproc entry indices, or orders fallthrough between blocks. lift.ret must obtain ret_index before it changes fp, but section 3.6 computes successors after execution. lift.ret also XORs into 'the caller's w of the matching call', although the record stores no destination identifier and no layout maps callee locations to record cells. Section 3.7 says inputs are copied into 'their locations', while the example reads x directly with lift.mov; no input-to-location mapping is declared.",
+    "section": "3.6, 3.7, 4.2, 16.2, 16.3"
+   },
+   {
+    "fix": "Make lifted load/store/boundscheck name their region, e.g. lift.load.iN @db a -> w. Define one address partition per memory region: disjoint static/global ranges and heap range, with heap_base and heap_limit, and require the end of the heap range to be at most 2^H. Generate initial alloctab entries for globals in a stated layout order, or include the static ranges directly in the boundscheck predicate. Restrict N to multiples of 8 and state that address circuits use the low H bits, with boundscheck proving the remaining bits zero. State the same initial bump pointer and partition for CC/R.",
+    "id": "B3",
+    "problem": "Globals have fixed bases and images in layout, but boundscheck searches only alloctab and no rule creates initial alloctab entries for globals, so global accesses always fault. Heap allocations start at heap_base=0 with no stated disjointness from globals, and heap_limit is not required to fit the 2^H-cell mem region. If H<ptr_width, conversion from a ptr to an H-bit cell index is unstated. lift.load.iN is defined over N/8 cells although iN allows N not divisible by 8. An oracle also cannot name an interface region in lift.load/lift.store, which always access the singular local mem, so caller-owned quantum memory is not usable as lifted memory.",
+    "section": "4.2, 5.1, 7.1, 7.2"
+   },
+   {
+    "fix": "For oracle_call and permutation action_call, include {(r,i,v_i) for every cell of every in or mut region the callee may read} in each resulting dependency set. Add rows: qalloc gives perm with S empty; qstore gives the destination cell the provenance of the XORed value combined with the old cell value and address; qexchm swaps wire and cell provenance conservatively, including address and all-cell dependencies. Add a syntactic in-use rule listing which operand positions may target an in wire; I recommend allowing in wires only as controls, diagonal targets, copy/XOR sources and call in arguments unless a permutation-frame certificate proves restoration.",
+    "id": "B4",
+    "problem": "The transfer rules are unsound for memory-dependent calls. oracle_call and permutation action_call set S from ins, mut, tgt and fr but omit cells of interface mem read by the callee. A later qstore to such a cell therefore does not close the window, yet a second call used as cleanup computes a different result and leaves residual entanglement. The table also lacks provenance results for qalloc and for the wire and cell after qexchm, and gives no stored-cell provenance. Separately, section 5.3 declares actions block-diagonal on in wires, but no checkable operand-position rule prevents an action body from targeting an in wire with x or h.",
+    "section": "5.3, 6.1, 6.2"
+   },
+   {
+    "fix": "Either add byte-array types to section 3.3 or, preferably, define every device operation over (ptr,len) classical-memory arguments with bounds and result writes. State initial device state (console empty, clock 0, block map from a named data image or empty). Add an entropy-tape field to the run inputs. Add a CC instruction hostcall service ptr len -> (len) with a stated reply-buffer rule, synchronous transition to HOST_REQUEST, and errors for use in R or Q. Publish the service-id namespace rule.",
+    "id": "B5",
+    "problem": "Device operations use [u8] and [u8;512], types absent from the type system and from effect operand forms. Initial clock value, block contents and console state are not stated, and the launch ABI has no way to supply the entropy tape on which section 7.3 makes an R run depend. The HOST_REQUEST state also has no in-program cause: no CC instruction raises a host-service request or receives the bennett_reply payload, and service ids have no namespace.",
+    "section": "3.3, 4.1, 7.3, 10"
+   },
+   {
+    "fix": "Define the run record as a nesting tree whose leaves are CC segments, R calls and Q calls, and define reversal recursively so a Q call inside an R call is reversed exactly once, by the R history rule. State what CC reversal records: either a start-of-run snapshot of device classical memory and register allocation state, or a store/alloc history equivalent to section 7.4. Delete 'invalidates no run' or remove 'prepared' from the eligibility list; I recommend that preparing a touched register invalidates reversal.",
+    "id": "B6",
+    "problem": "The run record is a flat list of Q invocations plus R history, but an R call can contain Q calls whose reversal is already performed by uncall under section 7.4. Reversing the flat Q list and the R segment reverses such a call twice. CC segments are reversed by 'restoring their recorded classical state', but no CC state recording is defined. bennett_qreg_prepare is annotated 'invalidates no run', while reverse eligibility requires that a touched register has not been prepared since the run.",
+    "section": "7.4, 10"
+   },
+   {
+    "fix": "Give the expression grammar precedence, associativity, numeric type (I recommend exact rationals, with JCS decimal inputs parsed exactly), division-by-zero and eps=0 rules, and a declared 'tables' field. Add variables a (address width), w (cell width) and c (total controls), and state what k means per gate and QRAM operation. Define 'controls' as an exact count, a maximum, or a range by renaming it. Either normatively define each decomposition scheme name in a scheme registry section or require schemes to carry a parametric gate-sequence template in the target document; a schedule may reference only defined schemes.",
+    "id": "B7",
+    "problem": "The cost-expression grammar has no precedence or associativity, no numeric evaluation type or precision, no declared place for 'table', and no rule for log2inv_eps at eps=0. Variables are only k and eps, so width-dependent costs for qload/qstore/qexchm and predicate-depth control costs cannot be expressed. Whether a gate entry's integer 'controls' is an exact count or a maximum is not stated, the QRAM cost objects have no schema, and decomposition 'scheme' is a free name whose gate sequence no competitor can execute.",
+    "section": "8.1, 8.2, 8.3"
+   },
+   {
+    "fix": "List every constructor, accessor, mutator and destructor for bennett_arg, bennett_result, bennett_request, bennett_sched_request, bennett_sched_response, bennett_estimate, bennett_coverage and the tape iterator, with ownership and error rules. Define params_hash as SHA-256 of a stated JCS encoding of the classical parameters and schedule_hash as SHA-256 of the schedule JCS bytes. Make realisation kind-specific (cleanup: reverse|recompute|mbu; gate: native|scheme name; alloc: class; start: start_time) and state which fields are required per kind.",
+    "id": "B8",
+    "problem": "Sections 10-11 still do not declare the constructors and accessors for the opaque types, so a C caller cannot build a bennett_arg array, read a bennett_result, or build a scheduler request; section 1.3 incorrectly says those accessors are normative in sections 10-11. The schedule binds params_hash and certificates bind schedule_hash, but neither hash's input bytes are defined. Schedule entries give one realisation enum (reverse|recompute|mbu) for cleanup, alloc, gate, structure and start kinds, so most kinds have no legal value and a validator cannot tell which of class, scheme, params, epsilon_share and start_time are required.",
+    "section": "1.3, 10, 11, 12.2"
+   },
+   {
+    "fix": "Publish a JSON schema (field names, types, required/optional, extra-field rule) for symbols, imports, devices, layout, schedule, certificate and coverage, and a per-opcode operand table giving arity, operand kinds, modes and result placement in canonical text. Define hash inputs byte-exactly: reference replacement replaces the '@name' token with the 64-character lowercase hex hash; canonical signature is the JCS encoding of the signature object; SCC index and member identity use the decimal index in ASCII; object_hash is SHA-256 of the canonical object text with the schedule, certificate and coverage sections deleted including their preceding separator. Pick these or other explicit rules, but state them.",
+    "id": "B9",
+    "problem": "The grammar reduces symbols, imports, devices, layout, schedule, certificate and coverage to one unspecified JCS line, but no schema defines their fields except by example. OPCODE is 'any mnemonic of section 4', while several section 4 forms are schematic or blank and operand modes/types such as ':in', ':consume' and 'tk:c' have no canonical-text encoding. Hash inputs remain inexact: how a reference token is replaced by a hash, what bytes a 'canonical signature' has, how an SCC index is encoded after scc_hash, and what byte sequence object_hash covers are all unstated.",
+    "section": "9.1, 9.2, 16.1, 16.2"
+   },
+   {
+    "fix": "Extend domain encoding to every component of D, including mem regions as per-cell ranges or a stated whole-region width 2^A x W with lo/hi, and state that lo/hi are inclusive. For permutation claims, carry P itself as a table (stated index order) or a program (a named oracle symbol whose interface hash is given), not only its hash. Define sampled replay exactly: xoshiro256** output order, how 64-bit outputs map to each range (I recommend rejection sampling with a stated bound), and the order in which bundles and cells consume outputs. Define sub-claim references by claim index within the region entry.",
+    "id": "B10",
+    "problem": "Certificate claims still cannot be checked independently. The exhaustive domain encodes only interface bundles, although D in section 5.2 includes borrowed bundles and every cell of in regions, and lo/hi inclusivity is unstated. A permutation expectation may be only a hash of P, from which a checker cannot obtain expected outputs. The sampled claim names xoshiro256** and a seed but not how outputs map to domain elements, so two checkers replay different samples. Structural claims rest on 'sub-claims' that have no identifiers.",
+    "section": "5.2, 12.1, 12.2"
+   }
+  ],
+  "opus": [
+   {
+    "id": "B1",
+    "section": "\u00a74.2 lift.free / lift.alloc; \u00a73.7; \u00a77.1\u20137.2",
+    "problem": "Lifted allocation is neither reversible nor representable as written. (a) lift.free matches 'the unique i with live_i \u2227 base_i = p' and flips live_i 'with no displaced value'. The control of that controlled-X depends on its own target, so the match cannot be uncomputed. The listed inverse ('same op') also finds no live entry after the free, so it faults instead of restoring the entry. (b) n = 0 is a valid allocation that does not advance the bump pointer, so the next allocation shares its base. 'The unique i with base p' is then false, in both the lifted and the CC/R allocator. (c) \u00a77.2 uses Ac and Sc as region-size exponents (2^Ac table entries, 2^Sc stack cells), while \u00a73.2/\u00a73.7 use them as counter widths that must represent every limit without wrap. With those widths, `atop = 2^Ac` and `sp+R_f > 2^Sc` cannot be represented. (d) Nothing bounds heap_base + heap_limit by 2^H, so an allocation can extend past the end of `mem`. That contradicts \u00a77.2's claim that an access wrapping past 2^H is outside every allocation.",
+    "fix": "State: match_i = (i < atop) \u2227 (base_i = p), computed without reference to live. flag = \u00ac\u2203i: match_i \u2227 live_i. Then live_i ^= match_i \u2227 \u00acflag, and match_i is uncomputed. The inverse is that same controlled flip on live_i, recomputing match from base only. Alternatively, displace the index i into the frame and use exchange-back; I would take the base-only match. Require allocation bases to be pairwise distinct by allocating max(n, 1) bytes (zero-size allocations stay unaccessible because boundscheck uses size n), in both lifted and CC/R. Introduce separate exponents A_tab and S_cells for the table and stack sizes, and require Ac \u2265 A_tab + 1 and Sc \u2265 S_cells + 1. Require heap_base + heap_limit \u2264 2^H, checked at load."
+   },
+   {
+    "id": "B2",
+    "section": "\u00a77.2 layout; \u00a74.2 lift.boundscheck; \u00a75.1 interface regions; \u00a77.1",
+    "problem": "The lifted address space contradicts itself and the north star. heap_base = 0, so the first successful allocation returns the null pointer, and C code testing `p == NULL` diverges from native. Globals have 'fixed base addresses' in the same `mem`, which overlaps the heap starting at 0. alloctab is written only by lift.alloc, so lift.boundscheck, which the dialect places before every access, raises FAULT_UB_MEMFAULT on every access to a global. Interface `mem` regions are allowed in oracle signatures, but a lifted ptr addresses only `mem`, so a lifted body cannot reach them. That leaves rung 4's database over quantum-addressed memory inexpressible except as a baked-in image. \u00a77.1 does not give the CC/R allocator's initial bump pointer, but the north star requires heap placement identical to the native comparison build.",
+    "fix": "State that the object's `layout` fixes: a null region [0, null_size) that is never allocated; global bases; heap_base above them (equal to the comparison link's shim heap base); and, for each interface region of an oracle, a base address in the lifted address space. At oracle entry, alloctab is initialised with one live, non-freeable entry per global and per mapped interface region, counted against the table size. lift.free of such an entry faults FAULT_UB_MEMFAULT. lift.load and lift.store dispatch to `mem` or to the mapped interface region by address range, preserving the role (`in` regions MUST be unchanged at exit). The CC/R allocator starts at the same heap_base. The alternative is to forbid `mem` parameters on oracles and keep databases as data images. I would take the mapping, since the north star's rung 4 needs it."
+   },
+   {
+    "id": "B3",
+    "section": "\u00a75.6 structural borrow frames; \u00a712.1 `borrow_frame_VWV`",
+    "problem": "The structural rule ('V; W; V\u207b\u00b9 with V permutation-only, W touching neither the borrowed wires nor any wire V reads') certifies restoration without checking it, and its meaning depends on an undefined word. If 'reads' includes V's targets, W is disjoint from V altogether and the frame is vacuous: it cannot express the standard dirty-ancilla pattern, where W uses the borrowed wire as a control. If 'reads' means controls only, the rule is unsound. Take V = `cx b y`, W = `cx y z`, V\u207b\u00b9 = `cx b y`. The borrowed wire b is restored on every basis value, but z ends as z \u2295 y \u2295 b, so the public output depends on b and entangles with it. A `structural` claim of kind `borrow_frame_VWV` would label this proof.",
+    "fix": "Replace the rule with the toggling lemma and state its side conditions. A frame V; W; V\u207b\u00b9; W is restoration-safe if all of the following hold. V only XORs into borrowed wires functions of wires X, where W writes no wire in X. W's targets lie outside X, outside the borrowed set and outside W's own controls. Every gate of W has at most one borrowed control, so W's effect is affine in b. The net effect is then b-independent and b is restored, which is the pattern used for dirty-ancilla MCX (Gidney; H\u00e4ner\u2013Roetteler\u2013Svore). Say explicitly that 'touches' includes targets. Frames of any other shape require an exhaustive or library T3 claim. A minimal alternative is to delete the structural rule and rely only on exhaustive or library frame certificates. I would take the lemma, because the north star's finite-D argument for large dirty pools depends on it."
+   },
+   {
+    "id": "B4",
+    "section": "\u00a79.2 identity; \u00a712.2 bindings; \u00a716.2 instr",
+    "problem": "Content identity omits semantic inputs, and canonical bytes are not unique. The interface hash, and therefore reference_program_hash, covers only the function text. The data images of local qregions and globals, the `layout` section (H, global bases, and after B2 heap_base and region mappings), ptr_width and the ISA major are not hashed, yet all of them change F_B. Two oracles that differ only in a baked-in table share their hash. Their certificates validate against each other, and 'equal-hash duplicates deduplicate' at link silently substitutes one for the other. Separately, the grammar admits a destination prefix `r = op \u2026`, the \u00a74 forms write `\u2192 w`, and the example writes the destination as a trailing operand (`lift.add rx one r`). Two producers can therefore emit different bytes, and different hashes, for one program, and a parser cannot tell destination from operand except by convention.",
+    "fix": "Define the hashed envelope of a symbol as: its canonical function bytes; the canonical bytes of every `data` and `layout` entry it reaches (by name, in sorted order); the header's ptr_width and ISA major; and the callee hashes, substituted as now. Interface hash and closure hash are both computed over this envelope, and certificates bind to it. Fix one destination spelling: I recommend `w = op a b` everywhere, with \u00a74 forms rewritten to match. Recompute the example's hash under the new spelling."
+   },
+   {
+    "id": "B5",
+    "section": "\u00a73.6, \u00a73.7, \u00a74.2 (indices, terminators, lift.ret/lift.retval)",
+    "problem": "The index space I[0..n) is not defined, although index values are data. The text says an oracle body is 'a sequence \u2026 over the oracle's locations and its lprocs' locations'. But the grammar has named blocks and separate lproc functions, and lprocs may come from other linked objects. No rule fixes the order of blocks, the placement of lprocs, or what happens when a block does not end in a terminator. lift.call pushes k+1, entry indices are taken from this layout, and qjumpr takes a runtime integer, so a body that computes jump targets means different things under different flattenings. Also: the terminator list omits qbranch. lift.ret executed with no active record (depth 0, at oracle top level) is undefined. Whether lift.retval inside an lproc halts the oracle with success is unstated.",
+    "fix": "State: I is the oracle's blocks in text order, followed by the lproc closure in a canonical order (sorted by closure hash, with the SCC index for mutual recursion), each block contiguous. A block must end in a terminator (qbranch added); fallthrough is ill-formed. Branch and call targets are written as labels in the text. qjumpr operands MUST be produced by a `lift.label ^b \u2192 w` constant, so no producer writes raw indices and executors may re-index extensionally. lift.ret with depth = 0 faults FAULT_UB_TRAP. lift.retval inside an lproc is ill-formed (suite F)."
+   }
+  ]
+ },
+ "means": {
+  "C1": 3.0,
+  "C2": 3.0,
+  "C3": 2.67,
+  "C4": 3.33,
+  "C5": 2.33,
+  "C6": 3.0,
+  "C7": 3.67,
+  "C8": 3.33
+ },
+ "members": [
+  "codex",
+  "muse",
+  "opus"
+ ]
+}

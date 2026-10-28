@@ -1,0 +1,283 @@
+{
+ "agree": false,
+ "verdicts": {
+  "codex": "revise",
+  "muse": "revise",
+  "opus": "revise"
+ },
+ "blocking": {
+  "codex": [
+   {
+    "id": "B1",
+    "section": "\u00a74.6 fault; \u00a75.2 construction; \u00a75.6",
+    "problem": "The caller's fault register is simultaneously an arbitrary XOR target and a zero-initialised first-fault accumulator. For fault code c, the prescribed zero-conditional update sends both initial fr=0 and fr=c to c, whereas the oracle contract requires fr=c to become 0. Moreover, exact reversal of the forward computation reverses the fault-register write; omitting that reversal contradicts prefix reversal.",
+    "fix": "Compute into a private, initially zero fault accumulator and private faulted flag, recording any irreversible updates in history. The forward computation must neither inspect nor modify caller tgt/fr. At one commit point, XOR the canonical payload and private fault code into those caller targets, then invert only the private computation. State this construction for success, explicit faults and budget exhaustion."
+   },
+   {
+    "id": "B2",
+    "section": "\u00a73.6; \u00a75.2; \u00a75.6",
+    "problem": "HALT has no transition into pc': after a halted step, fresh pc' remains zero and execution returns to the entry index. The exit also reads at_HALT after all at_k wires have been uncomputed, and history movement is specified for control instructions without consistently defining it for fallthrough instructions. Equal elapsed step counts alone do not establish the stated common halt configuration.",
+    "fix": "Define one transition from an immutable old-state snapshot: compute dispatch predicates, execute exactly the selected instruction, set next_pc including HALT\u2192HALT, preserve old pc and overwritten state in one frame, then clean dispatch predicates from that frame. Recompute the exit predicate from final pc. Specify initial HALT, B=0, exact-boundary termination, fault padding and reversible normalisation of an exhausted pc. Require the same transition semantics for structured replacements."
+   },
+   {
+    "id": "B3",
+    "section": "\u00a73.2 budget counters; \u00a74.2 alloc; \u00a75.4; \u00a714.1",
+    "problem": "Heap usage and call depth can differ between coherent branches, so their remaining counters cannot generally be classical. Step counting also lacks rules for nested calls, inlining and oracle invocations, and no frozen reference representation binds the ISA instruction count to the north star's materialised-region budget. Different lowerings can consequently change which inputs fault.",
+    "fix": "Keep budget limits and the padded outer iteration count classical; represent branch-dependent heap/depth usage reversibly in wires. Specify allocation charging, freeing, entry depth, call/return charging and fault precedence. Bind each oracle to an immutable reference instruction stream and accounting version before optimisation; require every lowering to preserve that bounded result. Define how nested work debits parent budgets independently of physical gate counts."
+   },
+   {
+    "id": "B4",
+    "section": "\u00a7\u00a73\u20134; \u00a77.1; \u00a714.1",
+    "problem": "The executable ISA is not closed: load/store, trap/unreachable and uncall are referenced without complete instruction definitions, while alloc/free and ret lack operational forms. Signed division overflow, memory byte order, allocation validity and pointer behaviour are unspecified. The relationship between classical iN operations and per-basis lifted execution is also unstated; f64 is forbidden outside CC but required as a Q rotation operand.",
+    "fix": "Provide a complete typed opcode table and memory model, including allocation metadata, access bounds, byte order, pointer width, return values and exceptional cases such as MIN_INT/-1. Explicitly choose whether lifted reference instructions form a separate typed sublanguage or are entirely wire operations with a specified reference mapping. Permit and define classical angle parameters in Q without implying that quantum-dependent values become classical."
+   },
+   {
+    "id": "B5",
+    "section": "\u00a73.1; \u00a75.3; \u00a75.5; \u00a714.1 and T1",
+    "problem": "Unrestricted oracle\u2192action calls admit non-permutation operations that the oracle reference interpreter explicitly rejects. Action calls can also form recursive cycles without a termination bound, defeating the assertion that each action denotes a unitary and potentially making an oracle step nonterminating. A nested fault being 'handled' merely because code 'tests' its register has no operational definition.",
+    "fix": "Allow an oracle to call an action only through a certified, phase-free permutation interface understood by its reference interpreter. Alternatively generalise the caller to an action and relinquish its F_B/involution contract; I recommend the former restriction. Require action call graphs to be acyclic or have a verified finite expansion bound. Give nested oracle calls an explicit propagate-versus-return fault policy and define propagation from a fresh local fault result."
+   },
+   {
+    "id": "B6",
+    "section": "\u00a74.4 qinplace",
+    "problem": "g and ginv are declared mutually inverse quantum actions, but the expansion invokes them as input-preserving out-of-place XOR evaluations. An in-place action implementing g does not acquire that interface merely because g is bijective; conversely, XOR evaluators for g and g\u207b\u00b9 are generally not mutually inverse actions.",
+    "fix": "Define g and ginv here as total classical bijections with certified, fault-free XOR evaluators O_g and O_ginv, then specify O_g(x,t); swap(x,t); O_ginv(x,t), with t initially zero and sufficient evaluation budgets. Alternatively make qinplace a direct call to an in-place permutation action with a certified adjoint, removing the compute\u2013swap expansion. I recommend the XOR-evaluator form to retain the north star's construction."
+   },
+   {
+    "id": "B7",
+    "section": "\u00a73.3; \u00a73.5; \u00a7\u00a74.2\u20134.6; \u00a75.3",
+    "problem": "The universal 'controlled-U' rule does not define allocation, borrowing or release, which change ownership and are not ordinary unitaries on a fixed wire set. Memory accesses omit the consumed/reproduced memory ownership required by the linear model. Reversing an action body also lacks inverse rules for qcopy, qload and allocation/release; the suggested loop continuation update conflicts with leaving predicate wires unmodified.",
+    "fix": "Specify unconditional bounded physical allocation with predicated logical use, identical ownership at coherent joins, and clean/restored release on every branch. Give memory a linear token or an explicit equivalent ownership rule. Define inverses for every action construct, including copy/load cleanup and allocation. Implement changing loop predicates through retained immutable predicate versions, rather than modifying an active control."
+   },
+   {
+    "id": "B8",
+    "section": "\u00a73.2; \u00a74.2 qborrow/qfree; \u00a75.3; \u00a714",
+    "problem": "Basis-value restoration does not establish restoration of an unknown borrowed quantum state. For example, applying s to a borrowed wire preserves every basis value but changes |+\u27e9 and its correlations; the draft's bit-only model cannot express this failure. It likewise provides no abstract semantics for general actions or measurement.",
+    "fix": "Define the machine's joint quantum state and the relevant unitary, isometry and measurement-channel transitions. Require a completed region to act as its declared public operation tensor identity on borrowed systems, including arbitrary external references, with clean workspace factored out. Restrict basis-tuple reasoning to certified phase-free permutation implementations; use full quantum semantics elsewhere. Clarify that legitimate correlations among public inputs and outputs are not forbidden."
+   },
+   {
+    "id": "B9",
+    "section": "\u00a76; \u00a711; \u00a712; suite D",
+    "problem": "Dependency sets and provenance have no transfer rules across writes, exchanges, memory aliases or calls, so the purported scheduling invariant is not checkable from the object. The MUST-clean-before rule also conflicts with the later closed-window exception. Internal MBU is admitted without defining a controlled implementation or its environment/outcome semantics; correctness of an uncontrolled channel does not specify coherent control of that implementation.",
+    "fix": "Define versioned dependencies, their transfer rules and cleanup preconditions over immutable value versions, including aliases and history. State the MBU exception explicitly and specify its scheduled reference channel and exposed outcomes. Under coherent control, require comparison of the complete controlled implementation, including a reference system and measurement environment; otherwise mandate unitary cleanup, as the north star requires. The adopted const/qfree distinction should be expressed as actual rules, following [Silq's definitions](https://silq.ethz.ch/documentation)."
+   },
+   {
+    "id": "B10",
+    "section": "\u00a74.3; \u00a76; \u00a78.3; \u00a712; T6",
+    "problem": "'Standard unitaries' leaves phase and angle conventions insufficiently explicit for structural control. The phrase 'non-diagonal rz usage' is technically false for the defined Z-axis rotation: RZ is diagonal, and replacing it by a phase gate changes controlled behaviour. Approximation tolerances are reported but not supplied as an acceptance constraint, and T6 does not distinguish each executor's error from their pairwise distance.",
+    "fix": "Define exact matrices, basis ordering and finite angle values, for example R\u03b1(\u03b8)=exp(-i\u03b8\u03c3\u03b1/2) with \u03b8 in radians; preserve phase under decomposition and control. Correct the RZ wording. Supply an allowed error budget as an object/launch/scheduling constraint; define phase-sensitive operator norm and diamond norm conventions, conversions and composition over actual call multiplicities. Two implementations with bounds \u03b51 and \u03b52 are guaranteed pairwise agreement within \u03b51+\u03b52. See the distinct [RZ and phase conventions](https://docs.quantum.ibm.com/api/qiskit/qiskit.circuit.library.RZGate)."
+   },
+   {
+    "id": "B11",
+    "section": "\u00a73.4; \u00a74.1; \u00a77.3; \u00a79.3; T4",
+    "problem": "R-tier exceptional execution is unspecified: division by zero defines Q and CC behaviour but omits R, despite the north star requiring recorded faults. Naming console, clock, entropy and block does not define their operation signatures, state transitions or replay inputs. T4 quantifies over every function and initial state without requiring a finite execution or specifying how Q calls and effects are reversed.",
+    "fix": "Define R fault records and terminal/suspended states, typed versioned device-model operations, and the environmental input trace consumed by nondeterministic effects. Specify forward, reverse and replay transitions, including inverse Q calls. State T4 for finite valid traces with retained history/tape and unchanged required dependencies; reversal restores model state, not already observed external-world events."
+   },
+   {
+    "id": "B12",
+    "section": "\u00a73.6 cost; \u00a78; \u00a711 space_budget",
+    "problem": "Resource names and units do not determine how to combine gate counts, peak qubits, depth and occupancy integrals. No timing/concurrency model fixes qubit-seconds, and instruction-body costs alone omit dispatch, history and cleanup work. Target legality also lacks class constraints and parameterised controlled-gate/decomposition costs. 'Cheapest' class and qubit-second-weighted peak space are consequently ambiguous.",
+    "fix": "Give each resource a measurement and aggregation rule, and define schedule timing or an explicit serial default. Report class occupancy as the integral of live qubits over time; express space limits separately as peak capacities. Include dispatch, predicates, history, reversal and fixups in accounting. Define gate/class compatibility and costs as functions of arity, controls, parameters and accuracy, plus objective validation and the rule for choosing any."
+   },
+   {
+    "id": "B13",
+    "section": "\u00a79.1\u2013\u00a79.2; \u00a716",
+    "problem": "Interned IDs are normally local to an object, so resolving by ID and content hash does not establish a cross-object symbol namespace. Imports, relocations, interface compatibility, recursive definitions and canonical hash inputs are missing. The claimed canonical text has no grammar or normalisation rules, making content identity and independently produced links undefined.",
+    "fix": "Separate local symbol indices from stable external keys; define typed imports/exports, relocation, duplicate-definition handling and compatibility checks. Specify canonical text and hashing, including a module/SCC rule for recursive definitions and treatment of certificates. Define linking as resolution and validation followed by composition, rather than merely a union of function tables. Binary encoding may remain deferred."
+   },
+   {
+    "id": "B14",
+    "section": "\u00a79.3 reversible ABI",
+    "problem": "A callee's peak workspace count does not make a shared ancilla frame safe: caller values or history can remain live during a nested call. The ABI also lacks frame layouts, clean-versus-dirty requirements, class requirements and an exact call/uncall state correspondence.",
+    "fix": "Publish frame descriptors containing typed interface slots, scratch requirements by class and cleanliness, retained-history requirements and ownership transitions. Permit reuse only for disjoint live ranges or through an explicit restoration contract; never infer it from peak size alone. Define invocation identity, argument/result placement and the precise state/history consumed by uncall, including controlled and adjoint variants."
+   },
+   {
+    "id": "B15",
+    "section": "\u00a710; \u00a715 suite G; \u00a717.3",
+    "problem": "The claim that Q regions 'self-reverse' is false: an oracle cleans its workspace while retaining its XOR update, and an action may be non-involutory. Making reverse a no-op therefore does not undo a Q run. The API also uses an unreturned run_id, omits suspension/resumption, and leaves handle ownership and the purported C ABI unspecified.",
+    "fix": "Define a launch state machine and actual versioned C declarations, returning invocation IDs and specifying handle validity, aliasing, completion, suspension, resumption and errors. For Q, reverse must invoke the oracle again or the action adjoint with retained parameters and valid live wires; alternatively reject Q reversal and provide an explicit adjoint launch operation. I recommend supporting the inverse operation. Require launch implementations to pass suite G."
+   },
+   {
+    "id": "B16",
+    "section": "\u00a711; \u00a717.3",
+    "problem": "Compile-time and run-time scheduling do not actually share a specified interface: the latter has an extra budget absent from the signature. There is no schedule interchange format, applicability condition, infeasibility result or rule for validating a stored schedule against changed launch parameters. Deferred C signatures directly prevent the binary substitutability promised by the north star.",
+    "fix": "Define one versioned C ABI whose request includes the program/reference identity, target identity, classical parameters, budget, accuracy, objective and capacity constraints. Specify serialisable schedule operations, validity domains, required certificates and explicit unsupported/infeasible outcomes. A consumer must validate those bindings and either apply the schedule or request a replacement without changing program semantics."
+   },
+   {
+    "id": "B17",
+    "section": "\u00a712; \u00a713; \u00a715",
+    "problem": "The certificate and coverage sections are schema sketches, not exchange contracts. Free-text domains and assumptions, seeds without generators/counts, and untyped proof references are insufficient for independent replay or checking. Re-execution alone does not define structural-proof checking or rigorous numerical proof, while linked-object epsilon summation ignores invocation multiplicity. Coverage lacks stable entry identity and shim provenance.",
+    "fix": "Specify machine-readable schemas bound to object, reference, target and schedule hashes. Encode finite domains, sampling algorithms/versions/counts, proof kinds and checkers, numerical error bounds, verification scope and compositional assumptions. Compose errors over execution bounds, not merely linked symbols. Give coverage entries stable reference locations, classification, reason, fault behaviour and shim identity. Derive conformance fixtures for these schemas and the corrected theorem hypotheses."
+   }
+  ],
+  "muse": [
+   {
+    "fix": "State the rule: an oracle body in the ISA is not SSA over wires but a program over a declared register file and quantum memory, where each lifted classical value of width N occupies a named wire[N] location, each instruction lists locations read and locations reversibly updated (by qexch or XOR into clean space with the old value retained as history), block entry coherently multiplexes block parameters from predecessor locations under at_k, and linearity applies to region-boundary wires and action bodies but locations inside an oracle are mutable state re-executed each step. The alternative (keep pure SSA and restrict oracles to structured qif/qloop bodies, abandoning the general step machine) is viable but contradicts the north star's arbitrary-CFG claim; take the register-file rule.",
+    "id": "B1",
+    "problem": "There is no representation for the values a lifted program computes. Classical registers in Q are constants fixed at entry (3.2), ptr is a classical address (3.3), and binop operates on iN (4.1), so none of these can hold superposed data or a superposed pointer. Worse, wires are linear SSA values consumed and produced exactly once (3.3), yet the step machine executes every instruction B times (3.6): an SSA value would be re-produced and re-consumed every machine step. Block parameters (3.4, 16) have no coherent merging rule in Q. Two implementers cannot draw the same state or execute the same body.",
+    "section": "3.2, 3.3, 3.6, 4.1"
+   },
+   {
+    "fix": "Add the transition: under at_HALT, XOR HALT into pc' (halted branches self-loop and perform no state change), allocate one history frame of P clean wires per machine step (B frames total, charged to workspace), define pc := pc' as exchange of the pc bundle with the fresh pc' bundle, and state that at exit at_HALT and the faulted flag are recomputed from pc and the internal fault register (B3) after the B-th step before commit.",
+    "id": "B2",
+    "problem": "The step machine has no transition for HALT. Step 2 XORs a next index into a fresh pc' only for k < n, so a halted branch leaves pc' = 0 and restarts the program, re-executing side effects for the remaining steps. Separately, every at_k is uncomputed in step 3, so the at_HALT used at exit (3.6, 5.2) no longer exists; pc := pc' is an assignment, not a defined reversible operation; and the number and allocation of history frames over B steps is never stated.",
+    "section": "3.6"
+   },
+   {
+    "fix": "Restate the construction: forward execution writes only to an internal clean fault-code register and faulted flag allocated by the region, first fault wins tested against the internal flag; at commit, under at_HALT and not faulted XOR the result into tgt, under faulted XOR the internal code into fr, under neither XOR FAULT_BUDGET_STEPS into fr; reversal then reverses only the forward computation over internal state and never touches tgt or fr. Assign the numeric fault code values now (FAULT_NONE=0, then 1..8 in the order listed in 5.4); the values are quantum data XORed into fr and are semantic, so deferring them (1.3) makes executors disagree on final states.",
+    "id": "B3",
+    "problem": "The fault construction is self-defeating in two ways. First, fault XORs the code into the fault register if it is currently 0 (4.6), but fr may hold any value on entry and domain D ranges over all fr values (5.2): with a nonzero initial fr no fault is ever recorded. Second, 5.2 says the fault instruction has already XORed the code during forward execution and then the whole execution is reversed (5.6), which reverses that XOR and erases the fault. As written, faulted branches return fr unchanged or unchanged-for-nonzero-fr, contradicting the interface.",
+    "section": "4.6, 5.2, 5.6"
+   },
+   {
+    "fix": "Two viable fixes: (a) keep the north-star promise by giving every ISA instruction in an oracle a producer-assigned reference-step weight recorded in the object, define the budget over weights (internal padding steps have weight 0, callee instructions count individually, oracle_call counts its callee's weights), and make heap and depth coherent wire counters in the register file (B1) whose comparisons raise faults, with a stated priority when two budgets trip on one instruction (e.g. depth, then heap, in program order); or (b) redefine the budget over ISA steps and amend the north star and certificate to say the fault set depends on Bennett's lowering. Take (a); (b) surrenders a load-bearing north-star guarantee.",
+    "id": "B4",
+    "problem": "The budget contradicts the north star and is partly unphysical. North star 4.2 fixes the budget unit as steps of the reference semantics on the materialised region so the fault set never depends on Bennett's lowering; 5.4 and 14.1 instead count instructions of the lowered ISA body, so the producer's inlining and layout choices change which inputs fault. Heap and depth counters are classical (3.2), but allocation size and call depth in lifted code depend on superposed data, so they cannot be classical values; and whether a call counts as one step or as its callee's steps is undefined, so F_B itself is ambiguous at every call boundary.",
+    "section": "5.4, 14.1"
+   },
+   {
+    "fix": "Add the well-formedness rule: an oracle body may contain only permutation gates, qcopy/qxor/qexch, quantum-memory operations, control, fault, oracle_call, and action_call to actions certified as exact permutations on their encoding; any other gate makes the function a quantum action, not an oracle. Suite F rejects the rest.",
+    "id": "B5",
+    "problem": "Nothing prevents non-permutation gates inside a lifted oracle. Section 5.1 forbids measure, effect and br but not h or rz, and 5.5 lets an oracle call any action. An oracle containing h is not a function F_B on basis inputs, is not an involution, is illegal in the reference interpreter's own oracle mode (14.1), and voids theorems T1 and T3. The central interface of the spec is not enforced by its well-formedness rules.",
+    "section": "5.1, 5.2, 5.5"
+   },
+   {
+    "fix": "Print the matrix of every gate in the computational basis, including rx/ry/rz as exp(-i theta P/2) or another single stated convention, and mcx as the exact multiply-controlled X. Add the legality rule: a decomposition is conformant only if the realised unitary equals the specified unitary exactly, not up to global phase, or equals it within a stated epsilon in a phase-sensitive norm that is preserved under adding controls; relative-phase constructions are legal only where a certificate proves the phase cancels in context.",
+    "id": "B6",
+    "problem": "Gate semantics are given as 'the standard unitaries' (4.3) with no matrices. Rz has two conventions in wide use differing by a global phase, and since every gate executes controlled on the active predicate (3.5), a global phase becomes a relative, observable phase: two executors choosing different conventions produce different states. The same hole exists for decompositions (8.3): nothing requires a target decomposition of ccx or mcx to be phase-exact, so a relative-phase Toffoli, which the north star 5.1 explicitly excludes from the permutation tier, is a conformant lowering here and silently breaks interference.",
+    "section": "4.3, 8.3"
+   },
+   {
+    "fix": "Pick the oracle-style reading, which is the one the construction and the north star need: g and ginv are compute functions with target-XOR semantics t ^= g(x) and t ^= ginv(x), total mutually inverse bijections on the declared encoding, and qinplace is compute g into clean t, exchange x and t, compute ginv from the new x into t clearing it, free t; state that the certificate obligation is g after ginv = ginv after g = id over the declared domain, checked exhaustively where the declared width makes that finite and otherwise carried as a library certificate, with no privileged width threshold. The alternative (g as an in-place action applied directly to x) makes qinplace a no-op wrapper and loses the founding use case of lifting a classical bijection.",
+    "id": "B7",
+    "problem": "qinplace mixes the two region interfaces the spec exists to separate. It requires g and ginv to be quantum actions, whose interface transforms mut wires in place (5.3), but its semantics call them out of place as g x -> t, which no action does. If g were an in-place bijection action one would simply apply it to x and the whole construction is pointless; the compute-exchange-uncompute sequence only makes sense for oracle-style compute functions t ^= g(x). The exhaustive-check bound 'n <= 16' is also an unmotivated constant appearing nowhere else.",
+    "section": "4.4"
+   },
+   {
+    "fix": "Define an action's semantics as a unitary on mut tensor ins that is block-diagonal in the ins computational basis (basis values of ins unchanged; phases and entanglement with mut are part of U and must be declared intended), with all workspace returned clean and unentangled. Define adj by a per-instruction adjoint table (gate to adjoint gate with negated angles, qalloc swapped with qfree, qborrow likewise, qload paired with its consuming inverse, qinplace with g and ginv exchanged, qif/qloop bodies adjointed, sequence reversed with SSA names renamed accordingly) and define ctl at the region level as controlled-U over that unitary with workspace allocated clean independently of the control, leaving the internal realisation (including compute, controlled commit, uncompute for nested oracles) to the executor.",
+    "id": "B8",
+    "problem": "A quantum action's unitary is never defined on a stated space, and its two derived forms are asserted, falsely, to be automatic. Inputs 'preserved' while usable as controls (5.3) is ambiguous: used as a control against a mut wire in a phase eigenstate, an input acquires phase kickback and entangles with mut, so preserved can only mean basis-value preservation of a joint unitary, which is not said. The adjoint recipe 'body reversed, gates adjointed' is wrong for qalloc/qfree (adjoints of each other), qload (produces wires; its inverse consumes them), qinplace, and any SSA renaming, so 'well-formed by construction' is false. ctl as textual qpred around the body also leaves allocation, oracle commit (B3) and global phase (B6) undefined under control.",
+    "section": "5.3, 4.7"
+   },
+   {
+    "fix": "Decide and state: allocation and release are unconditional resource operations (the wires exist for the region's static maximum regardless of predicate values; only gates are controlled), cleanup is explicit in the program text (every workspace value is cleaned by named inverse instructions before its qfree), and the schedule's freedom is only to choose the realisation of each cleanup (reverse, recompute, or MBU where the target declares mbu and, per the north star, never under a control until the controlled MBU certificate kind exists). Give per-instruction rules computing dependency sets and provenance, define validity in Silq's terms (the value is a classical function of wires that have only had qfree operations applied since computation), and restrict MBU to schedules where the correction is in the target alphabet and channel-verified; otherwise the schedule is invalid, not merely unverified.",
+    "id": "B9",
+    "problem": "Predication and uncomputation are each described twice, inconsistently. Every instruction executes controlled on the active predicate (3.5), but qalloc, qborrow, qfree and the wire-producing instructions have no unitary 'controlled' meaning. Section 5.1 requires producers to emit regions that free everything clean, yet section 11 makes placement of uncomputation a scheduler output, and no instruction in section 4 expresses uncomputing a qcopy result in program text; so whether cleanup is in the program or inserted by the scheduler, and hence what two executors run, is undecided. Section 6 gives no compositional rules for dependency sets, states validity as dynamic basis-value equality rather than a checkable static discipline, misclassifies rz (a diagonal gate) as 'non-diagonal rz usage' while omitting s, t and cz, and admits measurement-based uncomputation wherever the window closed with correction U D U-dagger, which for arbitrary intervening U is generally not an implementable gate.",
+    "section": "3.5, 5.1, 6, 11"
+   },
+   {
+    "fix": "Remove the automatic propagation and state: a nested oracle_call is given a fresh clean internal fault register by the caller; fault propagation is ordinary lifted code (compute fr != 0 as a qfree wire, conditionally XOR FAULT_CALLEE into the caller's internal fault register under the first-fault rule of B3, then clear the nested register by calling the nested oracle a second time or retain it as declared output data). The alternative, automatic propagation, is viable only if 'handled' is defined syntactically (the nested register is listed among the caller region's declared outputs); the explicit form is preferred because it keeps F_B a function of the program text.",
+    "id": "B10",
+    "problem": "FAULT_CALLEE is magic. Section 5.5 says a nested fault propagates 'unless the lifted code tests the nested fault register', but lifted code cannot test a wire classically, 'handles it' has no syntactic or semantic definition, the nested call's fault register (who supplies it, what it starts as, how its code is mapped to FAULT_CALLEE versus passed through, and what happens when the outer region faults later) is unspecified, and first-fault-wins across nesting levels is therefore indeterminate. Two executors will report different codes for the same nested fault.",
+    "section": "5.5, 5.4"
+   },
+   {
+    "fix": "Add: load/store instruction forms with width, signedness for loads, and little-endian byte order in classical memory; a data-initialisation rule for quantum regions (an object-level image mapping declared classical bytes into cells at region creation, bit order little-endian per cell), with the default image all zeros; and an out-of-range rule, either requiring cells = 2^A by well-formedness or defining out-of-range qload to produce 0 and, inside an oracle body, raise FAULT_UB_MEMFAULT through the internal fault register (B3). Prefer requiring producer-emitted range checks against declared allocations for lifted code, with the raw instructions total, and saying so.",
+    "id": "B11",
+    "problem": "Memory is not specified to implementable level. Classical load and store have no instruction forms at all in section 4 (widths, endianness and alignment unstated, though 7.1 and the executor suites presuppose them). A qregion is 'all clean at creation' (4.5) with no way to initialise it from classical data, yet lifted memory and the north star's classically fixed database require exactly that. And qaddr[A] into a region of 'cells' cells has no relation stated between A and cells and no out-of-range behaviour, while FAULT_UB_MEMFAULT (5.4) presupposes one.",
+    "section": "4.5, 7.1, 7.2"
+   },
+   {
+    "fix": "Add a history rule table: for each R instruction, exactly what a history frame records (e.g. for store, address and overwritten bytes; for a lossy binop, the destroyed operands; for br, the taken edge). Define each device model's operations, argument and result types, state, and inverse delta. Make clock a device-state counter advanced only by tape records and entropy an input tape supplied at launch and consumed in order, so a run is a function of (program, initial state, entropy tape) and T4 can be stated; a launch that exhausts the entropy tape is a defined R-tier trap recorded on the tape.",
+    "id": "B12",
+    "problem": "The reversible tier is asserted invertible without the rules that would make it so. 'Every instruction MUST be invertible given the history' (3.4) does not say what any instruction records: a mul or a store destroys information unless the history rule per instruction is stated, and only stores get one (7.1). The four device models (7.3) are names without operations, state, or inverse deltas; entropy (read) has no stated source, so two executors produce different forward runs and theorem T4 (14.3) is not statable, and clock under reversal is undefined.",
+    "section": "3.4, 7.3, 14.3"
+   },
+   {
+    "fix": "State a timing model: execution is sequential in program order unless the schedule (11) assigns start times; each native gate has a duration from the target (a declared 'time' resource, not an ad hoc field); qubit_second charged per wire is the integral of its live interval in scheduled time at its class rate, borrowed wires charged once to the borrower at dirty_rate replacing, not adding to, the owner's charge. Declare the ISA-level machine all-to-all over logical wires, with routing folded into decomposition costs, or add a topology and a move instruction; prefer all-to-all logical, matching the north star's regime. Make gate costs functions: mcx of k, rz of (theta precision, epsilon) with the synthesis rule named. Redefine space_budget as a per-class peak-wire vector, separate from the objective. Replace 8.5 with a normative import table (named source units to named resources with conversion factors); any unit not in the table imports as a new resource, full stop.",
+    "id": "B13",
+    "problem": "The resource model cannot be accounted twice with the same answer. Qubit_second occupancy (8.1, 4.2) needs elapsed time, but no timing or parallelism model is defined: gate 'time' appears in 8.3 without being a declared resource, and 3.6 sums step costs sequentially while a specialiser may parallelise. ptr width is 'from the target description' (3.3) but section 8 has no such field. Qubit classes have no compatibility or movement rules for two-wire gates across classes, 'cheapest' for any (8.2) has no order, borrowed-wire occupancy double-counts against the owner, mcx and rz costs cannot be static scalars (they depend on k and on synthesis epsilon), the scheduler's space_budget is expressed in 'qubit_second-weighted peak occupancy' (11) which is dimensionally a rate, not a space bound, and the Qualtran/Azure import rule (8.5) restates the north star's aspiration with no conversion table a vendor could apply.",
+    "section": "8, 11, 3.3"
+   },
+   {
+    "fix": "Make the content hash the sole global identity: name the hash function and define it over the canonical bytes of the symbol's interface and body (for data, over the image of B11), treat interned IDs as per-object aliases rewritten at link, and state the link rules for undefined symbols (link error unless declared external with a matching interface hash), duplicate definitions with equal hash (deduplicated), and type/device/layout section conflicts (link error). Either write the EBNF for the canonical text in this draft or explicitly demote the text to non-normative examples and declare that no interchange format exists yet; the former is strongly preferred since binary encoding is deferred.",
+    "id": "B14",
+    "problem": "Structural linking as stated is incoherent, and the one interchange format is unwritten. Symbols resolve 'by interned ID and content hash' (9.2), but interned IDs are assigned per object, so equal IDs in two objects are unrelated and different IDs say nothing; resolution by ID across objects cannot work, which is the opposite of how content addressing must be set up. The hash function, what bytes are hashed, undefined symbols, and section conflicts on union are all unstated, and 'certificate composition' is a phrase, not a rule. Meanwhile the canonical textual form (16) that must carry interchange and conformance while binary encodings are deferred has no grammar: section 4's tables use wire[*], 'args', ellipses and prose where a grammar is needed.",
+    "section": "9.1, 9.2, 16"
+   },
+   {
+    "fix": "Repair the launch contract minimally: bennett_run returns a run_id (status via a separate query), add bennett_prepare(handle, classical bits) setting clean wires to a basis value and bennett_free(handle), define status/error values, and define suspension as existing only between bennett_run calls at region boundaries (or add explicit suspend/resume for the R tier keyed by run_id; prefer the boundary rule for Q and explicit suspend for R, and say which). Define the schedule as a serialised object section listing per-cleanup realisations (B9), class assignments and decomposition choices, with an infeasible error return, and require a VM to execute a supplied schedule verbatim when the target hash matches. Make certificate domains machine-readable (symbol, input widths, enumerated ranges or seed-and-count sampling, widths exhaustive to N) so re-execution is defined, and either enumerate the coverage constructs by reference to a versioned dialect list or move the coverage format's enumeration to the dialect spec and keep only the container here.",
+    "id": "B15",
+    "problem": "The remaining cross-repository contracts are sketches with concrete holes. bennett_run returns only status (10), so the run_id that bennett_reverse requires can never be obtained; there is no operation to load classical basis values into allocated handles or to free them; the suspension the north star 4.4 assigns to the launch ABI is absent; free-text 'exact C signatures deferred' (17) defers the contract itself. The scheduling interface (11) returns a 'schedule' with no serialised form, no infeasible-result, and no rule that a VM honour a compile-time schedule, and the object format (9.1) has no section to carry one, so the north star's substitutability guarantee is unimplemented by construction. Certificate domains are '<description of D>' free text (12), so the checker's defining duty, re-execution without trusting the producer, has nothing mechanical to re-execute; the coverage report (13) counts 'source constructs' the ISA spec nowhere enumerates.",
+    "section": "10, 11, 12, 13"
+   },
+   {
+    "fix": "Add a quantum state semantics for actions and measurement: state space as the tensor product over live wires in bundle order, gates by the matrices of B6, measure as computational-basis measurement with Born probabilities consuming the handle's wires and yielding the little-endian integer. Restate T3 with the hypothesis 'the realised unitary on span(D) is a permutation matrix' (however decomposed), T5 with the static-validity hypotheses of B9, and T6 with fixed hypotheses: same target, same decompositions, exact equality for oracles on D, and for actions equality up to the summed epsilon measured in diamond norm for channels and phase-sensitive operator norm for unitaries, with the summation rule stated for sequential and nested composition.",
+    "id": "B16",
+    "problem": "The formal model omits the quantum half of the machine and misstates its flagship theorem. There is no state space, tensor-product ordering, channel semantics, or measurement rule anywhere (measure 'collapses', 4.6, with no Born probabilities), so actions and suite D have nothing to be checked against except the per-basis bit interpreter of 14.1, which by construction cannot see phases. T3's hypothesis requires the realisation to 'use only permutation gates after decomposition', which excludes the standard exact Clifford+T realisation of a Toffoli and contradicts both 8.3 and the north star's definition of the tier by the realised permutation; T2 is circular (hypothesis: implementing 3.6 and 5.6), and T6 claims agreement 'up to the certificate's epsilon' for actions with no fixed metric, target or decomposition hypotheses.",
+    "section": "14, 4.6"
+   }
+  ],
+  "opus": [
+   {
+    "id": "B1",
+    "section": "\u00a73.6, \u00a74.1, \u00a714.1, \u00a73.3",
+    "problem": "The step machine has no data model. Lifted classical code on superposed data has no ISA instructions: binops act on classical entry constants, so lifted code must be expanded into gates. That makes the budget unit, and therefore the fault set, depend on Bennett's lowering, which contradicts north star \u00a74.2. The step machine also re-executes a fixed static instruction list B times, while \u00a73.3 requires every wire to be produced exactly once. Nothing says how a re-executed instruction's writes are kept reversible; only `pc` gets a history frame. And with no write to pc' at HALT, a halted branch restarts at index 0.",
+    "fix": "State: (a) Step-machine bodies use a register file of named wire bundles, not linear SSA. Linearity (\u00a73.3) applies to structured code and region interfaces only. (b) Add `lift.*` instructions on wire[N] (binop, icmp, select, cast, load, store, alloc, call). Each computes its result out of place into fresh per-step scratch, `qexch`es it into the destination register, and leaves the displaced old value in that step's history frame. (c) Each lifted instruction is exactly one budget step, and the dialect's reference semantics maps each materialised LLVM instruction to exactly one lifted instruction, so the fault set depends only on program, budget, LLVM version and pipeline. Executors may expand instructions internally but must reproduce this step count. (d) Add to \u00a73.6: 'under at_HALT, XOR HALT into pc''. The alternative is to let producers pre-expand into gates and carry a per-instruction step annotation from the dialect. I would take (b), because it keeps the step unit in the spec rather than in producer metadata."
+   },
+   {
+    "id": "B2",
+    "section": "\u00a73.2, \u00a74.2 alloc, \u00a74.1 call, \u00a75.4",
+    "problem": "In Q, 'budget counters: classical: steps, heap, depth remaining'. Heap bytes allocated and call depth differ per basis branch, so a classical counter would have to inspect superposed data, which violates \u00a73.1's own invariant. It is also unstated what a lifted `alloc` returns, or where the frame-stack pointer lives, when either depends on superposed data.",
+    "fix": "State: the step counter is classical, because every branch runs exactly B machine steps. Heap-used and depth are wire bundles in step-machine workspace, updated by lifted alloc, call and ret, compared against the classical limits from the budget token, raise FAULT_BUDGET_HEAP or FAULT_BUDGET_DEPTH when exceeded, and are reversed with the history. A lifted alloc returns a wire[ptr] produced by a per-branch bump allocator over a declared heap qregion of size heap_limit."
+   },
+   {
+    "id": "B3",
+    "section": "\u00a74.6 fault, \u00a75.2, \u00a75.4, \u00a75.5, \u00a717.1",
+    "problem": "`fault` XORs into the caller's fr 'if the register is currently 0'. That is not injective (fr=0 and fr=code both map to code), it controls on the register it modifies, and it breaks fr\u2295code(F_B(x)) whenever fr enters nonzero. The numeric code values are deferred, yet they change the final quantum state, so deferring them is not non-semantic. The rules for FAULT_CALLEE propagation and for how much budget a nested oracle consumes are vague. LLVM's other immediate-UB division case, sdiv/srem INT_MIN/\u22121, is missing.",
+    "fix": "State: every lifted oracle has internal clean workspace `faulted:wire` and `code:wire[F]`. The `fault c` instruction XORs c into `code` and flips `faulted` under the active predicate, then jumps to HALT; because pc=HALT predicates everything off afterwards, first-fault-wins needs no zero test. At commit: under at_HALT\u2227\u00acfaulted XOR result into tgt; XOR `code` into fr; under \u00acat_HALT XOR FAULT_BUDGET_STEPS into fr. Then reverse, which cleans `code` and `faulted`. Assign numeric values now (for example NONE=0, BUDGET_STEPS=1 \u2026 CALLEE=8, plus UB_SDIV_OVERFLOW=9, or alternatively define that sdiv/srem INT_MIN/\u22121 returns INT_MIN and 0), F\u22654. Define a nested oracle_call as one outer step that consumes its own token, issued from a classical budget fixed at the outer region's entry. Its nonzero fault register, if the lifted code does not test it before the outer region halts, raises FAULT_CALLEE in the outer region."
+   },
+   {
+    "id": "B4",
+    "section": "\u00a74.4 qinplace, \u00a75.3, \u00a75.5, \u00a714.1",
+    "problem": "`qinplace` requires @g and @ginv to be quantum actions, but calls them out of place into a target t, which is the oracle interface. \u00a75.5 lets an oracle call any action, so an oracle could apply a rotation and stop being a permutation; F_B and the involution would then be undefined, and so would reference-interpreter oracle mode.",
+    "fix": "State: @g and @ginv in `qinplace` are total permutation oracles. They are permutation-only, and carry a certificate (exhaustive at n\u226416 or from a library) that their fault output is FAULT_NONE on the whole n-bit encoding under their declared budgets. They are invoked with an internal clean fault register that the certificate guarantees stays 0. An oracle may call only actions whose bodies are permutation-only; an oracle body that reaches a non-permutation operation is ill-formed (suite F), and the region must instead be declared an action."
+   },
+   {
+    "id": "B5",
+    "section": "\u00a74.6 qloop/qif, \u00a75.3, \u00a75.6",
+    "problem": "For actions, data-dependent loop exit is 'predicating the body on a continue wire the body maintains'. Overwriting a single flag (c \u2190 c\u2227cond) is irreversible, and an action has no step-machine history that could undo it without also undoing its rotations. No Quantum Control Machine injectivity or synchronisation condition is given for actions. The \u00a75.6 wording ('all basis branches reach the same halt configuration') is also false as written for oracles, where branches differ in pc and data until the reversal.",
+    "fix": "State: in an action, `qloop bound {body} while cond` allocates fresh flags c_1..c_bound with c_{i+1} = c_i \u2227 cond_i computed out of place. Each cond_i must be a perm-provenance function of wires that no iteration modifies (or that are restored before cleanup), and the flags are uncomputed in reverse order after the loop under \u00a76. Any other data-dependent exit in an action is ill-formed. For oracles, restate exit synchronisation as: every branch has run exactly B machine steps at commit, and the prefix reversal returns all control workspace to clean. The alternative is to forbid data-dependent exit in actions outright and route it through oracles. I prefer the rule above, because it keeps `when` over loops expressible."
+   },
+   {
+    "id": "B6",
+    "section": "\u00a76",
+    "problem": "The validity rules classify operations by permutation versus non-permutation, but the physical criterion is basis-diagonal. 'Non-diagonal rz' cannot occur. Diagonal gates on dependency wires (s, t, cz, rz) are safe, yet the rules treat them as closing the window. The rules never restrict operations on the garbage wires themselves, so an `h` on garbage before its uncomputation is allowed, and it leaves entangled residue while the spec claims that bug class is unrepresentable. The under-control fallback for measurement-based uncomputation, a north-star contract, is missing.",
+    "fix": "State: for a perm-provenance value g with dependency set S, between g's computation and its uncomputation (a) every operation touching S either uses S only as controls, or is diagonal in the computational basis on S, or is a permutation of S that is exactly undone before the uncomputation; (b) g's own wires are used only as controls or by diagonal gates; (c) any other operation on S or on g closes the window. Measurement-based uncomputation with fixup is permitted only when the predicate stack is empty and the target sets `mbu: true`; under any active predicate, unitary uncomputation is mandatory until a controlled measurement-based-uncomputation certificate kind is specified. Rename the provenance label `perm` to avoid the clash with the `qfree` instruction."
+   },
+   {
+    "id": "B7",
+    "section": "\u00a710",
+    "problem": "The launch ABI lets the host hold handles, call `bennett_measure`, and orchestrate region calls. North star \u00a73.1 forbids handle use and measurement-driven control in host native code, and \u00a73.1 of this spec says CC runs on the device. `suspend` (required by north star \u00a74.4) is absent. `bennett_reverse` is a 'no-op' for Q, but running an oracle XORs into tgt and running an action applies U to its mutable wires, so neither has been undone.",
+    "fix": "State: the launch entry point is a device CC function. The host supplies classical arguments, budgets and opaque register IDs for device-resident quantum state persisting between launches, and receives classical results, fault codes and final read-back measurements. Every measurement whose result affects control runs in device CC. Add `bennett_suspend` and `bennett_resume`, valid only at CC instruction boundaries and never inside a Q region. Define reverse as: R \u2192 uncall to entry; action run \u2192 U\u2020; oracle run \u2192 re-apply (involution). The alternative is to declare Q runs non-reversible through the ABI and say so."
+   },
+   {
+    "id": "B8",
+    "section": "\u00a79.2, \u00a79.3",
+    "problem": "Hash-only symbol resolution makes separate compilation against an unbuilt or upgraded library impossible, and the scope of 'interned IDs' is undefined. Call/uncall 'matches frames by the history' without saying who owns the history. Wire-argument ordering, the ownership of workspace and borrowed wires across a call, and the shared-ancilla-frame protocol are all left to convention, though two repositories must agree on them.",
+    "fix": "State: an import is (name, interface signature: tier, kind, wire-bundle widths in order, F, classical arg types, ABI version), with an optional pinned hash. The linker resolves by name+signature, errors on mismatch, and records the resolved hash in the linked certificate. The caller passes interface bundles in declared order and owns them. The callee owns its workspace, unless the caller passes a shared frame of at least the callee's certified peak_workspace clean wires, which the callee must return clean. A callee may qborrow only from a caller-designated idle set, which it must restore. For R uncall, the callee's history frame is pushed onto the caller's history stack at call and popped by uncall."
+   },
+   {
+    "id": "B9",
+    "section": "\u00a78.1\u2013\u00a78.4, \u00a711",
+    "problem": "`qubit_second` is the mandatory base resource, but there is no timing or parallelism model, so two conformant schedulers or estimators compute different values for the same schedule. Rotation costs cannot be expressed as functions of \u03b5, and the objective of 'peak occupancy weighted by qubit_second' is dimensionally ill-defined.",
+    "fix": "State: a gate occupies its wires for its declared `time`. Gates on disjoint wires may overlap unless the target declares `max_parallel` or a connectivity or routing constraint. A wire's lifetime runs from qalloc or qborrow to qfree, and qubit_second = \u03a3 lifetime \u00d7 class rate (dirty_rate for borrowed wires). A gate cost may be a declared function of \u03b5, and the certificate records the per-region \u03b5 split. The space budget is peak live qubits per class, a separate bound from qubit_second."
+   }
+  ]
+ },
+ "means": {
+  "C1": 2.0,
+  "C2": 2.0,
+  "C3": 1.33,
+  "C4": 2.33,
+  "C5": 2.0,
+  "C6": 2.0,
+  "C7": 3.0,
+  "C8": 2.33
+ },
+ "members": [
+  "codex",
+  "muse",
+  "opus"
+ ]
+}

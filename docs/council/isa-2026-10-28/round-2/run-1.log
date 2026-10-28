@@ -1,0 +1,7 @@
+[muse] muse exec --model muse-wonder-full-1.0 --reasoning-effort high --output-schema /home/tobias/Projects/Bennett.jl/docs/council/isa-2026-10-28/round-2/schema.json --prompt-file /home/tobias/Projects/Bennett.jl/docs/council/isa-2026-10-28/round-2/prompt.md --workspace /home/tobias/Projects/Bennett.jl --disable-web-tools --disable-reminders --disable-request-user-input --no-session-log
+[codex] codex exec -m gpt-6-astra -c model_reasoning_effort=xhigh -s read-only --ephemeral --skip-git-repo-check --output-schema /home/tobias/Projects/Bennett.jl/docs/council/isa-2026-10-28/round-2/schema.json -o /home/tobias/Projects/Bennett.jl/docs/council/isa-2026-10-28/round-2/out-codex.json -- -
+[opus] claude -p --model opus --output-format json --json-schema <1478 chars> --allowedTools Read Grep Glob --max-turns 40
+[opus] done in 319s (attempt 1)
+[muse] done in 407s (attempt 1)
+[codex] done in 1565s (attempt 1)
+all members done

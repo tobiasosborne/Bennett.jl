@@ -1,0 +1,38 @@
+{
+ "run": "isa-2026-10-28",
+ "round": 3,
+ "doc": "Bennett-ISA-Spec.md",
+ "doc_sha256": "a9c41974189612d700d0d57f120ceb42bffddf6b64000630e43a0595c64e36ac",
+ "prepared": "2026-10-28T11:19:13+00:00",
+ "members": {
+  "codex": {
+   "status": "done",
+   "attempts": 1,
+   "started": "2026-10-28T11:19:14+00:00",
+   "updated": "2026-10-28T11:50:38+00:00",
+   "exit": 0,
+   "seconds": 1884
+  },
+  "muse": {
+   "status": "done",
+   "attempts": 1,
+   "started": "2026-10-28T11:19:14+00:00",
+   "updated": "2026-10-28T11:27:10+00:00",
+   "exit": 0,
+   "seconds": 477
+  },
+  "opus": {
+   "status": "done",
+   "attempts": 1,
+   "started": "2026-10-28T11:19:14+00:00",
+   "updated": "2026-10-28T11:25:12+00:00",
+   "exit": 0,
+   "seconds": 358
+  }
+ },
+ "rubric": "docs/council/rubric-isa.md",
+ "subject": "the third normative draft (0.3) of the Bennett virtual ISA specification (the bennett-isa-spec contract named in the north-star document supplied as background)",
+ "context": [
+  "Bennett-NorthStar.md"
+ ]
+}

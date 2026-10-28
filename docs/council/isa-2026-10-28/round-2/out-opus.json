@@ -1,0 +1,118 @@
+{
+ "criteria": [
+  {
+   "id": "C1",
+   "score": 3,
+   "evidence": "The register file, the step-machine transition (dispatch, execute, next-pc with HALT self-loop, the two-exchange pc commit, cleaning from frame.old_pc) and the oracle step state are now drawable. Three things break that. The fixed frame layout (old_pc, displaced:wire[W_max], flag) contradicts instructions that write several locations: lift.alloc's 'upper half', and lift.call's stack cell, sp and depth. sp is missing from \u00a73.2. The R register model (SSA 'kept live', yet lossy operands recorded) is incoherent.",
+   "change": "Give every lifted instruction a declared write set and successor set, derive one fixed frame layout from them, and replace the R-tier 'SSA keeps live' remark with an explicit activation-frame model."
+  },
+  {
+   "id": "C2",
+   "score": 3,
+   "evidence": "The opcode tables are now close to closed: classical load/store with width and endianness, MIN/\u22121 handled, lift.*, the qload/qunload/qexchm family, qinplace spelled out. Still missing: any way to address one wire of a linear bundle (the qcopy semantics itself uses `cx s_i d_i`); where `qloop \u2026 while` gets its cond_i; lifted procedures across symbols; how lift.load.W maps onto W-wide cells of a byte region; quantum memory as a region parameter; lift.ret underflow and the semantics of lift.free.",
+   "change": "Add bundle split/join (or indexed operands), an explicit cond operand for qloop-while, symbol-level lifted procedures, and a multi-cell access rule."
+  },
+  {
+   "id": "C3",
+   "score": 3,
+   "evidence": "The fault construction is now right: a private code/faulted pair, commit outside the reversed prefix, three mutually exclusive cases, and an injective first-fault-wins via the HALT self-loop. qinplace and the gate matrices are correct, and T2's sketch holds. Remaining problems: F_B is defined on 'the body' in the object, not on the pre-curated reference stream. Recursion through lift.call clobbers fixed register locations. The MBU rule tests only the callee's own predicate stack, which is empty at region entry even when the region is invoked under control. The borrowed-wire discipline does not imply I\u2297 on borrowed systems in actions.",
+   "change": "Bind F_B to a reference body distinct from any executable body, and define an inherited control context that gates MBU."
+  },
+  {
+   "id": "C4",
+   "score": 3,
+   "evidence": "There are now resource kinds with aggregation rules, a serial-default timing model, all-to-all logical connectivity, dirty_rate replacing the owner's charge, class capacity, cross_class costs, fn(k)/fn(\u03b5) costs and a peak-capacity space budget: a vendor could draft one. \u00a78.5's import rule is still a sentence with no conversion table. The cost-function syntax (fn(...)) has no grammar. 'any' resolves against a capacity 'in the schedule', which is circular before scheduling.",
+   "change": "Give a small normative grammar for cost functions and a normative Qualtran/Azure-RE unit-mapping table."
+  },
+  {
+   "id": "C5",
+   "score": 3,
+   "evidence": "Linking by name+signature with optional pins, SHA-256 content identity, frame descriptors, a C launch API with run_id/wait/suspend/reverse, sched results INFEASIBLE/UNSUPPORTED, and a JSON certificate skeleton are all real progress. But the content hash of a symbol that has unpinned imports is undefined until link, so certificates bound to object hashes break under separate compilation. A stored schedule speaks of 'per cleanup', 'per allocation' and 'per gate' with no stable identity for those program points, so 'execute verbatim' cannot be implemented by a competitor.",
+   "change": "Define interface-hash vs closure-hash and stable program-point identifiers, and give the schedule section a grammar keyed to them."
+  },
+  {
+   "id": "C6",
+   "score": 3,
+   "evidence": "\u00a714.2 gives a quantum state semantics. T1\u2013T3, T5 and T6 now have explicit hypotheses, and T3 is correctly stated over 'realised unitary is a permutation matrix'. T4 is false under the \u00a77.4 table: block-parameter overwrites on back-edges and callee frames at ret are not recorded. Suite F's \u00a76 qxor rule is garbled ('S \u2287 {s} \u222a S_t' makes qxor into a fresh clean wire `other`). No proof kind exists for structural or compositional claims (the \u00a76 check, the borrowed-frame lemma).",
+   "change": "Fix the R history table so T4 holds, and add a 'structural' proof kind with a named checker obligation."
+  },
+  {
+   "id": "C7",
+   "score": 3,
+   "evidence": "The draft now adopts Bennett history, the QCM synchronisation conditions, a Silq-like validity rule and Quake-style linear wires. It conflicts with the north star in two places. North star \u00a73.2/\u00a74.2 put the budget unit on the materialised region *before* the curated pipeline, and the 'one-to-one' reference binding is contradicted by the draft's own mandatory range checks and by LLVM intrinsics that lower to many lifted instructions. And north star \u00a73.1's 'unitary uncomputation is the fallback under control' is not enforced for regions called under control.",
+   "change": "Make the reference body (the pre-curated, mapping-defined stream) the sole definition of F_B, and state control context as inherited."
+  },
+  {
+   "id": "C8",
+   "score": 3,
+   "evidence": "Well organised, and a VM author could start the classical tier and the oracle machine tomorrow. A specialiser author would immediately ask how to index a bundle, what the frame layout is when two locations change, and how recursion saves locals. Some text is visibly unfinished (the qinplace sentence beginning 'ginv(g(x)) \u2295 g(x)\u2026').",
+   "change": "Resolve the blocking gaps and remove the leftover draft prose."
+  }
+ ],
+ "blocking": [
+  {
+   "id": "B1",
+   "section": "\u00a74.2 Reference binding; \u00a75.2 F_B; \u00a714.1; \u00a712 bindings",
+   "problem": "F_B and the budget unit are defined by running the reference interpreter on the object's oracle body. But north star \u00a73.2 and \u00a74.2 define the unit as steps of the materialised region *before* the curated region pipeline, and say artefacts 'pad internally as needed'. Whatever optimised body the plugin emits after the curated pipeline therefore changes which inputs return FAULT_BUDGET_STEPS. That changes the quantum state, so Bennett's lowering decides the fault set. The claim that each source instruction maps to 'exactly one' lifted instruction is also false within the draft itself: lift.load and lift.store require a preceding lift.icmp + lift.faultif, and intrinsics such as ctpop or soft-float calls expand to many instructions. Two producers can therefore emit bodies with different step counts and both claim conformance.",
+   "fix": "State: 'Each oracle carries a reference body, the dialect-mapped materialised stream whose hash is reference_program_hash. F_B is defined solely by the \u00a714.1 interpreter on that body. Each source instruction maps to a fixed, versioned sequence of lifted instructions, range checks included, so step weight is a property of the mapping.' Drop 'exactly one'. Two ways to let optimisation happen: (a) the object holds only the reference body, and every optimisation (structure recovery, curated simplification, pebbling) is an executor transformation that must be extensionally equal on D (\u00a75.7/T6); (b) the object may also carry an optimised executable body with per-block reference-step weights and an equivalence certificate labelled proof or evidence. Take (a): it keeps F_B independent of every lowering, as the north star requires, and \u00a75.7 already licenses executor transforms."
+  },
+  {
+   "id": "B2",
+   "section": "\u00a73.6 step 2/3, \u00a73.7, \u00a74.2 lift.call/lift.ret/lift.alloc/lift.oracle_call",
+   "problem": "The lifted sublanguage has no procedure model. lift.call pushes only a return index, so a recursive callee overwrites its caller's fixed register-file locations and recursion computes the wrong function. 'Producers MUST inline non-recursive calls' makes code size the number of call-graph paths, which can be exponential for SQLite or Linux. It also leaves no way for an oracle to call a lifted function in another linked object while sharing the caller's budget, which defeats the north star's linkable reversible libraries; lift.oracle_call gets its own budget and so changes F_B. Finally, the 'exactly one location per step' invariant and the fixed frame layout are contradicted by lift.alloc (two locations), lift.call (stack cell, sp, depth), and lift.oracle_call (tgt and fr'). Step 3 also gives faulting lifted instructions the fallthrough k+1 instead of HALT.",
+   "fix": "Add lifted procedures. A `lproc @f (params) regs {\u2026}` symbol has its own locations, entered by `lift.call @f args \u2192 w` and left by `lift.ret v`. Each call pushes an activation record (return index plus every location of @f that is live across a recursive call) onto the `stack` region by qexchm, and ret pops it. Calls charge the *caller's* budget per callee instruction, and executors MAY inline extensionally. Give every lifted instruction a normative write set and successor set, with the faulting branch \u2192 HALT. Fix the frame layout as `(old_pc, displaced[k_max \u00d7 W_max], flag)`, where k_max is the largest write set. Add `sp` to the \u00a73.2 state. Define lift.ret on empty stack as FAULT_UB_TRAP."
+  },
+  {
+   "id": "B3",
+   "section": "\u00a73.5, \u00a74.7 ctl, \u00a75.3 Control, \u00a76 Obligations, \u00a711",
+   "problem": "The rule that MBU is permitted 'only when the predicate stack is empty' tests the callee's own stack, which \u00a73.5 makes empty at every region entry. An action invoked inside a caller's qif, under `ctl w`, or under a caller's active predicate therefore sees an empty stack and may legally be scheduled with measurement-based uncomputation while it is actually coherently controlled. That is exactly the case the north star says must fall back to unitary uncomputation. Schedules are per region, and 'controlled and adjoint variants use the same descriptor', so nothing separates the two.",
+   "fix": "Define the **control context** of an invocation as the conjunction of the caller's active predicate stack, any `ctl` wires, and the caller's own control context, inherited transitively. State: 'An MBU realisation is legal only in a schedule for an invocation whose control context is empty and whose target declares mbu: true.' Key schedules (and certificate entries for cleanup realisations) by (region hash, variant \u2208 {plain, controlled, adjoint}). A region reachable under a nonempty control context MUST have a unitary-cleanup schedule for that variant."
+  },
+  {
+   "id": "B4",
+   "section": "\u00a75.6 Borrowed systems; \u00a714.2",
+   "problem": "The borrowed-wire discipline (permutation gates only, never the control of a non-permutation gate, 'returned to initial basis value') does not imply U \u2297 I on borrowed systems inside an action. Counterexample: `cx m d; h m; cx m d` with d borrowed obeys every stated rule. Yet from |0\u27e9|d\u27e9 it yields (|0\u27e9|d\u27e9+|1\u27e9|d\u22951\u27e9)/\u221a2, entangling d. Once other gates create superposition, 'returned to its basis value on every basis configuration' is not even well defined. T3 does not apply, because the action's unitary is not a permutation.",
+   "fix": "Adopt the north star's frame lemma as the rule. In an action, borrowed wires may be touched only inside a **borrow frame** V; W; V\u207b\u00b9 (or the standard toggling pattern V W V\u207b\u00b9 W\u207b\u00b9). The frame consists only of permutation gates. Every wire that controls a gate targeting a borrowed wire stays within its \u00a76 window between V and V\u207b\u00b9, i.e. it is used only as a control or by diagonal gates. The frame's restriction to its wires is verified by T3 over all borrowed values. State that this implies U \u2297 I_borrowed \u2297 I_R. Borrowed use outside such frames is ill-formed (suite F). For oracles the existing T3 argument suffices."
+  },
+  {
+   "id": "B5",
+   "section": "\u00a73.4, \u00a77.4 R history rules, \u00a714.3 T4",
+   "problem": "The R history table does not record what the R machine destroys, so T4 is false as stated. An unconditional `br ^b(args)` on a loop back-edge overwrites b's block parameters, yet only conditional br records anything, and that is only the edge. `ret` records only the frame link, so the callee's register values at return are lost and uncall cannot step back into the callee. The table also says operands are kept live by SSA while recording 'destroyed operands' of mul/and/udiv, which is contradictory. R\u2192Q region calls (\u00a73.1) have no history entry, so reversal cannot know to re-invoke the oracle or the adjoint action.",
+   "fix": "Fix the R register model: within an activation, SSA values are immutable except block parameters. Each `br` records the predecessor block and the prior values of the target block's parameters. `ret` pushes the callee's entire activation (its live values) onto the history. Delete the 'lossy binop' row, since operands stay live. A Q region call records (region hash, variant, classical args, register ids) and is reversed by oracle re-application or adjoint action. With these rules, state T4 for finite traces."
+  },
+  {
+   "id": "B6",
+   "section": "\u00a74.2 lift.load/lift.store/lift.alloc, \u00a74.6 qregion, \u00a77.2",
+   "problem": "Lifted memory is not implementable without guessing. \u00a77.2 makes `heap` a region of 2^H *bytes*, but `lift.load.W region a` is defined by a `qload` of one W-wide cell, so the semantics of an i32 access at an arbitrary (unaligned) byte address in a byte region is unspecified. The 'range check against the declared allocation' has no allocation metadata to check against, because a superposed pointer's allocation is not static; two producers will emit different checks and get different fault sets. Separately, a qregion is local to a region and initialised only from a classical image. A quantum-addressed load or store into caller-owned quantum data, a north-star dialect operation, is therefore inexpressible.",
+   "fix": "(1) State: lifted classical memory regions have 8-bit cells; `lift.load.iN` and `lift.store.iN` access N/8 consecutive cells at addresses a \u2026 a+N/8\u22121, little-endian, with each byte address range-checked and wrap-around a fault. (2) Add an allocation table to the oracle's quantum memory, written by lift.alloc and lift.free (base, size, live bit). Define `lift.boundscheck p n \u2192 flag`, which raises FAULT_UB_MEMFAULT unless [p, p+n) lies inside a live allocation. The dialect mapping emits it before every access, which makes the north star's object-bounds model an ISA instruction. (3) Add a `mem: qregion[A,W]` interface parameter kind for actions and oracles: the caller passes a region it owns, and it is linear as a unit."
+  },
+  {
+   "id": "B7",
+   "section": "\u00a73.3, \u00a74.4\u2013\u00a74.6, \u00a716",
+   "problem": "Bundles are linear 'as a unit', and there is no instruction or operand syntax for a single wire of a bundle, nor for splitting or concatenating bundles. Yet the spec's own semantics use `cx s_i d_i`, and every arithmetic action needs per-bit gates. `qloop n while c {body}` defines c\u2081..c\u2099 through cond_i but gives cond_i no operand. Implementers will invent incompatible syntax and semantics, and the canonical text cannot express either.",
+   "fix": "Add `qsplit w:consume wire[N] \u2192 (w0:wire, \u2026, w_{N\u22121}:wire)` and `qjoin`, both cost-free and linear, or alternatively indexed operands `w[i]` that borrow one wire of a bundle for one instruction; take indexed operands, which keep listings short. Extend \u00a716 with the operand syntax. Change qloop to `qloop n while c:in cond:in wire[n] {body}`, where cond_i is cond[i], computed before the loop with permutation provenance from wires the body does not modify."
+  },
+  {
+   "id": "B8",
+   "section": "\u00a79.2 Identity; \u00a711 Schedule; \u00a712 bindings",
+   "problem": "A symbol's content hash replaces references by the referenced symbols' hashes, but an unpinned import has no hash until link. A library object's hashes, and every certificate bound to them, are therefore undefined at compile time, or else change at link. Stored schedules assign realisations 'per cleanup, per allocation, per gate' with no stable identity for those program points, so a competitor's VM cannot validate or execute a stored schedule verbatim. That is the substitutability guarantee of north star \u00a74.4.",
+   "fix": "Define two hashes. The **interface hash** hashes a symbol with each unresolved import replaced by H(name, signature); it is computed at compile time and certificates bind to it. The **closure hash** is computed at link, with resolved hashes substituted, and is recorded in the linked certificate. Give every instruction a stable program-point id (symbol interface hash, block name, instruction index in canonical text), and define the schedule section's grammar as a list of `point-id \u2192 realisation | class | decomposition-hash, \u03b5 share | start time` entries. A consumer validates that every point-id exists and that the realisations satisfy \u00a76, and otherwise rejects the schedule."
+  }
+ ],
+ "suggestions": [
+  "\u00a76 qxor transfer rule is garbled ('S \u2287 {s} \u222a S_t'): XOR of a perm value into a perm value should stay perm with S_t \u222a {s} \u222a S_s; as written qxor into a fresh clean wire becomes `other`.",
+  "Adjoint table: distinguish qfree of a qalloc'd bundle (adjoint qalloc) from release of a qborrow'd bundle (adjoint qborrow); 'qborrow \u21a6 qfree (restore \u21d2 identity)' is imprecise.",
+  "lift.alloc: compute heap_used + n in a width wide enough not to wrap (n is up to 64 bits), and state heap_limit \u2264 2^H; define what lift.free validates and which fault a double or invalid free raises.",
+  "Reconcile lift.alloc's bump addresses with north star \u00a73.2's deterministic layout model: either the heap is the bennett-runtimes shim lifted as ordinary code (and lift.alloc serves only allocas), or lift.alloc's address sequence is the shim's.",
+  "Fault precedence 'depth, then heap, then own fault' is vacuous: no instruction can trip two. Either drop it or define the instructions where it applies.",
+  "\u00a710: state that bennett_reverse on a run whose CC part measured is _E_INVALID_STATE; allow suspend at R-instruction boundaries too (a kernel boot is a long R run).",
+  "\u00a79.2: define the 'canonical order' of an SCC, e.g. by name, then by signature.",
+  "\u00a78.5: replace the sentence with a normative table mapping Qualtran/Azure-RE unit names to resource names, kinds and factors.",
+  "\u00a712: add a 'structural' proof kind (for \u00a76 validity, borrow-frame lemma, compositional oracle proofs) with a named checker obligation; compose permutation proofs across nested oracle_call, not only \u03b5.",
+  "Rewrite the leftover qinplace sentence ('t is clean because ginv(g(x)) \u2295 g(x)\u2026'); allow distinct budget tokens for @g and @ginv.",
+  "\u00a73.6: note that with qjumpr an out-of-range pc silently restarts at 0; require well-formedness to rule it out, or fault it."
+ ],
+ "verdict": "revise",
+ "path_to_accept": "I would return accept after eight changes:\n\n1. **B1:** F_B is defined only on a reference body under a versioned instruction\u2192sequence mapping, with 'exactly one' dropped.\n2. **B2:** add symbol-level lifted procedures with activation records on the stack, budget charged to the caller, inlining at the executor's option. Give every lifted instruction a write set and successor set, and derive a fixed frame layout from them.\n3. **B3:** define an inherited control context and make MBU legal only where it is empty. Schedules are keyed by variant.\n4. **B4:** replace the borrowed discipline in actions with the borrow-frame rule.\n5. **B5:** R history records block-parameter overwrites, whole activations at ret, and Q region calls, so T4 holds.\n6. **B6:** byte-cell lifted memory with a multi-cell access rule, an allocation table plus a lift.boundscheck instruction, and qregion interface parameters.\n7. **B7:** bundle indexing or split/join, and an explicit qloop-while cond operand.\n8. **B8:** interface hash vs closure hash, and stable program-point ids with a schedule-section grammar.\n\nEach is a paragraph-level rule; none requires redesigning the machine.",
+ "summary": "Draft 0.2 is a real rewrite, and most round-1 blockers are resolved. Holding: the register-file sublanguage; the step machine with the HALT self-loop, the two-exchange pc commit and cleaning from frame.old_pc; and a fault construction that is correct and injective (private code/faulted, commit outside the reversed prefix, normative codes, MIN/\u22121). Also holding: permutation-only oracles, wire counters for heap and depth, the XOR-evaluator qinplace (verified correct), exact gate matrices with phase-exact decomposition legality, and an adjoint table. The draft adds region-level control, quantum state semantics, corrected T3 and T6, and a launch ABI with run_id, suspend and per-tier reverse. It is not yet implementable by strangers. Mean \u2248 3.\n\nStatus of round-1 issues:\n\n- **Resolved:** codex B1, B2, B5, B6, B10, B12, B14, B15; muse B2, B3, B5, B6, B7, B8, B10, B13, B16; opus B2, B3, B4, B6 (except inherited control), B7, B8, B9.\n- **Partially resolved, re-raised in new form:**\n  - Budget/reference binding (codex B3, muse B4, opus B1) \u2192 B1: F_B is on the object body, not the pre-curated reference stream, and 'one-to-one' contradicts the mandated range checks.\n  - Lifted procedures and multi-write frames (muse B1, opus B1) \u2192 B2: recursion clobbers registers, inlining is mandated, frame layout is inconsistent.\n  - Uncomputation under control (codex B9, muse B9) \u2192 B3: the callee's empty predicate stack lets MBU run under control.\n  - Borrowed systems (codex B8) \u2192 B4: the discipline is insufficient in actions (counterexample `cx m d; h m; cx m d`).\n  - R history (codex B11, muse B12) \u2192 B5: block parameters and ret frames are not recorded, so T4 is false.\n  - Memory (codex B4, muse B11) \u2192 B6: byte-cell width mapping and allocation metadata are missing; no quantum-memory parameters.\n  - Bundle addressing and the qloop-while cond operand (new, related to opus B5) \u2192 B7.\n  - Linking and schedules (codex B13/B16, muse B14/B15) \u2192 B8: hashes with unresolved imports; no stable program-point ids for stored schedules.\n\nEvery remaining fix is a paragraph-level rule."
+}
