@@ -1,9 +1,11 @@
 # Bennett Virtual ISA — Specification, draft 0.8
 
-**Date:** 2026-10-28. **Status:** eighth normative draft, for council
-iteration (reports: `docs/council/isa-2026-10-28/round-{1..7}/`; **core
-consensus reached in round 7**: every member accepts §3–§7, §14, §16);
-editor's responses in `round-*/response.md`). Founding text of
+**Date:** 2026-10-28. **Status:** draft 0.8, **accepted by the council
+in round 8** (codex, muse and opus all accept with no blocking issue;
+core consensus from round 7; mean 4.17/5; reports and the editor's
+responses under `docs/council/isa-2026-10-28/round-{1..8}/` in the
+`bennett` meta repository). Implementation is expected to expose
+frictions; revisions go back through the council. Founding text of
 `bennett-isa-spec` (`Bennett-NorthStar.md` §4.4, §6.1); the north star
 governs where this draft is silent. Nothing is implemented. MUST, MUST
 NOT, SHOULD, MAY are normative; *(non-normative)* explains; *(deferred)*

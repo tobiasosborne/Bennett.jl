@@ -3,6 +3,21 @@
 Previous: chunk 121 (2026-10-27 blueprint; 2026-10-28 north-star council
 to consensus, ISA spec rounds 1–4, repo bootstrap, process change).
 
+## Session log — 2026-10-28 — ISA round 8: COUNCIL CONSENSUS on draft 0.8
+
+All three accept, zero blockers, mean 4.17 (C7 = 5 from every member).
+Eight rounds in one day: 2.12 → 2.83 → 3.04 → 2.83 → 3.12 → 3.92 → 4.12 →
+4.17. What moved the needle from 0.5 (3.12) to 0.6 (3.92) was not volume
+but three things: (1) literal reverse-order inversion of mixed rows with
+the lists printed; (2) replacing mechanisms that were sketched (MBU,
+realised-graph schedules) by a stated default + deferral; (3) a §17 of
+defaults so S1 items close instead of recurring. The two rounds after
+that were both spent on my own arithmetic in §12.1 (leading-minor PSD
+rule; δ-shift not strict) — the council caught both within one round.
+Status line updated; version string stays 0.8 (not in envelopes, hashes
+unchanged). Next in this session: migrate spec, north star, council
+tooling and records to `bennett` / `bennett-isa-spec` per handoff item 2.
+
 ## Session log — 2026-10-28 — ISA round 7: CORE CONSENSUS; codex+muse accept; draft 0.8; round 8 launched
 
 Round 7 on 0.7 (codex 742 s): codex accept, muse accept, opus revise;

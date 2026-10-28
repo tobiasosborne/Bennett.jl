@@ -1,0 +1,73 @@
+{
+ "criteria": [
+  {
+   "id": "C1",
+   "score": 4,
+   "evidence": "\u00a73.1\u2013\u00a73.7 give the tiers, the state table, the types and ownership rules, the qreg handle state machine, and the forward and inverse machine steps sub-operation by sub-operation. Nothing changed since round 7, where core consensus was reached.",
+   "change": "Add one figure or table showing the complete per-step wire inventory (dispatch scratch, frame fields, counters) in allocation order. Basis order matters for \u00a712.1 (allocation order), and implementers should not have to reconstruct it."
+  },
+  {
+   "id": "C2",
+   "score": 4,
+   "evidence": "\u00a74.1\u2013\u00a74.8 give every opcode with tier, arity, width rules, result suffixes and semantics. \u00a74.2 gives each lifted row its class, slots, flag/fault and successor, including the explicit inverse exchange order for lift.alloc.",
+   "change": "Turn the row table's slot widths (W_j, k_max) into an explicit per-row column, so frame sizing (\u00a73.6) can be read off the table rather than derived."
+  },
+  {
+   "id": "C3",
+   "score": 4,
+   "evidence": "The predicated step machine (\u00a73.6) covers injectivity through old_pc and synchronisation at HALT. Prefix reversal, the XOR/involution oracle contract (\u00a75.2), the borrow-frame translation lemma with negative tests (\u00a75.6), the \u00a76 provenance and window discipline, and segment uncall with purity conditions (\u00a77.4) are all stated as checkable rules. I found nothing phase-unsafe or dependent on inspecting superposed data.",
+   "change": "In \u00a76.2, say explicitly whether a diagonal gate on a wire of S keeps g's window open even when g is later used as a control under a different predicate context. A short worked example would settle what 'permutation change not undone' means."
+  },
+  {
+   "id": "C4",
+   "score": 4,
+   "evidence": "\u00a78 gives a closed expression AST, a variable-binding table per context, requested-versus-achieved epsilon matching, aggregation by resource kind from leaf events, scheme templates, and defaults (\u00a717 items 9\u201312).",
+   "change": "Specify how topology and routing costs enter when a target declares them; currently only 'all-to-all over logical wires' is the default."
+  },
+  {
+   "id": "C5",
+   "score": 4,
+   "evidence": "The object sections, the identity envelope with SCC handling, linking, the launch C ABI with its state machine, schedule matching by specificity with an expansion-library binding, the certificate claims including the corrected SDP witness recipe (\u00a712.1), and composition by multiplicities are all decided. The remaining gaps are S1 with stated defaults.",
+   "change": "State explicitly that every symbol, including one with no self-reference (inc8, zero), is hashed as a trivial one-member SCC (member hash = SHA-256 of '<scc_hash>:0'). Example 2 currently justifies the SCC treatment of @sum by its self-reference, which invites the reading that acyclic symbols hash their envelope directly."
+  },
+  {
+   "id": "C6",
+   "score": 4,
+   "evidence": "\u00a714.1 makes the reference interpreter normative. T1\u2013T6 are stated with hypotheses. The \u00a712.1 diamond-norm dual is sound: \u2212Y \u2aaf J \u2aaf Y implies \u2016(\u221a\u03c1\u2297I)J(\u221a\u03c1\u2297I)\u2016\u2081 \u2264 tr(\u03c1\u00b7Tr_out Y) \u2264 \u03bbmax(Tr_out Y) \u2264 mu. The \u03b4-shift with mu\u2032 = mu + \u03b4(d+1) now gives all three matrices \u2ab0 \u03b4I. The \u00a715 suites derive from the text.",
+   "change": "In the producer recipe, require \u03b4 to exceed the certified magnitude of any negative residual eigenvalue of a solver-produced witness, not only that the exact witness is feasible. The checker is unchanged."
+  },
+  {
+   "id": "C7",
+   "score": 5,
+   "evidence": "Consistent with north star \u00a73.2, \u00a74.2, \u00a74.4, \u00a75.1 and \u00a76.1: F_B success-or-fault with XOR targets, prefix reversal, the Silq/Unqomp validity window, QCM injectivity and synchronisation, unitary cleanup as the fallback under control. Established forms are used (Watrous SDP, RFC 8785, xoshiro256**).",
+   "change": "None required. Optionally cite Watrous 2012 ('Simpler semidefinite programs for completely bounded norms') next to the 2009 reference, since the Hermiticity-preserving single-Y dual is stated there most directly."
+  },
+  {
+   "id": "C8",
+   "score": 4,
+   "evidence": "\u00a717 lists 14 deferred items, each with a default. Items 1\u20135 are non-semantic; items 6\u201314 fix behaviour until revised. Two executable example objects with envelopes serve as test vectors. A VM author and a specialiser author could start from \u00a73\u2013\u00a77 and \u00a716.",
+   "change": "Publish the 'ref' expansion library (\u00a717 item 7) as an appendix or companion document with its hash. It is the one default an executor author cannot write from this text alone."
+  }
+ ],
+ "blocking": [],
+ "previous_status": [
+  {
+   "id": "B1_SDP_PRODUCER_SHIFT_NOT_STRICT",
+   "status": "resolved",
+   "note": "With Y\u2032 = Y + \u03b4I and mu\u2032 = mu + \u03b4(d+1): Y\u2032 \u00b1 J \u2ab0 \u03b4I, and mu\u2032I \u2212 Tr_out(Y\u2032) = (mu+\u03b4)I \u2212 Tr_out(Y) \u2ab0 \u03b4I. All three matrices are strictly positive definite, the bound \u2016\u03a6\u2016\u25c7 \u2264 mu\u2032 holds, and the producer recipe and checker obligation now agree."
+  }
+ ],
+ "regressions": [],
+ "suggestions": [
+  "\u00a79.2: say explicitly that acyclic symbols are trivial one-member SCCs (member hash = SHA-256('<scc_hash>:0')). Otherwise an implementer may hash inc8/zero envelopes directly; the test vectors pin the intended reading, but the prose should too.",
+  "\u00a712.1: in the strict-feasibility recipe, require \u03b4 larger than any certified negative residual of a numerically obtained witness (solvers return Y \u00b1 J \u2ab0 \u2212\u03b7\u00b7I), e.g. \u03b4 > \u03b7 + 2^\u2212precision_bits.",
+  "\u00a712.1: name the basis convention for Tr_out relative to \u03c1 (\u03c1 vs \u03c1\u1d40) in the non-normative soundness note. It does not affect the bound, but it helps checker authors cross-check.",
+  "\u00a711/\u00a717 item 7: ship the reference expansion library 'ref' with its hash alongside the spec. Schedules default to it, so executor charging depends on it.",
+  "\u00a716.3: add a third example covering an action with qloop bounds and a borrow frame satisfying the translation lemma, so suite C/F has a positive vector for \u00a75.3/\u00a75.6.",
+  "\u00a78.3: give a default for how target topology, when declared, constrains overlap and adds routing cost."
+ ],
+ "verdict": "accept",
+ "path_to_accept": "I already accept. To raise C5 (and C8) by one point: state in \u00a79.2 that every symbol is hashed as a possibly trivial SCC, and publish the default 'ref' expansion library with its hash. That would leave identity and schedule-charging with no implementer choice.",
+ "summary": "I accept draft 0.8; the blocking list is empty. Round 7's blocker B1_SDP_PRODUCER_SHIFT_NOT_STRICT is resolved: replacing Y with Y + \u03b4I and mu with mu + \u03b4(d+1) makes Y \u00b1 J(\u03a6) \u2ab0 \u03b4I and mu\u2032I \u2212 Tr_out(Y + \u03b4I) = (mu+\u03b4)I \u2212 Tr_out(Y) \u2ab0 \u03b4I. All three matrices the checker tests are therefore strictly positive definite, and the bound \u2016\u03a6\u2016\u25c7 \u2264 mu\u2032 still holds. I also re-checked the soundness of the Hermiticity-preserving dual: \u2212Y \u2aaf J \u2aaf Y gives \u2016(\u221a\u03c1\u2297I)J(\u221a\u03c1\u2297I)\u2016\u2081 \u2264 tr(\u03c1\u00b7Tr_out Y) \u2264 mu. It bounds the diamond norm itself, as the text states. Apart from that one change, the diff only bumps version strings and recomputes the example hashes. I did not recompute those hashes this round: my attempt to run the check was blocked in this environment. On re-reading the whole document I found no new S0 issue and no regression. Core (\u00a73\u2013\u00a77, \u00a714, \u00a716) remains accepted. The remaining items are S1 suggestions: state that trivial SCCs are hashed as one-member SCCs, require \u03b4 to exceed a solver's residual, and publish the 'ref' expansion library.",
+ "verdict_core": "accept"
+}

@@ -1,0 +1,72 @@
+{
+ "blocking": [],
+ "criteria": [
+  {
+   "change": "Synchronise the abbreviated \u00a74.1 uncall row fully with \u00a77.4 so the state model needs no cross-referencing to assemble.",
+   "evidence": "\u00a73.2-3.7 define state, frames, forward and inverse steps, register files and counters unambiguously; unchanged in 0.8 except version strings, and core was accepted by all members in round 7.",
+   "id": "C1",
+   "score": 4
+  },
+  {
+   "change": "Make \u00a74.1 repeat \u00a77.4's no-measure and history-traversal conditions for segment uncall.",
+   "evidence": "\u00a74 gives every form, operand schema (\u00a73.3, \u00a74.8), row classes, flags and successors (\u00a74.2); gate realisation (\u00a74.4) requires exact unitaries including global phase for oracles, so two implementers emit the same permutations.",
+   "id": "C2",
+   "score": 4
+  },
+  {
+   "change": "Add the no-measure / reverse-eligibility hypotheses explicitly to T4 in \u00a714.3.",
+   "evidence": "\u00a73.5-3.6 predication and prefix reversal, \u00a75.2 F_B commit procedure, \u00a75.6 borrow-frame translation lemma with negative tests, \u00a76 provenance windows and \u00a77.4 LIFO history traversal are checkable and phase-safe; nothing inspects superposed data.",
+   "id": "C3",
+   "score": 4
+  },
+  {
+   "change": "No semantic change needed; a worked target example would help first implementers.",
+   "evidence": "\u00a78 fixes target JCS form, closed cost-expression AST, variable binding per context, matching order, scheme expansion, aggregation from the scheduled event list and capacity, with \u00a717 defaults for deferred items.",
+   "id": "C4",
+   "score": 4
+  },
+  {
+   "change": "Enumerate \u00a712.1 invocation contexts directly from all region-tree paths (including default-covered invocations) rather than from schedule-entry paths.",
+   "evidence": "\u00a79-13 decide objects, byte-exact semantic envelopes and SCC hashing, linking, launch states, schedule specificity and coverage. \u00a712.1 as revised now states a producer shift that is actually strictly feasible, removing the last producer/checker contradiction.",
+   "id": "C5",
+   "score": 4
+  },
+  {
+   "change": "State in \u00a712.1 that \u03b4 must also exceed the interval-enclosure width so the interval Cholesky pivots clear zero at the chosen precision_bits.",
+   "evidence": "\u00a714.1 reference interpreter defines F_B; T1-T6 are stated with usable hypotheses; \u00a715 suites A-H are derivable; \u00a716.3 hashes independently recompute to the printed 0.8 values (inc8, zero, sum via its SCC envelope, sum_db). The corrected SDP statement is true: Tr_out(\u03b4I)=\u03b4\u00b7d\u00b7I, so mu'=mu+\u03b4(d+1) leaves mu'\u00b7I-Tr_out(Y+\u03b4I)=(mu\u00b7I-Tr_out Y)+\u03b4I \u2ab0 \u03b4I.",
+   "id": "C6",
+   "score": 4
+  },
+  {
+   "change": "No change needed.",
+   "evidence": "Tier separation, lifted-oracle vs quantum-action interfaces, fault registers, target descriptions, certificates separating proof from evidence, and the exclusion of measurement-based cleanup in this version all match Bennett-NorthStar.md \u00a74-5 without contradiction.",
+   "id": "C7",
+   "score": 5
+  },
+  {
+   "change": "Synchronise summary tables (\u00a74.1) and theorem statements (T4) with their controlling sections so no implementer must guess precedence.",
+   "evidence": "A VM author and a specialiser author can each start from the reference bodies, step machine, row table, schedule matching, conformance suites and \u00a717 defaults; every deferred item carries a default and none is semantic.",
+   "id": "C8",
+   "score": 4
+  }
+ ],
+ "path_to_accept": "Already accept. To raise a lowest-scoring criterion (C5) by one point: rewrite \u00a712.1's invocation-context enumeration as the sorted set of all paths in the root schedule's static region tree, explicitly including invocations covered only by schedule defaults, and use that same enumeration for numerical claims, channel witnesses and \u00a712.3 multiplicities.",
+ "previous_status": [
+  {
+   "id": "B1_SDP_PRODUCER_SHIFT_NOT_STRICT",
+   "note": "\u00a712.1 now sets mu' = mu + \u03b4\u00b7(d+1) (any mu' > mu + \u03b4\u00b7d), so mu'\u00b7I \u2212 Tr_out(Y+\u03b4I) = (mu\u00b7I \u2212 Tr_out Y) + \u03b4I \u2ab0 \u03b4I \u227b 0 and Y\u00b1J \u2ab0 \u03b4I; producer recipe and strict-PD checker obligation no longer contradict.",
+   "status": "resolved"
+  }
+ ],
+ "regressions": [],
+ "suggestions": [
+  "\u00a712.1: note that \u03b4 must be chosen large enough (relative to interval width at precision_bits) for the interval Cholesky pivot lower bounds to be strictly positive; exact strict feasibility alone does not make the interval test conclusive.",
+  "\u00a712.1 invocation contexts: enumerate paths from the region tree itself, not from schedule entries, since \u00a711 permits invocations covered only by defaults.",
+  "\u00a714.3 T4: add the explicit hypotheses that the trace contains no measure frame and reversal is invoked only under \u00a710 reverse eligibility.",
+  "\u00a74.1 uncall summary: repeat \u00a77.4's measure-frame and unverified-qreg.free traps and the shared history traversal.",
+  "\u00a77.4: define 'retired' for an uncall marker, or state that uncall frames remain in history and are always skipped."
+ ],
+ "summary": "Previous blocker B1_SDP_PRODUCER_SHIFT_NOT_STRICT is resolved exactly as proposed: mu' = mu + \u03b4\u00b7(d+1) makes all three SDP matrices \u2ab0 \u03b4I, since Tr_out(\u03b4I_{d\u00b2}) = \u03b4\u00b7d\u00b7I_d. The 0.8 diff otherwise touches only version strings and example hashes; all four recomputed hashes (inc8, zero, sum, sum_db) were independently recomputed from the \u00a79.2 envelopes and match, and no stale 0.7 string remains. Core (\u00a73-\u00a77, \u00a714, \u00a716) was accepted by every member in round 7 and is unchanged in substance. No new S0 issue was found in core or contract scope; remaining items are S1 wording and enumeration clarifications with sound defaults.",
+ "verdict": "accept",
+ "verdict_core": "accept"
+}

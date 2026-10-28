@@ -1,0 +1,72 @@
+{
+ "criteria": [
+  {
+   "id": "C1",
+   "score": 4,
+   "evidence": "\u00a7\u00a73.2\u20133.7 specify the state, ownership, predicated execution and activation records concretely. \u00a77.4 supplies a single cancellation-aware reversal procedure.",
+   "change": "Distinguish active history from retained, reversed audit records so restoration of history has one explicit meaning."
+  },
+  {
+   "id": "C2",
+   "score": 4,
+   "evidence": "\u00a74 supplies a closed instruction set with width rules, fault behavior and expansion-based cost hooks. The assignment exchange order and call/return inverse lists handle their state-dependent addresses correctly.",
+   "change": "Add a compact operand-aliasing table for lifted rows, making permitted self-updates and parallel assignments immediately apparent."
+  },
+  {
+   "id": "C3",
+   "score": 5,
+   "evidence": "The oracle XOR interface, commit followed by prefix reversal, phase-sensitive gates, bounded action semantics, cleanup windows and restricted borrow-frame lemma are sound under their stated obligations.",
+   "change": "No semantic change required; add concrete inverse-step and interference vectors to make these obligations easier to audit."
+  },
+  {
+   "id": "C4",
+   "score": 4,
+   "evidence": "\u00a78 defines capability matching, requested versus achieved accuracy, expanded-leaf accounting, timing and capacity. \u00a717 supplies defaults for deferred resource choices.",
+   "change": "Show one worked scheme expansion tracing the parent's accuracy allocation through its leaves and into the reported resource vector."
+  },
+  {
+   "id": "C5",
+   "score": 4,
+   "evidence": "Objects, linking, launch, scheduling and certificates are decided at the required level. Bounds over every invocation context make multiplicity composition sound. The description of context ordering still refers to sparse schedule-entry paths.",
+   "change": "Clarify that context ordering covers the complete concrete invocation tree, including invocations whose operations use schedule defaults."
+  },
+  {
+   "id": "C6",
+   "score": 4,
+   "evidence": "The corrected SDP shift supplies strict slack in all three constraints. The symmetric dual bound agrees with [Watrous's 2013 formulation, \u00a73.2](https://cs.uwaterloo.ca/~watrous/Papers/SimplerSDPforCBnorm.pdf). Frobenius upper bounds and the operator-to-diamond factor of two are sound. T4's history wording remains less precise than its referenced operational rules.",
+   "change": "State T4 explicitly over reversal-eligible traces and the active-history projection, distinguishing retained audit records from restored machine state."
+  },
+  {
+   "id": "C7",
+   "score": 5,
+   "evidence": "The specification preserves the north star's tier separation, total oracle interface, reversible ABI, phase-sensitive correctness and independently replaceable components. Deferred measurement-based cleanup has an explicit unitary default.",
+   "change": "No substantive change required."
+  },
+  {
+   "id": "C8",
+   "score": 4,
+   "evidence": "A VM author and specialiser author can start from the operational rules and declared defaults. The supplied checker passes both example objects, all four hashes, both printed envelopes and the tested execution and budget-boundary cases.",
+   "change": "Add one complete action example with its target, schedule and certificate, exercising inherited control and repeated callee invocations with different classical arguments."
+  }
+ ],
+ "blocking": [],
+ "previous_status": [
+  {
+   "id": "B1_SDP_PRODUCER_SHIFT_NOT_STRICT",
+   "status": "resolved",
+   "note": "For Y\u2032 = Y + \u03b4I and mu\u2032 = mu + \u03b4(d+1), the third slack becomes (mu I \u2212 Tr_out(Y)) + \u03b4I; the other two slacks also gain \u03b4I. Starting from a feasible witness, all three are strictly positive definite."
+  }
+ ],
+ "regressions": [],
+ "suggestions": [
+  "Align the abbreviated \u00a74.1 uncall entry explicitly with all legality conditions and the cancellation-aware traversal in \u00a77.4.",
+  "Clarify invocation-context ordering using concrete invocation chains, including default-scheduled invocations; the existing requirement to check every context should remain unchanged.",
+  "Separate active history from retained audit records and use that distinction in T4.",
+  "Add a small strictly feasible channel-witness test vector and a worked controlled-action target/schedule/certificate example.",
+  "Cite Watrous's 2013 \u00a73.2 alongside the 2009 reference for the particular symmetric dual formulation used."
+ ],
+ "verdict": "accept",
+ "path_to_accept": "No mandatory changes remain. To raise C8 from 4 to 5, add a byte-exact worked action object with a target, schedule and certificate demonstrating controlled execution, default schedule resolution and repeated invocation contexts.",
+ "summary": "B1_SDP_PRODUCER_SHIFT_NOT_STRICT is resolved: the revised mu shift makes every required slack matrix strictly positive definite. The example checker passes against the round-8 snapshot. Re-reading the complete specification revealed no additional S0 issue or regression; remaining points concern clarification and conformance examples.",
+ "verdict_core": "accept"
+}
