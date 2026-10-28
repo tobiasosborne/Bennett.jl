@@ -1,0 +1,107 @@
+{
+ "criteria": [
+  {
+   "id": "C1",
+   "score": 4,
+   "evidence": "\u00a73.2 state table, \u00a73.3 handle transitions (the measure frame is now never reversed), \u00a73.6 forward and inverse steps with the A-row exchange order now fixed, \u00a77.4 one history traversal. Two implementers would draw the same state diagram for CC/R/Q.",
+   "change": "Bring the \u00a74.1 `uncall` row into line with \u00a77.4. It still describes the old reversal ('frames reversed in LIFO order (nested segments included) and marked reversed') and omits the measure/qreg.free legality condition."
+  },
+  {
+   "id": "C2",
+   "score": 4,
+   "evidence": "Every \u00a74.2 row has its class, reads, slots, flag and successor. lift.alloc now prints its forward slot order and inverse exchange order (atop, heap_used, alloctab[atop] at the restored atop, w), which is the exact reverse. \u00a74.8 opcode table and the width rules are closed.",
+   "change": "Replace the summary semantics in the \u00a74.1 `uncall` row with a pointer to \u00a77.4's legality conditions and history traversal, so \u00a74.1 cannot be read as a second, divergent rule."
+  },
+  {
+   "id": "C3",
+   "score": 4,
+   "evidence": "I traced the A-row inverse for lift.alloc, the C1\u2013C5 and R1\u2013R5 inverses, the commit and prefix reversal, the qinplace expansion and the translation lemma: all invert correctly. The history traversal skips reversed frames and uncall markers. In the nested clock counterexample the clock goes +1, \u22121 once, and the outer uncall then skips the cancelled frames. Uncall over measure now traps.",
+   "change": "State whether the call segment cancelled by an `uncall` can still be 'the most recent completed call segment' for a later uncall. Today a second uncall is blocked only because the uncall frame is impure; say so explicitly."
+  },
+  {
+   "id": "C4",
+   "score": 4,
+   "evidence": "\u00a78 has a closed expression AST, variable binding per context, requested vs achieved \u03b5, aggregation from leaf events, matching order and scheme templates. \u00a717 gives defaults for any-class, rates and timing.",
+   "change": "Give one worked target-description example: the gates and schemes entries for mcx(k) under c inherited controls, with its evaluated cost, as a suite-E vector."
+  },
+  {
+   "id": "C5",
+   "score": 4,
+   "evidence": "\u00a712.1 invocation contexts with common upper bounds make the \u00a712.3 multiplicity composition sound. The positivity test is now strict PD by interval Cholesky with positive pivot lower bounds, which is sound. But the producer \u03b4-shift recipe does not make the third SDP constraint strict (see B1).",
+   "change": "Fix the mu shift so that all three matrices are strictly positive definite, and define the context enumeration key as the JCS bytes of each context's concrete invocation chain."
+  },
+  {
+   "id": "C6",
+   "score": 4,
+   "evidence": "T1\u2013T6 are stated with hypotheses. \u00a714.1 reference interpreter defines F_B. The suites now include the nested-uncall and uncall-over-measure cases and the lift.call/lift.ret one-step inverse checks. The Watrous dual (Y0=Y1=Y with Y\u00b1J \u2ab0 0 and mu \u2265 \u03bbmax(Tr_out Y)) is a valid upper bound on \u2016\u03a6\u2016\u25c7. The Frobenius bound on \u2016V\u2020U\u2212I\u2016 and the \u00d72 conversion from operator norm to diamond norm are correct.",
+   "change": "State T4 explicitly over the history traversal: reversed and retired frames contribute nothing, and an uncall restores every component except retained instances."
+  },
+  {
+   "id": "C7",
+   "score": 4,
+   "evidence": "Consistent with north star \u00a74.2 (F_B, prefix reversal, the validity invariant) and \u00a75.1 (permutation theorem; proof vs evidence). The mbu capability is reserved, consistent with the north star's unitary fallback under control. The Watrous SDP is attributed and used correctly.",
+   "change": "Cite the Watrous 2012/2013 'Simpler SDPs for completely bounded norms' Hermiticity-preserving form specifically, alongside the ToC 2009 citation."
+  },
+  {
+   "id": "C8",
+   "score": 4,
+   "evidence": "A VM author can start from \u00a73.6/\u00a73.7/\u00a74.2 and the two executed examples, whose hashes are recomputed. A specialiser author has the \u00a711 expansion library binding with default `ref`. Every \u00a717 item has a default.",
+   "change": "Add a suite-D test vector: one tiny channel claim (e.g. id vs Z\u00b7Z on one qubit) with a strictly feasible witness that the checker accepts, so producers and checkers calibrate on the same bytes."
+  }
+ ],
+ "blocking": [
+  {
+   "id": "B1_SDP_PRODUCER_SHIFT_NOT_STRICT",
+   "section": "\u00a712.1 Diamond-norm SDP, positivity test",
+   "scope": "contract",
+   "severity": "S0",
+   "problem": "The checker must prove all three matrices strictly positive definite: Y\u2212J, Y+J and mu\u00b7I\u2212Tr_out(Y). The normative producer recipe says to replace Y with Y+\u03b4I and mu with mu+\u03b4\u00b7d. Since Tr_out(I_{d\u00b2}) = d\u00b7I_d, this gives (mu+\u03b4d)\u00b7I \u2212 Tr_out(Y+\u03b4I) = mu\u00b7I \u2212 Tr_out(Y) exactly, so the third matrix is unchanged. At a dual optimum mu = \u03bbmax(Tr_out Y), so that matrix is singular and the checker must reject. The claim that the recipe 'makes witnesses strictly feasible' is false: producer and checker obligations contradict each other. Every producer that follows the recipe from a tight witness gets its channel claim rejected by every conformant checker.",
+   "fix": "State: 'Producers replace Y with Y+\u03b4I and mu with mu+\u03b4\u00b7(d+1) (any mu\u2032 > mu+\u03b4\u00b7d suffices) for a small rational \u03b4>0. Then Y\u00b1J(\u03a6) \u2ab0 \u03b4I \u227b 0 and mu\u2032\u00b7I \u2212 Tr_out(Y+\u03b4I) \u2ab0 \u03b4I \u227b 0, and \u2016\u03a6\u2016\u25c7 \u2264 mu\u2032 \u2264 bound.' I would take this. The alternative is to require strict PD only for Y\u00b1J and accept the third constraint as soon as the interval upper bound of \u03bbmax(Tr_out Y), by Cholesky of (mu\u2212\u03b7)I\u2212Tr_out(Y) for a stated \u03b7>0, is below mu. That is more machinery, so I prefer the one-line shift."
+  }
+ ],
+ "previous_status": [
+  {
+   "id": "codex B1",
+   "status": "resolved",
+   "note": "\u00a73.6 step 4 runs A-row inverse exchanges in reverse forward order with addresses evaluated in the current state; lift.alloc prints atop, heap_used, alloctab[restored atop], w. Traced: correct, and in range at capacity."
+  },
+  {
+   "id": "codex B3",
+   "status": "resolved",
+   "note": "\u00a77.4 history traversal (LIFO; skip reversed and uncall frames; undo and mark) is shared by segment uncall and whole-run reversal; the clock counterexample nets to zero and is a suite-A case. The \u00a74.1 summary row is stale (suggestion)."
+  },
+  {
+   "id": "codex B10",
+   "status": "resolved",
+   "note": "Subjects denote all invocation contexts; claims and error entries are common upper bounds over them, so multiplicity composition is sound; one channel witness per context. The enumeration key wording could be tightened (suggestion)."
+  },
+  {
+   "id": "codex B11",
+   "status": "resolved",
+   "note": "The leading-minor rule is removed; strict PD by interval Cholesky/LDL\u2020 with positive pivot lower bounds is sound. The new producer shift recipe has a defect, raised as B1."
+  },
+  {
+   "id": "opus B1_UNCALL_OVER_MEASURE",
+   "status": "resolved",
+   "note": "Uncall of a segment containing a measure frame, or an unverified hardware qreg.free, at any depth is a trap with no state change; the handle table says measure frames are never reversed; suite A case added."
+  },
+  {
+   "id": "opus B2_PSD_ACCEPTANCE_UNSOUND",
+   "status": "resolved",
+   "note": "Same as codex B11: the acceptance rule is now sound. The producer \u03b4-shift leaves mu\u00b7I\u2212Tr_out(Y) non-strict (B1)."
+  }
+ ],
+ "regressions": [],
+ "suggestions": [
+  "\u00a74.1 `uncall` row: it still says the segment's frames are 'reversed in LIFO order (nested segments included) and marked reversed' and lists only three legality conditions. Replace it with 'legal and executed per \u00a77.4 (including the measure/qreg.free exclusion and the history traversal)' so it cannot be read as a second, divergent rule.",
+  "\u00a712.1 context enumeration: contexts are invocation chains, not necessarily schedule `entries` (uncovered operations take defaults). Define the order as the bytewise order of the JCS serialisation of each context's concrete invocation chain, using the \u00a711 path-element schema with concrete iteration vectors. Then two checkers assign channel witnesses to the same contexts.",
+  "\u00a712.1 numerical: say explicitly that U is the realised map restricted to clean workspace input with workspace verified returned to |0\u27e9 (an isometry on the interface), or that the workspace-clean check is a separate obligation. Otherwise 'realised unitary at signature widths' is slightly underdefined.",
+  "\u00a77.4: state that a call segment already cancelled by an `uncall` is not eligible as 'the most recent completed call segment'. Today a repeat uncall is excluded only because the uncall frame is impure.",
+  "\u00a710: say whether a FAILED R run (fault record terminal) is reversible. \u00a77.4 says fault records are 'reversed like any prefix', but the state machine allows REVERSED only from COMPLETED.",
+  "Allow channel claims to supply one witness per distinct realised channel instead of per context, via an index map, to avoid repeating identical witnesses across loop iterations."
+ ],
+ "verdict": "revise",
+ "path_to_accept": "One sentence changes my verdict to accept: correct the \u00a712.1 producer recipe so the mu shift exceeds \u03b4\u00b7d (e.g. mu\u2032 = mu + \u03b4\u00b7(d+1)), making mu\u2032\u00b7I \u2212 Tr_out(Y+\u03b4I) \u2ab0 \u03b4I \u227b 0, and drop the false claim that the current shift yields strict feasibility. Optionally, in the same pass, align the stale \u00a74.1 uncall row with \u00a77.4 and pin the context enumeration key. After that, the lowest criterion (all at 4) rises with a suite-D channel-claim test vector and a worked target-description example.",
+ "summary": "All six round-6 blockers are resolved. The A-row inverse exchange order is fixed, and I traced it for lift.alloc: correct, including at table capacity. The single history traversal handles nested compute\u2013copy\u2013uncall: the clock counterexample nets to zero. Uncall over measure traps. Certificate subjects range over all invocation contexts with common upper bounds, so multiplicity composition is sound. The PSD acceptance rule is now strict positive definiteness by interval Cholesky, which is sound. I re-checked the core (forward and inverse step, C1\u2013C5/R1\u2013R5 inverses, commit and prefix reversal, qinplace, translation lemma, both examples' stated results) and found no new core S0, so verdict_core is accept. One new contract-level S0: the producer \u03b4-shift (Y+\u03b4I, mu+\u03b4\u00b7d) leaves mu\u00b7I\u2212Tr_out(Y) unchanged, hence singular at a tight witness. The checker must then reject every witness produced by the normative recipe; the fix is one sentence (shift mu by more than \u03b4\u00b7d). Suggestions: the stale \u00a74.1 uncall summary row, a precise context enumeration key, and the workspace restriction of U in numerical claims.",
+ "verdict_core": "accept"
+}

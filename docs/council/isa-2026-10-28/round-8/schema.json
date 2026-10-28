@@ -1,0 +1,164 @@
+{
+ "type": "object",
+ "additionalProperties": false,
+ "properties": {
+  "criteria": {
+   "type": "array",
+   "minItems": 8,
+   "maxItems": 8,
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "id": {
+      "type": "string",
+      "enum": [
+       "C1",
+       "C2",
+       "C3",
+       "C4",
+       "C5",
+       "C6",
+       "C7",
+       "C8"
+      ]
+     },
+     "score": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5
+     },
+     "evidence": {
+      "type": "string"
+     },
+     "change": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "score",
+     "evidence",
+     "change"
+    ]
+   }
+  },
+  "blocking": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "section": {
+      "type": "string"
+     },
+     "scope": {
+      "type": "string",
+      "enum": [
+       "core",
+       "contract"
+      ]
+     },
+     "severity": {
+      "type": "string",
+      "enum": [
+       "S0",
+       "S1"
+      ]
+     },
+     "problem": {
+      "type": "string"
+     },
+     "fix": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "section",
+     "scope",
+     "severity",
+     "problem",
+     "fix"
+    ]
+   }
+  },
+  "previous_status": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "status": {
+      "type": "string",
+      "enum": [
+       "resolved",
+       "partially",
+       "unresolved",
+       "regressed"
+      ]
+     },
+     "note": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "status",
+     "note"
+    ]
+   }
+  },
+  "regressions": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "suggestions": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "verdict": {
+   "type": "string",
+   "enum": [
+    "accept",
+    "revise",
+    "reject"
+   ]
+  },
+  "path_to_accept": {
+   "type": "string"
+  },
+  "summary": {
+   "type": "string"
+  },
+  "verdict_core": {
+   "type": "string",
+   "enum": [
+    "accept",
+    "revise",
+    "reject"
+   ]
+  }
+ },
+ "required": [
+  "criteria",
+  "blocking",
+  "previous_status",
+  "regressions",
+  "suggestions",
+  "verdict",
+  "path_to_accept",
+  "summary",
+  "verdict_core"
+ ]
+}

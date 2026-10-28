@@ -3,6 +3,19 @@
 Previous: chunk 121 (2026-10-27 blueprint; 2026-10-28 north-star council
 to consensus, ISA spec rounds 1–4, repo bootstrap, process change).
 
+## Session log — 2026-10-28 — ISA round 7: CORE CONSENSUS; codex+muse accept; draft 0.8; round 8 launched
+
+Round 7 on 0.7 (codex 742 s): codex accept, muse accept, opus revise;
+`verdict_core` = accept from all three, zero core blockers → **core
+consensus** (the rubric's first milestone). Mean 4.12, every criterion
+≥ 4. One contract S0 (opus): my 0.7 δ-shift `mu + δ·d` does not make
+`mu·I − Tr_out(Y)` strict (Tr_out(δI_{d²}) = δ·d·I_d cancels exactly), so
+a tight witness would be rejected; fixed to `mu′ = mu + δ·(d+1)`. Second
+consecutive round where the only new defect was the editor's own
+arithmetic in §12.1 — write the derivation out before printing a recipe.
+Draft 0.8 = that one line + version bump + repatched hashes. Round 8
+prepared and launched.
+
 ## Session log — 2026-10-28 — ISA round 6: muse accepts, mean 3.92; draft 0.7; round 7 launched
 
 Round 6 on 0.6 (codex 1686 s, muse 325 s, opus ~5 min, zero retries):

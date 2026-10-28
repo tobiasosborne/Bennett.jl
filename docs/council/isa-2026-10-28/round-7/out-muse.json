@@ -1,0 +1,97 @@
+{
+ "blocking": [],
+ "criteria": [
+  {
+   "change": "Synchronise the abbreviated \u00a74.1 uncall row with the complete \u00a77.4 rule.",
+   "evidence": "\u00a73.6 now defines reverse-order A-row exchanges with addresses evaluated from the current inverse state; \u00a74.2 prints lift.alloc's exact forward and inverse orders; \u00a7\u00a73.7, 5.2, 7.4 give a coherent state and step model.",
+   "id": "C1",
+   "score": 4
+  },
+  {
+   "change": "Make \u00a74.1 state explicitly that segment uncall uses \u00a77.4's cancellation-aware traversal and traps over measure.",
+   "evidence": "\u00a74 gives forms, operand schemas, row classes, flags, successors and tier restrictions; the lift.alloc ordering ambiguity is removed.",
+   "id": "C2",
+   "score": 4
+  },
+  {
+   "change": "Add the no-measure and reverse-eligibility hypotheses explicitly to T4.",
+   "evidence": "\u00a73.6 defines forward and inverse steps, \u00a77.4 defines one LIFO history traversal that skips reversed frames and uncall frames, and \u00a77.4 makes uncall over measure or unverified qreg.free a no-state-change trap.",
+   "id": "C3",
+   "score": 4
+  },
+  {
+   "change": "No semantic change needed; further worked target examples would help implementers.",
+   "evidence": "\u00a78 defines target expressions, variable binding, matching, schemes, aggregation, timing, capacities and defaults sufficiently for independent implementation.",
+   "id": "C4",
+   "score": 4
+  },
+  {
+   "change": "Define invocation-context enumeration directly from all region-tree paths, including default-covered invocations, rather than referring to schedule-entry paths.",
+   "evidence": "\u00a7\u00a79-13 decide objects, identity, linking, launch, scheduling, coverage and certificates. \u00a712.1 now makes subject bounds common upper bounds over every invocation context and \u00a712.3 states why multiplicity composition is sound.",
+   "id": "C5",
+   "score": 4
+  },
+  {
+   "change": "State in T4 that the trace contains no measure frame, matching \u00a7\u00a73.3, 7.4 and 10, and add the third-matrix strictness slack to the SDP producer recipe.",
+   "evidence": "\u00a714 states the reference interpreter and theorems with usable hypotheses; \u00a715 derives suites from the text, including nested uncall, uncall over measure and the clock counterexample. \u00a712.1 replaces the false principal-minor test with a sound strict-positive-definiteness test.",
+   "id": "C6",
+   "score": 4
+  },
+  {
+   "change": "No change needed.",
+   "evidence": "The draft implements the north star's tier separation, oracle/action distinction, fault outcomes, target descriptions, certificates and staged ISA contracts without an identified contradiction.",
+   "id": "C7",
+   "score": 5
+  },
+  {
+   "change": "Synchronise summary tables with \u00a7\u00a77.4 and 12.1 so an implementer need not infer which text controls.",
+   "evidence": "A VM or specialiser author can start from the reference bodies, step machine, row table, schedule matching and \u00a717 defaults; remaining items are non-semantic or conservatively defaulted.",
+   "id": "C8",
+   "score": 4
+  }
+ ],
+ "path_to_accept": "Already accept. To raise a lowest-scoring criterion, C5, by one point: rewrite \u00a712.1's context enumeration as the sorted set of all paths in the root schedule's static region tree, explicitly including invocations covered only by schedule defaults, and use that same enumeration for numerical claims, channel witnesses and \u00a712.3 multiplicities.",
+ "previous_status": [
+  {
+   "id": "codex B1",
+   "note": "\u00a73.6 requires A-row inverse exchanges in reverse forward order with current-state addressing, and \u00a74.2 prints lift.alloc's inverse order atop, heap_used, alloctab[restored atop], w.",
+   "status": "resolved"
+  },
+  {
+   "id": "codex B3",
+   "note": "\u00a77.4 defines one history traversal for segment and whole-run reversal: LIFO, skipping already-reversed frames and uncall frames; the nested clock example is in suite A.",
+   "status": "resolved"
+  },
+  {
+   "id": "codex B10",
+   "note": "\u00a712.1 defines subjects over every invocation context, including path-resolved arguments, budgets, shares and cleanup choices; bounds are common upper bounds and channel claims carry one witness per context.",
+   "status": "resolved"
+  },
+  {
+   "id": "codex B11",
+   "note": "The unsound leading-principal-minor acceptance rule is removed; \u00a712.1 requires strict positive definiteness proved by interval Cholesky/LDL\u2020 with every pivot lower bound >0.",
+   "status": "resolved"
+  },
+  {
+   "id": "opus B1_UNCALL_OVER_MEASURE",
+   "note": "\u00a77.4 traps segment uncall when the segment contains a measure frame at any depth or an unverified hardware qreg.free, and \u00a73.3 states that a measure frame is never reversed.",
+   "status": "resolved"
+  },
+  {
+   "id": "opus B2_PSD_ACCEPTANCE_UNSOUND",
+   "note": "The checker may now accept only by proving positive definiteness with strictly positive interval pivots and must reject otherwise; sound conservative rejection replaces the false minor criterion.",
+   "status": "resolved"
+  }
+ ],
+ "regressions": [],
+ "suggestions": [
+  "\u00a74.1 uncall summary: repeat \u00a77.4's history-traversal, measure-frame and unverified-qreg.free conditions so the instruction table cannot be read as allowing the old reversal.",
+  "\u00a714.3 T4: add the explicit hypotheses that reversal is invoked only under \u00a710 reverse eligibility and that the trace contains no measure frame.",
+  "\u00a712.1 producer shift: replace mu -> mu + \u03b4\u00b7d with mu -> mu + \u03b4\u00b7d + \u03b7 for \u03b7 > 0. The \u03b4\u00b7d part alone leaves mu\u00b7I - Tr_out(Y) unchanged, so an optimal singular third constraint is still not strictly positive definite; the checker's acceptance rule itself is sound.",
+  "\u00a712.1 invocation contexts: enumerate paths from the region tree itself, not from schedule entries, because \u00a711 permits invocations covered only by defaults and entries need not enumerate them.",
+  "\u00a77.4 history traversal: define 'retired' for an uncall marker, or simply say uncall frames remain but are always skipped."
+ ],
+ "summary": "All six round-6 blockers are resolved: B1 by reverse-order A-row exchanges and the printed lift.alloc inverse order; B3 by the shared cancellation-aware history traversal; codex B10 by common upper bounds checked over every invocation context; codex B11 and opus B2 by removing the false principal-minor PSD test and requiring strict positive-definiteness; and opus B1 by trapping segment uncall over measure. I found no remaining S0 divergence or unsoundness in core or contract scope. The remaining items are S1 wording, enumeration and witness-production details with sound conservative defaults.",
+ "verdict": "accept",
+ "verdict_core": "accept"
+}

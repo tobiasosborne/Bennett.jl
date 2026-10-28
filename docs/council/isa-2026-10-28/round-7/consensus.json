@@ -1,0 +1,43 @@
+{
+ "agree": false,
+ "core_agree": true,
+ "verdicts": {
+  "codex": "accept",
+  "muse": "accept",
+  "opus": "revise"
+ },
+ "core_verdicts": {
+  "codex": "accept",
+  "muse": "accept",
+  "opus": "accept"
+ },
+ "blocking": {
+  "codex": [],
+  "muse": [],
+  "opus": [
+   {
+    "id": "B1_SDP_PRODUCER_SHIFT_NOT_STRICT",
+    "section": "\u00a712.1 Diamond-norm SDP, positivity test",
+    "scope": "contract",
+    "severity": "S0",
+    "problem": "The checker must prove all three matrices strictly positive definite: Y\u2212J, Y+J and mu\u00b7I\u2212Tr_out(Y). The normative producer recipe says to replace Y with Y+\u03b4I and mu with mu+\u03b4\u00b7d. Since Tr_out(I_{d\u00b2}) = d\u00b7I_d, this gives (mu+\u03b4d)\u00b7I \u2212 Tr_out(Y+\u03b4I) = mu\u00b7I \u2212 Tr_out(Y) exactly, so the third matrix is unchanged. At a dual optimum mu = \u03bbmax(Tr_out Y), so that matrix is singular and the checker must reject. The claim that the recipe 'makes witnesses strictly feasible' is false: producer and checker obligations contradict each other. Every producer that follows the recipe from a tight witness gets its channel claim rejected by every conformant checker.",
+    "fix": "State: 'Producers replace Y with Y+\u03b4I and mu with mu+\u03b4\u00b7(d+1) (any mu\u2032 > mu+\u03b4\u00b7d suffices) for a small rational \u03b4>0. Then Y\u00b1J(\u03a6) \u2ab0 \u03b4I \u227b 0 and mu\u2032\u00b7I \u2212 Tr_out(Y+\u03b4I) \u2ab0 \u03b4I \u227b 0, and \u2016\u03a6\u2016\u25c7 \u2264 mu\u2032 \u2264 bound.' I would take this. The alternative is to require strict PD only for Y\u00b1J and accept the third constraint as soon as the interval upper bound of \u03bbmax(Tr_out Y), by Cholesky of (mu\u2212\u03b7)I\u2212Tr_out(Y) for a stated \u03b7>0, is below mu. That is more machinery, so I prefer the one-line shift."
+   }
+  ]
+ },
+ "means": {
+  "C1": 4.0,
+  "C2": 4.0,
+  "C3": 4.33,
+  "C4": 4.0,
+  "C5": 4.0,
+  "C6": 4.0,
+  "C7": 4.67,
+  "C8": 4.0
+ },
+ "members": [
+  "codex",
+  "muse",
+  "opus"
+ ]
+}

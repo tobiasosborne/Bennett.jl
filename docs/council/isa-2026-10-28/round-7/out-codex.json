@@ -1,0 +1,100 @@
+{
+ "criteria": [
+  {
+   "id": "C1",
+   "score": 4,
+   "evidence": "\u00a7\u00a73.2\u20133.7 specify the state, ownership, register files and activation records concretely. \u00a77.4 now supplies one cancellation-aware traversal. The distinction between retained audit frames and logically restored history remains implicit.",
+   "change": "Define the active history separately from retained reversed records, making T4's restoration of history precise."
+  },
+  {
+   "id": "C2",
+   "score": 4,
+   "evidence": "\u00a74 provides a closed instruction set with width rules, fault behavior and expansion-based cost hooks. The corrected A-row exchange order handles lift.alloc's indexed destination; the printed call/return inverses restore their addressing counters before accessing records.",
+   "change": "Add a compact normative table of permitted destination/source aliasing for lifted rows, including self-updates and parallel assignments."
+  },
+  {
+   "id": "C3",
+   "score": 5,
+   "evidence": "The repaired inverse ordering, shared history traversal and irreversible-segment exclusion resolve the previous core counterexamples. Oracle XOR semantics, prefix reversal, phase-sensitive control, cleanup windows and the restricted borrow-frame lemma are sound within their stated obligations.",
+   "change": "No semantic change required; concrete allocation-inverse and nested-cancellation vectors would improve auditability."
+  },
+  {
+   "id": "C4",
+   "score": 4,
+   "evidence": "\u00a78 distinguishes requested and achieved accuracy, counts expanded leaf events once, defines capacity and provides resource defaults. Applying the equal-share default during scheme expansion could be stated more directly.",
+   "change": "Specify how the existing epsilon-share default applies to a scheme's expanded leaves, including its relationship to the parent's share."
+  },
+  {
+   "id": "C5",
+   "score": 4,
+   "evidence": "Objects, linking, launch, scheduling and certificates are decided at the required level. \u00a712.1 now requires bounds over every resolved invocation context, closing B10. Context enumeration refers to sparse schedule-entry paths even though invocations also exist under defaults.",
+   "change": "Enumerate contexts from the complete expanded invocation tree, then resolve schedule overrides for each context; do not derive the context set from the entries array."
+  },
+  {
+   "id": "C6",
+   "score": 4,
+   "evidence": "The strict positive-definiteness acceptance test is sound and rejects the previous counterexamples. However, the new claim that shifting Y by \u03b4I and mu by \u03b4d makes the entire witness strictly feasible is false: the third slack matrix is unchanged.",
+   "change": "Starting from a feasible witness, use Y' = Y + \u03b4I and mu' = mu + \u03b4d + \u03b7 for rational \u03b4,\u03b7 > 0, requiring mu' \u2264 bound."
+  },
+  {
+   "id": "C7",
+   "score": 5,
+   "evidence": "The specification preserves the north star's tier separation, total oracle interface, phase-sensitive correctness, public contracts and target-driven scheduling. Deferring measurement-based cleanup with an explicit unitary default is consistent with that vision.",
+   "change": "No substantive change required."
+  },
+  {
+   "id": "C8",
+   "score": 4,
+   "evidence": "The document is implementable as a first normative specification. Defaults cover the principal deferred choices. The supplied mechanical checker passes both example objects, their hashes, both printed envelopes and their stated execution cases.",
+   "change": "Add one small action example with a schedule and certificate covering repeated callee invocations with different classical arguments."
+  }
+ ],
+ "blocking": [],
+ "previous_status": [
+  {
+   "id": "B1",
+   "status": "resolved",
+   "note": "\u00a73.6 requires reverse-order assignment exchanges, and lift.alloc explicitly restores atop before addressing its allocation-table entry."
+  },
+  {
+   "id": "B3",
+   "status": "resolved",
+   "note": "\u00a77.4 applies the same cancellation-aware traversal to segment and whole-run reversal, skipping already-reversed frames and nested uncall markers."
+  },
+  {
+   "id": "B10",
+   "status": "resolved",
+   "note": "Claims and error entries now cover every resolved invocation context in the bound root schedule; channel claims require a witness for each context."
+  },
+  {
+   "id": "B11",
+   "status": "resolved",
+   "note": "The unsound leading-principal-minor fallback is removed; rigorous strictly positive pivots are required for all three matrices."
+  },
+  {
+   "id": "B1_UNCALL_OVER_MEASURE",
+   "status": "resolved",
+   "note": "Segment uncall explicitly excludes measurement and unverified hardware release at every nesting depth; measure frames are never reversed."
+  },
+  {
+   "id": "B2_PSD_ACCEPTANCE_UNSOUND",
+   "status": "resolved",
+   "note": "The acceptance procedure is now conservative and sound. The new witness-inflation recipe has a separate nonblocking defect."
+  }
+ ],
+ "regressions": [
+  "New nonblocking defect in \u00a712.1: the stated strict-feasibility construction does not make the third inequality strict. It leaves mu\u00b7I \u2212 Tr_out(Y) unchanged. This can cause rejection of a valid bound, but cannot make the revised checker accept an invalid bound."
+ ],
+ "suggestions": [
+  "S1 \u2014 \u00a712.1: Correct the witness-inflation recipe. With \u03a6 = 0, Y = 0 and mu = 0, the printed shift gives Y' = \u03b4I and mu' = \u03b4d, leaving the third slack exactly zero. Add an independent positive margin \u03b7 to mu', or require the starting third slack to be strictly positive. I recommend the independent margin.",
+  "S1 \u2014 \u00a712.1: Distinguish mathematical dual feasibility from acceptance by the conservative strict-positivity procedure. A feasible boundary witness may legitimately be rejected; the preceding 'accepts iff' sentence should say so.",
+  "S1 \u2014 \u00a712.1: Enumerate all expanded invocation contexts, including the root, default-covered calls and loop repetitions. The universal verification obligation already closes B10; sorting sparse override entries is merely an unsuitable description of the enumeration.",
+  "S1 \u2014 \u00a7\u00a77.4, 14.3: Distinguish active history from retained audit records, and explicitly restrict T4 to reversal-eligible traces. This would reconcile retained reversed frames with restoration of history without changing the cancellation semantics.",
+  "S1 \u2014 \u00a7\u00a78.1, 8.3, 17.9: State explicitly how equal epsilon shares are assigned after scheme expansion and how the resulting sum is checked against the requested region accuracy.",
+  "Citation correction \u2014 \u00a712.1: The Y0/Y1 Choi-form dual is presented directly in [Watrous, Simpler semidefinite programs for completely bounded norms (2013), \u00a73](https://cs.uwaterloo.ca/~watrous/Papers/SimplerSDPforCBnorm.pdf). Cite that formulation, or explain the transformation from the 2009 channel-distance formulation. The printed full-diamond-norm bound is sound."
+ ],
+ "verdict": "accept",
+ "path_to_accept": "Already accept: no S0 blocker remains. The most direct improvement to a lowest-scoring criterion is correcting \u00a712.1's strict-feasibility construction and distinguishing feasible witnesses from witnesses accepted by the conservative procedure; this would raise C6.",
+ "summary": "All six previous blockers are resolved: B1, B3, B10, B11, B1_UNCALL_OVER_MEASURE and B2_PSD_ACCEPTANCE_UNSOUND. The core repairs are sound, and the example checker passes. No new S0 issue found. The new strict-feasibility recipe contains a false mathematical claim, but the checker still rejects inconclusive or non-positive witnesses, so this is a producer-side S1 correction rather than an unsound acceptance path.",
+ "verdict_core": "accept"
+}

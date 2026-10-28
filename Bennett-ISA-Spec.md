@@ -1,7 +1,8 @@
-# Bennett Virtual ISA — Specification, draft 0.7
+# Bennett Virtual ISA — Specification, draft 0.8
 
-**Date:** 2026-10-28. **Status:** seventh normative draft, for council
-iteration (reports: `docs/council/isa-2026-10-28/round-{1..6}/`;
+**Date:** 2026-10-28. **Status:** eighth normative draft, for council
+iteration (reports: `docs/council/isa-2026-10-28/round-{1..7}/`; **core
+consensus reached in round 7**: every member accepts §3–§7, §14, §16);
 editor's responses in `round-*/response.md`). Founding text of
 `bennett-isa-spec` (`Bennett-NorthStar.md` §4.4, §6.1); the north star
 governs where this draft is silent. Nothing is implemented. MUST, MUST
@@ -10,8 +11,8 @@ names items left open; every deferred decision that an implementer must
 take carries a **default** in §17, which implementers follow until the
 item is revised.
 
-**Versioning.** ISA 0.7, object 0.7, launch 0.7, sched 0.7, cert 0.7,
-coverage 0.7, target 0.7. The **full version string** (`0.7`) is part of
+**Versioning.** ISA 0.8, object 0.8, launch 0.8, sched 0.8, cert 0.8,
+coverage 0.8, target 0.8. The **full version string** (`0.8`) is part of
 every semantic envelope (§9.2): drafts are not compatible with each
 other.
 
@@ -44,7 +45,7 @@ Binary encodings (§16 text is the interchange form); mechanisation of
 §14; device models beyond §7.3; the gate-name registry process; the
 memory layout of the opaque C objects of §10–§11 (every constructor,
 accessor and destructor is listed). **Minimality claims** (north star
-§5) are not supported by cert 0.7 and MUST NOT appear in a certificate.
+§5) are not supported by cert 0.8 and MUST NOT appear in a certificate.
 Decisions deferred to implementation, each with its default, are listed
 in §17.
 
@@ -749,7 +750,7 @@ Every cleanup in this version is **unitary**: realisation `reverse`
 (legal for `perm` values only: recompute g into a fresh clean bundle by
 the same sequence, `qxor` it into g's wires, uncompute the fresh bundle
 by the adjoint). **Measurement-based cleanup is not admitted in sched/
-cert 0.7**: a schedule naming any other realisation is invalid, the
+cert 0.8**: a schedule naming any other realisation is invalid, the
 target capability `mbu` is reserved and MUST be `false`, and no cleanup
 produces a `channel` claim. *(non-normative)* The fixup after an X-basis
 measurement of g with outcome m is the phase (−1)^{m·g(x)}, a function
@@ -879,7 +880,7 @@ uncalls `g`, returns; `g` performs one `clock.read`; `call f; uncall f`
 leaves the clock at its entry value; and `uncall` of a segment that
 measured is a trap.
 
-## 8. Target descriptions (target 0.7)
+## 8. Target descriptions (target 0.8)
 
 ### 8.1 Format and expressions
 
@@ -984,7 +985,7 @@ descriptor. A scheme's correctness is the target author's obligation
 
 The capacity constraint is peak live qubits per class.
 
-## 9. Objects, identity, linking, reversible ABI (object 0.7)
+## 9. Objects, identity, linking, reversible ABI (object 0.8)
 
 ### 9.1 Sections and schemas
 
@@ -995,12 +996,12 @@ errors. Metadata sections are one JCS line each, an object:
 ```
   symbols:  { "<local index>": { "name", "kind": "cc"|"r"|"oracle"|"action"|"perm_action"|"lproc"|"data", "signature": <sig>, "interface_hash" } }
   imports:  { "<name>": { "signature": <sig>, "pinned_closure_hash"?: hex } }
-  devices:  { "models": { "<dev>": { "version": "0.7" } }, "services": { "<reverse-dns id>": { "version": "…" } } }
+  devices:  { "models": { "<dev>": { "version": "0.8" } }, "services": { "<reverse-dns id>": { "version": "…" } } }
   layout:   { "ptr_width", "H", "A_tab", "S_cells", "null_size", "heap_base", "heap_limit_max",
               "globals": { "<name>": { "base", "size", "image": "<data name>" } },
               "interface_regions": { "<oracle>": { "<region>": { "base" } } }, "block_image"?: "<data name>" }
   schedule: §11      certificate: §12      coverage: { "entries": [ §13 ] }
-  <sig>:    kind "oracle": { "tier":"q", "kind", "in":[w…], "tgt":w, "fault":F, "mem":[{"A","W","role"}], "args":[types], "abi":"0.7" }
+  <sig>:    kind "oracle": { "tier":"q", "kind", "in":[w…], "tgt":w, "fault":F, "mem":[{"A","W","role"}], "args":[types], "abi":"0.8" }
             kind "action"/"perm_action": { "tier":"q", "kind", "mut":[w…], "in":[w…], "mem":[…], "args":[types], "bounds":[…], "abi" }
             kind "lproc": { "tier":"q", "kind", "params":[w…], "result":w, "abi" }
             kind "cc"/"r": { "tier", "kind", "params":[types], "results":[types], "abi" }
@@ -1017,7 +1018,7 @@ through its last instruction line, lines joined by LF, no trailing LF.
 **Semantic envelope** of a symbol (byte-exact; every part ends with LF):
 
 ```
-  (1) "isa=" <full version string, e.g. 0.7>
+  (1) "isa=" <full version string, e.g. 0.8>
   (2) "ptr_width=" INT
   (3) the JCS signature
   (4) the canonical function bytes (with reference tokens replaced, below); for a data symbol: its data line NAME SP HEX
@@ -1090,7 +1091,7 @@ rebinding to closure hashes.
   ancillae. Shared frames only with disjoint live ranges (suite F);
   callees `qborrow` only from the caller's designated idle set.
 
-## 10. Launch ABI (launch 0.7)
+## 10. Launch ABI (launch 0.8)
 
 **Model.** A run executes a device CC entry; the host passes classical
 arguments, register ids and the entropy tape, receives classical
@@ -1153,7 +1154,7 @@ holds the operation's operands in the order of §7.3, each an unsigned
 `*alen` = 8 × arity.
 
 ```c
-/* launch 0.7. All objects opaque. A function that returns an object transfers ownership to the caller,
+/* launch 0.8. All objects opaque. A function that returns an object transfers ownership to the caller,
    released with the matching *_free. Status 0 = BENNETT_OK. */
 typedef enum { BENNETT_OK=0, BENNETT_E_VERSION, BENNETT_E_PTR_WIDTH, BENNETT_E_DEVICE_MISSING, BENNETT_E_GATE_UNSUPPORTED,
   BENNETT_E_TARGET, BENNETT_E_BUDGET, BENNETT_E_QREG_NOT_CLEAN, BENNETT_E_INVALID_STATE, BENNETT_E_NOT_REVERSIBLE,
@@ -1203,7 +1204,7 @@ bennett_status bennett_coverage_get(bennett_program_t*, bennett_coverage_t** out
 const uint8_t* bennett_coverage_jcs(const bennett_coverage_t*, size_t* len);   void bennett_coverage_free(bennett_coverage_t*);
 ```
 
-## 11. Scheduling interface (sched 0.7)
+## 11. Scheduling interface (sched 0.8)
 
 ```c
 typedef struct bennett_sched_request_t bennett_sched_request_t;   typedef struct bennett_sched_response_t bennett_sched_response_t;
@@ -1288,7 +1289,7 @@ scheduler version. A consumer validates every binding and every path
 against the object and executes verbatim or rejects (`E_SCHEDULE_
 INFEASIBLE`).
 
-## 12. Certificate (cert 0.7; JCS)
+## 12. Certificate (cert 0.8; JCS)
 
 ### 12.1 Claims
 
@@ -1329,9 +1330,10 @@ Cholesky (or Hermitian LDL†) factorisation in which the interval lower
 bound of every pivot is strictly positive, and rejects otherwise; no
 other test is admitted (nonnegative leading principal minors do not
 imply positive semidefiniteness: diag(0, −1)). Producers make witnesses
-strictly feasible by replacing Y with Y + δI and mu with mu + δ·d for a
-small rational δ > 0 (then Y ± J(Φ) ≻ 0 and Tr_out(Y + δI) = Tr_out(Y) +
-δ·d·I, so ‖Φ‖◇ ≤ mu + δ·d, which MUST be ≤ `bound`). **Interval
+strictly feasible by replacing Y with Y + δI and mu with mu′ = mu + δ·(d
++ 1) for a small rational δ > 0 (any mu′ > mu + δ·d suffices): then Y ±
+J(Φ) ⪰ δI ≻ 0 and, since Tr_out(Y + δI) = Tr_out(Y) + δ·d·I, mu′·I −
+Tr_out(Y + δI) ⪰ δI ≻ 0; ‖Φ‖◇ ≤ mu′, which MUST be ≤ `bound`. **Interval
 arithmetic** at `precision_bits`
 means every operation rounds outward to `precision_bits`-bit binary
 rationals; transcendental entries (`rx ry rz`) are enclosed by a Taylor
@@ -1379,7 +1381,7 @@ compared as a channel requires a `channel` claim. Executable claims
 (`numerical`, `channel`, `exhaustive` with `expected: "oracle"`) bind to
 `schedule_hash` through their subject.
 
-## 13. Coverage (coverage 0.7)
+## 13. Coverage (coverage 0.8)
 
 `{ "entries": [ { "point": <program-point id>, "source": "<dialect-spec stable id>", "classification": "lowered" | "trapped" | "shimmed", "reason", "fault_code"?, "shim_hash"?, "count" } ] }`.
 
@@ -1487,10 +1489,10 @@ objects.
 has **six** canonical lines.
 
 ```
-bennett-object isa=0.7 object=0.7 launch=0.7 sched=0.7 cert=0.7 coverage=0.7 target=0.7 ptr_width=32
+bennett-object isa=0.8 object=0.8 launch=0.8 sched=0.8 cert=0.8 coverage=0.8 target=0.8 ptr_width=32
 
 section symbols
-{"0":{"interface_hash":"f26c850c6501cacf08a1457b9fd7b6c515b631cc7dadebc7a1457cabe412e1cb","kind":"oracle","name":"inc8","signature":{"abi":"0.7","args":[],"fault":4,"in":[8],"kind":"oracle","mem":[],"tgt":8,"tier":"q"}}}
+{"0":{"interface_hash":"8ce5e64f15830d8e596ba9b4861def6565dd567b5804300f427d8b9566d5be93","kind":"oracle","name":"inc8","signature":{"abi":"0.8","args":[],"fault":4,"in":[8],"kind":"oracle","mem":[],"tgt":8,"tier":"q"}}}
 
 section functions
 oracle @inc8 (x:wire[8] in) (t:wire[8]) (f:wire[4]) () ()
@@ -1505,9 +1507,9 @@ The object has no `layout` section, so the oracle's closure set is
 empty and its envelope is exactly these bytes (each line LF-terminated):
 
 ```
-isa=0.7
+isa=0.8
 ptr_width=32
-{"abi":"0.7","args":[],"fault":4,"in":[8],"kind":"oracle","mem":[],"tgt":8,"tier":"q"}
+{"abi":"0.8","args":[],"fault":4,"in":[8],"kind":"oracle","mem":[],"tgt":8,"tier":"q"}
 oracle @inc8 (x:wire[8] in) (t:wire[8]) (f:wire[4]) () ()
 regs { one:reg[8], r:reg[8] }
 ^entry():
@@ -1524,10 +1526,10 @@ lifted memory with a recursive lproc that receives the base as a
 parameter, and a global accessed by address.
 
 ```
-bennett-object isa=0.7 object=0.7 launch=0.7 sched=0.7 cert=0.7 coverage=0.7 target=0.7 ptr_width=32
+bennett-object isa=0.8 object=0.8 launch=0.8 sched=0.8 cert=0.8 coverage=0.8 target=0.8 ptr_width=32
 
 section symbols
-{"0":{"interface_hash":"168949dd7f1f03562b440391c0b45c03cd26e75ae2408e72b73eacf7c7617ae4","kind":"oracle","name":"sum_db","signature":{"abi":"0.7","args":[],"fault":4,"in":[8],"kind":"oracle","mem":[{"A":4,"W":8,"role":"in"}],"tgt":8,"tier":"q"}},"1":{"interface_hash":"39fa102343778703c31c0589c7be17aee5dd0434029336c26ce2c9cf6271009d","kind":"lproc","name":"sum","signature":{"abi":"0.7","kind":"lproc","params":[8,8,32],"result":8,"tier":"q"}},"2":{"interface_hash":"3ea3c9b12e14f3955d1fdec6fe5718d28262ed98d6d3a5ca380e024f22ee252b","kind":"data","name":"zero","signature":{"abi":"0.7","kind":"data","size":1,"tier":"-"}}}
+{"0":{"interface_hash":"68225d213c44812fe844cd295d8821127c3cf31682be4eb19303cb53f9b147f7","kind":"oracle","name":"sum_db","signature":{"abi":"0.8","args":[],"fault":4,"in":[8],"kind":"oracle","mem":[{"A":4,"W":8,"role":"in"}],"tgt":8,"tier":"q"}},"1":{"interface_hash":"74f110bbafde68a4785025e7e571ef871ddd83a09465ab9c1604f653a0cfcd92","kind":"lproc","name":"sum","signature":{"abi":"0.8","kind":"lproc","params":[8,8,32],"result":8,"tier":"q"}},"2":{"interface_hash":"7002ed5ea010907a0ae99065663f22fb7d18ca1d6cb171fed57e2594bd9367e6","kind":"data","name":"zero","signature":{"abi":"0.8","kind":"data","size":1,"tier":"-"}}}
 
 section functions
 oracle @sum_db (n:wire[8] in) (t:wire[8]) (f:wire[4]) (db:region[4,8] in) ()
@@ -1586,13 +1588,13 @@ exactly the bytes below, its `scc_hash` is their SHA-256 and its hash
 is SHA-256 of the ASCII `<scc_hash hex>:0`:
 
 ```
-isa=0.7
+isa=0.8
 ptr_width=32
-{"abi":"0.7","kind":"lproc","params":[8,8,32],"result":8,"tier":"q"}
+{"abi":"0.8","kind":"lproc","params":[8,8,32],"result":8,"tier":"q"}
 lproc @sum (n:reg[8], acc:reg[8], base:reg[32]) (r:reg[8]) () () ()
 regs { zp:reg[32], zv:reg[8], z:reg[1], one:reg[8], n2:reg[8], idx:reg[32], p:reg[32], v:reg[8], acc2:reg[8] }
 ^entry():
-zp = lift.addr @3ea3c9b12e14f3955d1fdec6fe5718d28262ed98d6d3a5ca380e024f22ee252b
+zp = lift.addr @7002ed5ea010907a0ae99065663f22fb7d18ca1d6cb171fed57e2594bd9367e6
 lift.boundscheck zp 1
 zv = lift.load.i8 zp
 z = lift.icmp.eq n zv
@@ -1611,7 +1613,7 @@ lift.ret r
 lift.ret acc
 data zero 00
 layout globals.zero {"base":16,"image":"zero","size":1}
-3ea3c9b12e14f3955d1fdec6fe5718d28262ed98d6d3a5ca380e024f22ee252b
+7002ed5ea010907a0ae99065663f22fb7d18ca1d6cb171fed57e2594bd9367e6
 ```
 
 `@sum_db`'s envelope includes every layout leaf, the `zero` image, `@` +
@@ -1619,10 +1621,10 @@ the `sum` hash in place of `@sum`, and the `sum` hash as its part-(6)
 line (`@db` is an interface region, not a symbol):
 
 ```
-inc8 = f26c850c6501cacf08a1457b9fd7b6c515b631cc7dadebc7a1457cabe412e1cb
-zero = 3ea3c9b12e14f3955d1fdec6fe5718d28262ed98d6d3a5ca380e024f22ee252b
-sum = 39fa102343778703c31c0589c7be17aee5dd0434029336c26ce2c9cf6271009d
-sum_db = 168949dd7f1f03562b440391c0b45c03cd26e75ae2408e72b73eacf7c7617ae4
+inc8 = 8ce5e64f15830d8e596ba9b4861def6565dd567b5804300f427d8b9566d5be93
+zero = 7002ed5ea010907a0ae99065663f22fb7d18ca1d6cb171fed57e2594bd9367e6
+sum = 74f110bbafde68a4785025e7e571ef871ddd83a09465ab9c1604f653a0cfcd92
+sum_db = 68225d213c44812fe844cd295d8821127c3cf31682be4eb19303cb53f9b147f7
 ```
 
 ## 17. Decisions deferred to implementation, with defaults
