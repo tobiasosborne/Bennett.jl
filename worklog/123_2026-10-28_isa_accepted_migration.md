@@ -32,6 +32,8 @@ members with cwd = that repo, so codex's read-only sandbox sees the
 records but must be given the spec path explicitly (it is embedded in
 the prompt verbatim anyway).
 
+**Next session starts in `~/Projects/bennett-workspace/bennett/HANDOFF.md`** (state table for all 13 repos, council how-to, open items in order). This repo is the v1 reference and differential oracle only.
+
 **Beads**: `Bennett-amah` (dolt journal bloat) closed — flatten done, force push pending with the maintainer. The post-flatten noms journal restarts small and is tracked again.
 
 **Not done / open**: `bd init` in the new repos (chunk 122 item 3; bd
