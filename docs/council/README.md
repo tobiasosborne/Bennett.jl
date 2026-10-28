@@ -49,13 +49,52 @@ session, a dropped network, or a provider capacity failure loses nothing:
 ```sh
 python3 tools/council.py selftest
 python3 tools/council.py prepare --run northstar-2026-10-28 --round 1 --doc Bennett-NorthStar.md
+python3 tools/council.py prepare --run isa-2026-10-28 --round N --doc Bennett-ISA-Spec.md \
+        --rubric docs/council/rubric-isa.md --context Bennett-NorthStar.md \
+        --subject "..." --precheck "python3 tools/isa_check.py"
+python3 tools/isa_check.py        # the pre-flight on its own
 python3 tools/council.py run     --run northstar-2026-10-28 --round 1 [--member codex …] [--dry-run]
 python3 tools/council.py status  --run northstar-2026-10-28
 python3 tools/council.py aggregate --run northstar-2026-10-28 --round 1
 ```
 
-Between rounds the editor revises the document on the blocking issues (and
-on suggestions it agrees with), records what changed and what was declined
-in `docs/council/<run>/round-<N>/response.md`, and prepares the next round.
-From round 2 on, the prompt includes the previous round's blocking issues
-and the editor's response so members can confirm each is resolved.
+## Convergence process (adopted 2026-10-28 after ISA rounds 1–4)
+
+The north star converged in six rounds; the ISA spec oscillated (2.12 →
+2.83 → 3.04 → 2.83) because each round was a full rewrite that introduced
+new mechanical errors, and because members were grading field-level
+completeness of contracts as blockers. The process is now:
+
+1. **Surgical edits between rounds, never rewrites.** Accepted text does
+   not move. The editor applies each blocker's fix in place and records
+   it in `round-<N>/response.md`.
+2. **Pre-flight before every round.** `prepare --precheck` runs
+   `tools/isa_check.py`: the spec's example objects must parse per the
+   grammar, their hashes must reproduce from the spec's own envelope rule,
+   their layouts must be disjoint, and their stated results must hold on
+   a reference interpreter. A round is not prepared if the check fails.
+   Add every new example or claim to the check before grading it.
+3. **Diff attached.** `prepare` attaches the unified diff from the previous
+   snapshot; members confirm fixes there first, then hunt new S0 issues.
+4. **S0 only blocks.** The rubric defines blocking as "two conformant
+   implementations would differ, or unsound, or contradictory, or a
+   missing normative decision". S1 (implementer must choose, any choice
+   conformant; enumeration gaps with a stated default) goes to
+   suggestions. The spec carries a deferred-decisions section with
+   defaults so S1 items can be closed by stating a default.
+5. **Staged acceptance.** Every blocker is tagged `core` or `contract`;
+   members give `verdict_core` and `verdict`. Core consensus first.
+6. **Status accounting.** Members fill `previous_status` for every prior
+   blocker and list `regressions`; the report shows them, so a regression
+   is visible as such and never mistaken for new depth.
+7. **Formal correctness after practical revisions.** Statements with
+   hypotheses are required; proofs, mechanisation and witness formats
+   are S1 until implementation has forced the revisions it will force.
+8. **Executable spec as the tie-breaker.** When a round still disputes a
+   core rule, the rule is implemented in `bennett-isa-spec`'s reference
+   interpreter and the example extended, rather than re-worded.
+
+Between rounds the editor revises the document on the blocking issues
+(and on suggestions it agrees with), records what changed and what was
+declined in `docs/council/<run>/round-<N>/response.md`, and prepares the
+next round with `--precheck "python3 tools/isa_check.py"`.

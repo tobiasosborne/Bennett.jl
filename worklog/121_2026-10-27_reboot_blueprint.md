@@ -388,6 +388,29 @@ pressure I introduced new *mechanical* errors each round; from now on
 every example in the spec gets executed by a script before a round, not
 just hashed. Round 5 launched.
 
+**Process change for ISA convergence** (maintainer: "update the
+workflow/process to improve convergence to acceptance. Goal: an accepted
+spec that is likely correct; implementation will expose frictions").
+Diagnosis: ISA rounds oscillated (2.12 → 2.83 → 3.04 → 2.83) because (a)
+each round was a full rewrite introducing new mechanical errors, (b)
+members blocked on field-level completeness of contracts. Changes, all
+encoded in tooling: `tools/council.py` — blocking issues carry `scope`
+(core|contract) + `severity` (S0|S1); members fill `previous_status`
+per prior blocker and `regressions`; new `verdict_core`; report shows
+per-scope counts and core consensus; `prepare --precheck CMD` refuses a
+round if the command fails; `prepare` attaches the unified diff from the
+previous snapshot; a CONVERGENCE block in the prompt states S0-only
+blocking, staged acceptance (core first), diff-first review. New
+`tools/isa_check.py`: parses the spec's example objects per §16,
+recomputes hashes per §9.2 (Tarjan SCC over @refs, envelope bytes),
+checks layout disjointness, and executes the examples on a reference
+interpreter for the lifted subset (inc8 ∀x at B=3/2; sum_db ∀n≤23,
+depth and step faults). `docs/council/rubric-isa.md` rewritten with the
+S0/S1 definition, scope tags, staged acceptance, and "deferred decisions
+with defaults close S1". README documents the seven-point process. Spec
+rule from now on: surgical edits only; every claim in an example is
+executed before a round.
+
 **Not done.** No tests run; no src/test change; nothing committed or
 pushed this session yet (maintainer still iterating). BennettVM untouched.
 

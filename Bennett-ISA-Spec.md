@@ -851,7 +851,8 @@ width`, `H`, … are leaves); a scalar's JCS value is its decimal text. An
 `@name` naming an interface region (in `lift.addr`) is not a symbol
 reference and is left unchanged. **Reference replacement**: in parts
 (4)–(5) every `@name` symbol-reference token is replaced by `@` followed
-by the referenced symbol's 64-hex hash; the **interface hash** uses
+by the referenced symbol's 64-hex hash (the symbol's own name in its
+header line is a definition, not a reference, and is left unchanged); the **interface hash** uses
 interface hashes of defined symbols and `SHA-256(name ‖ 0x00 ‖ JCS
 signature)` (hex) for unresolved imports; the **closure hash** uses
 closure hashes. **SCCs**: members ordered by name bytewise; every intra-
@@ -1284,10 +1285,10 @@ place of `@sum`, and b6fd68bbcc467e7a7aecaf3729a01dea946b08644b2c439382ecf40ce42
 region, not a symbol):
 
 ```
-d93adc99ace27c34de9f20b0ef463ad6f4a600b15942fdb8cf1662eeef9d4ffa = d93adc99ace27c34de9f20b0ef463ad6f4a600b15942fdb8cf1662eeef9d4ffa
-ff565436ab8c1fa0170c5fd2493cd1cbb7e27876b19e0f3e3985e12269d7f88a = ff565436ab8c1fa0170c5fd2493cd1cbb7e27876b19e0f3e3985e12269d7f88a
-b6fd68bbcc467e7a7aecaf3729a01dea946b08644b2c439382ecf40ce423dce8 = b6fd68bbcc467e7a7aecaf3729a01dea946b08644b2c439382ecf40ce423dce8
-90ce8e8544085a055c11f1d410c13372c200aa17c31b31eb065267bb1f8b01a2 = 90ce8e8544085a055c11f1d410c13372c200aa17c31b31eb065267bb1f8b01a2
+inc8 = d93adc99ace27c34de9f20b0ef463ad6f4a600b15942fdb8cf1662eeef9d4ffa
+zero = ff565436ab8c1fa0170c5fd2493cd1cbb7e27876b19e0f3e3985e12269d7f88a
+sum = b6fd68bbcc467e7a7aecaf3729a01dea946b08644b2c439382ecf40ce423dce8
+sum_db = 90ce8e8544085a055c11f1d410c13372c200aa17c31b31eb065267bb1f8b01a2
 ```
 
 ## 17. Open items *(deferred, asserted non-semantic)*

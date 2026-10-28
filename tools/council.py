@@ -46,16 +46,27 @@ def schema():
     issue = {"type": "object", "additionalProperties": False,
              "properties": {"id": {"type": "string"},
                             "section": {"type": "string"},
+                            "scope": {"type": "string", "enum": ["core", "contract"]},
+                            "severity": {"type": "string", "enum": ["S0", "S1"]},
                             "problem": {"type": "string"},
                             "fix": {"type": "string"}},
-             "required": ["id", "section", "problem", "fix"]}
+             "required": ["id", "section", "scope", "severity", "problem", "fix"]}
+    prev = {"type": "object", "additionalProperties": False,
+            "properties": {"id": {"type": "string"},
+                           "status": {"type": "string",
+                                      "enum": ["resolved", "partially", "unresolved", "regressed"]},
+                           "note": {"type": "string"}},
+            "required": ["id", "status", "note"]}
     top = {"criteria": {"type": "array", "minItems": 8, "maxItems": 8,
                         "items": crit},
            "blocking": {"type": "array", "items": issue},
+           "previous_status": {"type": "array", "items": prev},
+           "regressions": {"type": "array", "items": {"type": "string"}},
            "suggestions": {"type": "array", "items": {"type": "string"}},
            "verdict": {"type": "string", "enum": list(VERDICTS)},
            "path_to_accept": {"type": "string"},
            "summary": {"type": "string"}}
+    top["verdict_core"] = {"type": "string", "enum": list(VERDICTS)}
     return {"type": "object", "additionalProperties": False,
             "properties": top, "required": list(top)}
 
@@ -96,6 +107,11 @@ def validate(r):
         errs.append("summary missing")
     if not isinstance(r.get("path_to_accept"), str):
         errs.append("path_to_accept missing")
+    for b in (r.get("blocking") or []):
+        if isinstance(b, dict) and "scope" in b and b["scope"] not in ("core", "contract"):
+            errs.append(f"blocking scope {b['scope']!r}")
+    if "verdict_core" in r and r["verdict_core"] not in VERDICTS:
+        errs.append("verdict_core invalid")
     return errs
 
 
@@ -185,7 +201,36 @@ DEFAULT_SUBJECT = ("the founding vision for a from-scratch reboot of Bennett "
                    "(a reversible / quantum compiler toolchain; see the document)")
 
 
-def build_prompt(doc_text, run, rnd, subject=None, rubric=None, contexts=()):
+CONVERGENCE = (
+    "Convergence rules for this council (read before grading):\n"
+    "1. Blocking means S0 only: two conformant implementations built from the text would "
+    "compute different results, the semantics is unsound or self-contradictory, or a normative "
+    "decision is missing where one is needed to build. Tag every blocking issue with "
+    "`scope` (`core` = machine model, instruction set, regions, validity, memory, formal model, "
+    "examples; `contract` = targets, objects/identity, launch, scheduling, certificate, coverage, "
+    "grammar) and `severity` (`S0` as defined; `S1` = an implementer would have to choose, but "
+    "any choice yields a conformant machine). S1 items belong in `suggestions`, not `blocking`, "
+    "unless the document fails to state a default for them.\n"
+    "2. Implementation will expose frictions; that is expected and acceptable. Do not block on "
+    "field-level completeness of C headers, JSON schemas, numerical procedures or encodings "
+    "when the normative obligation is stated and a default is given; list such gaps as "
+    "suggestions. Do block on anything that would make an executor compute a different function.\n"
+    "3. Fill `previous_status` for every blocking issue of the previous round (by id) with "
+    "resolved | partially | unresolved | regressed and a one-line note. List in `regressions` "
+    "anything that was correct in the previous snapshot and is wrong now.\n"
+    "4. Give `verdict_core` (accept/revise/reject) for the core scope alone, and `verdict` "
+    "for the whole document. Core consensus is reached when every member returns "
+    "verdict_core = accept with no core-scoped blocking issue.\n"
+    "5. A diff from the previous snapshot is attached when one exists: confirm fixes there "
+    "first, then re-read the whole document for new S0 issues.\n"
+    "6. Formal correctness is pursued after practical revisions, by the maintainer's decision: "
+    "in this phase the specification needs correct *statements* with explicit hypotheses, not "
+    "proofs. Demands for proof formats, mechanisation, rigorous numerical or SDP witness "
+    "schemas, or checker algorithms are S1 (suggestions) as long as the obligation and a default "
+    "procedure are stated. Block only on a statement that is false, unsound or ambiguous.\n")
+
+
+def build_prompt(doc_text, run, rnd, subject=None, rubric=None, contexts=(), diff_text=None):
     task = (
         "You are a member of a three-model council grading the document "
         f"below, {subject or DEFAULT_SUBJECT}. Grade "
@@ -214,11 +259,13 @@ def build_prompt(doc_text, run, rnd, subject=None, rubric=None, contexts=()):
         "below is what you grade.\n\n"
         "Answer only with JSON matching the schema.")
     ctx = []
+    if diff_text:
+        ctx.append("# Diff from the previous round's snapshot (unified)\n\n```diff\n" + diff_text + "\n```")
     for c in contexts:
         ctx.append(f"# Background (not graded): `{Path(c).name}`\n\n"
                    + Path(c).read_text(encoding="utf-8"))
     return "\n\n".join(p for p in [
-        "# Council", task, previous_round_context(run, rnd),
+        "# Council", task, CONVERGENCE, previous_round_context(run, rnd),
         "# Rubric", rubric_text(rubric), *ctx,
         f"# The document under review (round {rnd} snapshot)",
         doc_text] if p)
@@ -230,12 +277,25 @@ def prepare(a):
         sys.exit(f"{rdir} already has member output; use --force to re-prepare")
     doc = Path(a.doc)
     text = doc.read_text(encoding="utf-8")
+    if a.precheck:
+        print(f"precheck: {a.precheck}")
+        p = subprocess.run(a.precheck, shell=True, cwd=ROOT)
+        if p.returncode != 0:
+            sys.exit("precheck FAILED; the round is not prepared")
+    diff_text = None
+    prev = round_dir(a.run, a.round - 1) / "doc.md"
+    if a.round > 1 and prev.exists():
+        import difflib
+        diff_text = "".join(difflib.unified_diff(
+            prev.read_text(encoding="utf-8").splitlines(True), text.splitlines(True),
+            fromfile=f"round-{a.round - 1}/doc.md", tofile=f"round-{a.round}/doc.md", n=2))
+        atomic_write(rdir / "diff.patch", diff_text)
     sha = hashlib.sha256(text.encode()).hexdigest()
     rdir.mkdir(parents=True, exist_ok=True)
     atomic_write(rdir / "doc.md", text)
     atomic_write(rdir / "prompt.md", build_prompt(
         text, a.run, a.round, subject=a.subject, rubric=a.rubric,
-        contexts=a.context or ()))
+        contexts=a.context or (), diff_text=diff_text if not a.no_diff else None))
     atomic_write(rdir / "schema.json", json.dumps(schema(), indent=1))
     st = State(rdir)
     st.d.update({"run": a.run, "round": a.round, "doc": str(doc),
@@ -428,16 +488,35 @@ def aggregate_cmd(a):
     blocking = {m: outs[m]["blocking"] for m in names}
     agree = (len(names) == len(MEMBERS) and all(v == "accept" for v in verdicts.values())
              and not any(blocking.values()))
+    core_verdicts = {m: outs[m].get("verdict_core") for m in names}
+    core_blocking = {m: [b for b in blocking[m] if b.get("scope") == "core"] for m in names}
+    core_agree = (len(names) == len(MEMBERS) and all(v == "accept" for v in core_verdicts.values())
+                  and not any(core_blocking.values()))
     lines += ["", f"Overall mean: {round(sum(means) / len(means), 2)}",
               "", "Verdicts: " + ", ".join(f"**{m}: {v}**" for m, v in verdicts.items()),
-              "", f"**Consensus: {'YES' if agree else 'no'}**", ""]
+              "", "Core verdicts: " + ", ".join(f"**{m}: {v}**" for m, v in core_verdicts.items()),
+              "", f"**Consensus: {'YES' if agree else 'no'}**   **Core consensus: {'YES' if core_agree else 'no'}**",
+              "", "Blocking by scope/severity: " + ", ".join(
+                  f"{m}: core {sum(1 for b in blocking[m] if b.get('scope') == 'core')} / "
+                  f"contract {sum(1 for b in blocking[m] if b.get('scope') == 'contract')}"
+                  f" (S0 {sum(1 for b in blocking[m] if b.get('severity') == 'S0')})" for m in names), ""]
+    regs = {m: outs[m].get("regressions") or [] for m in names}
+    if any(regs.values()):
+        lines += ["## Regressions reported", ""] + [f"- **[{m}]** {r}" for m in names for r in regs[m]] + [""]
+    ps = {m: outs[m].get("previous_status") or [] for m in names}
+    if any(ps.values()):
+        lines += ["## Previous-round blockers, status", ""]
+        for m in names:
+            for e in ps[m]:
+                lines.append(f"- [{m}] {e['id']}: **{e['status']}** — {e['note']}")
+        lines.append("")
     lines += ["## Blocking issues", ""]
     n = 0
     for m in names:
         for b in blocking[m]:
             n += 1
-            lines.append(f"- **[{m}] {b['id']}** ({b['section']}): {b['problem']} "
-                         f"*Fix:* {b['fix']}")
+            lines.append(f"- **[{m}] {b['id']}** ({b['section']}; {b.get('scope', '?')}/{b.get('severity', '?')}): "
+                         f"{b['problem']} *Fix:* {b['fix']}")
     if n == 0:
         lines.append("- none")
     for m in names:
@@ -449,8 +528,8 @@ def aggregate_cmd(a):
         lines += ["", "Suggestions:"] + [f"{i + 1}. {s}" for i, s in enumerate(r["suggestions"])]
     atomic_write(rdir / "report.md", "\n".join(lines) + "\n")
     atomic_write(rdir / "consensus.json", json.dumps(
-        {"agree": agree, "verdicts": verdicts, "blocking": blocking,
-         "means": dict(zip(CRITERIA, means)), "members": names}, indent=1))
+        {"agree": agree, "core_agree": core_agree, "verdicts": verdicts, "core_verdicts": core_verdicts,
+         "blocking": blocking, "means": dict(zip(CRITERIA, means)), "members": names}, indent=1))
     print(f"wrote {rdir / 'report.md'}; consensus agree={agree} verdicts={verdicts}")
 
 
@@ -460,12 +539,12 @@ def selftest():
     good = {"criteria": [{"id": c, "score": 3, "evidence": "e", "change": "c"}
                          for c in CRITERIA],
             "blocking": [], "suggestions": ["s"], "verdict": "accept", "summary": "ok",
-            "path_to_accept": "none"}
+            "path_to_accept": "none", "verdict_core": "accept", "previous_status": [], "regressions": []}
     assert validate(good) == [], validate(good)
     bad = json.loads(json.dumps(good))
     bad["criteria"][0]["score"] = 6
     bad["verdict"] = "accept"
-    bad["blocking"] = [{"id": "B1", "section": "§3", "problem": "p", "fix": "f"}]
+    bad["blocking"] = [{"id": "B1", "section": "§3", "scope": "core", "severity": "S0", "problem": "p", "fix": "f"}]
     errs = validate(bad)
     assert any("outside 1-5" in e for e in errs) and any("accept with non-empty" in e for e in errs), errs
     assert validate({"criteria": "x"}) == ["criteria missing"]
@@ -474,8 +553,8 @@ def selftest():
     opus_wrap = json.dumps({"type": "result", "structured_output": good, "result": "x"})
     assert parse_member_output("opus", opus_wrap, Path("/nonexistent")) == good
     sch = schema()
-    assert sch["required"] == ["criteria", "blocking", "suggestions", "verdict",
-                               "path_to_accept", "summary"]
+    assert set(sch["required"]) >= {"criteria", "blocking", "suggestions", "verdict", "path_to_accept", "summary"}
+    assert "verdict_core" in sch["properties"] and "previous_status" in sch["properties"]
     with tempfile.TemporaryDirectory() as td:
         rdir = Path(td)
         atomic_write(rdir / "prompt.md", "p")
@@ -510,6 +589,8 @@ def main():
     p.add_argument("--subject", help="one phrase describing the document")
     p.add_argument("--context", action="append",
                    help="background document(s) appended to the prompt, not graded")
+    p.add_argument("--precheck", help="shell command that must exit 0 before the round is prepared")
+    p.add_argument("--no-diff", action="store_true", help="do not attach the diff from the previous round")
     r = sub.add_parser("run")
     r.add_argument("--run", required=True)
     r.add_argument("--round", type=int, required=True)
