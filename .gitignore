@@ -24,3 +24,10 @@ external/
 # benchmark/sweep_cell.jl + benchmark/regression_check.jl auto-regen
 # when missing. Do NOT check in.
 benchmark/sweep_persistent_impls_gen.jl
+
+# bd gate lock (transient, created at repo root by bd embedded-dolt gating)
+.beads.gate.lock
+
+# Python bytecode caches
+tools/__pycache__/
+__pycache__/
