@@ -1,0 +1,151 @@
+{
+ "agree": false,
+ "core_agree": false,
+ "verdicts": {
+  "codex": "revise",
+  "muse": "revise",
+  "opus": "revise"
+ },
+ "core_verdicts": {
+  "codex": null,
+  "muse": null,
+  "opus": null
+ },
+ "blocking": {
+  "codex": [
+   {
+    "id": "B1",
+    "section": "\u00a7\u00a73.6\u20133.7, 4.2; T2",
+    "problem": "The inverse remains incorrect for A+D rows. A forward lift.call changes sp and fp after pushing the record, but \u00a73.6 tells the inverse to undo direct suboperations before restoring assignments. Consequently, its stack exchanges and metadata XORs use the new sp rather than the original record base. lift.ret similarly needs its original fp restored before reversing delivery and location exchanges. The text also gives no dependency-safe reversal rule for assignment destinations such as alloctab[old_atop]. The repaired pure-assignment example works, but T2 still fails for the stated mixed-row algorithm.",
+    "fix": "Define inversion by reversing the complete ordered list of elementary suboperations, interleaving assignment restoration with direct inverses. For call, restore the counter assignments first, undo parameter binding and record construction at the restored record base, restore L_f, then uncompute captured arguments. For return, restore fp/depth before undoing delivery and location exchanges, then uncompute the captured result. Preserve every effective address until its last inverse use, either through retained address slots or an explicitly proved restoration order; I recommend literal reverse-order semantics with retained addresses wherever needed."
+   },
+   {
+    "id": "B2",
+    "section": "\u00a7\u00a73.7, 16.2\u201316.3 Example 2",
+    "problem": "Example 2 cannot satisfy its advertised success domain. If the named result r is a location, as its use as a recursive call destination and lift.ret operand requires, @sum has 3 parameters, 1 result location and 9 regs: R_f = 16 cells. Input n = 16 requires 17 activations and therefore 272 cells, exceeding the maximum stack_limit of 2^8 = 256. If the result declaration specifies only a width, r is undeclared instead. No permitted budget makes the stated n = 16 success case work.",
+    "fix": "Explicitly define whether a named lproc result belongs to L_f and its declaration order; I recommend that it does. Increase Example 2's S_cells to 9 and recompute its affected hashes. Alternatively restrict its advertised success domain to n \u2264 15, but increasing the stack preserves the intended 16-byte example."
+   },
+   {
+    "id": "B3",
+    "section": "\u00a7\u00a74.1, 7.4, 9.4, 10; T4",
+    "problem": "Matching boundary argument/result values does not make a call segment reversible through intervening state changes. For example, f() reads pointer P and stores 1 through it. Start with P=A and A=B=0; call f, change P to B, then uncall f. The stored delta restores A. Re-executing f when reversing uncall now writes B, whereas the retained original call frames describe writes to A. Following those frames leaves B modified; replacing the segment with newly generated frames would be a different, unspecified history rule. Intervening allocations and device operations cause analogous interference.",
+    "fix": "Permit segment uncall only when intervening frames are proven noninterfering with the segment's read dependencies, writes, allocator state, device state and quantum operands. Define the version checks, failure outcome and exact replay/history treatment; copying an immutable result can remain legal. Alternatively restrict uncall to an adjacent LIFO segment. I recommend the checked noninterfering form if compute-copy-uncall is required."
+   },
+   {
+    "id": "B4",
+    "section": "\u00a7\u00a73.7, 4.2, 7.1\u20137.2",
+    "problem": "Memory boundary semantics still have holes. Nothing explicitly rejects more pinned pre-entries than alloctab can hold. CC/R alloc has no stated heap-exhaustion or address-overflow check despite the declared maximum heap interval. Finally, inrange mandates ptr_width + 1 arithmetic even though its length operand can be wider; this conflicts with \u00a73.7's widened-arithmetic rule and can truncate a large boundscheck length.",
+    "fix": "Reject layouts whose pre-entry count exceeds table capacity. Define CC/R allocation failure before mutation when the prospective bump exceeds the heap interval or pointer range, with a CC trap and a specified R fault code. Evaluate every bounds comparison at a width sufficient for all address and length operands plus carry, and narrow only after successful validation."
+   },
+   {
+    "id": "B5",
+    "section": "\u00a7\u00a73.1, 3.3, 4.7\u20134.8, 9.1, 16.2",
+    "problem": "The claimed closed instruction and metadata schemas are still incomplete. \u00a73.1 permits R functions to call Q regions, while \u00a74.8 permits region calls only in Q and CC. Width and alias rules for label values, frame-slot padding and repeated assignment destinations are absent. qjumpr checks only a global numeric range without a complete rule preserving function/activation ownership. Action bounds remain an unexplained array, and the memoryless example omits layout although budget validation and construction otherwise require its fields.",
+    "fix": "Publish per-opcode schemas and kind-specific metadata schemas with required fields, defaults and rejection rules. Include R in region-call applicability consistently. Define label provenance and legal indirect destinations; I recommend checked block-entry labels belonging to the current function. Require distinct assignment destinations, specify slot padding, map every action bound to its construct, and define the exact memoryless configuration when layout is absent."
+   },
+   {
+    "id": "B6",
+    "section": "\u00a7\u00a73.3, 4.1, 7.4, 10",
+    "problem": "The launch/handle contract remains ambiguous. measure consumes the handle and wires, but \u00a710 prescribes 'measure then free'. concat does not say whether it consumes its inputs, and slice lacks a complete ownership-return rule. hostcall has a form and API handshake but no defined request-memory/reply-memory semantics or reply-capacity behaviour. Failed-run, trap and fault outcomes are not fully mapped to states and reversal eligibility.",
+    "fix": "Define a handle transition table covering creation, views, concatenation, calls, measurement, release and reversal. I recommend consuming concat inputs, explicit restoration of parent ownership after a view's call, and consuming measurement that invalidates the id; remove the subsequent free instruction. A non-consuming measurement plus explicit reset is another viable design. Specify hostcall request bytes, reply destination/capacity, rlen and failure atomicity, then map each completion/fault condition to launch states and allowed operations. Treat hardware cleanliness as a semantic or certified precondition, without promising a nondestructive test of an arbitrary quantum state."
+   },
+   {
+    "id": "B7",
+    "section": "\u00a78",
+    "problem": "Targets still cannot be expanded and charged independently. k, c, a, w and eps_decade lack complete evaluation environments; the relationship between requested eps and an entry's epsilon expression is unstated. Schemes expose one target t without a general binding for multi-target operations, and mbu_schemes still contains an ellipsis instead of a measurement/fixup language. Scheme costs versus expanded gate costs can be double-counted, and optional occupancy rates have no complete default/precedence rule.",
+    "fix": "Define every expression variable and index, including requested versus achieved accuracy. Give schemes explicit ordered control/target/parameter bindings and complete native-leaf expansion rules. Specify measurement outcomes, dependency inputs and conditional fixups for MBU templates; alternatively prohibit MBU in target 0.5 until that grammar exists. I recommend completing it. Aggregate expanded leaf events exactly once, with scheme costs either validated summaries or separately identified overhead events, and define rates for every occupancy resource and class."
+   },
+   {
+    "id": "B8",
+    "section": "\u00a7\u00a79.2\u20139.3",
+    "problem": "The envelope now reproduces the examples, but dependency closure is defined only for oracles, lprocs and data. Actions can initialise qregions from images, and CC/R functions depend on initial memory/layout, yet their data/layout closure is unspecified. An action that XORs a local image byte into a target changes meaning when the image changes; its function text alone does not identify that change. Global names versus image-symbol names and lproc access to caller-specific interface mappings also need explicit resolution.",
+    "fix": "Define semantic dependencies for every symbol kind, including image references without @ tokens and all applicable initialisation inputs. Require lproc interface-region bases to be explicit parameters, or bind an explicit environment in its signature and hash; I recommend parameters. A precise dependency analysis is viable, but for this draft I recommend conservative inclusion of all applicable layout, image and device initialisation inputs, with byte-level vectors for actions and CC/R functions."
+   },
+   {
+    "id": "B9",
+    "section": "\u00a7\u00a75.7, 8.2, 11",
+    "problem": "Declaring generated ordinals normative does not define the generated operation graph. The cited sections specify comparisons and arithmetic abstractly, without gate decompositions or scratch identities. Transformations may remove operations, nested oracle invocations have only one step coordinate, and an uncovered allocation still resolves any by an unspecified choice. Selector resolution is not clearly independent per kind. Furthermore, assigning start times is allowed without a complete dependency-order rule, leaving noncommuting instruction order insufficiently constrained.",
+    "fix": "Carry a hierarchical realised-operation graph in the schedule, or bind a complete versioned expansion library; I recommend carrying the graph. Give every invocation level its own occurrence, step/iteration and phase coordinates. Bind all decompositions, concrete allocation classes and cleanup instruments, resolve selectors independently by kind with ties rejected, and require timing to respect explicit data, wire, lifetime and effect dependencies unless a checked transformation justifies their removal."
+   },
+   {
+    "id": "B10",
+    "section": "\u00a7\u00a76.4, 12.1\u201312.3; suites C\u2013D",
+    "problem": "Certificate checking still requires unspecified choices. 'The diamond-norm program' does not identify a particular SDP, Choi normalisation, matrix encoding or rigorous PSD acceptance rule; standard formulations even differ in whether their objective is the norm or half the norm. [Watrous, \u00a74](https://www.theoryofcomputing.org/articles/v005a011/v005a011.pdf). The realised artifact remains incompletely bound because schedule_hash is optional. Error entries also remain keyed only by region, although realisations and cleanup entries vary by variant and inherited control count.",
+    "fix": "Require a schedule/realised-graph identity for executable claims and define the checked matrix construction, workspace treatment and proof-dependency rules. For channel differences, one sufficient explicit contract uses an unnormalised Choi matrix J and checks Y\u2212J \u2265 0, Y+J \u2265 0, \u03bcI\u2212Tr_out(Y) \u2265 0 and \u03bc \u2264 bound, with a specified rational witness encoding and rigorous PSD checker that rejects inconclusive results. Alternatively prohibit channel proof labels until such a rule exists; I recommend specifying the rule. Key local/inclusive errors and multiplicities by the complete realisation context, or explicitly require a verified common worst-case bound across all contexts."
+   }
+  ],
+  "muse": [
+   {
+    "fix": "State that the inverse of an A+D row is the exact reverse of its full \u00a73.7 sub-operation list, with A sub-operations inverted at their reversed positions, and print the inverse sequences for lift.call and lift.ret. Distinguish three slot kinds: assignment slots (exchange back, then uncompute), capture slots (uncompute only, after the state they were captured from is restored), and the ret delivery slot (exchange back with the destination under the restored fp, then uncompute v after L_f is exchanged back to callee values). Add suite-B tests that run one forward call/ret step on a recursive call, then its inverse, and assert the whole pre-step tuple and clean frame.",
+    "id": "B1_AD_INVERSE_INTERLEAVING",
+    "problem": "\u00a73.6 inverse step 4 groups operations as fault writes, then direct sub-operations in reverse order, then A-row exchanges/uncomputes. Read literally for lift.ret this undoes the pop and delivery exchanges before the A assignment restoring fp, so their stack addresses and the (stack[fp+2]==id) delivery condition are evaluated with the caller's fp, not the callee fp used forward. For lift.call, undoing the stack[sp+1]^=fp XOR before restoring fp likewise uses the new fp. The text also does not distinguish assignment slots from the \u00a73.7 argument/result capture slots, which forward are computed but not exchanged with a destination, so 'exchange every slot back with its destination' has no destination for them. An implementer reversing the whole \u00a73.7 list operationally gets the true inverse; one following \u00a73.6's grouping does not.",
+    "section": "\u00a73.6 inverse step, \u00a73.7 lift.call/lift.ret, \u00a74.2"
+   },
+   {
+    "fix": "Add a per-row type column or closed rules: every address operand and lift.addr/lift.label destination is reg[ptr_width]; lift.alloc's n and lift.boundscheck's n are reg[ptr_width] or a literal in [0,2^ptr_width); lift.load/store addresses are reg[ptr_width]; call arguments, ret operand and oracle/perm call ins/tgt/fr locations have exactly the callee signature widths; fault's code literal is < 2^F; the \u00a73.3 width rules apply verbatim to the lift.* counterparts; mem operands name caller regions with the callee's exact [A,W] and compatible role. State that any width mismatch is suite-F ill-formed, never truncation or extension.",
+    "id": "B2_LIFTED_TYPE_SCHEMA",
+    "problem": "The CC width holes of round 4 are fixed, but lifted rows still have no closed type relations. Nothing states the width of a lift.load/store/boundscheck/alloc address or length location relative to ptr_width, the destination width of lift.addr or lift.label, or width equality between lift.call/lift.ret/lift.oracle_call operands and the callee signature. A body with base:reg[8] under ptr_width=32 and lift.addr of a global at 4096 is accepted-and-truncated by one executor, zero-extended by another, and rejected by a third; inrange's 'computed at ptr_width+1, no wrap' is false if the length operand is reg[64]. Well-formedness, hence F_B, diverges.",
+    "section": "\u00a73.3, \u00a74.2, \u00a74.8, \u00a75.1"
+   },
+   {
+    "fix": "Add a variable-binding table by evaluation context (gate cost/epsilon: k = the gate's own control count, c = k + effective control count, eps = the schedule epsilon_share; scheme ancillae/template subscripts: k and i only; qram: a = address width, w = cell width; frame descriptor: c only), make referencing an unbound variable a load error, and either delete a scheme's cost/epsilon and charge/validate the expanded template (my choice), or require suite E to verify they equal the expansion's sums and use only the expansion for accounting. For measurement-based cleanup, either define mbu_schemes as named patterns with an applicability signature over the computing instruction (computing gate kind, garbage wire role, dependency/control wire roles, measurement basis, outcome-to-fixup gate list), or remove the mbu realisation from cert/sched 0.5 and mark it a named future extension; I would take removal for 0.5, since the fixup is a function of the computing circuit, not of the target.",
+    "id": "B3_TARGET_VARIABLES_AND_MBU",
+    "problem": "\u00a78.1 lists variables k, eps, a, w, c but never binds a or w, and does not say how k differs from c (\u00a78.3 calls the total control count c, then says template subscripts are expressions 'over k and i'). A scheme also carries its own cost and epsilon while \u00a78.2 aggregates the expanded template gates, with no rule for which is authoritative when they disagree. Finally mbu_schemes' template is the placeholder '[\u2026 measure/fixup steps \u2026]' with no language, no wire roles, and no statement of which computing shapes a scheme may clean up, although \u00a76.4 and \u00a711 bind cleanups to it by name. A vendor cannot write, and a scheduler cannot cost identically, these entries.",
+    "section": "\u00a78.1\u2013\u00a78.3, \u00a76.4, \u00a79.4"
+   },
+   {
+    "fix": "Carry the realised operation graph in the schedule: nodes with stable ids, source program-point, invocation chain, loop-iteration vector, machine step/phase where applicable, realised gate or library-call identity (closure hash for composite arithmetic), wire/region operands, dependencies, and per-node kind bindings; selectors then resolve against nodes, and the consumer executes the node list verbatim. The alternative, a normative gate-level expansion of every arithmetic row, comparator, inrange scan and address dispatch, is possible but freezes one adder family into the ISA; I would take the carried hierarchical graph. In either case define path matching explicitly (prefix over the invocation chain) and make iteration a vector with one component per enclosing qloop, outermost first.",
+    "id": "B4_SCHEDULE_OPERATION_IDENTITY",
+    "problem": "\u00a711 asserts the expansion into generated operations is normative, but \u00a7\u00a73.6/4.2/4.5\u20134.6 never expand lift.add, the inrange scan, dispatch comparators or address multiplexing into gates: a ripple-carry and a carry-lookahead executor produce different generated gate sets, so a 'generated: 5, kind: gate' entry names different operations, or none, in each. Path matching is also undefined: nothing says a shorter path is a prefix of an operation's invocation chain, what a non-final path element's point denotes, or how one integer 'iteration' identifies a point inside two nested qloops of the same function. \u00a75.7 permits transformations while \u00a711 requires the surviving operations to keep ordinals, without saying which operations a transformation may drop under a verbatim schedule. Two consumers can execute and charge different circuits from one valid-looking schedule.",
+    "section": "\u00a711, \u00a75.7, \u00a73.6 expansions"
+   },
+   {
+    "fix": "Restrict numerical/channel claims to explicitly identified subjects {region closure hash, variant, inherited_controls, schedule_hash, reference subject} at their actual signature widths (delete free-floating 'widths', or define it as the ordered width list of the subject's interface in allocation order). Key error exactly like cleanup by '<variant>:<inherited_controls>'. Print the SDP: unnormalised Choi matrix in input\u2297output allocation-order basis, the dual variables' shapes, the exact linear/PSD constraints (Y, mu) must satisfy, the objective whose value bounds the diamond norm (stating the norm, not half-norm, convention), interval entries as ordered [re_lo,re_hi,im_lo,im_hi] decimal strings, and a named PSD/feasibility checking procedure. Define interval arithmetic as outward rounding to precision_bits-bit binary rationals after every operation, with stated Taylor/remainder enclosures for sin/cos/exp, so accept/reject is a function of the certificate.",
+    "id": "B5_CERTIFICATE_CHECKER_RULES",
+    "problem": "The channel claim still says only 'verify the SDP dual feasibility of (Y, mu) for the diamond-norm program': the Choi convention, the primal/dual equations, the objective, the factor-of-two convention, dimensions, and the JSON encoding of an interval Hermitian matrix are all unstated, so two checkers test different programs. The numerical claim's 'widths' have no format or meaning for a region whose signature widths are fixed, the claim carries no subject (which realised variant, how many inherited controls, under which schedule) and no reference identity, and 'interval arithmetic at precision_bits' does not fix rounding or enclosures of the trigonometric entries of rz/rx, so one sound checker accepts a bound another rejects. The error object is still one local/inclusive pair per region although realised error varies with the variant and inherited control count that cleanup entries are keyed by and that \u00a78.3 charges on total controls.",
+    "section": "\u00a712.1, \u00a712.3, \u00a76.4"
+   },
+   {
+    "fix": "Give one result-value table: INT = ceil(N/8) little-endian bytes with width=N; F64 = 8 IEEE-754 little-endian bytes with width=64; QREG and TOKEN are returned only through new typed accessors bennett_result_get_qreg/_token (bennett_result_get on them returns BENNETT_E_ARG), and cap too small is BENNETT_E_ARG writing nothing. State that bennett_wait blocks until exactly one outcome: HOST_REQUEST (BENNETT_OK, request non-null, result null) or COMPLETED/FAILED (BENNETT_OK, result non-null including fault codes, request null). Define bennett_qreg_free to require clean, returning BENNETT_E_QREG_NOT_CLEAN, with discarding an entangled register available only through measurement (I prefer this to a silent trace-out free). Define tape args per device operation as its operands in \u00a77.3 order, each an unsigned 64-bit little-endian field, pointers zero-extended from ptr_width.",
+    "id": "B6_LAUNCH_RESULT_AND_TAPE_ENCODING",
+    "problem": "Input binding is now pinned but outputs are not. bennett_result_get returns one (kind, width, le_bytes) triple for every value, with no encoding for QREG (width = register width n, or 64 for the id?) or TOKEN, no F64 byte rule, and no result when cap is too small. bennett_wait's contract for RUNNING, HOST_REQUEST and FAILED runs\u2014which out-pointer is set, whether it blocks, and which status each outcome carries\u2014is unstated. bennett_tape_next returns argument 'bytes' with no per-device-op layout, although tape replay is a conformance artefact. bennett_qreg_free has no clean/dirty rule, unlike the CC qreg.free and \u00a710's clean-only prepare, so one runtime traces out an entangled register and another errors.",
+    "section": "\u00a710, \u00a77.3\u2013\u00a77.4, \u00a73.3"
+   }
+  ],
+  "opus": [
+   {
+    "id": "B1",
+    "section": "\u00a74.1 uncall, \u00a77.4 segment uncall and whole-run reversal, T4",
+    "problem": "Segment uncall reverses a call segment's frames while later frames stay in place, so recorded old-value restores are applied out of LIFO order. This is unsound on three counts. (a) Allocation: f does `alloc 10` (bump hb\u2192hb+10, entry e0). The caller then allocates p2 = hb+10. `uncall f` restores the old bump pointer hb and the table entry. The next `alloc 20` returns [hb, hb+20), which overlaps the still-live p2. If the table is reset by index, p2's entry is lost as well. (b) Devices: console reversal 'pops' bytes the caller wrote after f; entropy `p -= len` rewinds behind later reads. (c) Whole-run reversal 're-executes reversed segments forward when it meets their uncall frame', and that execution starts from the state at that time, not the original one. Take entry C = 0. f reads B = 0 and writes A. The caller stores C = 7, then B = 5. `uncall f` follows. On reversal, re-executing f reads B = 5 and writes C = 1, recording old C = 7. The caller's frames are reversed (B\u21900, C\u21900), then the re-executed segment's frame restores C\u21907. The final C is 7, not the entry value 0, so T4 is false. Two executors would also disagree on where the re-executed frames sit in the history.",
+    "fix": "Choose one of two semantics. (a) Recommended: `uncall @f (args)(results)` is legal only if every frame after the matched segment is pure: dynamic SSA instances, `br` frames, and loads that only create instances. Any store, alloc, free, effect, hostcall, qreg, measure, call or region-call frame after the segment makes uncall a CC trap / R fault FAULT_UB_TRAP. Executing uncall removes the segment by LIFO-restoring its frames and pushes an uncall frame holding the removed frames verbatim. Reversing that frame re-applies those frames' recorded new values in forward order (redo by delta, never re-execution). This keeps the compute\u2013copy\u2013uncall idiom and makes T4 follow from frame-by-frame LIFO. (b) Janus semantics: uncall runs @f's inverse on the current state. This needs an inverse-execution semantics for R functions and a precondition check that the post-state matches; it is much larger, and I would not take it now."
+   },
+   {
+    "id": "B2",
+    "section": "\u00a73.7, \u00a716.3 Example 2, \u00a79.2 hash table",
+    "problem": "Example 2 is a normative test vector, and its stated results are wrong or underdetermined. (i) No rule says whether an lproc's result name (`(r:reg[8])`) is a location, yet @sum writes `r = lift.call \u2026`. If it is a location (required for the body to be well-formed), L_f has m\u2032 = 3 params + r + 9 regs = 13, so R_f = 16. The 17 nested calls needed for n = 16 then require 17\u00b716 = 272 > 2^S_cells = 256 stack cells, and since `stack_limit \u2264 2^S_cells`, n = 16 faults FAULT_BUDGET_DEPTH under every valid budget. The text claims success for n \u2264 16; that holds only if r is not a location (m\u2032 = 12, 17\u00b715 = 255), in which case the body is ill-formed. (ii) The final hash table still prints each hash equal to itself, the template error flagged as opus B5 last round. The @sum/@sum_db envelopes are not printed. I verified inc8 (d93adc99\u2026) and `zero` (ff565436\u2026) byte-for-byte, but could not reproduce @sum/@sum_db from the text alone.",
+    "fix": "State in \u00a73.7: 'an lproc's result name is a location of the lproc, numbered after its params and before its regs, and included in L_f'. Then either set S_cells = 9 in the layout (recomputing the hashes) or state the success range as n \u2264 15 with n = 16 \u2192 FAULT_BUDGET_DEPTH. The alternative is to drop result names (the signature carries a width only, and the body uses a reg); I prefer keeping the name as a location. Replace the hash table with `name = hash` rows and print the @sum and @sum_db envelopes as escaped listings, as was done for inc8."
+   },
+   {
+    "id": "B3",
+    "section": "\u00a76.4, \u00a78.3 mbu_schemes, \u00a711 cleanup entries, \u00a712.1 channel claims",
+    "problem": "Measurement-based cleanup is the compiler's sanctioned strategy (north star \u00a74.2, \u00a75), but its realisation and its proof check are not pinned. (a) `mbu_schemes.template` is elided ('\u2026 measure/fixup steps \u2026'). In any case the correct fixup is function-specific: after X-basis measurement of g's wires with outcome m, the phase (\u22121)^{m\u00b7g(x)} must be applied, and that needs g's computing sequence (or a phase oracle derived from it), which a target-level template cannot contain. Two executors honouring the same `realisation: mbu, mbu_scheme: s` binding would therefore emit different operation sets and costs, and verbatim schedule execution is undefined. (b) The `channel` claim checks 'SDP dual feasibility of (Y, mu) for the diamond-norm program' without stating which program, the Choi convention, or the \u00bd factor. One checker would accept a bound that another rejects.",
+    "fix": "Make the MBU realisation normative in \u00a76.4. For a cleanup of perm value g (width w) bound to its computing sequence S: apply `h` to each wire of g; measure each, giving m \u2208 {0,1}^w, recorded classically; release the wires; then, if m \u2260 0, apply the fixup. The fixup is to recompute g into a fresh clean bundle via S, apply `z` to bit i for each m_i = 1 (classically conditioned), and uncompute via S\u207b\u00b9. The fixup's ops are expanded with ordinals like any generated operation. A target's mbu_scheme then supplies only costs and feedforward latency, and may name an alternative fixup only as a separately certified scheme. For channel claims, state the program: with unnormalised Choi J(\u03a6) = \u03a3_ij |i\u27e9\u27e8j| \u2297 \u03a6(|i\u27e9\u27e8j|) and \u03a6 = \u03a6_real \u2212 \u03a6_ref, accept the bound iff Y \u2ab0 0, Y \u2212 J(\u03a6) \u2ab0 0 (verified by interval Cholesky or a Gershgorin/eigenvalue enclosure at precision_bits), \u03bb_max(Tr_out Y) \u2264 mu, and 2\u00b7mu \u2264 bound (Watrous's simplified SDP, \u2016\u03a6\u2016\u25c7 \u2264 2\u00b7mu)."
+   }
+  ]
+ },
+ "means": {
+  "C1": 3.33,
+  "C2": 3.0,
+  "C3": 3.0,
+  "C4": 3.0,
+  "C5": 2.67,
+  "C6": 3.0,
+  "C7": 4.0,
+  "C8": 3.0
+ },
+ "members": [
+  "codex",
+  "muse",
+  "opus"
+ ]
+}

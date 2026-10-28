@@ -117,6 +117,8 @@ with defaults"** section (replacing the bare deferred list in §17): each
 S1 item gets a default implementers follow until revised. That is how S1
 items are closed under the new rubric.
 
+**Round 5 result (aggregated at pause):** codex: revise, 10 blockers; muse: revise, 6 blockers; opus: revise, 3 blockers. Report: `docs/council/isa-2026-10-28/round-5/report.md`. Start from its blocking list, re-classified by the S0/S1 rule.
+
 ### Other open items, in priority order
 
 1. Chunk 120's pending maintainer decisions remain pending: **amah**
