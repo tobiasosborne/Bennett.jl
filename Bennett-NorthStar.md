@@ -1,12 +1,15 @@
-# Bennett — North Star (reboot vision, iteration 4)
+# Bennett — North Star (reboot vision, iteration 7 — council consensus)
 
 **Date:** 2026-10-28. **Status:** vision settled at the level of "what it
-truly looks like"; technical design NOT started. Iteration 4 after council
-rounds 1–3 (`docs/council/northstar-2026-10-28/round-*/report.md`; the
-editor's responses are in `round-*/response.md`). Round 3 closed the
-three-round budget with one accept and two revise at mean 4.04/5; the
-residue (five semantic paragraphs, each with an agreed fix) is folded into
-this iteration and is listed in `round-3/response.md`. Nothing here is
+truly looks like"; technical design NOT started. Iteration 6 after council
+rounds 1–5 (`docs/council/northstar-2026-10-28/round-*/report.md`; the
+editor's responses are in `round-*/response.md`). Round 5: one accept, two
+revise at mean 4.42/5, every earlier blocker confirmed resolved, one new
+one (residual LLVM nondeterminism after poison/undef removal: NaN bits,
+`fmuladd`, addresses), folded in here as a complete determinism contract.
+Round 6: **all three members accept, no blocking issues, mean 4.46**; the
+council loop on this document is closed, and this iteration applies only
+wording fixes from that round. Nothing here is
 implemented, and no code is to be written on the strength of this
 document alone (maintainer process rule: vision, then design, then
 spikes, then code).
@@ -24,8 +27,9 @@ risks carry over where they do not conflict. `Bennett-V2-PRD.md` remains
 parked. `Bennett-VISION-PRD.md`'s Enzyme analogy turns out to be literal.
 
 **Ground truth this was checked against** (2026-10-28 read-only survey of
-both repos, the Astra reviews, BENCHMARKS.md, and the Sturm.jl checkout at
-`~/old/Projects/Sturm.jl`): worklog chunk 121, session 2026-10-28. The
+both repos, the Astra reviews, BENCHMARKS.md, and the checkout of the now-
+sunset Sturm.jl at `~/old/Projects/Sturm.jl`): worklog chunk 121, session
+2026-10-28. The
 current Bennett.jl / BennettVM.jl are deprecated as designs; their research
 assets (arithmetic generators, soft-float with its test conventions, gate
 algebra, scaling-relation regressions, the 6502 native-oracle harness) are
@@ -44,7 +48,8 @@ of marker calls: allocate qubits, rotate by theta, measure, and a way to
 condition a region on a qubit. Everything else is inferred.
 
 Tagline: **controlled-anything.** If it compiles with clang, you can put it
-under a qubit.
+under a qubit. "Unmodified" means **no source edits**; build-configuration
+flags and runtime shims are allowed and are recorded in the certificate.
 
 Stated precisely, because precision is what makes the slogan true rather
 than a slogan: *every execution of any LLVM program that is defined under
@@ -57,9 +62,12 @@ the optimiser has already erased is not detectable by anyone after the
 fact; it is covered by an explicit definedness assumption recorded in the
 certificate, not by a fault guarantee (§3.2).
 
-The project is predicated on scalable logical quantum computation becoming
-real: plenty of logical qubits and gates at usable gate times. Efficiency
-is pursued hard; universality is never traded for it.
+**The project is predicated on the hardware getting good enough:**
+scalable logical quantum computation with plentiful logical qubits and
+**logical gate times on the order of nanoseconds**. Every cost in this
+document is counted in that regime; a kernel boot of billions of steps is
+a design target only because of it. Efficiency is pursued hard;
+universality is never traded for it.
 
 ## 1. Decisions (settled 2026-10-28, refined after council rounds 1–2)
 
@@ -119,7 +127,7 @@ is pursued hard; universality is never traded for it.
         launch-time lowering to the target alphabet
                   └───────────────────────────┬───────────────────────────┘
                                               ▼
-  Backends     Sturm.jl (Perm/MCX)   OpenQASM 3   QIR   bennett-estimate   hardware via bennett-targets
+  Backends     Bennett.jl simulators   OpenQASM 3   QIR   Quil   bennett-estimate   hardware via bennett-targets
 ```
 
 One semantics: the ISA spec's formal model and conformance suite. Two
@@ -138,11 +146,11 @@ gates freezing the spec.
 | Need | Mechanism (out-of-tree, stock LLVM) | What it does NOT give, and what covers the gap |
 |---|---|---|
 | Quantum operations: allocate (clean / dirty / class), release, gate, rotate(θ), measure, quantum-addressed load and store | **Declared external marker functions** `__bennett_*` with fixed signatures, exactly as Enzyme's `__enzyme_autodiff`. Not `llvm.*` intrinsics (a plugin cannot register them). The plugin recognises them by name and signature at link time. **Positive legality requirement:** a marker is declared as an external function that may read and write memory and may not return (no `readnone`, `readonly`, `speculatable`, `willreturn`, `nounwind`-only combinations that would license elimination, commoning or speculation). Stock passes then preserve the *dynamic sequence* of marker calls on every executed path. | Containing functions may be inlined, cloned, unrolled or versioned, so the *static* count of marker call sites is not preserved; the external declaration itself is never inlined. *Explicit quantum registers* are accessed only through markers, never through LLVM `load`/`store`, so no alias-analysis or forwarding pass can touch them. The ordinary loads and stores of lifted classical code (all of SQLite's) are not quantum-register accesses: they are lifted coherently according to the incoming memory model, as classical memory whose contents happen to be superposed. This legality is a property of ordinary effectful external calls, not of any attribute we invent; the legality corpus (§3.2) tests it. |
-| Qubit handles | **Portable handles**: an ordinary `ptr` in address space 0 (or an integer handle) returned by `__bennett_qalloc`, which every front end can emit from unmodified source: clang, rustc, Julia. Never dereferenced by host code. The plugin normalises recognised handles into its internal representation after outlining, respecting the incoming target's pointer size. **Reference semantics at the dialect level.** | LLVM cannot enforce linearity; SSA uses are free to duplicate. Linearity is a fail-loud verifier obligation after outlining, plus the ISA's value semantics below. A handle that flows through memory or through an `inttoptr`/`ptrtoint` round trip before outlining is **rejected fail-loud** (not tracked) in v1 of the dialect; any handle use that survives into host native code is rejected likewise. Any code that touches handles or measurement results runs in the device's classical-control tier, never as host native code. This is the point on which QIR is faulted in §7, and the answer is to be explicit about it. |
+| Qubit handles | **Portable handles**: an ordinary `ptr` in address space 0 (or an integer handle) returned by `__bennett_qalloc`, which every front end can emit from unmodified source: clang, rustc, Julia. Never dereferenced by host code. The plugin normalises recognised handles into its internal representation after outlining, respecting the incoming target's pointer size. **Reference semantics at the dialect level.** | LLVM cannot enforce linearity; SSA uses are free to duplicate. Linearity is a fail-loud verifier obligation after outlining, plus the ISA's value semantics below. Collections of handles are supported through a **handle table**: an aggregate or array of handles indexed by a classical value (a compile-time constant or a classical-tier value) is lowered to table lookups; a handle that flows through memory at a superposed address, or through an `inttoptr`/`ptrtoint` round trip, is **rejected fail-loud** in v1 of the dialect; any handle use that survives into host native code is rejected likewise. Any code that touches handles or measurement results runs in the device's classical-control tier, never as host native code. This is the point on which QIR is faulted in §7, and the answer is to be explicit about it. |
 | Qubit values in the ISA | **Linear value semantics in the virtual ISA** (wire form, as in Quake's wire dialect and QSSA): each use consumes, each definition produces. The plugin converts handles to wires after outlining and verifies the conversion. | Both forms exist, at named pipeline stages, for the same reason CUDA-Q keeps both. |
-| Coherent memory and in-place update | **Copy-on-read, XOR-on-write, inverse-for-in-place** (§4.2): `__bennett_qload` is a CNOT copy of the register onto fresh wires (source preserved, copy is workspace); `__bennett_qstore` XORs into its target, so a store into a known-clean register is a copy and a store into a register not known to be clean is a **compile-time error**; an in-place update x ← g(x) is written `__bennett_inplace(@g, @ginv, …)` and lowered compute-out-of-place, swap, uncompute-with-g⁻¹; library bijections (add a constant, xor, rotate, modular add/mul) carry their inverses in `bennett-arith`. | An in-place update with no inverse fails loud at compile time. Front ends may instead compose two compute regions and a swap themselves; both are legal. This is what makes `when(q) do x += a end`, the founding Sturm use case, work as written. |
+| Coherent memory and in-place update | **Copy-on-read, XOR-on-write, total-bijection-for-in-place** (§4.2): `__bennett_qload` is a CNOT copy of the register onto fresh wires (source preserved, copy is retained workspace until uncomputed under the validity invariant); `__bennett_qstore` XORs into its target, so a store into a known-clean register is a copy and a store into a register not known to be clean is a **compile-time error** (this source-level restriction is distinct from the oracle ABI, whose targets may hold any value); an in-place update x ← g(x) is written `__bennett_inplace(@g, @ginv, …)` and is admitted **only when g and ginv are mutually inverse total bijections on a declared finite encoding**, with budgets sufficient for forward evaluation and inverse cleanup, and is lowered compute-out-of-place, swap, uncompute-with-g⁻¹; library bijections (add a constant, xor, rotate, modular add, modular multiply with its coprimality condition and its treatment of unused encodings stated) carry their inverses and their g∘ginv = id certificates in `bennett-arith`. | A fallible or budget-limited computation cannot be in-place: it uses the out-of-place oracle interface (§4.2). A declared inverse is a correctness obligation: g∘ginv = id is checked by §5.1 part 1 at exhaustive small widths or carried as a library certificate, and a wrong inverse is caught because swap-then-uncompute leaves the scratch register non-clean. An in-place update with no inverse fails loud at compile time. Front ends may instead compose two compute regions and a swap themselves. This is what makes `when(q) do x += a end`, the founding use case of the Julia language (§6), work as written. |
 | Taint: classical vs reversible vs coherent | **Analysis, not types**: a context-sensitive interprocedural analysis over data dependence, control dependence and memory effects, from marker results and region entries, over the whole-program call graph, with polyvariant specialisation when one function is used both classically and coherently. | No per-value attribute survives optimisation and none is needed. "Untainted" is defined relative to the resolved call graph, never per translation unit. |
-| Control as structure: adjoint, controlled-by-qubit, compute-with-uncompute, reversible-tier entry | **Function granularity**: a region is outlined to a function (LLVM's `CodeExtractor`) and entered through a marker call `__bennett_ctrl(q, @f, budget, args…)`, `__bennett_adj(@f, …)`, `__bennett_compute(@f, …)`, or `__bennett_reversible(@f, budget, …)` for the reversible tier. The plugin generates controlled and adjoint bodies on demand from one source body. **Well-formedness:** a `ctrl`/`adj`/`compute` region is unitary: user measurement inside it is refused (or, when the front end asks for it, deferred by the deferred-measurement principle, which the certificate states); allocations inside are released clean or borrowed and restored; the compiler's own measurement-based uncomputation is the sole exception, and until its controlled form is agreed with Sturm (§9.6) **unitary uncomputation is the fallback under control**. Exceptions and unwinding (`invoke`/`landingpad`, Rust panics, C++ `throw`) inside a region are step-machine control flow where the handler is in the region, and a fault code where it is not. | Front ends that want `when`-style syntax do the outlining themselves (Julia macro, clang attribute, Rust proc-macro) and emit the marker call; the dialect does not require it. Generating a body needs the callee's IR, which is why the plugin runs at link time (§3.3). |
+| Control as structure: adjoint, controlled-by-qubit, compute-with-uncompute, reversible-tier entry | **Function granularity**: a region is outlined to a function (LLVM's `CodeExtractor`) and entered through a marker call `__bennett_ctrl(q, @f, budget, args…)`, `__bennett_adj(@f, …)`, `__bennett_compute(@f, …)`, or `__bennett_reversible(@f, budget, …)` for the reversible tier. The plugin generates controlled and adjoint bodies on demand from one source body. **Well-formedness:** a `ctrl`/`adj`/`compute` region is unitary: user measurement inside it is refused (or, when the front end asks for it, deferred by the deferred-measurement principle, which the certificate states); allocations inside are released clean or borrowed and restored; the compiler's own measurement-based uncomputation is the sole exception, and until its controlled form is fixed in the language's certificate kinds (§9.6) **unitary uncomputation is the fallback under control**. Exceptions and unwinding (`invoke`/`landingpad`, Rust panics, C++ `throw`) inside a region are step-machine control flow where the handler is in the region, and a fault code where it is not. | Front ends that want `when`-style syntax do the outlining themselves (Julia macro, clang attribute, Rust proc-macro) and emit the marker call; the dialect does not require it. Generating a body needs the callee's IR, which is why the plugin runs at link time (§3.3). |
 | Bounds for coherent regions | **A region-level classical budget**: dynamic steps, heap bytes and recursion depth, passed as ordinary integer operands of the region-entry marker or supplied out of band by the host or driver (a project-wide default, a per-function table), and applied by the plugin after outlining. **No per-loop source annotation is ever required**, so unmodified SQLite, Linux and the Monte Carlo compile as they are. Per-loop bounds from scalar evolution, and optional per-loop markers, are *refinements* that let the specialiser tighten padding; they are not needed for correctness and no loop identity has to survive O3. | A region whose budget is exhausted on some basis input produces a fault outcome on that input (§4.2); it is never a compile error and never a truncated result. |
 | Garbage and uncomputation | **Liveness analysis** on the outlined region plus the compute/uncompute marker; no lifetime intrinsics. | The scheduler decides when to pay to free a dead value; the dialect only has to make deadness computable. |
 | Measurement and classical feedback | Marker call returning `i1`, flowing into ordinary `br` / `select` / `phi`, outside unitary regions. | Branching on a measurement result is classical control (§4.2). |
@@ -161,22 +169,96 @@ gates freezing the spec.
   return 0;` into `return 0`, and nothing remains to fault on), so the
   document does not claim that. The contract, stated once and referenced
   by §0, §4.2, §5.1 and §8: **the reference semantics is the ISA formal-
-  model interpreter run on the freeze-normalised optimised bitcode of the
-  outlined region**, before the curated region pipeline. `undef`/`poison`
-  are refined deterministically by `freeze` at region inputs and at
-  poison-producing operations, with the refinement stated in the spec;
-  the native comparison binary is built from that same freeze-normalised
-  bitcode, so "same bitcode" includes the refinement. Immediate undefined
-  behaviour that the reference machine encounters (traps, `unreachable`,
-  faulting memory access) is a fault code (§4.2); compiled artefacts must
-  never fault where the reference does not. Source UB that optimisation
-  erased before this point is **not detectable** and is covered by an
-  explicit definedness assumption recorded in the certificate. The
-  conformance harness classifies inputs with instrumented builds (UBSan,
-  ASan, MSan) or a checked reference interpreter, as a separate build
-  from the comparison binary; these are **supplementary classifiers**,
-  not a complete decision procedure for source definedness, and inputs
-  they flag are reported as *undefined* and excluded from comparison.
+  model interpreter run on the *materialised* optimised bitcode of the
+  outlined region**, mapped by the dialect's reference semantics, before
+  the curated region pipeline. **Materialised normalisation**, not
+  `freeze`: LLVM's `freeze` yields an arbitrary fixed value that codegen
+  lowers to whatever the register holds, so it cannot define one meaning
+  shared by native code and the device. Instead the normaliser rewrites
+  the region's optimised bitcode into a **poison-free, undef-free form**:
+  poison-generating flags (`nsw`, `nuw`, `exact`, `inbounds` and kin) are
+  stripped; partial operations are totalised with a stated result (a
+  shift by ≥ width yields 0 through a `select`; division by zero and
+  `sdiv`/`srem` of INT_MIN by −1 become faults, below); memory first
+  touched inside the region (alloca and heap contents, and the padding
+  of region-local objects) is zero-filled; any remaining `undef` operand
+  is replaced by a stated constant; `llvm.objectsize`, `llvm.is.constant`
+  and similar query intrinsics are lowered before both builds. Region
+  inputs are **not** zero-initialised: they are the bytes the host
+  supplies.
+
+  Poison and undef are not the only choices LLVM leaves open, and the
+  reference semantics **fixes every remaining one** so that the native
+  comparison binary and the device implement the same function:
+
+  - **Floating point is deterministic soft-float in both builds.** The
+    normaliser rewrites every floating-point operation of lifted code
+    into calls to the project's bit-exact soft-float library
+    (`bennett-arith`, IEEE 754 binary64, round-to-nearest-even, a single
+    canonical NaN with fixed sign and payload produced by *arithmetic*
+    operations only, while `fneg`, `fabs`, `copysign`, loads, stores,
+    `bitcast`, `select` and `phi` stay bit-exact as LangRef requires; no
+    fused multiply-add unless the source wrote `fma` explicitly;
+    `llvm.fmuladd` is rewritten to `fmul` + `fadd`; out-of-range
+    `fptosi`/`fptoui` and the `minnum`/`maxnum` NaN cases have stated
+    results); fast-math flags are stripped. Formats: binary64 and
+    binary32 are covered; `half`, `bfloat`, `x86_fp80` and `fp128` are
+    coverage-report lines until the library covers them, never silent
+    widening. Hardware floating point never executes in either build, so
+    NaN bits, fusion and intermediate rounding are identical by
+    construction, including through `bitcast` and branches. The native
+    comparison binary is the materialised region plus its entire
+    materialised callee closure, linked against the same
+    `bennett-runtimes` and `bennett-arith`, never against the host libc
+    or libm.
+  - **Addresses follow a deterministic layout model.** The heap is laid
+    out by the same `bennett-runtimes` allocator shim linked into both
+    builds at a fixed base with no ASLR; globals and functions are placed
+    by a driver-controlled comparison link (non-PIE, fixed section
+    addresses, constant merging and identical-code folding disabled) whose
+    link map the device loader replicates. Region allocas are rewritten
+    by the normaliser onto a shim-managed shadow stack in both builds
+    where possible, which shrinks the remaining class: executions in
+    which absolute *native stack* address bits still influence the
+    payload or the fault are classified by the reference interpreter's
+    **address-provenance** tracking as *layout-dependent*, excluded from
+    native comparison, counted like the undefined class, validated
+    against the reference interpreter instead, and recorded in the
+    certificate.
+  - **Faulting memory access is defined** by an object-bounds model in the
+    reference semantics: a lifted load or store outside any live
+    allocation is `FAULT_UB_MEMFAULT`. The artefact may therefore fault
+    where native silently reads adjacent memory; "equals native, or is
+    flagged" permits this, and the fault rate reports it.
+  - **Atomics and volatile** in lifted code are sequentialised in program
+    order (the single-thread assumption recorded in the certificate);
+    concurrency is §9.11.
+
+  After this the materialised bitcode has **one defined meaning**, which
+  native codegen and the ISA interpreter both implement, and the native
+  comparison binary is built from that materialised bitcode. Only
+  immediate undefined behaviour that the reference machine encounters
+  (traps, `unreachable`, faulting memory access, division by zero) remains,
+  and it is a fault code (§4.2); compiled artefacts must never fault where
+  the reference does not; native execution supplies success values, and
+  fault *causes* come from the reference interpreter, since a native trap
+  cannot tell division by zero from `unreachable`. Source UB that
+  optimisation erased before this point is **not detectable** and is
+  covered by an explicit definedness assumption recorded in the
+  certificate, together with the LLVM version, the pipeline and the
+  normaliser version, since the fault set and the materialised program
+  depend on them. The normalisation rules are normative text in
+  `bennett-dialect-spec`, enumerating every source they remove (poison
+  literals, `nsw`/`nuw`/`exact`/`inbounds`, fast-math `nnan`/`ninf`,
+  `!range`/`!nonnull`/`!noundef` metadata and the matching attributes,
+  `llvm.assume`, undef vector lanes) and shipping a residual-poison
+  validator implemented independently by the plugin and by
+  `bennett-conformance`. The conformance
+  harness classifies inputs with instrumented builds (UBSan, ASan, MSan)
+  or a checked reference interpreter, as a separate build from the
+  comparison binary; these are **supplementary classifiers**, not a
+  complete decision procedure for source definedness, and inputs they
+  flag are reported as *undefined* and excluded from comparison.
 - **Regions are functions.** Every `when`, adjoint, compute and
   reversible-tier block outlines first. Enzyme lives with this.
 - **Per-LLVM-major builds** of the plugin, as Enzyme is built. A mixed-
@@ -291,13 +373,44 @@ Two control disciplines, kept apart by name in the ISA:
   counts observable or cheap; what it makes possible is choosing the
   budget at run time from classical data instead of at compile time.**
 
-**Totality: every coherent region computes one deterministic bounded
-result, F_B(x), success or fault.** The region's interface is: inputs
-(preserved), a caller-supplied output target, a caller-supplied **fault
-register**, and workspace. The **budget unit** is steps of the ISA formal-
-model interpreter on the outlined region before the region pipeline
-(§3.2), so the fault set is a property of program plus budget, never of
-the compiler; compiled artefacts pad internally as needed and never fault
+**Two region interfaces, kept apart by name.** Every coherent region is
+one of:
+
+- a **lifted classical oracle**: classical code that the plugin
+  reversibilises. It computes one deterministic bounded result F_B(x),
+  success or fault, with the interface and the XOR/involution properties
+  below. Control is control of the XOR; adjoint is the same region.
+- a **quantum action**: a region whose body contains non-permutation
+  operations (rotations, Hadamards) or in-place bijections, acting as a
+  unitary U on its **declared mutable wires**, with borrowed inputs
+  preserved and workspace restored. Control means controlled-U, adjoint
+  means U†. It need not be an involution and does not XOR; in-place
+  bijections belong here, and because they are total bijections with
+  bounded inverses (§3.1) a quantum action has no fault outcome of its
+  own: any fallible computation it needs is a lifted oracle it calls,
+  whose fault register it declares among its outputs. A quantum action
+  whose body contains coherent internal control is, by definition, its
+  bounded padded unitary under the declared bound, and that bound is
+  part of the action's content identity and certificate entry (the same
+  body under two bounds is two unitaries); the budget-fault guarantees
+  of this section describe lifted oracles only.
+
+Lifted oracles and quantum actions nest freely; the plugin classifies
+each outlined region by its contents and the verifier checks the
+declared interface. The step machine records, per step, which
+predecessor it came from, which is what makes block-counter transitions
+injective at control-flow joins; and at region exit it synchronises: all
+branches pad to a common halt counter before control workspace is
+restored (the Quantum Control Machine injectivity and synchronisation
+conditions, §7).
+
+**Totality of lifted oracles: F_B(x), success or fault.** The oracle's
+interface is: inputs (preserved), a caller-supplied output target (any
+value), a caller-supplied **fault register**, and workspace. The **budget
+unit** is steps of the ISA formal-model interpreter on the materialised
+outlined region (§3.2), so the fault set is a property of program plus
+budget plus recorded LLVM version and pipeline, never of Bennett's own
+lowering; compiled artefacts pad internally as needed and never fault
 where the reference does not. On success, F_B(x) = (f(x), 0): the output
 target is XORed with f(x) and the fault register is unchanged. On failure,
 F_B(x) = (0, code): the output target is XORed with the **canonical zero
@@ -315,9 +428,11 @@ as on a clean branch. Two implementations that return the same fault code
 therefore return the same quantum state, not merely the same flag. The
 fault register is part of the oracle's interface: algorithms test it,
 resource estimates report it, and the acceptance tests of §8 require its
-rate to be zero on their declared domains. Both executors implement
-exactly this; the circuit specialiser is the VM's semantics under a fixed
-budget, no more and no less.
+rate to be zero on their declared domains, because a nonzero fault code on
+some basis inputs entangles the fault register with x and degrades the
+interference an algorithm such as Grover relies on. Both executors
+implement exactly this; the circuit specialiser is the VM's semantics
+under a fixed budget, no more and no less.
 
 **Coherent memory and the region interface.** Classical code acting on
 quantum state that outlives a region has exactly these meanings (mirrored
@@ -326,21 +441,27 @@ source preserved; a write XORs into its target, so writing a known-clean
 register is a copy and writing a register not known to be clean is a
 compile-time error; region inputs are preserved and declared outputs are
 XORed into caller-supplied targets, every other write being restored
-workspace; an in-place update x ← g(x) requires an inverse (a declared
-`__bennett_inplace(@g, @ginv)` or a library bijection) and is lowered as
-compute-out-of-place, swap, uncompute-with-g⁻¹, else it fails loud. This
-is the rule that makes controlled modular arithmetic, and `when(q) do x +=
-a end`, compile from unmodified code.
+workspace; an in-place update x ← g(x) requires a total bijection with a
+bounded inverse (a declared `__bennett_inplace(@g, @ginv)` or a library
+bijection, §3.1) and is lowered as compute-out-of-place, swap, uncompute-
+with-g⁻¹, else it fails loud; a fallible computation is never in-place.
+This is the rule that makes controlled modular arithmetic, and `when(q)
+do x += a end`, compile from unmodified code.
 
 **Uncomputation validity (the Silq `qfree`/`const` and Unqomp
 condition).** Garbage is a cost choice inside a correctness envelope, not
-free policy. Each garbage value records its dependency set. It may be
-uncomputed by reversal or recomputation only while that set is unmodified
-since its computation, and it **must** be cleaned before any non-
-permutation operation (Hadamard, non-diagonal rotation, measurement) or
-in-place update acts on a wire in its dependency set, and before the end
-of the enclosing unitary region. Measurement-based uncomputation with
-phase fixup is the sanctioned alternative where that window has closed.
+free policy. Each garbage value records its dependency set and was
+computed by a `qfree` (classical, permutation-tier) computation; both
+halves of the Silq discipline apply. It may be uncomputed by reversal or
+recomputation only while that set is unmodified since its computation,
+and it **must** be cleaned before any non-permutation operation
+(Hadamard, non-diagonal rotation, measurement) or in-place update acts on
+a wire in its dependency set, and before the end of the enclosing unitary
+region. Measurement-based uncomputation with phase fixup is the
+sanctioned alternative where that window has closed, with the fixup
+computed for the actual schedule: after an intervening U the correction
+D becomes U D U†, and §5.1 part 2 verifies the fixup as scheduled, never
+an assumed one.
 Compile-time and run-time schedulers choose **only among schedules that
 satisfy this invariant**; the handle→wire verifier rejects violations;
 conformance exercises them with interference tests (§5.1 part 2). A
@@ -354,8 +475,8 @@ Effects by tier:
 | Tier | Where | Effects | Undefined values |
 |---|---|---|---|
 | classical | host, native | real | real |
-| reversible | device | recorded on the effect tape forwards, replayed backwards; the device models console, clock, entropy, block storage as reversible device models; entered through `__bennett_reversible` or a driver mode | refined by `freeze` at entry; immediate UB is a fault, recorded |
-| coherent | device | **closed and effect-free**: no external effect may occur inside a coherent region. Devices the program touches are virtualised as reversible state inside the device (an in-memory VFS, a console register, a device model) and become part of the oracle's state. Classical inputs are fixed before entry; outputs leave through measurement after exit. An effect the device cannot virtualise is a fault code on the executions that reach it. | refined by `freeze` at entry and at poison-producing operations; immediate UB is a fault code |
+| reversible | device | recorded on the effect tape forwards, replayed backwards; the device models console, clock, entropy, block storage as reversible device models; entered through `__bennett_reversible` or a driver mode | refined by the materialised normalisation of §3.2; immediate UB is a fault, recorded |
+| coherent | device | **closed and effect-free**: no external effect may occur inside a coherent region. Devices the program touches are virtualised as reversible state inside the device (an in-memory VFS, a console register, a device model) and become part of the oracle's state. Classical inputs are fixed before entry; outputs leave through measurement after exit. An effect the device cannot virtualise is a fault code on the executions that reach it. | refined by the materialised normalisation of §3.2; immediate UB is a fault code |
 
 What the VM physically *is* at run time: a classical runtime that
 schedules quantum operations. Coherent regions are lowered to predicated
@@ -392,8 +513,7 @@ checkable without a state vector the size of SQLite's memory.
   use; a predicated step machine over an unstructured CFG costs the budget
   times the block count unless the specialiser recovers structure.
 - **Allocation classes:** clean |0⟩ allocation, **dirty borrowing** (a
-  first-class resource with no analogue in the current code or in
-  Sturm.jl), and release, with clean release and restored correlations as
+  first-class resource with no analogue in the current code), and release, with clean release and restored correlations as
   **semantic obligations** checked by simulation (§5.1), since they cannot
   be decided statically in general.
 
@@ -505,15 +625,19 @@ over a declared finite domain, or compositional/structural) or
    {X, CX, CCX, exact MCX} is a permutation matrix. Relative-phase Toffoli
    decompositions and measurement-based fixups are **not** in this tier.
    A permutation is determined by its action on basis states. Therefore,
-   over a declared finite domain D (every input x, every output-target
-   value t, every fault-register value e, every value of every borrowed
-   dirty ancilla d, clean ancillae in their declared state): if on every
-   element of D the artefact's **entire final register tuple** equals the
-   expected tuple |x⟩|t ⊕ payload(F_B(x))⟩|e ⊕ code(F_B(x))⟩|d⟩|0⟩, where
-   F_B is the bounded reference result of §4.2 (native execution supplies
-   f(x); the embedding specification supplies the rest), then its
-   restriction to D is exactly that permutation, with input preserved, no
-   relative phase and no residual entanglement. Input preservation is a
+   for a region whose declared interface specifies an expected
+   permutation P, over a declared finite domain D: if on every element
+   of D the artefact's **entire final register tuple** equals P applied
+   to that element, then its restriction to D is exactly P, with no
+   relative phase and no residual entanglement. For a lifted oracle, D is
+   every input x, every output-target value t, every fault-register value
+   e, every value of every borrowed dirty ancilla d, clean ancillae in
+   their declared state, and P is |x⟩|t⟩|e⟩|d⟩|0⟩ ↦ |x⟩|t ⊕
+   payload(F_B(x))⟩|e ⊕ code(F_B(x))⟩|d⟩|0⟩, where F_B is the bounded
+   reference result of §4.2 (native execution supplies f(x); the embedding
+   specification supplies the rest). For an in-place bijection, P is
+   |x⟩|0⟩ ↦ |g(x)⟩|0⟩ on the mutable wires with workspace clean, and the
+   same check establishes g∘ginv = id. Input preservation is a
    hypothesis of the theorem and an acceptance check, not a consequence:
    an artefact that flipped an input bit after an otherwise correct oracle
    would pass every output-only check. **Exhaustive agreement on D is
@@ -544,8 +668,18 @@ over a declared finite domain, or compositional/structural) or
 **Equivalence is "equals native, or is flagged".** On every element of a
 rung's declared domain the artefact must return either the native result
 or a fault code; the fault rate over the domain is reported and must be
-zero on the rung's acceptance instances; inputs the UBSan-instrumented
-native oracle reports as undefined are excluded and counted separately.
+zero on the rung's acceptance instances; inputs the instrumented
+classifiers of §3.2 report as *undefined*, and executions the reference
+interpreter classifies as *layout-dependent*, are excluded from native
+comparison, validated against the reference interpreter, and counted
+separately, with each rung reporting and bounding both excluded
+fractions. One outcome table governs §3.2, §5.1 and §8: native-
+comparable success, reference fault, layout-dependent reference
+validation, classifier-flagged undefined. Domain D stays finite and tractable when large dirty pools
+are borrowed by a structural lemma: borrowed wires are used only inside
+verified compute–use–uncompute frames, so their restoration is proved per
+frame; where that lemma does not apply, dirty restoration above small
+widths is labelled evidence.
 
 **What a certificate asserts:** the ISA object, the target, the objective,
 the claimed resource vector, the tier and budget of each region, the
@@ -561,11 +695,11 @@ not proofs and are labelled evidence.
 
 | Component | Language | Why (taste excluded) |
 |---|---|---|
-| Pass plugin (taint, outlining, body generation, lowering to the ISA) | **C++** | The only component that links LLVM. `llvmGetPassPluginInfo` has C linkage, but registering a new-PM pass and every analysis the plugin needs (loop info, dominators, scalar evolution for bound refinement, alias analysis, MemorySSA, `CodeExtractor`) are C++ API only. v1 is the evidence of avoiding this: it reimplements loop analysis in `src/lowering/cfg.jl` and parses MemorySSA out of printed text in `src/memssa.jl`. Enzyme is C++ for the same reason. Built per LLVM major. Kept narrow: it does not contain the scheduler. |
+| Pass plugin (taint, outlining, body generation, lowering to the ISA) | **C++** | The only component of the compiler core that links LLVM (Bennett.jl, as a front end, uses LLVM.jl). `llvmGetPassPluginInfo` has C linkage, but registering a new-PM pass and every analysis the plugin needs (loop info, dominators, scalar evolution for bound refinement, alias analysis, MemorySSA, `CodeExtractor`) are C++ API only. v1 is the evidence of avoiding this: it reimplements loop analysis in `src/lowering/cfg.jl` and parses MemorySSA out of printed text in `src/memssa.jl`. Enzyme is C++ for the same reason. Built per LLVM major. Kept narrow: it does not contain the scheduler. |
 | Scheduler and cost model (`bennett-sched`) | **Rust**, C ABI owned by the ISA spec | Linked by the plugin (compile time) and the VM (run time); it is what makes decision 6 literally true. No LLVM dependency. |
 | ISA spec tooling, VM / device runtime, circuit specialiser, estimator | **Rust** | None touch LLVM: they consume the ISA's serialised form. Embeddable device library with no runtime; memory safety in a component that must never crash a host; usable without std near kernels; a JIT tier available without LLVM. Rust ownership is affine, not linear, so it models qubit ownership well with a leak check, not natively. |
 | Driver | **Rust**, invoking LLVM tools (`opt`, `lld`) as external processes and the plugin through them | The driver orchestrates bitcode but does not link LLVM itself; that keeps the "C++ only where LLVM is linked" rule true. |
-| Front door, REPL, Sturm bridge, research laboratory | **Julia (Bennett.jl)** | The REPL experience is the product's face; Bennett.jl orchestrates the driver in-process through LLVM.jl while the LLVM tools themselves run out of process; new lowerings and arithmetic are prototyped here against the spec. |
+| **The Julia quantum language**, REPL, research laboratory | **Julia (Bennett.jl)** | Bennett is the family name: Bennett.jl *is* the Julia quantum language (`when`, oracles, in-place regions, certificates, `@cost`), the first front end built on the dialect, and the product's face. The former Sturm.jl is sunset; its surface constructs and its MCX kernel are absorbed here. Bennett.jl orchestrates the driver in-process through LLVM.jl while the LLVM tools themselves run out of process; new lowerings and arithmetic are prototyped here against the spec. |
 | Arithmetic and runtime libraries (adders, multipliers, QROM, soft-float, allocator shims, libc, device models) | **Any** | Ordinary code compiled through the same pipeline and shipped as ISA objects with certificates. "Runtimes are libraries" applies to arithmetic too; the specialiser links them. |
 
 Consequence: the centre of gravity leaves Julia. Bennett.jl is the front
@@ -585,9 +719,13 @@ own, communicating only through **two published contracts**:
   versioning.
 - **`bennett-isa-spec`**: everything in §4.4: instruction set and formal
   model, resource vector and target-description format with capabilities,
-  object and link format with the reversible ABI, host–device launch ABI,
-  scheduling interface, certificate schema, coverage-report format,
-  serialisation, conformance suite.
+  object and link format with the reversible ABI, host–device launch ABI
+  (including how host code that interleaves genuine host effects with
+  handle or measurement manipulation is split from the device's
+  classical-control tier), scheduling interface, certificate schema,
+  coverage-report format, serialisation, conformance suite. Its sub-
+  artefacts (ISA, object format, launch ABI, certificate schema) are
+  versioned independently.
 
 Nothing shares code across a contract boundary; anything that needs to is
 a sign the boundary is wrong. **One semantics comes from the ISA spec's
@@ -603,19 +741,19 @@ edges.
 
 | Repository | Owns | Depends on |
 |---|---|---|
-| `bennett-dialect-spec` | as above | nothing |
+| `bennett-dialect-spec` | as above, plus the normalisation rules and residual-poison validator | ISA spec (its reference semantics targets the ISA formal model) |
 | `bennett-isa-spec` | as above | nothing |
 | `bennett-sched` | scheduler and cost model behind the ISA spec's scheduling interface | ISA spec |
 | `bennett-plugin` | the C++ LLVM pass plugin; built per LLVM major | dialect spec, ISA spec, sched (binary) |
 | `bennett-driver` | link-time driver: bitcode merge, plugin invocation, fat objects, launch, coverage reports; per-front-end integration | dialect spec, ISA spec, plugin (binary) |
 | `bennett-vm` | the Rust device runtime: classical-control tier, history layers, effect tape, device models, branch-enumeration simulation, launch-time lowering to the target alphabet, JIT tier | ISA spec, sched |
-| `bennett-circuits` | the bounded specialiser: hierarchical circuit IR, placement, proof-carrying output, exporters (OpenQASM 3, QIR, Quil, Sturm `Perm`) | ISA spec, sched |
+| `bennett-circuits` | the bounded specialiser: hierarchical circuit IR, placement, proof-carrying output, exporters (OpenQASM 3, QIR, Quil) | ISA spec, sched |
 | `bennett-estimate` | resource estimation from ISA objects, certificates and target descriptions, no gates materialised | ISA spec |
 | `bennett-targets` | target descriptions per hardware model, contributed by vendors; importers for existing resource-model formats | ISA spec |
 | `bennett-runtimes` | allocator, libc/musl shims, device models, Julia shim runtime, bitcode builds of language runtimes, as ordinary code compiled to ISA objects | dialect spec; driver (build tool) |
 | `bennett-arith` | adders, multipliers, QROM, soft-float, as ISA library objects with certificates | dialect spec; driver (build tool) |
-| `Bennett.jl` | Julia front door, REPL, `@cost`, Sturm bridge, research lab | driver (binary), ISA spec |
-| `bennett-conformance` | the demo ladder as executable gates, the certificate checker, the legality corpus runner, the UBSan-instrumented differential harness | everything, as a consumer only |
+| `Bennett.jl` | the Julia quantum language: `when`, oracles, in-place regions, certificate kinds, simulators as VM targets, REPL, `@cost`, research lab | driver (binary), ISA spec |
+| `bennett-conformance` | the demo ladder as executable gates, the certificate checker, the legality corpus runner, the differential harness with the instrumented classifiers of §3.2 | everything, as a consumer only |
 
 The test of the split: every repository can be replaced by a competitor's
 implementation of the same spec without the rest noticing.
@@ -638,7 +776,7 @@ implementation of the same spec without the rest noticing.
 | **QCOR / XACC, Qiskit classical-function compiler, tweedledum / RevKit, ProjectQ Compute/Uncompute, REVS (Parent–Roetteler–Svore)** | C++ quantum kernels through a clang plugin with compute/action/uncompute and automatic ctrl/adjoint; oracle synthesis from classical functions; the compute/uncompute idiom. | Whole programs in any LLVM language rather than annotated kernels or small classical-function languages; a VM and ISA beneath. |
 | **Tower, Spire** | Superposed pointers and classically bounded recursion as the right semantics for coherent data structures; Spire's accounting of the cost of padded coherent control. | The same semantics, for programs nobody rewrote; the step machine of §4.2 is the general case. |
 | **Qualtran, Azure RE** | Symbolic, hierarchical resource counting without materialised gates; target models as data. | Certificates attached to linkable objects; the target-description format accepts imported models, converting units where they align with the target's declared resources and otherwise importing them as new named resources. |
-| **QSSA, QIRO** | Linear SSA for quantum values. | Used in the ISA, not imposed on LLVM IR. |
+| **QSSA, QIRO, HUGR / Guppy / tket2** | Linear SSA for quantum values; HUGR's hierarchical hybrid graph and Guppy's Python-embedded typed quantum language as the closest contemporary program-level IR. | Used in the ISA, not imposed on LLVM IR; HUGR is an import/export door. |
 | **ReVerC** | Verified reversible compilation of a small language. | Correctness by theorem plus oracle (§5.1) for arbitrary LLVM input. |
 | **Reversible pebbling (Bennett 89, Knill 95, PRS15, Chan et al.)** | The space-time trade-off theory and its hardness result. | Pebbling as run-time policy over a resource vector, not only a compile-time choice. |
 
@@ -661,7 +799,7 @@ attribution.
 | 1 | Scalar C, Rust, Julia functions | Exhaustive at Int8 over the full domain D of §5.1 part 1, both executors equal to native; fault rate zero. |
 | 2 | Pointers, structs, byte memory | A C hashtable (the existing 258-line corpus): forward result equal to native on every tested input (independent check), then reversed byte-exactly, both executors. |
 | 3 | musl hello-world | Forward output equal to native; run in the reversible tier with a console device model; un-run to the reset state; tape replay deterministic. |
-| 4 | **Grover over SQLite** | SQLite compiled unmodified to the coherent tier under a region budget, with an in-memory VFS over quantum-addressed memory. Database of N rows fixed classically before entry; the predicate is a real SQL query; the oracle bit is the query's match. (a) Oracle verified by §5.1 part 1 over all rows and all target values for N ≤ 2¹⁰, fault rate zero. (b) End-to-end Grover by state-vector simulation with branch enumeration at N ≤ 2⁸. (c) A resource estimate for N = 2²⁰ under a named target, reporting the budget and the padded cost. Nobody rewrote SQLite. |
+| 4 | **Grover over SQLite** | SQLite compiled unmodified to the coherent tier under a region budget, with an in-memory VFS over quantum-addressed memory. Database of N rows fixed classically before entry; the predicate is a real SQL query parameterised by a `rowid` bound from the superposed register; the oracle bit is the query's match for that row. (a) Oracle verified by §5.1 part 1 over all rows and all target values for N ≤ 2¹⁰, fault rate zero. (b) End-to-end Grover by state-vector simulation with branch enumeration at N ≤ 2⁸. (c) A resource estimate for N = 2²⁰ under a named target, reporting the budget and the padded cost. Nobody rewrote SQLite. |
 | 5 | Julia on a shim runtime | `push!` and `Dict` work because the allocator works, with zero compiler awareness of either; forward results equal to native Julia; reversal exact. |
 | 6 | xv6, then Linux `tinyconfig` | Serial console output equal to a native (QEMU) run of the same image (independent forward check); boots in the reversible tier with device models; un-boots to the reset vector; tape replay byte-identical. |
 | 7 | **Quantum fuzzing of the kernel** | Kernel state snapshot fixed classically after boot; a step budget; syscall arguments as the superposed input over a declared small space; devices virtualised; the oracle bit is the panic flag. The contract is the optimised-IR reference semantics of §3.2 under a recorded definedness assumption; the kernel's own source UB is not detected after optimisation and is not claimed to be. (a) Oracle verified by §5.1 part 1 against native execution of the same snapshot per basis input, with classifier-flagged inputs reported, fault rate zero on the declared space. (b) Amplitude amplification by state-vector simulation at a toy argument space. (c) A resource estimate under a named target. The oracle is Linux. |
@@ -691,10 +829,11 @@ above and appear here only for their mechanics.
 5. **Effect virtualisation**: which device models exist (VFS, console,
    clock, entropy, block device, network as a recorded peer), how they are
    expressed as reversible state, what is refused.
-6. **Measurement-based uncomputation under control**: Sturm.jl's
-   `PermClean` certificate cannot express it; the certificate kind with
-   classical fixup and its controlled form, agreed with Sturm before any
-   gate record freezes.
+6. **Measurement-based uncomputation under control**: the v1
+   `PermClean`-style certificate (inherited from the sunset Sturm.jl)
+   cannot express it; the certificate kind with classical fixup and its
+   controlled form, fixed in Bennett.jl's language before any gate record
+   freezes.
 7. **Reversible ABI and linking**: call/uncall convention, shared ancilla
    frames, structural symbol resolution, content-addressed objects.
 8. **Run-time scheduling policy**: history layers, checkpoint interval,
@@ -703,8 +842,10 @@ above and appear here only for their mechanics.
 9. **ISA serialisation and versioning**; conformance suite; the formal
    model's scope.
 10. **Per-LLVM-major builds**; Julia in-process invocation through LLVM.jl.
-11. Floating point (soft-float as a library), concurrency (sequentialised
-    with a recorded schedule), self-modifying code, signals, setjmp.
+11. Concurrency (sequentialised with a recorded schedule; the single-
+    thread assumption of §3.2 is the v1 contract), self-modifying code,
+    signals, setjmp. Floating point is decided in §3.2 (deterministic
+    soft-float in both builds) and is no longer open.
 12. Repository hosting and release mechanics for §6.1.
 
 ## 10. Process

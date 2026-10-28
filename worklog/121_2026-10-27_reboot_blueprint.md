@@ -179,6 +179,101 @@ layer (effects → bounds/totality → memory/uncomputation validity).
 Budget rounds for depth, not for premise-fixing; and ask for
 `path_to_accept` from round 1, not round 3.
 
+**Maintainer decisions after round 3:** (a) committed + pushed as
+7df99f3d; (b) three-round cap lifted — "I would rather spend time now
+getting it right" — but a further round only if *new blockers* emerge;
+nits and criticism are not blockers; (c) **Sturm.jl is sunset. Bennett is
+the family name for the Julia quantum language**: Bennett.jl *is* the
+language (`when`, oracles, in-place regions, certificate kinds,
+simulators as VM targets, `@cost`), the first front end on the dialect;
+the former Sturm bridge/exporter rows are gone from the doc, and the
+`PermClean`-style certificate is now described as inherited v1 history.
+Round 4 launched on the pre-rename snapshot (sha256 6f4306ec…); the
+rename is not a semantic change and will ride into the next snapshot.
+
+**Council round 4** (muse 93 s, opus 139 s, codex 858 s): muse `accept`,
+codex/opus `revise`, mean 4.33; all five round-3 blockers confirmed
+resolved by everyone; three NEW blockers, all real, all mine from
+iteration 3: (1) `freeze` is NOT a deterministic refinement — it is an
+arbitrary fixed value that codegen lowers to whatever the register holds
+(codex: clang 18 gives different results at -O0/-O3; opus: x86 masks
+over-wide shifts, padding holds stale memory) → replaced by
+**materialised normalisation** (strip nsw/nuw/exact/inbounds, totalise
+partial ops via select, zero-init allocas/heap/padding/inputs, replace
+undef by constants) applied before BOTH the reference interpreter and
+the native comparison binary are built; (2) the universal "XOR
+involution, inputs preserved" oracle formula can't describe a region
+with RZ(θ) or an in-place increment → two named region interfaces:
+*lifted classical oracle* (F_B, XOR, self-adjoint, fault register) and
+*quantum action* (U on declared mutable wires; ctrl = cU, adj = U†; no
+own fault outcome); (3) compute-swap-uncompute needs the inverse to be
+valid under bounds → `__bennett_inplace` admitted only for total
+bijections on a declared finite encoding with bounded inverses; fallible
+work is never in-place. Lesson for the gotcha list: a fix written under
+time pressure (freeze) introduced a false premise that cost a round;
+check LLVM semantics claims against LangRef before writing them into a
+contract. Iteration 5 written; round 5 to follow (maintainer rule: new
+blockers only).
+
+**ISA spec workstream opened** (maintainer: "iterate on the ISA spec
+until no blockers, report back after each round with a status: go /
+no-go"; asked which module is most demanding → answer: plugin by
+engineering load, ISA spec by intellectual difficulty, VM by existential
+risk; spec first because both executors are its consumers). Written:
+`Bennett-ISA-Spec.md` draft 0.1 (~560 lines: tiers/state/types,
+predicated step machine at instruction granularity with pc history
+frames, 7 instruction groups, lifted-oracle F_B interface + quantum-
+action interface, budgets + fault codes, prefix reversal + exit sync,
+uncomputation validity, memory with qload/qstore/qexchm, effects/device
+models, resource vector + target description, object/link/reversible
+ABI, launch ABI, scheduling interface, certificate schema, coverage
+report, reference interpreter + theorems T1–T6, conformance suites A–H,
+canonical text form, deferred list) and `docs/council/rubric-isa.md`
+(8 criteria: machine model, instruction set, coherent semantics,
+resources/targets, contracts, formal model/conformance, consistency
+with north star + prior art, implementability). `tools/council.py`
+gained `--rubric/--subject/--context` (north star passed as ungraded
+background). Run `isa-2026-10-28` round 1 launched on sha256 0e9d79c4….
+Maintainer also pinned the hardware predication into north star §0:
+nanosecond-scale logical gate times. North-star round 5 still running
+concurrently.
+
+**North-star round 5** (opus 149 s, muse 176 s, codex 837 s): muse
+`accept`, codex/opus `revise`, mean 4.42; all round-4 blockers
+resolved; ONE new blocker, same class as freeze (3rd instance):
+poison/undef removal still leaves NaN sign/payload, `fmuladd` fusion,
+fast-math, and allocation addresses unspecified, all observable by
+SQLite-class code (codex: clang 18 emits opposite SSE operand orders at
+-O0 vs -O3 for one fadd/bitcast/xor). Fix (iteration 6) closes the
+class: **deterministic soft-float in both builds** (the v1 bit-exact
+library becomes the determinism mechanism — codex's preferred option),
+deterministic layout via the shared allocator shim at fixed base with
+stack-address-dependent executions classified *layout-dependent* and
+excluded (opus option A), object-bounds memfault model, atomics/volatile
+sequentialised, fault causes from the reference interpreter,
+normaliser version in certificate, normalisation rules normative in the
+dialect spec. Plus: inputs NOT zero-initialised (only first-touched
+memory); permutation theorem generalised to a declared P (oracle tuple
+or in-place |x⟩↦|g(x)⟩); handle-table idiom; QCM injectivity named.
+Status reported to maintainer: **no-go** (new blocker) → round 6.
+
+**North-star round 6 — CONSENSUS (GO).** codex/muse/opus all `accept`,
+zero blockers, mean 4.46, C1 + C3 unanimous 5s (opus 152 s, muse 160 s,
+codex 483 s). Trajectory over six rounds: 2.62 → 3.75 → 4.04 → 4.33 →
+4.42 → 4.46; blockers 15 → 7 → 5 → 3 → 1 → 0. Iteration 7 applies only
+the round-6 wording nits (zero-init contradiction; NaN canonicalisation
+only for arithmetic ops; FP formats scoped; comparison binary linked
+against bennett-runtimes/arith never host libc; globals via driver-
+controlled non-PIE link, allocas on a shim shadow stack; layout-
+dependent class mirrored in §5.1 with bounded excluded fractions;
+action bound in content identity). Loop closed per maintainer rule (no
+rounds for nits). Residual suggestions routed to the dialect/ISA specs
+(`round-6/response.md`). Council process lesson, confirmed over six
+rounds: the hard residue was never the vision — it was the determinism
+contract of the differential oracle (freeze → poison → NaN/fmuladd/
+addresses), i.e. "what does *equals native* mean", which only closed
+when the project's own soft-float became the determinism mechanism.
+
 **Not done.** No tests run; no src/test change; nothing committed or
 pushed this session yet (maintainer still iterating). BennettVM untouched.
 

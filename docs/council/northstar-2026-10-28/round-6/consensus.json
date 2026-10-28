@@ -1,0 +1,28 @@
+{
+ "agree": true,
+ "verdicts": {
+  "codex": "accept",
+  "muse": "accept",
+  "opus": "accept"
+ },
+ "blocking": {
+  "codex": [],
+  "muse": [],
+  "opus": []
+ },
+ "means": {
+  "C1": 5.0,
+  "C2": 4.0,
+  "C3": 5.0,
+  "C4": 4.67,
+  "C5": 4.0,
+  "C6": 4.67,
+  "C7": 4.33,
+  "C8": 4.0
+ },
+ "members": [
+  "codex",
+  "muse",
+  "opus"
+ ]
+}

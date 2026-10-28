@@ -150,8 +150,8 @@ def extract_json(text):
 
 # --------------------------------------------------------------- prepare
 
-def rubric_text():
-    return RUBRIC.read_text(encoding="utf-8")
+def rubric_text(path=None):
+    return Path(path or RUBRIC).read_text(encoding="utf-8")
 
 
 def previous_round_context(run, rnd):
@@ -181,11 +181,14 @@ def previous_round_context(run, rnd):
     return "\n".join(parts)
 
 
-def build_prompt(doc_text, run, rnd):
+DEFAULT_SUBJECT = ("the founding vision for a from-scratch reboot of Bennett "
+                   "(a reversible / quantum compiler toolchain; see the document)")
+
+
+def build_prompt(doc_text, run, rnd, subject=None, rubric=None, contexts=()):
     task = (
         "You are a member of a three-model council grading the document "
-        "below, the founding vision for a from-scratch reboot of Bennett "
-        "(a reversible / quantum compiler toolchain; see the document). Grade "
+        f"below, {subject or DEFAULT_SUBJECT}. Grade "
         "it against the rubric on the absolute scale. Be exacting and "
         "skeptical: verify every technical premise against your own "
         "knowledge; name any that is false. Grade the vision for being the "
@@ -210,10 +213,14 @@ def build_prompt(doc_text, run, rnd):
         "and src/ (the deprecated v1). Reading is optional; the snapshot "
         "below is what you grade.\n\n"
         "Answer only with JSON matching the schema.")
+    ctx = []
+    for c in contexts:
+        ctx.append(f"# Background (not graded): `{Path(c).name}`\n\n"
+                   + Path(c).read_text(encoding="utf-8"))
     return "\n\n".join(p for p in [
         "# Council", task, previous_round_context(run, rnd),
-        "# Rubric", rubric_text(),
-        f"# The document (`Bennett-NorthStar.md`, round {rnd} snapshot)",
+        "# Rubric", rubric_text(rubric), *ctx,
+        f"# The document under review (round {rnd} snapshot)",
         doc_text] if p)
 
 
@@ -226,11 +233,15 @@ def prepare(a):
     sha = hashlib.sha256(text.encode()).hexdigest()
     rdir.mkdir(parents=True, exist_ok=True)
     atomic_write(rdir / "doc.md", text)
-    atomic_write(rdir / "prompt.md", build_prompt(text, a.run, a.round))
+    atomic_write(rdir / "prompt.md", build_prompt(
+        text, a.run, a.round, subject=a.subject, rubric=a.rubric,
+        contexts=a.context or ()))
     atomic_write(rdir / "schema.json", json.dumps(schema(), indent=1))
     st = State(rdir)
     st.d.update({"run": a.run, "round": a.round, "doc": str(doc),
-                 "doc_sha256": sha, "prepared": now(), "members": {}})
+                 "doc_sha256": sha, "prepared": now(), "members": {},
+                 "rubric": a.rubric or str(RUBRIC), "subject": a.subject,
+                 "context": list(a.context or [])})
     st.save()
     print(f"prepared {rdir} (doc sha256 {sha[:12]}, prompt "
           f"{len((rdir / 'prompt.md').read_text())} chars)")
@@ -401,7 +412,8 @@ def aggregate_cmd(a):
     by = {m: {x["id"]: x for x in r["criteria"]} for m, r in outs.items()}
     lines = [f"# Council — {a.run} round {a.round}", "",
              f"Document snapshot sha256 {State(rdir).d.get('doc_sha256', '')[:12]}; "
-             f"rubric docs/council/rubric.md. Members: {', '.join(names)}. "
+             f"rubric {State(rdir).d.get('rubric', 'docs/council/rubric.md')}. "
+             f"Members: {', '.join(names)}. "
              "Scores are advisory.", "",
              "| | " + " | ".join(names) + " | mean | spread ≥ 2 |",
              "|---|" + "---|" * (len(names) + 2)]
@@ -494,6 +506,10 @@ def main():
     p.add_argument("--round", type=int, required=True)
     p.add_argument("--doc", required=True)
     p.add_argument("--force", action="store_true")
+    p.add_argument("--rubric", help="rubric path (default docs/council/rubric.md)")
+    p.add_argument("--subject", help="one phrase describing the document")
+    p.add_argument("--context", action="append",
+                   help="background document(s) appended to the prompt, not graded")
     r = sub.add_parser("run")
     r.add_argument("--run", required=True)
     r.add_argument("--round", type=int, required=True)

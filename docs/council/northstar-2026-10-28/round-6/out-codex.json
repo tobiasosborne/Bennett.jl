@@ -1,0 +1,63 @@
+{
+ "criteria": [
+  {
+   "id": "C1",
+   "score": 5,
+   "evidence": "The thesis, LLVM delivery mechanism, bounded oracle semantics, device architecture and demonstration ladder describe one coherent project. The hardware assumptions and potentially enormous padding costs are explicit assumptions, not hidden promises of efficiency.",
+   "change": "No substantive change required at vision level."
+  },
+  {
+   "id": "C2",
+   "score": 4,
+   "evidence": "The external-marker and link-time transformation model is credible, and \u00a73.2 now requires deterministic semantics rather than incorrectly deriving them from poison removal. One qualification remains: sequential execution alone does not resolve weak cmpxchg's permitted spurious failures; the blanket determinism requirement must also govern its lowering. [LLVM specification](https://releases.llvm.org/16.0.0/docs/LangRef.html#cmpxchg-instruction).",
+   "change": "Explicitly require deterministic closure beyond the residual-poison check, with weak cmpxchg strengthened or lowered to deterministic sequential operations in both builds."
+  },
+  {
+   "id": "C3",
+   "score": 5,
+   "evidence": "\u00a74 precisely separates classical scheduling from coherent predicates, charges for both branches and bounded allocation, and distinguishes XOR oracles from general quantum actions. Preserved inputs, reversible history and clean control state make the bounded-circuit interpretation coherent without claiming that a superposed instruction pointer supplies free dynamic execution.",
+   "change": "No substantive change required; preserve these qualifications when presenting the VM more briefly."
+  },
+  {
+   "id": "C4",
+   "score": 5,
+   "evidence": "\u00a7\u00a74.4 and 6.1 enumerate the semantic, binary, scheduling, linking, launch and certificate interfaces rather than merely naming repositories. The dialect-to-ISA reference semantics and binary substitutability requirement address the principal places an implementation-specific monolith could hide.",
+   "change": "No substantive change required at vision level."
+  },
+  {
+   "id": "C5",
+   "score": 4,
+   "evidence": "Universality is credibly qualified by bitcode availability, compatibility envelopes, runtime shims, coverage faults and explicit resource bounds. However, describing every floating-point operation through a binary64 library leaves the treatment of other LLVM floating formats insufficiently clear.",
+   "change": "State that soft-float preserves each admitted operation's declared format and rounding semantics; name unsupported formats as explicit coverage faults until supported, rather than suggesting implicit conversion through binary64."
+  },
+  {
+   "id": "C6",
+   "score": 5,
+   "evidence": "\u00a75.1 checks the entire register tuple, includes arbitrary target and dirty-register values, distinguishes permutation proofs from channel verification, and labels sampling honestly. The ladder combines independent forward checks, coherent algorithm tests, zero-fault acceptance domains and resource estimates without requiring enormous circuits to be materialised.",
+   "change": "No conceptual change required; consolidate the comparison classifications as suggested below."
+  },
+  {
+   "id": "C7",
+   "score": 4,
+   "evidence": "The prior-art coverage and narrowly combined novelty claim are strong. Some negative descriptions remain false when read literally: Quil is explicitly architecture-independent, and OpenQASM 3 has classical memory and virtual qubits. [Quil specification](https://quil-lang.github.io/), [OpenQASM types](https://openqasm.com/versions/3.1/language/types.html).",
+   "change": "Replace categorical absence claims with a sourced feature comparison distinguishing existing portability, memory and control facilities from Bennett's combined allocation, coherent-control, linking and resource contract."
+  },
+  {
+   "id": "C8",
+   "score": 4,
+   "evidence": "The document supplies enough architectural direction for all three intended readers and mostly defers mechanics appropriately. Accumulated amendments leave avoidable inconsistencies: \u00a73.2 first includes region inputs among zero-initialised storage and immediately excludes them, while \u00a75.1's equivalence summary omits the newly established layout-dependent category.",
+   "change": "Consolidate the reference contract into one authoritative description of input encoding, normalisation and comparison outcomes, then replace repeated formulations with references."
+  }
+ ],
+ "blocking": [],
+ "suggestions": [
+  "Make deterministic closure a named dialect-conformance obligation alongside poison elimination. Include weak cmpxchg, existing freeze instructions, observable address categories and format-specific floating operations; the existing requirement to fix every observable choice already establishes the right vision-level policy.",
+  "Clarify that binary64 is an initial arithmetic asset, not a universal replacement format. Preserve admitted formats, distinguish arithmetic NaN canonicalisation from bit-preserving operations, and explicitly classify unsupported numerical environments. [LLVM floating-point semantics](https://llvm.org/docs/LangRef.html#floating-point-semantics).",
+  "Use one comparison-outcome table throughout \u00a7\u00a73.2, 5.1 and 8: native-comparable success, reference fault, layout-dependent reference validation, and classifier-flagged source undefinedness. Report separate counts so excluded inputs cannot inflate demonstrated native-equivalence coverage.",
+  "Correct the landscape's categorical claims. In particular, distinguish QIR's specified allocation/release lifetime rules from the linear ownership verification Bennett proposes; QIR does have lifecycle obligations. [QIR memory management](https://github.com/qir-alliance/qir-spec/blob/main/specification/Memory_Management.md).",
+  "Remove region inputs from the first zero-initialisation list. Also replace 'native stack frames cannot be matched by a no-fork design' with 'our native comparison path does not reproduce reference stack layout': rewriting address-exposed allocations into an explicit arena is another possible no-fork design, although the chosen exclusion policy is reasonable."
+ ],
+ "verdict": "accept",
+ "path_to_accept": "Already acceptable as the founding vision. To raise C7, one of the lowest-scoring criteria, from 4 to 5, replace the categorical landscape negatives with a sourced feature comparison that accurately credits existing portability, memory, allocation and control mechanisms while isolating Bennett's proposed combination.",
+ "summary": "Both previous blockers are resolved at vision level: B_DEFINED_NONDETERMINISM by the explicit complete-determinism requirement and materialised soft-float semantics in both builds, and B_RESIDUAL_NONDETERMINISM by the fusion policy, shared layout model and declared exception for stack-layout-dependent executions. The remaining observations clarify implementation obligations and correct presentation; they do not require changing the project's architecture or intended semantics. This is an ambitious, coherent founding vision with a credible correctness contract and unusually explicit costs."
+}

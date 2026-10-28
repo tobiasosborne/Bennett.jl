@@ -1,0 +1,54 @@
+{
+ "agree": false,
+ "verdicts": {
+  "codex": "revise",
+  "muse": "accept",
+  "opus": "revise"
+ },
+ "blocking": {
+  "codex": [
+   {
+    "id": "B_FREEZE_DETERMINISM",
+    "section": "\u00a7\u00a73.2, 4.2 and 5.1",
+    "problem": "The premise that LLVM freeze deterministically selects the reference machine's value is false. Freeze stabilises an arbitrary choice for its uses; it does not prescribe a canonical choice shared by independent lowerings. See the [LLVM freeze semantics](https://llvm.org/docs/LangRef.html#freeze-instruction). Locally, clang 18 compiled the same freeze i1 poison return to an undefined return register at -O0 and zero at -O3. Consequently, using the same freeze-normalised bitcode does not establish one deterministic F_B shared by native execution and both executors.",
+    "fix": "Prefer an explicit deterministic normalisation contract: undef/poison choices and encountered immediate UB are lowered to specified ordinary values or checked faults before subsequent optimisation, and the native comparison build uses that same defined normalisation. Freeze may assist stabilisation but is not the canonicalisation mechanism. Alternatively, retain deterministic choices only in Bennett's reference semantics and restrict native differential equivalence to executions whose results are independent of LLVM's unspecified choices; validate the remainder against the checked interpreter. State this distinction in certificates."
+   },
+   {
+    "id": "B1_QUANTUM_STATE_WRITE_SEMANTICS",
+    "section": "\u00a7\u00a73.1, 4.2 and 5.1",
+    "problem": "The new copy/store/inverse paragraph resolves the individual operations, but the encompassing interface remains contradictory. Section 4.2 says every coherent region preserves inputs and is an XOR-result involution. A region containing RZ(theta) is generally not an involution, and an in-place increment changes its operand. These operations cannot satisfy the stated oracle mapping merely by cleaning workspace. Thus ctrl/adj/compute still lack an unambiguous contract for persistent quantum state.",
+    "fix": "Scope F_B, XOR accumulation, input preservation, and self-adjointness to lifted classical-oracle calls. Separately define quantum action regions as U on declared mutable wires, with borrowed inputs preserved and workspace restored; control means controlled-U and adjoint means U\u2020. In-place bijections belong to this action interface. Define their admissible budget/fault policy separately rather than inheriting the oracle formula. Alternatively, restrict regions to classical oracles and narrow the claims about arbitrary quantum bodies and persistent in-place updates. I would retain the ambition and introduce the two explicit interfaces."
+   },
+   {
+    "id": "B_INPLACE_BOUNDED_INVERSE",
+    "section": "\u00a73.1 coherent memory row and \u00a74.2 coherent memory, budgets and totality",
+    "problem": "Compute\u2013swap\u2013uncompute requires a valid inverse on the values actually produced, including its bounded execution. If forward evaluation faults, its canonical zero payload cannot replace the original register; if inverse evaluation faults, it need not erase the old input. Simply preserving x on failure and XORing an error is not a general repair: a bounded NOT succeeding at x=0 and faulting at x=1 would map both (x,e)=(0,1) and (1,0) to (1,1). The current document supplies no reversible failure extension for this case.",
+    "fix": "For the minimal design, reserve in-place actions for mutually inverse total bijections on a specified finite encoding, with bounds sufficient for forward evaluation and inverse cleanup. Fallible computations use the out-of-place oracle interface; scope the no-compile-error budget promise accordingly. Library modular multiplication must state its coprimality condition and treatment of unused encodings. Alternatively, define a larger reversible interface retaining explicit status/history registers, its complete failure-state mapping, and its adjoint. I would choose the bounded total-bijection restriction first."
+   }
+  ],
+  "muse": [],
+  "opus": [
+   {
+    "id": "B1_FREEZE_REFINEMENT_NOT_NATIVE",
+    "section": "\u00a73.2 Definedness (referenced by \u00a70, \u00a74.2, \u00a75.1, rung 7)",
+    "problem": "The contract says undef/poison are 'refined deterministically by freeze\u2026 with the refinement stated in the spec', and that the native comparison binary, built from the same freeze-normalised bitcode, therefore 'includes the refinement'. That is false. LLVM's `freeze` yields an arbitrary but fixed value, and the backend lowers it to whatever bits the register or memory holds. Two examples: `shl` by \u2265 width is masked on x86 but would be whatever the spec picks, and uninitialised struct padding read via memcmp/memcpy holds stale memory natively. So on any execution where a frozen poison/undef value reaches the output or fault, the reference interpreter and the native binary legitimately disagree. 'Equals native, or is flagged' (\u00a75.1) then becomes ill-posed exactly where real C code (SQLite, Linux) routinely goes. The project would build a correctness oracle that its own native leg cannot satisfy.",
+    "fix": "Preferred (option A): state that normalisation *materialises* the refinement instead of freezing it. Before the reference and the native binary are both built, the normaliser rewrites the region's optimised bitcode into a poison- and undef-free form: strip poison-generating flags (nsw/nuw/exact/inbounds-poison and the like), make partial operations total with an explicit stated result (e.g. a shift by \u2265 width yields 0 via select), zero-initialise allocas, heap and region-input padding, and replace any remaining `undef` operand by a stated constant. After this, the bitcode has one defined meaning, which native codegen and the ISA interpreter both implement; only immediate UB (traps, unreachable, faulting access, division by zero) remains, and it becomes a fault code. Option B: keep freeze as nondeterministic choice in the spec, have the reference interpreter track poison/undef provenance, and classify any execution where a frozen value influences payload or fault as *indeterminate*: excluded from native comparison, counted like the UBSan exclusions. The artefact must still pick one fixed refinement so that F_B stays deterministic. I would take A, because B leaves F_B under-specified across competing implementations and excludes a large, uninteresting slice of real executions."
+   }
+  ]
+ },
+ "means": {
+  "C1": 4.67,
+  "C2": 3.67,
+  "C3": 4.67,
+  "C4": 4.67,
+  "C5": 4.0,
+  "C6": 4.33,
+  "C7": 4.33,
+  "C8": 4.33
+ },
+ "members": [
+  "codex",
+  "muse",
+  "opus"
+ ]
+}

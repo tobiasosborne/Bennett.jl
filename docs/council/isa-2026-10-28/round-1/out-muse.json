@@ -1,0 +1,162 @@
+{
+ "blocking": [
+  {
+   "fix": "State the rule: an oracle body in the ISA is not SSA over wires but a program over a declared register file and quantum memory, where each lifted classical value of width N occupies a named wire[N] location, each instruction lists locations read and locations reversibly updated (by qexch or XOR into clean space with the old value retained as history), block entry coherently multiplexes block parameters from predecessor locations under at_k, and linearity applies to region-boundary wires and action bodies but locations inside an oracle are mutable state re-executed each step. The alternative (keep pure SSA and restrict oracles to structured qif/qloop bodies, abandoning the general step machine) is viable but contradicts the north star's arbitrary-CFG claim; take the register-file rule.",
+   "id": "B1",
+   "problem": "There is no representation for the values a lifted program computes. Classical registers in Q are constants fixed at entry (3.2), ptr is a classical address (3.3), and binop operates on iN (4.1), so none of these can hold superposed data or a superposed pointer. Worse, wires are linear SSA values consumed and produced exactly once (3.3), yet the step machine executes every instruction B times (3.6): an SSA value would be re-produced and re-consumed every machine step. Block parameters (3.4, 16) have no coherent merging rule in Q. Two implementers cannot draw the same state or execute the same body.",
+   "section": "3.2, 3.3, 3.6, 4.1"
+  },
+  {
+   "fix": "Add the transition: under at_HALT, XOR HALT into pc' (halted branches self-loop and perform no state change), allocate one history frame of P clean wires per machine step (B frames total, charged to workspace), define pc := pc' as exchange of the pc bundle with the fresh pc' bundle, and state that at exit at_HALT and the faulted flag are recomputed from pc and the internal fault register (B3) after the B-th step before commit.",
+   "id": "B2",
+   "problem": "The step machine has no transition for HALT. Step 2 XORs a next index into a fresh pc' only for k < n, so a halted branch leaves pc' = 0 and restarts the program, re-executing side effects for the remaining steps. Separately, every at_k is uncomputed in step 3, so the at_HALT used at exit (3.6, 5.2) no longer exists; pc := pc' is an assignment, not a defined reversible operation; and the number and allocation of history frames over B steps is never stated.",
+   "section": "3.6"
+  },
+  {
+   "fix": "Restate the construction: forward execution writes only to an internal clean fault-code register and faulted flag allocated by the region, first fault wins tested against the internal flag; at commit, under at_HALT and not faulted XOR the result into tgt, under faulted XOR the internal code into fr, under neither XOR FAULT_BUDGET_STEPS into fr; reversal then reverses only the forward computation over internal state and never touches tgt or fr. Assign the numeric fault code values now (FAULT_NONE=0, then 1..8 in the order listed in 5.4); the values are quantum data XORed into fr and are semantic, so deferring them (1.3) makes executors disagree on final states.",
+   "id": "B3",
+   "problem": "The fault construction is self-defeating in two ways. First, fault XORs the code into the fault register if it is currently 0 (4.6), but fr may hold any value on entry and domain D ranges over all fr values (5.2): with a nonzero initial fr no fault is ever recorded. Second, 5.2 says the fault instruction has already XORed the code during forward execution and then the whole execution is reversed (5.6), which reverses that XOR and erases the fault. As written, faulted branches return fr unchanged or unchanged-for-nonzero-fr, contradicting the interface.",
+   "section": "4.6, 5.2, 5.6"
+  },
+  {
+   "fix": "Two viable fixes: (a) keep the north-star promise by giving every ISA instruction in an oracle a producer-assigned reference-step weight recorded in the object, define the budget over weights (internal padding steps have weight 0, callee instructions count individually, oracle_call counts its callee's weights), and make heap and depth coherent wire counters in the register file (B1) whose comparisons raise faults, with a stated priority when two budgets trip on one instruction (e.g. depth, then heap, in program order); or (b) redefine the budget over ISA steps and amend the north star and certificate to say the fault set depends on Bennett's lowering. Take (a); (b) surrenders a load-bearing north-star guarantee.",
+   "id": "B4",
+   "problem": "The budget contradicts the north star and is partly unphysical. North star 4.2 fixes the budget unit as steps of the reference semantics on the materialised region so the fault set never depends on Bennett's lowering; 5.4 and 14.1 instead count instructions of the lowered ISA body, so the producer's inlining and layout choices change which inputs fault. Heap and depth counters are classical (3.2), but allocation size and call depth in lifted code depend on superposed data, so they cannot be classical values; and whether a call counts as one step or as its callee's steps is undefined, so F_B itself is ambiguous at every call boundary.",
+   "section": "5.4, 14.1"
+  },
+  {
+   "fix": "Add the well-formedness rule: an oracle body may contain only permutation gates, qcopy/qxor/qexch, quantum-memory operations, control, fault, oracle_call, and action_call to actions certified as exact permutations on their encoding; any other gate makes the function a quantum action, not an oracle. Suite F rejects the rest.",
+   "id": "B5",
+   "problem": "Nothing prevents non-permutation gates inside a lifted oracle. Section 5.1 forbids measure, effect and br but not h or rz, and 5.5 lets an oracle call any action. An oracle containing h is not a function F_B on basis inputs, is not an involution, is illegal in the reference interpreter's own oracle mode (14.1), and voids theorems T1 and T3. The central interface of the spec is not enforced by its well-formedness rules.",
+   "section": "5.1, 5.2, 5.5"
+  },
+  {
+   "fix": "Print the matrix of every gate in the computational basis, including rx/ry/rz as exp(-i theta P/2) or another single stated convention, and mcx as the exact multiply-controlled X. Add the legality rule: a decomposition is conformant only if the realised unitary equals the specified unitary exactly, not up to global phase, or equals it within a stated epsilon in a phase-sensitive norm that is preserved under adding controls; relative-phase constructions are legal only where a certificate proves the phase cancels in context.",
+   "id": "B6",
+   "problem": "Gate semantics are given as 'the standard unitaries' (4.3) with no matrices. Rz has two conventions in wide use differing by a global phase, and since every gate executes controlled on the active predicate (3.5), a global phase becomes a relative, observable phase: two executors choosing different conventions produce different states. The same hole exists for decompositions (8.3): nothing requires a target decomposition of ccx or mcx to be phase-exact, so a relative-phase Toffoli, which the north star 5.1 explicitly excludes from the permutation tier, is a conformant lowering here and silently breaks interference.",
+   "section": "4.3, 8.3"
+  },
+  {
+   "fix": "Pick the oracle-style reading, which is the one the construction and the north star need: g and ginv are compute functions with target-XOR semantics t ^= g(x) and t ^= ginv(x), total mutually inverse bijections on the declared encoding, and qinplace is compute g into clean t, exchange x and t, compute ginv from the new x into t clearing it, free t; state that the certificate obligation is g after ginv = ginv after g = id over the declared domain, checked exhaustively where the declared width makes that finite and otherwise carried as a library certificate, with no privileged width threshold. The alternative (g as an in-place action applied directly to x) makes qinplace a no-op wrapper and loses the founding use case of lifting a classical bijection.",
+   "id": "B7",
+   "problem": "qinplace mixes the two region interfaces the spec exists to separate. It requires g and ginv to be quantum actions, whose interface transforms mut wires in place (5.3), but its semantics call them out of place as g x -> t, which no action does. If g were an in-place bijection action one would simply apply it to x and the whole construction is pointless; the compute-exchange-uncompute sequence only makes sense for oracle-style compute functions t ^= g(x). The exhaustive-check bound 'n <= 16' is also an unmotivated constant appearing nowhere else.",
+   "section": "4.4"
+  },
+  {
+   "fix": "Define an action's semantics as a unitary on mut tensor ins that is block-diagonal in the ins computational basis (basis values of ins unchanged; phases and entanglement with mut are part of U and must be declared intended), with all workspace returned clean and unentangled. Define adj by a per-instruction adjoint table (gate to adjoint gate with negated angles, qalloc swapped with qfree, qborrow likewise, qload paired with its consuming inverse, qinplace with g and ginv exchanged, qif/qloop bodies adjointed, sequence reversed with SSA names renamed accordingly) and define ctl at the region level as controlled-U over that unitary with workspace allocated clean independently of the control, leaving the internal realisation (including compute, controlled commit, uncompute for nested oracles) to the executor.",
+   "id": "B8",
+   "problem": "A quantum action's unitary is never defined on a stated space, and its two derived forms are asserted, falsely, to be automatic. Inputs 'preserved' while usable as controls (5.3) is ambiguous: used as a control against a mut wire in a phase eigenstate, an input acquires phase kickback and entangles with mut, so preserved can only mean basis-value preservation of a joint unitary, which is not said. The adjoint recipe 'body reversed, gates adjointed' is wrong for qalloc/qfree (adjoints of each other), qload (produces wires; its inverse consumes them), qinplace, and any SSA renaming, so 'well-formed by construction' is false. ctl as textual qpred around the body also leaves allocation, oracle commit (B3) and global phase (B6) undefined under control.",
+   "section": "5.3, 4.7"
+  },
+  {
+   "fix": "Decide and state: allocation and release are unconditional resource operations (the wires exist for the region's static maximum regardless of predicate values; only gates are controlled), cleanup is explicit in the program text (every workspace value is cleaned by named inverse instructions before its qfree), and the schedule's freedom is only to choose the realisation of each cleanup (reverse, recompute, or MBU where the target declares mbu and, per the north star, never under a control until the controlled MBU certificate kind exists). Give per-instruction rules computing dependency sets and provenance, define validity in Silq's terms (the value is a classical function of wires that have only had qfree operations applied since computation), and restrict MBU to schedules where the correction is in the target alphabet and channel-verified; otherwise the schedule is invalid, not merely unverified.",
+   "id": "B9",
+   "problem": "Predication and uncomputation are each described twice, inconsistently. Every instruction executes controlled on the active predicate (3.5), but qalloc, qborrow, qfree and the wire-producing instructions have no unitary 'controlled' meaning. Section 5.1 requires producers to emit regions that free everything clean, yet section 11 makes placement of uncomputation a scheduler output, and no instruction in section 4 expresses uncomputing a qcopy result in program text; so whether cleanup is in the program or inserted by the scheduler, and hence what two executors run, is undecided. Section 6 gives no compositional rules for dependency sets, states validity as dynamic basis-value equality rather than a checkable static discipline, misclassifies rz (a diagonal gate) as 'non-diagonal rz usage' while omitting s, t and cz, and admits measurement-based uncomputation wherever the window closed with correction U D U-dagger, which for arbitrary intervening U is generally not an implementable gate.",
+   "section": "3.5, 5.1, 6, 11"
+  },
+  {
+   "fix": "Remove the automatic propagation and state: a nested oracle_call is given a fresh clean internal fault register by the caller; fault propagation is ordinary lifted code (compute fr != 0 as a qfree wire, conditionally XOR FAULT_CALLEE into the caller's internal fault register under the first-fault rule of B3, then clear the nested register by calling the nested oracle a second time or retain it as declared output data). The alternative, automatic propagation, is viable only if 'handled' is defined syntactically (the nested register is listed among the caller region's declared outputs); the explicit form is preferred because it keeps F_B a function of the program text.",
+   "id": "B10",
+   "problem": "FAULT_CALLEE is magic. Section 5.5 says a nested fault propagates 'unless the lifted code tests the nested fault register', but lifted code cannot test a wire classically, 'handles it' has no syntactic or semantic definition, the nested call's fault register (who supplies it, what it starts as, how its code is mapped to FAULT_CALLEE versus passed through, and what happens when the outer region faults later) is unspecified, and first-fault-wins across nesting levels is therefore indeterminate. Two executors will report different codes for the same nested fault.",
+   "section": "5.5, 5.4"
+  },
+  {
+   "fix": "Add: load/store instruction forms with width, signedness for loads, and little-endian byte order in classical memory; a data-initialisation rule for quantum regions (an object-level image mapping declared classical bytes into cells at region creation, bit order little-endian per cell), with the default image all zeros; and an out-of-range rule, either requiring cells = 2^A by well-formedness or defining out-of-range qload to produce 0 and, inside an oracle body, raise FAULT_UB_MEMFAULT through the internal fault register (B3). Prefer requiring producer-emitted range checks against declared allocations for lifted code, with the raw instructions total, and saying so.",
+   "id": "B11",
+   "problem": "Memory is not specified to implementable level. Classical load and store have no instruction forms at all in section 4 (widths, endianness and alignment unstated, though 7.1 and the executor suites presuppose them). A qregion is 'all clean at creation' (4.5) with no way to initialise it from classical data, yet lifted memory and the north star's classically fixed database require exactly that. And qaddr[A] into a region of 'cells' cells has no relation stated between A and cells and no out-of-range behaviour, while FAULT_UB_MEMFAULT (5.4) presupposes one.",
+   "section": "4.5, 7.1, 7.2"
+  },
+  {
+   "fix": "Add a history rule table: for each R instruction, exactly what a history frame records (e.g. for store, address and overwritten bytes; for a lossy binop, the destroyed operands; for br, the taken edge). Define each device model's operations, argument and result types, state, and inverse delta. Make clock a device-state counter advanced only by tape records and entropy an input tape supplied at launch and consumed in order, so a run is a function of (program, initial state, entropy tape) and T4 can be stated; a launch that exhausts the entropy tape is a defined R-tier trap recorded on the tape.",
+   "id": "B12",
+   "problem": "The reversible tier is asserted invertible without the rules that would make it so. 'Every instruction MUST be invertible given the history' (3.4) does not say what any instruction records: a mul or a store destroys information unless the history rule per instruction is stated, and only stores get one (7.1). The four device models (7.3) are names without operations, state, or inverse deltas; entropy (read) has no stated source, so two executors produce different forward runs and theorem T4 (14.3) is not statable, and clock under reversal is undefined.",
+   "section": "3.4, 7.3, 14.3"
+  },
+  {
+   "fix": "State a timing model: execution is sequential in program order unless the schedule (11) assigns start times; each native gate has a duration from the target (a declared 'time' resource, not an ad hoc field); qubit_second charged per wire is the integral of its live interval in scheduled time at its class rate, borrowed wires charged once to the borrower at dirty_rate replacing, not adding to, the owner's charge. Declare the ISA-level machine all-to-all over logical wires, with routing folded into decomposition costs, or add a topology and a move instruction; prefer all-to-all logical, matching the north star's regime. Make gate costs functions: mcx of k, rz of (theta precision, epsilon) with the synthesis rule named. Redefine space_budget as a per-class peak-wire vector, separate from the objective. Replace 8.5 with a normative import table (named source units to named resources with conversion factors); any unit not in the table imports as a new resource, full stop.",
+   "id": "B13",
+   "problem": "The resource model cannot be accounted twice with the same answer. Qubit_second occupancy (8.1, 4.2) needs elapsed time, but no timing or parallelism model is defined: gate 'time' appears in 8.3 without being a declared resource, and 3.6 sums step costs sequentially while a specialiser may parallelise. ptr width is 'from the target description' (3.3) but section 8 has no such field. Qubit classes have no compatibility or movement rules for two-wire gates across classes, 'cheapest' for any (8.2) has no order, borrowed-wire occupancy double-counts against the owner, mcx and rz costs cannot be static scalars (they depend on k and on synthesis epsilon), the scheduler's space_budget is expressed in 'qubit_second-weighted peak occupancy' (11) which is dimensionally a rate, not a space bound, and the Qualtran/Azure import rule (8.5) restates the north star's aspiration with no conversion table a vendor could apply.",
+   "section": "8, 11, 3.3"
+  },
+  {
+   "fix": "Make the content hash the sole global identity: name the hash function and define it over the canonical bytes of the symbol's interface and body (for data, over the image of B11), treat interned IDs as per-object aliases rewritten at link, and state the link rules for undefined symbols (link error unless declared external with a matching interface hash), duplicate definitions with equal hash (deduplicated), and type/device/layout section conflicts (link error). Either write the EBNF for the canonical text in this draft or explicitly demote the text to non-normative examples and declare that no interchange format exists yet; the former is strongly preferred since binary encoding is deferred.",
+   "id": "B14",
+   "problem": "Structural linking as stated is incoherent, and the one interchange format is unwritten. Symbols resolve 'by interned ID and content hash' (9.2), but interned IDs are assigned per object, so equal IDs in two objects are unrelated and different IDs say nothing; resolution by ID across objects cannot work, which is the opposite of how content addressing must be set up. The hash function, what bytes are hashed, undefined symbols, and section conflicts on union are all unstated, and 'certificate composition' is a phrase, not a rule. Meanwhile the canonical textual form (16) that must carry interchange and conformance while binary encodings are deferred has no grammar: section 4's tables use wire[*], 'args', ellipses and prose where a grammar is needed.",
+   "section": "9.1, 9.2, 16"
+  },
+  {
+   "fix": "Repair the launch contract minimally: bennett_run returns a run_id (status via a separate query), add bennett_prepare(handle, classical bits) setting clean wires to a basis value and bennett_free(handle), define status/error values, and define suspension as existing only between bennett_run calls at region boundaries (or add explicit suspend/resume for the R tier keyed by run_id; prefer the boundary rule for Q and explicit suspend for R, and say which). Define the schedule as a serialised object section listing per-cleanup realisations (B9), class assignments and decomposition choices, with an infeasible error return, and require a VM to execute a supplied schedule verbatim when the target hash matches. Make certificate domains machine-readable (symbol, input widths, enumerated ranges or seed-and-count sampling, widths exhaustive to N) so re-execution is defined, and either enumerate the coverage constructs by reference to a versioned dialect list or move the coverage format's enumeration to the dialect spec and keep only the container here.",
+   "id": "B15",
+   "problem": "The remaining cross-repository contracts are sketches with concrete holes. bennett_run returns only status (10), so the run_id that bennett_reverse requires can never be obtained; there is no operation to load classical basis values into allocated handles or to free them; the suspension the north star 4.4 assigns to the launch ABI is absent; free-text 'exact C signatures deferred' (17) defers the contract itself. The scheduling interface (11) returns a 'schedule' with no serialised form, no infeasible-result, and no rule that a VM honour a compile-time schedule, and the object format (9.1) has no section to carry one, so the north star's substitutability guarantee is unimplemented by construction. Certificate domains are '<description of D>' free text (12), so the checker's defining duty, re-execution without trusting the producer, has nothing mechanical to re-execute; the coverage report (13) counts 'source constructs' the ISA spec nowhere enumerates.",
+   "section": "10, 11, 12, 13"
+  },
+  {
+   "fix": "Add a quantum state semantics for actions and measurement: state space as the tensor product over live wires in bundle order, gates by the matrices of B6, measure as computational-basis measurement with Born probabilities consuming the handle's wires and yielding the little-endian integer. Restate T3 with the hypothesis 'the realised unitary on span(D) is a permutation matrix' (however decomposed), T5 with the static-validity hypotheses of B9, and T6 with fixed hypotheses: same target, same decompositions, exact equality for oracles on D, and for actions equality up to the summed epsilon measured in diamond norm for channels and phase-sensitive operator norm for unitaries, with the summation rule stated for sequential and nested composition.",
+   "id": "B16",
+   "problem": "The formal model omits the quantum half of the machine and misstates its flagship theorem. There is no state space, tensor-product ordering, channel semantics, or measurement rule anywhere (measure 'collapses', 4.6, with no Born probabilities), so actions and suite D have nothing to be checked against except the per-basis bit interpreter of 14.1, which by construction cannot see phases. T3's hypothesis requires the realisation to 'use only permutation gates after decomposition', which excludes the standard exact Clifford+T realisation of a Toffoli and contradicts both 8.3 and the north star's definition of the tier by the realised permutation; T2 is circular (hypothesis: implementing 3.6 and 5.6), and T6 claims agreement 'up to the certificate's epsilon' for actions with no fixed metric, target or decomposition hypotheses.",
+   "section": "14, 4.6"
+  }
+ ],
+ "criteria": [
+  {
+   "change": "Define the lifted-value register file and per-instruction history records (B1, B12) so the state diagram is drawable once.",
+   "evidence": "Tiers and a state table are listed (3.1-3.2), but superposed data has no home: Q-tier classical registers are constants, ptr is classical, and linear SSA wires are incompatible with a B-times-executed step machine (3.3 vs 3.6). R-tier history contents are defined for no instruction except store (7.1).",
+   "id": "C1",
+   "score": 2
+  },
+  {
+   "change": "Add the missing forms (load/store, result/ret for oracles, memory initialisation) and a WF/Sem/Cost triple for every row, with gate matrices (B6, B11).",
+   "evidence": "Coverage is broad (allocation, memory, predication, regions) but many entries lack operands, well-formedness or cost: classical load/store have no form at all, call semantics in Q are one clause, oracles have no result-producing instruction, and qinplace calls actions with an interface actions do not have (4.4).",
+   "id": "C2",
+   "score": 2
+  },
+  {
+   "change": "Rewrite the oracle construction around an internal fault register with a commit phase and a HALT self-loop, and close the oracle body to permutation operations (B3, B2, B5).",
+   "evidence": "The core construction as written computes the wrong function: halted branches restart from pc=0 (3.6), the fault XOR is undone by prefix reversal and suppressed whenever fr starts nonzero (4.6, 5.2), and nothing forbids h inside an oracle, voiding F_B and involution (5.1).",
+   "id": "C3",
+   "score": 1
+  },
+  {
+   "change": "Add the timing model that makes qubit_second an integral over scheduled live intervals, plus the missing target fields (ptr width, parameterised gate costs) (B13).",
+   "evidence": "Classes, alphabet and objective are sketched in the right shape (8.2-8.4), but qubit_second has no timing model to integrate over, ptr width is referenced (3.3) and never declared in section 8, class compatibility is absent, and the import rule (8.5) has no conversion table.",
+   "id": "C4",
+   "score": 2
+  },
+  {
+   "change": "Make the content hash the global symbol identity and give the canonical text a grammar (B14); the other contracts then have something to attach to.",
+   "evidence": "Every contract the north star names is present (9-13), which is real progress over a vision, but linking by per-object interned ID cannot work (9.2), bennett_reverse needs a run_id nothing returns (10), schedules have no serialised form or object section (11, 9.1), and certificate domains are free text (12).",
+   "id": "C5",
+   "score": 2
+  },
+  {
+   "change": "Restate T3 over the realised unitary and add the measurement and action semantics (Born rule, block-diagonal U) the theorems quantify over (B16, B8).",
+   "evidence": "The six theorems are the right six (14.3) and suites A-H map onto them, but T3's syntactic gate hypothesis excludes exact Toffoli decompositions, T2 is circular, T6 lacks metric and target hypotheses, and there is no quantum state or measurement semantics for suites D to test against.",
+   "id": "C6",
+   "score": 2
+  },
+  {
+   "change": "Move the budget unit to reference-step weights recorded in the object, restoring the north star's lowering-independence (B4).",
+   "evidence": "The draft faithfully imports the north star's structures and names its sources (Silq/Unqomp in 6, QCM synchronisation in 5.6, linear wires in 3.3), but contradicts it on the budget unit (5.4 vs north star 4.2), on first-fault against a possibly nonzero fr (4.6), and on MBU under control (6 vs north star 3.1).",
+   "id": "C7",
+   "score": 3
+  },
+  {
+   "change": "Un-defer the semantic items (fault values, launch signatures, schedule format) or explicitly narrow draft 0.1's conformance claims to executor semantics only.",
+   "evidence": "Organisation is good and a reader finds rules where expected, but a VM author is stopped on day one by B1-B3, and two deferred items are semantic: numeric fault codes are XORed quantum data (1.3, 5.4) and the unfrozen C signatures (17) are the launch contract itself.",
+   "id": "C8",
+   "score": 2
+  }
+ ],
+ "path_to_accept": "Fix the oracle core first: register-file semantics for lifted values, HALT self-loop, internal fault register with commit-phase XOR and assigned code values, permutation-only oracle bodies, and reference-step budget weights with coherent heap/depth counters (B1-B5). Then pin the physics: gate matrices with phase-exact decomposition legality, the adjoint table and joint-unitary meaning of actions, unconditional allocation with explicit in-program cleanup under a static validity discipline, and Born measurement semantics with T3/T6 restated over realised unitaries (B6, B8, B9, B16). Then close the remaining executor ambiguities (qinplace as oracle-style bijections, B7; explicit nested-fault propagation, B10; memory forms, initialisation and range rule, B11; R-tier history table and tape-deterministic devices, B12). Finally make the contracts mechanical: timing model and completed target fields (B13), hash-as-identity linking with a canonical grammar (B14), and a launch/scheduling/certificate surface a checker can execute (B15). Binary encodings and mechanisation may stay deferred; with the above stated as rules in the text I would re-grade and expect to accept.",
+ "suggestions": [
+  "Rename the device tier CC to avoid collision with the north star's classical tier, which is host native code outside this ISA (north star 4.2); section 3.1 'CC never runs on the host' will otherwise be misread by every implementer arriving from the north star.",
+  "Section 2: token is returned by budget but bennett_budget and oracle_call disagree on whether tokens are consumed per call or reusable across calls with the same budget; say reusable-but-region-bound or per-call explicitly.",
+  "rz takes theta:c:f64 (4.3) but f64 exists only in CC (2) and action classical arguments have no float type in 3.3; either admit f64 as a Q-region entry constant type or pass angles as fixed-point iN with a stated scale.",
+  "mcx with k=0 defined as x (4.3) makes mcx's arity depend on a bundle that may be empty; require k>=1 in the text form and let producers emit x/cx/ccx directly, simplifying the grammar B14 needs.",
+  "State the qstore known-clean restriction explicitly as a dialect-level rule, not an ISA rule (the ISA's XOR semantics in 4.5 are total and fine), so producer authors do not look for the check in suite F.",
+  "Section 12: epsilon composition 'summed' appears only under composition; state in section 8 or 11 that sequential and nested composition both sum in diamond norm so scheduler authors see the rule where they choose decompositions (B16 covers the theorem side).",
+  "The illustrative target in the north star uses RZ: synth(epsilon) as a cost; carry one worked example target description into section 8 so vendors see a parameterised cost written out in full."
+ ],
+ "summary": "A structurally faithful first draft: every contract the north star assigns is at least named, and the theorem and suite lists are the right ones. But the coherent core as written does not compute the function it claims: lifted values have no representation compatible with both linear SSA and the step machine, halted branches restart, fault codes are erased by the reversal meant to protect them and suppressed by arbitrary initial fault registers, and the budget unit silently moved to the lowered body, breaking the north star's central fault guarantee. Several stated premises are false (structural linking by per-object interned IDs, adjoints well-formed by textual reversal, 'non-diagonal rz'). All are fixable at the level of stated rules, and each blocking item gives the rule to state; hence revise, not reject.",
+ "verdict": "revise"
+}

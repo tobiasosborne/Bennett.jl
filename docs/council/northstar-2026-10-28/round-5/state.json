@@ -1,0 +1,33 @@
+{
+ "run": "northstar-2026-10-28",
+ "round": 5,
+ "doc": "Bennett-NorthStar.md",
+ "doc_sha256": "25d3875f7d30d723dbd7ad4c4ef7ee74c04bb16b97df625e3295d415f4cce26b",
+ "prepared": "2026-10-28T10:03:56+00:00",
+ "members": {
+  "codex": {
+   "status": "done",
+   "attempts": 1,
+   "started": "2026-10-28T10:03:56+00:00",
+   "updated": "2026-10-28T10:17:53+00:00",
+   "exit": 0,
+   "seconds": 837
+  },
+  "muse": {
+   "status": "done",
+   "attempts": 1,
+   "started": "2026-10-28T10:03:56+00:00",
+   "updated": "2026-10-28T10:06:53+00:00",
+   "exit": 0,
+   "seconds": 176
+  },
+  "opus": {
+   "status": "done",
+   "attempts": 1,
+   "started": "2026-10-28T10:03:56+00:00",
+   "updated": "2026-10-28T10:06:25+00:00",
+   "exit": 0,
+   "seconds": 149
+  }
+ }
+}

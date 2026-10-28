@@ -1,0 +1,42 @@
+{
+ "agree": false,
+ "verdicts": {
+  "codex": "revise",
+  "muse": "accept",
+  "opus": "revise"
+ },
+ "blocking": {
+  "codex": [
+   {
+    "id": "B_DEFINED_NONDETERMINISM",
+    "section": "\u00a7\u00a73.2, 4.2, 5.1 and 9.11",
+    "problem": "The premise that eliminating poison/undef yields one defined meaning is false. Even flag-free floating-point arithmetic permits nondeterministic NaN sign and payload bits; bitcast can expose these as integer outputs or branch conditions. These executions need not contain UB. See [LLVM's NaN semantics](https://llvm.org/docs/LangRef.html#behavior-of-floating-point-nan-values). Locally, Clang 18.1.3 compiled the same O3-optimised fadd/bitcast/xor function with opposite SSE addition operand orders at -O0 and -O3. Consequently, the listed normalisation does not establish the single F_B shared by native execution and independent executors. Deferring floating point while promising exact native equivalence leaves a correctness-oracle mismatch.",
+    "fix": "State that materialised normalisation resolves every remaining observable execution choice, including defined floating-point choices. Prefer a specified deterministic numerical contract, implemented in both the native comparison build and device reference through the same materialised semantics\u2014for example deterministic soft-float, or fully specified canonicalisation and rounding rules that subsequent optimisation must preserve. Resolve remaining fast-math permissions too; checking only final floating-point outputs is insufficient because bitcasts and branches can observe intermediate bits. Alternatively, retain a deterministic Bennett numerical refinement but restrict native differential equivalence to executions independent of LLVM-permitted choices, explicitly classifying the remainder as indeterminate and validating them against the checked reference. I would take the first option."
+   }
+  ],
+  "muse": [],
+  "opus": [
+   {
+    "id": "B_RESIDUAL_NONDETERMINISM",
+    "section": "\u00a73.2 Definedness (referenced by \u00a70, \u00a74.2, \u00a75.1, rungs 2, 4, 6, 7)",
+    "problem": "Materialised normalisation removes poison and undef, but the stated conclusion that the bitcode then has 'one defined meaning, which native codegen and the ISA interpreter both implement' is false. LLVM IR keeps other nondeterminism that codegen resolves one way and an independent interpreter may resolve another. (i) Allocation addresses are unspecified, and they become observable through ptrtoint, cross-allocation pointer comparison, pointer hashing and %p. Native stack frames and the system malloc will not match the interpreter's layout. (ii) `llvm.fmuladd` may or may not be fused. (iii) NaN results carry a nondeterministic sign and payload. Executions that depend on any of these will disagree between native and device without any defect, so 'equals native, or is flagged' fails on legitimate executions of SQLite- and kernel-class code. It is the same class of error as the `freeze` premise of round 4: the differential oracle that defines correctness would be built on a contract that native execution cannot satisfy.",
+    "fix": "State that the reference semantics fixes every remaining LLVM nondeterminism, and that the normaliser applies that choice to both builds. (a) `fmuladd` is rewritten to explicit `fma`, or to `fmul`+`fadd`, per a stated rule (or per the target description). (b) NaN results follow a stated rule; I prefer canonicalising to the host ISA's default NaN, applied by the normaliser; the alternative is to define equivalence modulo NaN payload. (c) Addresses follow a deterministic layout model. Globals and heap are laid out through the same `bennett-runtimes` allocator shim linked into the native comparison binary, at a fixed base with no ASLR. Address values that layout cannot match (native stack frames chosen by codegen) are handled in one of two ways. Option A: the reference interpreter tracks address provenance, and any execution in which absolute address bits influence the payload or fault is classified *layout-dependent* and excluded from native comparison, counted like the undefined class. It is then validated against the reference interpreter, and the certificate records that it was. Option B: the native comparison runs under a harness that reproduces the reference layout exactly. I would take the shared shim for heap and globals plus option A for stack addresses, because option B needs control over native frame layout, which a no-fork design does not have."
+   }
+  ]
+ },
+ "means": {
+  "C1": 4.67,
+  "C2": 4.33,
+  "C3": 4.67,
+  "C4": 4.67,
+  "C5": 4.0,
+  "C6": 4.33,
+  "C7": 4.67,
+  "C8": 4.0
+ },
+ "members": [
+  "codex",
+  "muse",
+  "opus"
+ ]
+}

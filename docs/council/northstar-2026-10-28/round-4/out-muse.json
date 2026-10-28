@@ -1,0 +1,64 @@
+{
+ "blocking": [],
+ "criteria": [
+  {
+   "change": "None required at vision level; carry the coherent-memory/in-place rule verbatim into both specs so the slogan and the founding Sturm case cannot drift apart in design.",
+   "evidence": "\u00a70's qualified thesis, the ten decisions, \u00a74.2's total regions and coherent-memory rules, and rungs 4/7/8 describe one system: inferred-taint reversibilisation of unmodified LLVM programs onto a public virtual ISA. In-place update now has inverse semantics, so 'controlled-anything' covers controlled modular arithmetic rather than only out-of-place oracles.",
+   "id": "C1",
+   "score": 5
+  },
+  {
+   "change": "Pin the freeze refinement to concrete values realised identically in the shared normalisation for the native comparison binary and the device lowering (e.g. an explicit freeze-to-zero normalisation), since LLVM's freeze alone permits different arbitrary choices in different back ends.",
+   "evidence": "The load-bearing premises check out: external effectful marker functions rather than plugin-registered llvm.* intrinsics, portable AS0/integer handles, CodeExtractor regions, C++-only analyses in the sole LLVM-linked component, per-major builds, and no post-hoc UB concretisation. \u00a73.2 now consistently makes the freeze-normalised optimised bitcode under the reference interpreter the contract, demotes UBSan/ASan/MSan to supplementary classifiers, and gates spec freezing on the O3 legality corpus and real clang/rustc/Julia emission.",
+   "id": "C2",
+   "score": 4
+  },
+  {
+   "change": "Make step-machine synchronisation explicit in \u00a74.2 itself \u2014 all branches pad to a single halt/exit PC value before workspace restoration \u2014 rather than leaving the Quantum Control Machine injectivity/synchronisation requirement visible mainly in \u00a77.",
+   "evidence": "\u00a74.1\u2013\u00a74.3 articulate the missing layer precisely: virtual qubits and allocation classes, dirty borrowing, region-level classical budgets, the predicated step machine as the general construction for arbitrary post-O3 CFGs with pred/loop as optimisations, padded costs stated honestly, the resource vector with a scalarisation/lexicographic decision rule, and the circuit executor as exactly the VM under a fixed budget. Garbage is now a scheduled resource inside the Silq/Unqomp validity envelope, not free policy.",
+   "id": "C3",
+   "score": 5
+  },
+  {
+   "change": "None required at vision level; in design, subject the binary edges (plugin\u2194sched, driver\u2194plugin) to the same competitor-replacement conformance test as the document edges, as \u00a76.1 now promises.",
+   "evidence": "\u00a74.4 and \u00a76.1 enumerate every cross-repository artefact \u2014 object/link formats, reversible ABI, launch ABI, scheduling interface with C ABI and objective semantics, certificate and coverage-report formats \u2014 under exactly two contracts. The dialect spec now also carries a reference semantics into the ISA formal model, and binary-edge versioning is stated, so no monolith or shared-code coupling remains hidden; the one scheduler is shared by specification, not by code.",
+   "id": "C4",
+   "score": 5
+  },
+  {
+   "change": "State the host/device-classical-control boundary for orchestration code that interleaves handle/measurement manipulation with genuine host effects (which parts are host-launched device programs at the launch ABI), the one place a front-end author could still guess wrong.",
+   "evidence": "'Any LLVM language, no fork' is credible as stated: the universal requirement is only bitcode emission, handles through memory or inttoptr round trips are rejected fail-loud rather than silently mistracked, handle-touching code is assigned to the device classical-control tier, exceptions/unwinding are named, Rust std embedded bitcode is used where present, and mixed-version support is honestly bounded to a tested compatibility envelope.",
+   "id": "C5",
+   "score": 4
+  },
+  {
+   "change": "None required at vision level; keep the fault-register value inside domain D in every downstream conformance artefact so the full-tuple check cannot regress to output-only comparison.",
+   "evidence": "\u00a75.1 is now exact and complete: F_B is deterministic with canonical zero payload on failure, the theorem compares the entire final tuple |x\u27e9|t\u2295payload\u27e9|e\u2295code\u27e9|d\u27e9|0\u27e9 over a domain including fault-register and dirty-ancilla values, the budget unit is reference-interpreter steps so the fault set is compiler-independent, non-permutation lowerings are compared as channels in diamond norm with composition rules and rigorous-bound-or-evidence labelling, and every rung is ordered and measurable.",
+   "id": "C6",
+   "score": 5
+  },
+  {
+   "change": "None required at vision level; preserve the narrow (a)\u2013(d) novelty claim wording in derivative documents so adopted mechanisms are not later re-claimed as new.",
+   "evidence": "\u00a77 now covers and correctly credits Enzyme, PTX/offload, Knill/Quil/eQASM, QIR (faulted precisely), OpenQASM 3, CUDA-Q/Quake, Catalyst/MLIR/Qrisp, Q#, Quipper, Silq/Unqomp/Reqomp/SQUARE including the validity condition, the Quantum Control Machine, QCOR/XACC, tweedledum/RevKit, ProjectQ, REVS, Tower/Spire, Qualtran/Azure with a unit-reconciliation rule, QSSA/QIRO, ReVerC and the pebbling literature. Novelty is claimed narrowly as the combination (a)\u2013(d) and survives scrutiny.",
+   "id": "C7",
+   "score": 5
+  },
+  {
+   "change": "Unify the budget/reference terminology between \u00a73.2 (formal-model interpreter on freeze-normalised optimised bitcode) and \u00a74.2 (ISA formal-model interpreter on the outlined region) in one sentence identifying the single artefact the reference interpreter runs, via the dialect reference semantics.",
+   "evidence": "All three readers can act: a vendor gets the ISA, target-description and conformance contracts; a language designer gets the portable marker ABI, legality requirement and copy/XOR/in-place rules; a compiler engineer gets pipeline placement, totality, validity invariants and per-front-end costs. \u00a79 now defers only mechanics \u2014 fat-object layout, fault-code enumeration, serialisation, MBU-under-control form with its unitary fallback already named \u2014 not load-bearing semantics.",
+   "id": "C8",
+   "score": 4
+  }
+ ],
+ "path_to_accept": "No changes are required for accept; the blocking list is empty. To raise the lowest-scoring criteria (C2, C5, C8 at 4) by one point, add one short normative paragraph, mirrored in both specs, that (i) fixes the freeze refinement to concrete values realised identically in the shared normalisation consumed by both the native binary and the device lowering, (ii) names the single artefact the budget-counting reference interpreter runs, and (iii) states step-machine exit synchronisation and the host-launch boundary for handle-touching orchestration code. These are spec-level pins for the design phase, not vision changes.",
+ "suggestions": [
+  "Pin freeze values concretely and realise them in the shared normalisation, so native code generation and device lowering cannot pick different arbitrary freeze results for the same bitcode (\u00a73.2).",
+  "Unify \u00a73.2/\u00a74.2 wording on which artefact (freeze-normalised outlined bitcode, mapped by the dialect reference semantics to the ISA formal model) the budget-counting reference interpreter executes.",
+  "State PC synchronisation at region exit explicitly in \u00a74.2: branches pad to a common halt PC before control workspace is restored, per the Quantum Control Machine condition cited in \u00a77.",
+  "Clarify in \u00a74.2/\u00a73.1 what happens to the qload copy and qstore source after the store (retained workspace until uncomputed under the validity invariant) so the handle\u2192wire verifier's obligation is unmistakable.",
+  "Replace the remaining shorthand 'UBSan-instrumented native oracle' in \u00a75.1's equivalence paragraph and \u00a76.1's conformance row with the \u00a73.2 wording (instrumented classifiers: UBSan/ASan/MSan or checked interpreter, separate build).",
+  "Describe, at launch-ABI level, how host code that interleaves genuine host effects with handle or measurement manipulation is split from the device classical-control tier (\u00a73.1, \u00a74.4)."
+ ],
+ "summary": "All five round-3 blocking issues are resolved and none is re-raised. Codex B1_LLVM_DEFINEDNESS is resolved: \u00a70, \u00a73.2, \u00a75.1 and rung 7 now share one contract \u2014 the reference is the formal-model interpreter on freeze-normalised optimised bitcode, faults cover only what that machine encounters, erased source UB (with codex's 10/x example quoted) is a recorded definedness assumption, and sanitizers are supplementary classifiers in a separate build. Codex B3_FAULT_RESULT_SEMANTICS is resolved: \u00a74.2 defines F_B deterministically (success XORs f(x), fault register unchanged; failure XORs the canonical zero payload and a reference-chosen code), states the prefix-reversal invariant, and counts budgets in reference-interpreter steps, so equal fault codes now entail equal quantum states and the region is an involution composing under control and adjoint. Codex B4_INPUT_PRESERVATION is resolved: \u00a75.1 requires equality of the entire final register tuple with x preserved, the fault register is part of domain D, and the input-bit-flip counterexample is named as the reason. Opus B1_QUANTUM_STATE_WRITE_SEMANTICS is resolved: \u00a73.1 and \u00a74.2 state copy-on-read, XOR-on-write with store-to-not-known-clean as a compile-time error, region inputs preserved with outputs XORed into caller targets, and in-place update only via __bennett_inplace(@g,@ginv) or a library bijection lowered compute/swap/uncompute, else fail-loud. Opus B2_UNCOMPUTATION_VALIDITY is resolved: \u00a74.2 adopts the Silq qfree/const and Unqomp condition as an ISA invariant confining all schedulers, enforced by the verifier, exercised by interference conformance tests, and credited in \u00a77. Re-grading from scratch, I found no false technical premise, internal contradiction, or missing load-bearing piece that would make the project build the wrong thing; the residual items are spec-level pins for the design phase. The vision is unreasonably ambitious, right, and stated precisely enough for strangers to build from.",
+ "verdict": "accept"
+}

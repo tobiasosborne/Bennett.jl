@@ -1,0 +1,64 @@
+{
+ "blocking": [],
+ "criteria": [
+  {
+   "change": "No vision-level change required; keep the two-interface vocabulary (lifted oracle vs quantum action) verbatim in both specs so the slogan and the semantics cannot drift apart in design.",
+   "evidence": "\u00a70's qualified thesis, the ten decisions, \u00a74.2's two region interfaces with total oracles and fault register, and rungs 4/7/8 describe one system: inferred-taint reversibilisation of unmodified LLVM programs onto a public virtual ISA. Ambition (controlled-anything, Grover over unmodified SQLite, kernel as oracle) and the totality/fault discipline now support rather than contradict each other.",
+   "id": "C1",
+   "score": 5
+  },
+  {
+   "change": "No vision-level change required; in the dialect spec, close the materialiser's definition with an enumerated list of poison/undef sources it eliminates or rejects (poison literals, noundef and range attributes, fast-math nnan/ninf flags, poison-generating intrinsics and vector lanes) plus a residual-poison validator, so 'poison-free form' is checkable rather than aspirational.",
+   "evidence": "The load-bearing premises are now true: external effectful marker functions instead of plugin-registered llvm.* intrinsics, with positive legality stated as a property of ordinary opaque calls; portable AS0/integer handles with fail-loud rejection of memory/inttoptr flow; CodeExtractor regions at link time; C++-only analyses confined to the one LLVM-linked compiler-core component. \u00a73.2's materialised normalisation (strip poison flags, totalise shifts via select, zero-initialise allocas/heap/padding/inputs, replace residual undef) is a sound refinement on defined executions and, unlike freeze, gives the bitcode one meaning that both native codegen and the ISA interpreter implement; freezing the dialect spec is gated on the O3 legality corpus and real clang/rustc/Julia emission.",
+   "id": "C2",
+   "score": 5
+  },
+  {
+   "change": "Add one sentence pinning the budget semantics of a quantum action whose own control is coherent: either the action is defined as exactly the bounded, padded unitary of its reference step machine (budget part of its identity, recorded in the certificate), or admission requires budget-adequacy evidence and fails loud without it \u2014 so no action can be silently truncated the way an oracle without its fault register could.",
+   "evidence": "\u00a74.1\u2013\u00a74.3 articulate the missing layer precisely: virtual qubits with allocation classes and dirty borrowing, classical region budgets chosen at run time, the predicated step machine as the general construction for arbitrary post-O3 CFGs with pred/loop as specialiser optimisations, padded costs and O(N) quantum addressing stated honestly, exit synchronisation to a common halt counter, and the circuit executor as exactly the VM under a fixed budget. Garbage is a scheduled resource inside the Silq/Unqomp validity envelope, and oracle (F_B, XOR, self-adjoint, fault register) and quantum-action (U on mutable wires, ctrl-U, U\u2020) interfaces are finally kept apart by name.",
+   "id": "C3",
+   "score": 4
+  },
+  {
+   "change": "No vision-level change required; in design, run the competitor-replacement test over the binary edges (plugin\u2194sched, driver\u2194plugin) as \u00a76.1 now promises, not only over the document edges.",
+   "evidence": "\u00a74.4 and \u00a76.1 enumerate every cross-repository artefact \u2014 object/link formats, reversible ABI, launch ABI including the host-effect/handle split, scheduling interface with C ABI and objective semantics, certificate and coverage-report formats \u2014 under exactly two contracts, with ISA sub-artefacts versioned independently and a dialect reference semantics into the ISA formal model. The one scheduler is shared by specification behind a substitutable interface, not by code; no monolith remains hidden.",
+   "id": "C4",
+   "score": 5
+  },
+  {
+   "change": "Name the supported idiom for collections of qubit handles (statically indexed aggregates resolved at outlining, or a classical-control handle table owned by the launch ABI), since arrays/structs of qubits are the first thing real quantum code writes and today read as fail-loud rejects under the handle-through-memory rule.",
+   "evidence": "'Any LLVM language, no fork' is credible as stated: the universal requirement is only bitcode emission, 'unmodified' is defined as no source edits with flags/shims recorded, per-front-end costs are named (rustc bitcode extraction or -Zbuild-std, Julia via LLVM.jl, mixed majors only inside a tested envelope), exceptions/unwinding are assigned step-machine or fault semantics, and handle-touching code is placed in the device classical-control tier with the host split owned by the launch ABI.",
+   "id": "C5",
+   "score": 4
+  },
+  {
+   "change": "No vision-level change required; keep fault-register and dirty-ancilla values inside domain D in every downstream conformance artefact so the full-tuple check cannot regress to output-only comparison.",
+   "evidence": "\u00a75.1 defines correctness exactly: the permutation tier is fixed after decomposition to emitted gates, verified by equality of the entire final tuple |x\u27e9|t\u2295payload\u27e9|e\u2295code\u27e9|d\u27e9|0\u27e9 over a finite D including fault and dirty values, with exhaustive agreement complete for D and sampling labelled evidence; budgets counted in reference-interpreter steps make the fault set a property of program+budget+recorded LLVM pipeline, never of Bennett's lowering. Non-permutation lowerings get diamond-norm channel comparison and controlled-interference tests with composition rules, dirty-pool tractability is by structural frame lemma or labelled evidence, and every rung is ordered, measurable, and requires zero fault rate for the interference reason \u00a74.2 states.",
+   "id": "C6",
+   "score": 5
+  },
+  {
+   "change": "No vision-level change required; preserve the narrow (a)\u2013(d) novelty wording in derivative documents so adopted mechanisms are not later re-claimed as new.",
+   "evidence": "\u00a77 credits and correctly differentiates Enzyme, PTX/offload, Knill/Quil/eQASM, QIR (faulted precisely on ownership and front-end-emitted adjoints), OpenQASM 3, CUDA-Q/Quake, Catalyst/MLIR/Qrisp, Q#, Quipper, Silq/Unqomp/Reqomp/SQUARE with the validity invariant adopted, the Quantum Control Machine, QCOR/XACC, tweedledum/RevKit, ProjectQ, REVS, Tower/Spire, Qualtran/Azure with a unit-reconciliation rule, QSSA/QIRO and now HUGR/Guppy/tket2 as an import door, ReVerC, and the pebbling literature including its PSPACE hardness. Nothing claimed new is prior art under scrutiny; the novelty is the combination, claimed as such.",
+   "id": "C7",
+   "score": 5
+  },
+  {
+   "change": "Promote two \u00a79.11 items to one-sentence vision contracts where they are used: the memory-ordering assumption for atomics/volatile in lifted code (sequentialised on a recorded schedule, matching the single-threaded native oracle) and the floating-point determinism contract (defined rounding/NaN semantics the interpreter and soft-float library implement), since SQLite, the kernel, and the Monte Carlo all exercise them.",
+   "evidence": "Each reader can act: a vendor gets the ISA, target-description, scheduling-interface and conformance contracts; a language designer gets the portable marker ABI, legality requirement, and copy/XOR/total-bijection rules; a compiler engineer gets pipeline placement, materialised normalisation, the two interfaces, validity invariants, and per-front-end costs. \u00a79 defers mechanics (fat-object layout, fault-code enumeration, serialisation, MBU-under-control certificate form with unitary fallback already named) rather than load-bearing semantics; what remains under-specified is at spec-example level, not vision level.",
+   "id": "C8",
+   "score": 4
+  }
+ ],
+ "path_to_accept": "No changes are required for accept; the blocking list is empty. To raise the lowest-scoring criteria (C3, C5, C8 at 4) by one point, add three short normative sentences, mirrored in the specs: (i) a quantum action with coherent internal control is either defined as its bounded padded reference unitary or admitted only with budget-adequacy evidence, failing loud otherwise; (ii) the supported idiom for statically indexed collections of qubit handles; (iii) the atomic/volatile sequentialisation assumption and the floating-point determinism contract for lifted code. These are pins for the design phase, not changes of direction.",
+ "suggestions": [
+  "State the quantum-action budget rule explicitly (bounded-unitary-by-definition vs budget-adequacy obligation), and extend \u00a73.1's 'unitary uncomputation fallback under control' to say 'under control and adjoint' until the \u00a79.6 certificate kind exists (\u00a7\u00a73.1, 4.2).",
+  "In bennett-dialect-spec, enumerate every poison/undef source the materialiser eliminates or rejects \u2014 poison literals, noundef/range attributes, fast-math nnan/ninf, poison-generating intrinsics, undef vector lanes \u2014 and ship a residual-poison validator so the normaliser's output property is mechanically checked (\u00a73.2).",
+  "Clarify that zero-initialisation of region-input padding is an entry encoding realised unitarily (masked workspace copy, physical input wires preserved), with domain D stated over those encodings, so no reader implements it as overwriting a caller's wires (\u00a7\u00a73.2, 5.1).",
+  "Carry the worked examples codex asked for into the dialect spec as planned: one faulting oracle under control and adjoint, one non-self-inverse quantum action (RZ) with an in-place increment, one controlled in-place bijection at a width with unused encodings.",
+  "Define the handle-collection idiom for v1 (statically indexed aggregates or a launch-ABI handle table) so ordinary qubit-array code has a stated path instead of only a stated rejection (\u00a73.1).",
+  "Note in \u00a75.1 that native execution supplies success values and that fault causes/codes come from the checked reference interpreter, since a native trap cannot distinguish division-by-zero from unreachable or a faulting access."
+ ],
+ "summary": "All round-4 blocking issues are resolved and none is re-raised. Codex B_FREEZE_DETERMINISM and opus B1_FREEZE_REFINEMENT_NOT_NATIVE are resolved: \u00a73.2 abandons freeze for materialised normalisation (option A from both members) \u2014 poison flags stripped, partial operations totalised with stated results, allocas/heap/padding/inputs zero-initialised, residual undef replaced \u2014 with the native comparison binary and the reference interpreter both built from that materialised bitcode, so F_B has one defined meaning and only encountered immediate UB remains, as a fault code under a recorded definedness assumption and LLVM pipeline. Codex B1_QUANTUM_STATE_WRITE_SEMANTICS is resolved: \u00a74.2 now separates the lifted classical oracle (F_B, XOR accumulation, inputs preserved, self-adjoint, fault register) from the quantum action (unitary U on declared mutable wires, borrowed inputs preserved, workspace restored, ctrl-U and U\u2020, no fault of its own, fallible work delegated to nested oracles whose fault registers it declares), with region-exit synchronisation stated. Codex B_INPLACE_BOUNDED_INVERSE is resolved by the minimal design: __bennett_inplace is admitted only for mutually inverse total bijections on a declared finite encoding with budgets sufficient for forward and inverse evaluation, fallible computation is never in-place, library modular multiplication states coprimality and unused-encoding treatment, and g\u2218ginv=id is a checked obligation whose failure leaves scratch non-clean. Re-grading from scratch, I found no false technical premise, internal contradiction, or missing load-bearing piece that would make the project build the wrong thing; the residuals (action budget wording, poison-source enumeration, handle collections, FP/atomic contracts) are spec-level pins recorded as suggestions. The vision is unreasonably ambitious, right, and stated precisely enough for strangers to build from.",
+ "verdict": "accept"
+}

@@ -1,0 +1,82 @@
+{
+ "criteria": [
+  {
+   "id": "C1",
+   "score": 4,
+   "evidence": "The thesis, plugin/VM/specialiser architecture, and SQLite/kernel/Monte Carlo ladder describe one ambitious project. However, \u00a74.2 applies an input-preserving, self-inverse oracle contract to regions that also admit state-changing quantum operations.",
+   "change": "Distinguish lifted classical oracles from quantum action regions, with an explicit state transformation for each."
+  },
+  {
+   "id": "C2",
+   "score": 3,
+   "evidence": "The external-marker and link-time transformation approach is credible and follows the documented [Enzyme model](https://enzyme.mit.edu/getting_started/UsingEnzyme/). Two technical premises remain unsound: freeze alone does not enforce deterministic concretisation, and declaring an inverse does not make a fallible bounded computation safe for compute\u2013swap\u2013uncompute.",
+   "change": "Replace these premises with explicit deterministic normalisation and a bounded-bijection contract."
+  },
+  {
+   "id": "C3",
+   "score": 4,
+   "evidence": "Classical-only scheduling, padded coherent execution, virtual allocation, and target-defined resource objectives make the VM concrete without concealing superposition costs. The bounded-specialisation claim is sound for the classical-oracle construction, but its extension to general quantum actions remains unspecified.",
+   "change": "State which callable kinds the predicated interpreter totalises and how quantum actions compose with them."
+  },
+  {
+   "id": "C4",
+   "score": 5,
+   "evidence": "\u00a7\u00a74.4 and 6.1 assign the exchanged formats, scheduling interface, launch ABI, certificates, and binary compatibility rules to published contracts. The scheduler is independently replaceable, and no implementation is designated the semantic authority.",
+   "change": "None required at vision level; preserve this explicit ownership of every cross-repository interface."
+  },
+  {
+   "id": "C5",
+   "score": 4,
+   "evidence": "\u00a73.3 honestly names whole-program bitcode, runtime shims, incoming host ABI, and LLVM-version compatibility as integration costs. The handle restrictions and inverse requirement qualify the promise of invisible integration, but the document does not yet demonstrate their interaction with its flagship mutable-state example.",
+   "change": "Show one complete when(q) { x += a } example identifying the quantum action, preserved operands, inverse, and budget contract."
+  },
+  {
+   "id": "C6",
+   "score": 4,
+   "evidence": "The complete-register permutation theorem, reference-system channel comparison, phase-sensitive controlled checks, and proof/evidence distinction are strong. The native oracle still inherits the freeze ambiguity, while in-place updates lack a defined bounded acceptance contract.",
+   "change": "Extend the correctness contract to cover non-involutory actions and failures during forward or inverse evaluation."
+  },
+  {
+   "id": "C7",
+   "score": 4,
+   "evidence": "\u00a77 credits the relevant compiler, abstract-machine, uncomputation, and estimation precedents and appropriately claims a combination. Some contrasts remain too categorical: OpenQASM has [classical arrays](https://openqasm.com/language/types.html), and QIR specifies [allocation and lifetime obligations](https://github.com/qir-alliance/qir-spec/blob/main/specification/Memory_Management.md), although neither supplies Bennett's proposed complete contract.",
+   "change": "Describe the specific missing capabilities\u2014such as enforced linear ownership and a reversible object ABI\u2014instead of broadly denying memory or ownership semantics."
+  },
+  {
+   "id": "C8",
+   "score": 4,
+   "evidence": "The document gives each intended reader concrete responsibilities, boundaries, and success criteria. Its remaining load-bearing ambiguity is the overloaded meaning of region, which currently conflates classical oracle evaluation, in-place permutation, and general unitary execution.",
+   "change": "Add one normative table defining those region kinds, including their interfaces, adjoints, and fault policies."
+  }
+ ],
+ "blocking": [
+  {
+   "id": "B_FREEZE_DETERMINISM",
+   "section": "\u00a7\u00a73.2, 4.2 and 5.1",
+   "problem": "The premise that LLVM freeze deterministically selects the reference machine's value is false. Freeze stabilises an arbitrary choice for its uses; it does not prescribe a canonical choice shared by independent lowerings. See the [LLVM freeze semantics](https://llvm.org/docs/LangRef.html#freeze-instruction). Locally, clang 18 compiled the same freeze i1 poison return to an undefined return register at -O0 and zero at -O3. Consequently, using the same freeze-normalised bitcode does not establish one deterministic F_B shared by native execution and both executors.",
+   "fix": "Prefer an explicit deterministic normalisation contract: undef/poison choices and encountered immediate UB are lowered to specified ordinary values or checked faults before subsequent optimisation, and the native comparison build uses that same defined normalisation. Freeze may assist stabilisation but is not the canonicalisation mechanism. Alternatively, retain deterministic choices only in Bennett's reference semantics and restrict native differential equivalence to executions whose results are independent of LLVM's unspecified choices; validate the remainder against the checked interpreter. State this distinction in certificates."
+  },
+  {
+   "id": "B1_QUANTUM_STATE_WRITE_SEMANTICS",
+   "section": "\u00a7\u00a73.1, 4.2 and 5.1",
+   "problem": "The new copy/store/inverse paragraph resolves the individual operations, but the encompassing interface remains contradictory. Section 4.2 says every coherent region preserves inputs and is an XOR-result involution. A region containing RZ(theta) is generally not an involution, and an in-place increment changes its operand. These operations cannot satisfy the stated oracle mapping merely by cleaning workspace. Thus ctrl/adj/compute still lack an unambiguous contract for persistent quantum state.",
+   "fix": "Scope F_B, XOR accumulation, input preservation, and self-adjointness to lifted classical-oracle calls. Separately define quantum action regions as U on declared mutable wires, with borrowed inputs preserved and workspace restored; control means controlled-U and adjoint means U\u2020. In-place bijections belong to this action interface. Define their admissible budget/fault policy separately rather than inheriting the oracle formula. Alternatively, restrict regions to classical oracles and narrow the claims about arbitrary quantum bodies and persistent in-place updates. I would retain the ambition and introduce the two explicit interfaces."
+  },
+  {
+   "id": "B_INPLACE_BOUNDED_INVERSE",
+   "section": "\u00a73.1 coherent memory row and \u00a74.2 coherent memory, budgets and totality",
+   "problem": "Compute\u2013swap\u2013uncompute requires a valid inverse on the values actually produced, including its bounded execution. If forward evaluation faults, its canonical zero payload cannot replace the original register; if inverse evaluation faults, it need not erase the old input. Simply preserving x on failure and XORing an error is not a general repair: a bounded NOT succeeding at x=0 and faulting at x=1 would map both (x,e)=(0,1) and (1,0) to (1,1). The current document supplies no reversible failure extension for this case.",
+   "fix": "For the minimal design, reserve in-place actions for mutually inverse total bijections on a specified finite encoding, with bounds sufficient for forward evaluation and inverse cleanup. Fallible computations use the out-of-place oracle interface; scope the no-compile-error budget promise accordingly. Library modular multiplication must state its coprimality condition and treatment of unused encodings. Alternatively, define a larger reversible interface retaining explicit status/history registers, its complete failure-state mapping, and its adjoint. I would choose the bounded total-bijection restriction first."
+  }
+ ],
+ "suggestions": [
+  "Clarify the measurement-based uncomputation exception: after intervening U, an original phase correction D generally becomes U D U\u2020. Require the correction for the actual schedule to satisfy \u00a75.1; do not imply that ordinary phase fixup automatically repairs a closed dependency window.",
+  "Spell out that the adopted Silq discipline includes qfree computation as well as preserved dependencies; dependency tracking alone is not the complete condition. See [Silq's uncomputation rules](https://silq.ethz.ch/overview).",
+  "Add small normative examples for a faulting oracle, a non-self-inverse quantum action, and a controlled in-place bijection. These would expose interface disagreements before the encoding design begins.",
+  "Distinguish the source-level clean-target restriction on qstore from the arbitrary-target XOR oracle ABI and compiler-generated inverse operations.",
+  "Qualify the 'only LLVM-linked component' statement as applying to the compiler core: the Julia frontend explicitly uses LLVM.jl."
+ ],
+ "verdict": "revise",
+ "path_to_accept": "Make three semantic changes: establish deterministic normalisation or explicitly narrow native equivalence around freeze choices; separate classical-oracle and quantum-action contracts; and specify a sound bounded in-place policy, preferably total bijections with guaranteed inverse cleanup. Propagate these decisions through the dialect, ISA interface, and correctness clauses. No implementation or additional demo is required for acceptance.",
+ "summary": "The vision is ambitious, coherent in direction, and unusually strong on modularity and verification, but three semantic issues still block acceptance. Previous-round status: B1_LLVM_DEFINEDNESS is resolved for erased source UB and supplementary classifiers; B3_FAULT_RESULT_SEMANTICS is resolved for classical oracles; B4_INPUT_PRESERVATION is resolved; B1_QUANTUM_STATE_WRITE_SEMANTICS is partially resolved but remains blocked by the universal oracle contract; B2_UNCOMPUTATION_VALIDITY is resolved at vision level, with the clarification suggested above. Freeze determinism and bounded inverse execution are additional issues identified in this review."
+}

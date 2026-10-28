@@ -1,0 +1,36 @@
+{
+ "run": "northstar-2026-10-28",
+ "round": 6,
+ "doc": "Bennett-NorthStar.md",
+ "doc_sha256": "7b170bce432c721f454c687c74b8aef04febdfa2e725557c5735aef07076f786",
+ "prepared": "2026-10-28T10:19:41+00:00",
+ "members": {
+  "codex": {
+   "status": "done",
+   "attempts": 1,
+   "started": "2026-10-28T10:19:42+00:00",
+   "updated": "2026-10-28T10:27:44+00:00",
+   "exit": 0,
+   "seconds": 483
+  },
+  "muse": {
+   "status": "done",
+   "attempts": 1,
+   "started": "2026-10-28T10:19:42+00:00",
+   "updated": "2026-10-28T10:22:22+00:00",
+   "exit": 0,
+   "seconds": 160
+  },
+  "opus": {
+   "status": "done",
+   "attempts": 1,
+   "started": "2026-10-28T10:19:42+00:00",
+   "updated": "2026-10-28T10:22:14+00:00",
+   "exit": 0,
+   "seconds": 152
+  }
+ },
+ "rubric": "/home/tobias/Projects/Bennett.jl/docs/council/rubric.md",
+ "subject": null,
+ "context": []
+}

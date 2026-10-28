@@ -1,0 +1,69 @@
+{
+ "criteria": [
+  {
+   "id": "C1",
+   "score": 4,
+   "evidence": "\u00a7\u00a70\u20134 describe a coherent compiler-and-device vision, and the oracle/action distinction resolves the central persistent-state contradiction. Some blanket statements about all regions still retain the older faulting-oracle contract.",
+   "change": "Apply the oracle/action distinction consistently to decision 4, the budget row, and the coherent-memory paragraph."
+  },
+  {
+   "id": "C2",
+   "score": 4,
+   "evidence": "The external-marker and LTO delivery model has a concrete [Enzyme precedent](https://enzyme.mit.edu/getting_started/UsingEnzyme/). However, \u00a73.2 incorrectly treats poison-free, undef-free LLVM as necessarily deterministic; defined floating-point operations retain observable choices.",
+   "change": "Extend materialised normalisation to resolve defined nondeterminism, especially floating-point result bits, before native and device compilation diverge."
+  },
+  {
+   "id": "C3",
+   "score": 5,
+   "evidence": "\u00a74 articulates the missing abstraction convincingly: virtual allocation, garbage scheduling, resource accounting, and bounded coherent execution without pretending that superposed control becomes cheap. Fixed-budget circuit specialisation and classical-only scheduling form a sound architectural relationship.",
+   "change": "No foundational change required; preserve these explicit invariants in the normative ISA."
+  },
+  {
+   "id": "C4",
+   "score": 5,
+   "evidence": "\u00a7\u00a74.4 and 6.1 enumerate the exchanged formats and binary interfaces, including scheduling, launch, linking, certificates, and target capabilities. The shared scheduler is an explicitly replaceable component rather than hidden implementation coupling.",
+   "change": "No architectural change required; make the dialect-to-ISA reference-semantics version dependency explicit in the dependency table."
+  },
+  {
+   "id": "C5",
+   "score": 4,
+   "evidence": "\u00a73.3 credibly accounts for whole-program bitcode, host-target IR, runtime shims, and LLVM-version compatibility without requiring a fork. The universal opening still understates the separately declared restrictions on quantum handles flowing through memory.",
+   "change": "Distinguish universal lifting of classical code from the initial quantum-marker API's handle restrictions in the thesis."
+  },
+  {
+   "id": "C6",
+   "score": 4,
+   "evidence": "\u00a75.1 correctly requires complete-register agreement, distinguishes proofs from samples, and treats controlled phase and measurement channels explicitly. The ladder is measurable, but its native oracle cannot yet support the claimed exact comparison for all defined numerical executions.",
+   "change": "Bind certificates to the materialised reference program and its complete deterministic numerical contract, including normalisation version."
+  },
+  {
+   "id": "C7",
+   "score": 4,
+   "evidence": "\u00a77 gives substantial credit to relevant predecessors and locates novelty primarily in their integration. Some categorical negative comparisons remain broader than necessary, particularly QIR's ownership description and the claims about earlier abstract machines.",
+   "change": "Describe the missing combination precisely, and distinguish absent statically checked linear ownership from absent allocation and lifetime conventions."
+  },
+  {
+   "id": "C8",
+   "score": 4,
+   "evidence": "The component responsibilities and central semantics are sufficiently concrete for the three intended readers. Floating-point semantics remain listed as deferred mechanics even though their determinism is already load-bearing in the reference contract.",
+   "change": "Move the numerical-semantics decision into \u00a73.2, leaving implementation mechanics in \u00a79."
+  }
+ ],
+ "blocking": [
+  {
+   "id": "B_DEFINED_NONDETERMINISM",
+   "section": "\u00a7\u00a73.2, 4.2, 5.1 and 9.11",
+   "problem": "The premise that eliminating poison/undef yields one defined meaning is false. Even flag-free floating-point arithmetic permits nondeterministic NaN sign and payload bits; bitcast can expose these as integer outputs or branch conditions. These executions need not contain UB. See [LLVM's NaN semantics](https://llvm.org/docs/LangRef.html#behavior-of-floating-point-nan-values). Locally, Clang 18.1.3 compiled the same O3-optimised fadd/bitcast/xor function with opposite SSE addition operand orders at -O0 and -O3. Consequently, the listed normalisation does not establish the single F_B shared by native execution and independent executors. Deferring floating point while promising exact native equivalence leaves a correctness-oracle mismatch.",
+   "fix": "State that materialised normalisation resolves every remaining observable execution choice, including defined floating-point choices. Prefer a specified deterministic numerical contract, implemented in both the native comparison build and device reference through the same materialised semantics\u2014for example deterministic soft-float, or fully specified canonicalisation and rounding rules that subsequent optimisation must preserve. Resolve remaining fast-math permissions too; checking only final floating-point outputs is insufficient because bitcasts and branches can observe intermediate bits. Alternatively, retain a deterministic Bennett numerical refinement but restrict native differential equivalence to executions independent of LLVM-permitted choices, explicitly classifying the remainder as indeterminate and validating them against the checked reference. I would take the first option."
+  }
+ ],
+ "suggestions": [
+  "Propagate the chosen interface distinction through remaining shorthand: budget-fault guarantees describe lifted oracles, while quantum actions have their separate admission contract. Replace 'It is not an involution' with 'It need not be an involution'; Hadamard and X are counterexamples.",
+  "Generalise \u00a75.1's permutation theorem to a declared permutation P, with the XOR oracle as one instance and an in-place bijection as another. This carries the new action interface through verification without changing the proof technique.",
+  "Record the materialised reference program's identity and normalisation version in certificates, so an independent checker can identify exactly which F_B was assessed.",
+  "Tighten the landscape's negative comparisons around the missing combination of capabilities, rather than implying that predecessors lack every listed capability individually."
+ ],
+ "verdict": "revise",
+ "path_to_accept": "Resolve B_DEFINED_NONDETERMINISM by choosing and stating the numerical refinement and native-comparison policy in \u00a7\u00a73.2 and 5.1, then remove that semantic decision from the deferred portion of \u00a79.11. The other observations are non-blocking refinements.",
+ "summary": "The founding architecture is credible and unusually precise. Round-4 B_FREEZE_DETERMINISM and B1_FREEZE_REFINEMENT_NOT_NATIVE are resolved by replacing freeze with materialised normalisation; B1_QUANTUM_STATE_WRITE_SEMANTICS is resolved by the oracle/action distinction; B_INPLACE_BOUNDED_INVERSE is resolved by the total-bijection and sufficient-inverse-budget restriction. A distinct blocker remains: defined LLVM floating-point nondeterminism survives the stated normalisation and defeats the promised shared deterministic reference result. This requires a semantic decision, not an implementation milestone."
+}
