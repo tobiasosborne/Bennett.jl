@@ -1,0 +1,187 @@
+{
+ "criteria": [
+  {
+   "id": "C1",
+   "score": 4,
+   "evidence": "Tiers, state (\u00a73.2), the handle state machine (\u00a73.3 transition table), step machine (\u00a73.6) and the memoryless configuration (\u00a77.2) are now pinned. Two implementers would draw the same diagram, with one exception. The `measure` reversal row of the handle table can be reached through segment uncall (\u00a77.4), and that is unphysical (see blocker).",
+   "change": "Say which frames may not be reversed at all (`measure`). Make every path that would reach one, segment uncall included, trap with no state change."
+  },
+  {
+   "id": "C2",
+   "score": 4,
+   "evidence": "The lifted width rules (\u00a73.3) close the type holes of round 5. `qjumpr` is confined to its function (\u00a74.2). Region calls are allowed in R (\u00a74.7/\u00a74.8). `inrange` is evaluated at max(ptr_width, width(n))+1. `alloc` now fails before mutation (\u00a77.1). What remains is that the A rows do not fix the order of their exchanges where one destination's address depends on another destination. The case is `lift.alloc`: `alloctab[atop]` against `atop`. Forward reads are fixed by the rule that reads see the start-of-step state; the inverse order is left implicit.",
+   "change": "State the exchange order for `lift.alloc`: alloctab[atop] first, then heap_used, then atop, with the inverse in reverse order. More generally, every destination address of an A row is evaluated from the old state."
+  },
+  {
+   "id": "C3",
+   "score": 4,
+   "evidence": "The A+D inverses are printed and I checked them by hand. In C1\u2013C5/C5\u207b\u00b9\u2013C1\u207b\u00b9, every slot clears, and the record XORs use the restored sp/fp. In R1\u2013R5/R5\u207b\u00b9\u2013R1\u207b\u00b9, delivery is undone at the callee fp, and recursive self-calls and delivery into r work. The pure-suffix segment uncall removes the opus/codex counterexamples, and skipping reversed segments in whole-run reversal is sound for classical state. One residual unsoundness: a CC segment that contains `measure` can be uncalled.",
+   "change": "Exclude segments that contain irreversible frames from `uncall`. Also treat a reversed segment together with its `uncall` frame as transparent, so that nested compute/uncompute works."
+  },
+  {
+   "id": "C4",
+   "score": 4,
+   "evidence": "\u00a78.1 now has a variable-binding table and the requested-vs-achieved rule. Schemes carry no cost of their own, leaf events are aggregated once, default rates are given and `mbu` is reserved. Gaps: the default `epsilon_share` divides by the number of '\u03b5>0 operations', but that set depends on which entry matched, which in turn depends on eps. Template gates have no stated eps binding. An action with region epsilon 0 that uses `rz` hits the `log2inv_eps` load error instead of 'no exact entry'.",
+   "change": "Define the \u03b5>0 operation set independently of matching (for example, gates in {rx, ry, rz} whose angle has no exact `gates` entry). Bind a template gate's eps to its parent's share divided by the template's \u03b5>0 gate count."
+  },
+  {
+   "id": "C5",
+   "score": 4,
+   "evidence": "These are now decided: closure sets per symbol kind (\u00a79.2), the hostcall request/reply, the result encodings, the `bennett_wait` outcomes and the tape field layout (\u00a710), a schedule bound to an expansion library with prefix path matching and iteration vectors (\u00a711), and certificate subjects with `schedule_hash` and keyed `error` (\u00a712). The diamond-norm SDP as printed is correct: Y\u00b1J\u2ab00 and \u03bcI\u2ab0Tr_out Y is the Hermiticity-preserving dual with Y0=(Y+J)/2 and Y1=(Y\u2212J)/2, and it gives the full norm, not half. The PSD acceptance rule is false, however (blocker).",
+   "change": "Replace the 'leading principal minors nonnegative' acceptance rule with a sound positive-definiteness test."
+  },
+  {
+   "id": "C6",
+   "score": 3,
+   "evidence": "T1\u2013T6 are stated with hypotheses, and suite B now runs single-step inverses for call and ret. Two problems. T4 is not true as written for segment uncall over a `measure` frame. The \u00a712.1 PSD procedure admits matrices that are not PSD: diag(0,\u22121) has leading principal minors 0 and 0. The R-fault/FAILED mapping is also not reconciled with T4, since \u00a77.4 says fault records reverse like any prefix while \u00a710 forbids reversing FAILED runs.",
+   "change": "Fix the two false statements. Then say whether a FAILED run is reversible, and how an R fault reaches its CC caller."
+  },
+  {
+   "id": "C7",
+   "score": 4,
+   "evidence": "The draft is consistent with the north star's tiers, oracle interface, fault outcome and \u00a76.4 control discipline. Deferring measurement-based cleanup is narrower than north star \u00a74.2, but it is recorded as a default (\u00a717 item 6) and does not contradict it, since the north star already makes unitary cleanup the fallback. The citation for the Hermiticity-preserving simplification is to Watrous, ToC 2009, \u00a74; the simplified SDP with Y0/Y1 is from Watrous, 'Simpler semidefinite programs for completely bounded norms', Chicago J. Theor. Comput. Sci. 2013.",
+   "change": "Correct the SDP citation to Watrous 2013 (arXiv:1207.5726)."
+  },
+  {
+   "id": "C8",
+   "score": 4,
+   "evidence": "A VM author could start on CC/R and the step machine tomorrow, and the \u00a717 defaults close most of the deferred items. Example 2's arithmetic checks out: R_sum=16, 17\u00b716=272\u2264512, the depth-limit and stack-limit fault conditions, and the MEMFAULT at p=4112 for n>16. The `ref` expansion library is a deferred artefact named only by a sketch, so schedule ordinals cannot yet be written. That is acceptable as S1 with a default.",
+   "change": "Publish at least the row-level skeleton of `ref` (ordinal lists for the dispatch comparator, `lift.add` and `inrange`) as an appendix."
+  }
+ ],
+ "blocking": [
+  {
+   "id": "B1_UNCALL_OVER_MEASURE",
+   "section": "\u00a77.4, \u00a74.1 uncall, \u00a73.3 handle table",
+   "scope": "core",
+   "severity": "S0",
+   "problem": "Segment uncall is legal in CC. A CC callee may execute `measure` (and `qreg.free` on hardware, \u00a717 item 14), and nothing excludes such a segment from uncall. The handle table defines the reversal of a `measure` frame as 'the handle states before that frame'. So `call @f` (where f measures q) followed by `uncall @f (...)` makes q live again over wires that were collapsed and released. That is unphysical, and T4 claims a restoration that cannot happen. Some implementers will restore the handle and others will trap, so the semantics diverge and are unsound. The parenthetical 'a run containing measure is not reversible' governs only whole-run reversal (\u00a710), not segment uncall.",
+   "fix": "Add to \u00a77.4: 'An `uncall` whose segment S contains, at any nesting depth, a `measure` frame (or, on hardware, a `qreg.free` frame whose cleanliness was not verified) is a CC trap with no state change.' Change the handle-table reversal row to say that reversal of a `measure` frame never occurs, because both segment uncall and whole-run reversal exclude it. Add the case to suite A. The alternative is to forbid `measure` in any function reachable from a callee that is later uncalled, as a static suite-F rule. That is harder to check, so I would take the dynamic trap."
+  },
+  {
+   "id": "B2_PSD_ACCEPTANCE_UNSOUND",
+   "section": "\u00a712.1 diamond-norm SDP, encoding paragraph",
+   "scope": "contract",
+   "severity": "S0",
+   "problem": "The checker may establish PSD by 'any procedure that rejects whenever it cannot prove every leading principal minor nonnegative'. Nonnegative leading principal minors do not imply PSD: diag(0,\u22121) has minors 0 and 0 and is not PSD. A checker following this rule accepts invalid witnesses, so a false diamond bound can be certified, and it disagrees with an LDL\u1d40-based checker on the same certificate. Interval LDL\u1d40 also cannot soundly prove PSD when a pivot is exactly zero.",
+   "fix": "Require the checker to prove positive definiteness of Y\u2212J(\u03a6), Y+J(\u03a6) and mu\u00b7I\u2212Tr_out(Y) by an interval Cholesky (or LDL\u1d40) factorisation in which every pivot's interval lower bound is strictly positive, and to reject otherwise. State that producers make witnesses strictly feasible by replacing Y with Y+\u03b4I and mu with mu+\u03b4\u00b7d_out; this keeps the bound valid, since \u2016\u03a6\u2016\u25c7 \u2264 mu+\u03b4\u00b7d_out \u2264 `bound`. The alternative is to require proof that every principal minor (not only the leading ones) is nonnegative. That is exponential and still fragile at zero, so I would take strict positive definiteness."
+  }
+ ],
+ "previous_status": [
+  {
+   "id": "codex B1",
+   "status": "resolved",
+   "note": "The A+D inverse is the exact reverse of the printed C1\u2013C5/R1\u2013R5 lists, and I verified both by hand. The order of A-row exchanges for lift.alloc's alloctab[atop] is left implicit (suggestion)."
+  },
+  {
+   "id": "codex B2",
+   "status": "resolved",
+   "note": "The result name is a location, R_sum=16, S_cells=9, and 272\u2264512. The fault boundaries are consistent."
+  },
+  {
+   "id": "codex B3",
+   "status": "resolved",
+   "note": "Pure-suffix uncall with no re-execution. Whole-run reversal skips the segment. The `measure`-in-segment gap is a new blocker (B1)."
+  },
+  {
+   "id": "codex B4",
+   "status": "resolved",
+   "note": "Pre-entry count \u2264 2^A_tab, alloc fails before mutation, and inrange is evaluated at max width+1."
+  },
+  {
+   "id": "codex B5",
+   "status": "resolved",
+   "note": "R region calls, label/qjumpr confinement, distinct parmov destinations, cell padding, bounds and the memoryless configuration are all defined."
+  },
+  {
+   "id": "codex B6",
+   "status": "resolved",
+   "note": "Handle table, consuming measure, hostcall semantics, wait outcomes. How an R fault propagates to CC and the FAILED/T4 relation are left as a suggestion."
+  },
+  {
+   "id": "codex B7",
+   "status": "resolved",
+   "note": "Variable-binding table, requested vs achieved accuracy, no cost on schemes, single aggregation, mbu removed. The eps-share circularity is a suggestion."
+  },
+  {
+   "id": "codex B8",
+   "status": "resolved",
+   "note": "Closure sets per symbol kind; qregion images and globals are data symbols."
+  },
+  {
+   "id": "codex B9",
+   "status": "resolved",
+   "note": "Expansion library bound in the schedule with `ref` as default; prefix matching, iteration vectors, per-kind resolution, dependency-respecting timing."
+  },
+  {
+   "id": "codex B10",
+   "status": "partially",
+   "note": "The SDP is printed and correct, and schedule_hash is required with error keyed. The PSD acceptance procedure is unsound (new B2)."
+  },
+  {
+   "id": "muse B1_AD_INVERSE_INTERLEAVING",
+   "status": "resolved",
+   "note": "Slot kinds defined and inverse lists printed; addresses are evaluated at the current inverse position."
+  },
+  {
+   "id": "muse B2_LIFTED_TYPE_SCHEMA",
+   "status": "resolved",
+   "note": "Lifted width rules added to \u00a73.3; a mismatch is ill-formed."
+  },
+  {
+   "id": "muse B3_TARGET_VARIABLES_AND_MBU",
+   "status": "resolved",
+   "note": "Binding table added; schemes carry no cost; MBU deferred with a default."
+  },
+  {
+   "id": "muse B4_SCHEDULE_OPERATION_IDENTITY",
+   "status": "resolved",
+   "note": "Expansion-library binding, prefix path matching and iteration vectors."
+  },
+  {
+   "id": "muse B5_CERTIFICATE_CHECKER_RULES",
+   "status": "partially",
+   "note": "Subjects, Choi convention, norm convention, encoding and interval rounding are stated. The PSD criterion is false (B2)."
+  },
+  {
+   "id": "muse B6_LAUNCH_RESULT_AND_TAPE_ENCODING",
+   "status": "resolved",
+   "note": "Result encodings, wait outcomes, qreg_free clean rule and tape layout given."
+  },
+  {
+   "id": "opus B1",
+   "status": "resolved",
+   "note": "The pure-suffix rule was adopted and re-execution removed. The measure-in-segment case is a new, narrower issue."
+  },
+  {
+   "id": "opus B2",
+   "status": "resolved",
+   "note": "The result name is a location, S_cells=9, the hash table is now name=hash, and the @sum envelope is printed. I could not run a hash recomputation in this session; the editor reports a mechanical check."
+  },
+  {
+   "id": "opus B3",
+   "status": "resolved",
+   "note": "(a) MBU deferred with a unitary default. (b) The SDP is stated and equivalent to the Watrous dual. Its PSD procedure is raised separately as B2."
+  }
+ ],
+ "regressions": [],
+ "suggestions": [
+  "Nested uncall: under the current rule, `call g; call f; uncall f; uncall g` traps, because the `uncall f` frame is impure. Reading 'most recent completed segment' as including or excluding reversed segments both lead to a trap. State that a reversed segment together with its `uncall` frame is transparent both for selecting the most recent completed segment and for the pure-suffix test. This is sound because the state after the uncall equals the state before S apart from instances, and it lets the Bennett nested compute\u2013copy\u2013uncompute idiom work without wrapper functions.",
+  "\u00a74.2 lift.alloc / \u00a73.6 A rows: state that destination addresses are evaluated from the old state in both directions, and fix the exchange order (alloctab[atop], heap_used, atop; the inverse in reverse order).",
+  "\u00a78.1/\u00a717 item 9: the default epsilon_share depends on the set of '\u03b5>0 operations', which depends on matching, which depends on eps. Define the set without reference to matching. Also say what happens when eps = 0 for an operation that needs an approximate entry (no match, so E_SCHEDULE_INFEASIBLE, rather than a log2inv_eps load error).",
+  "\u00a78.3: bind eps for template gates of a scheme (for example, the parent operation's share divided by the template's \u03b5>0 gate count).",
+  "\u00a77.4/\u00a710: say how an R-tier fault record reaches the CC caller: does the run become FAILED, or does CC observe a code? Reconcile 'fault record \u2026 reversed like any prefix' (T4) with 'Reverse eligibility: COMPLETED' only.",
+  "\u00a712.1: cite Watrous, 'Simpler semidefinite programs for completely bounded norms', Chicago J. Theor. Comput. Sci. 2013, for the Y0/Y1 simplification; ToC 5 (2009) \u00a74 is the earlier, non-simplified program.",
+  "\u00a74.6 qregion: require 2^A\u00b7W \u2261 0 mod 8 for an @image, or define padding.",
+  "\u00a73.3 lift.label/qjumpr width 2^N > n: n depends on the linked closure, so a separately compiled lproc can become ill-formed at link time. State that this is a link error.",
+  "\u00a73.3 qreg.slice: say whether 'q2 used by exactly one region call' is checked statically (suite F, conservative) or dynamically (CC trap), since CC control flow is dynamic.",
+  "\u00a710 bennett_qreg_free on hardware: apply the \u00a717 item 14 default (or E_QREG_NOT_CLEAN is undecidable there); say what the host-side call does on hardware.",
+  "\u00a77.2: give the alloctab entry field widths (base and size at ptr_width, live and pinned 1 bit).",
+  "\u00a716.2 regs grammar: `bounds {INT, INT}` has no inner spaces while `regs { \u2026 }` has them. Make them uniform.",
+  "\u00a711/\u00a717 item 7: publish the row-level ordinal skeleton of `ref` for dispatch, lift.add and inrange, so that schedule `generated` selectors can be written before the full library exists."
+ ],
+ "verdict": "revise",
+ "path_to_accept": "Two sentence-level changes. (1) Core: in \u00a77.4, make `uncall` of any segment that contains a `measure` frame (or, on hardware, an unverified `qreg.free`) a CC trap with no state change, and mark reversal of a `measure` frame as unreachable in the \u00a73.3 handle table. (2) Contract: in \u00a712.1, replace the 'leading principal minors nonnegative' rule with a requirement to prove strict positive definiteness, by interval Cholesky with every pivot's lower bound > 0, for Y\u2212J, Y+J and mu\u00b7I\u2212Tr_out(Y). Producers make witnesses strictly feasible by Y+\u03b4I and mu+\u03b4\u00b7d_out. With these two changes I return accept for both scopes. After that, the highest-value improvement is making a reversed segment plus its `uncall` frame transparent, so that nested compute/uncompute works.",
+ "summary": "Draft 0.6 resolves all 19 round-5 blockers. Two of them, the certificate-SDP pair codex B10 and muse B5, are only partially resolved because of a new defect in the PSD rule they introduced. I checked the A+D inverse lists by hand. C1\u2013C5 and their inverses clear every slot, and the record XORs use the restored sp/fp. R1\u2013R5 and their inverses undo delivery at the callee fp, and recursive self-calls (delivery into r \u2208 L_f) work. Example 2's numbers are consistent: R_sum=16, n=16 needs 272 \u2264 2^9 cells, depth faults iff depth_limit \u2264 n, and n>16 hits MEMFAULT at 4112. The diamond-norm SDP as printed is mathematically correct. Y\u00b1J\u2ab00 with \u03bcI\u2ab0Tr_out Y is the Hermiticity-preserving dual via Y0=(Y+J)/2 and Y1=(Y\u2212J)/2, and it bounds the full norm, not half. I could not run a hash recomputation in this session, so I rely on the editor's mechanical check for the printed hashes. Two new S0 issues remain, each a one-sentence fix. (Core) Segment uncall in CC can reverse a segment containing `measure`, which would revive a collapsed, released register; this is unphysical and makes T4 false. (Contract) The PSD acceptance rule ('leading principal minors nonnegative') is unsound: diag(0,\u22121) passes it. Neither is a regression. The suggestions mainly cover nested-uncall transparency, A-row exchange order for alloc, epsilon_share circularity and the citation of the SDP. Core verdict: revise because of B1; it becomes accept once that sentence is added.",
+ "verdict_core": "revise"
+}

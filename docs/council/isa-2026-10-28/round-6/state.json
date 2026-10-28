@@ -4,7 +4,32 @@
  "doc": "Bennett-ISA-Spec.md",
  "doc_sha256": "0458614026cb9986aeea92dc37839c64de29ed9d9e1de3f69070b2171718a7f1",
  "prepared": "2026-10-28T13:14:31+00:00",
- "members": {},
+ "members": {
+  "codex": {
+   "status": "done",
+   "attempts": 1,
+   "started": "2026-10-28T13:14:40+00:00",
+   "updated": "2026-10-28T13:42:45+00:00",
+   "exit": 0,
+   "seconds": 1686
+  },
+  "muse": {
+   "status": "done",
+   "attempts": 1,
+   "started": "2026-10-28T13:14:40+00:00",
+   "updated": "2026-10-28T13:20:04+00:00",
+   "exit": 0,
+   "seconds": 325
+  },
+  "opus": {
+   "status": "done",
+   "attempts": 1,
+   "started": "2026-10-28T13:14:40+00:00",
+   "updated": "2026-10-28T13:19:23+00:00",
+   "exit": 0,
+   "seconds": 283
+  }
+ },
  "rubric": "docs/council/rubric-isa.md",
  "subject": "the sixth normative draft (0.6) of the Bennett virtual ISA specification (the bennett-isa-spec contract named in the north-star document supplied as background)",
  "context": [

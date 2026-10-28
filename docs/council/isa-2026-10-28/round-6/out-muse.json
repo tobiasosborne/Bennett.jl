@@ -1,0 +1,165 @@
+{
+ "blocking": [],
+ "criteria": [
+  {
+   "change": "State in one sentence that the first block is the entry block and pc is initially its first index (0), and give the W_j rule (per-slot maximum width, low-bit exchange).",
+   "evidence": "\u00a73.1-\u00a73.7 give tiers, state table, index space, frame layout and the full forward/inverse step; entry pc is only implied by clean allocation of step state (\u00a75.2 step 1) and W_j only as 'from the widest write sets' (\u00a73.6).",
+   "id": "C1",
+   "score": 4
+  },
+  {
+   "change": "Extend the \u00a73.3 treatment already given to lifted rows into a compact per-opcode operand/result table for the CC/R families.",
+   "evidence": "\u00a74.1-\u00a74.8 enumerate every family; lifted rows now have class, reads, slots, flag and successor plus closed width rules (\u00a73.3), label confinement (\u00a74.2) and R in region calls (\u00a74.7-\u00a74.8). CC/R opcodes are still summarised by family rather than per-opcode schema (accepted as S1: \u00a74.8 plus signatures determine arity and types).",
+   "id": "C2",
+   "score": 4
+  },
+  {
+   "change": "Add one rule: A-row destination identities (alloctab[old atop], store cells) are resolved in the old state and retained through the exchanges in both directions; and state R1 is the \u00a73.6 step-2(b) succ computation, not a second XOR.",
+   "evidence": "\u00a73.6 step 4 inverts A+D rows as the exact reverse of the \u00a73.7 lists, and \u00a73.7 prints C1-C5/R1-R5 with both inverse lists; I traced recursive call/ret (counter restoration before record/delivery undo, capture uncompute after L_f restoration) and it is correct. Segment uncall is now sound: pure-suffix legality plus skip-on-whole-run-reversal (\u00a77.4). \u00a76 windows and the borrow-frame lemma remain sound on re-check.",
+   "id": "C3",
+   "score": 4
+  },
+  {
+   "change": "State how a scheme parent's epsilon_share is apportioned among its template leaf gates (e.g. each matched at the parent share with the sum charged, or an equal split).",
+   "evidence": "\u00a78.1 now binds every expression variable by context and defines requested-vs-achieved epsilon; schemes carry no cost/epsilon, leaves are aggregated exactly once, t2 and control order are defined, absent occupancy rates default to 1 (\u00a78.2-\u00a78.3). One costing choice remains implicit for template-gate epsilon shares, an S1 accounting detail under the stated default-share rule (\u00a717 item 9).",
+   "id": "C4",
+   "score": 4
+  },
+  {
+   "change": "Add a one-line mapping of each CC trap cause to the \u00a75.4 fault code a FAILED run exposes (the R names in \u00a74.1 already imply it).",
+   "evidence": "Object/identity (\u00a79.2 closure set per kind, globals as data symbols), launch (\u00a710 handle table \u00a73.3, result encodings, bennett_wait outcomes, hostcall reply rule, tape field layout), scheduling (\u00a711 bound expansion library, prefix matching, iteration vectors, per-kind selectors, timing) and certificate (\u00a712.1 printed SDP, subject with schedule_hash, error keyed by variant:controls) are all decided, each deferral with a default in \u00a717.",
+   "id": "C5",
+   "score": 4
+  },
+  {
+   "change": "Replace 'every leading principal minor nonnegative' in \u00a712.1 with all principal minors or nonnegative LDLT pivots: leading minors alone do not prove semidefiniteness (e.g. diag(0,-1)). The normative 'accepts iff Y-J, Y+J, mu I-Tr_out(Y) are PSD' already governs, so this is a wording fix, not a soundness hole.",
+   "evidence": "\u00a714.1 reference interpreter defines F_B and the budget unit; T1-T6 are stated with hypotheses; the diamond SDP (unnormalised Choi, Y-J>=0, Y+J>=0, mu I-Tr_out Y>=0, ||Phi||<=mu) is the correct hermiticity-preserving dual (verified against Phi = id - Z(.)Z, optimum mu=2). Suites A-H are derivable, including the new one-step call/ret inverse and stack-boundary tests (\u00a715).",
+   "id": "C6",
+   "score": 4
+  },
+  {
+   "change": "None needed for consistency; when MBU is admitted, point \u00a76.4 back to north-star \u00a79 item 6's certificate kind.",
+   "evidence": "No contradiction found: deferring measurement-based cleanup with unitary default (\u00a76.4, \u00a717 item 6) matches the north star's own sequencing (\u00a73.1 unitary fallback, \u00a79 item 6); the pure-suffix uncall keeps the compute-copy-uncall idiom (\u00a77.4); PTX-style target descriptions, Silq/Unqomp windows and QCM synchronisation are used as cited.",
+   "id": "C7",
+   "score": 5
+  },
+  {
+   "change": "Publish the 'ref' expansion library document (with the hash schedules bind) as the first bennett-isa-spec deliverable; the text decision is already taken in \u00a711/\u00a717 item 7.",
+   "evidence": "A VM author can implement \u00a73-\u00a77 from the text, and a specialiser/scheduler author from \u00a75-\u00a76, \u00a78, \u00a711; tools/isa_check.py runs green on both examples and I independently recomputed the inc8 hash (1b6157f8...) and the @sum SCC member hash (c0f11401...) from the printed envelopes. Every \u00a717 deferral carries a default an implementer can follow today.",
+   "id": "C8",
+   "score": 4
+  }
+ ],
+ "path_to_accept": "Already accept. The single change that would raise the joint-lowest criteria (C1/C3) from 4 to 5 is a short clarifying paragraph in \u00a73.6-\u00a73.7: first block is the entry block with pc initially its first index; W_j is the maximum width over rows using slot j with low-bit exchange; A-row destination identities are resolved in the old state and retained through all exchanges in both directions; R1 is the step-2(b) succ computation. None of these changes any computed function under the reading the text already forces.",
+ "previous_status": [
+  {
+   "id": "codex B1",
+   "note": "\u00a73.6 inverts A+D rows as the exact reverse of the \u00a73.7 list with printed C/R inverses; retraced recursive call/ret, correct. A-row destinations follow the old-state reading of \u00a74.2 (see suggestion).",
+   "status": "resolved"
+  },
+  {
+   "id": "codex B2",
+   "note": "Result name is a location (\u00a73.7), R_sum=16, S_cells=9; 272 cells for n=16 now fits and the boundary is a stated, suite-C-tested result.",
+   "status": "resolved"
+  },
+  {
+   "id": "codex B3",
+   "note": "Pure-suffix legality (\u00a77.4) removes the interference class entirely; no re-execution or redo anywhere.",
+   "status": "resolved"
+  },
+  {
+   "id": "codex B4",
+   "note": "Pre-entry count <= 2^A_tab at load (\u00a77.2), CC/R and lifted alloc fail before mutation, inrange at max(ptr_width,width(n))+1 (\u00a74.2).",
+   "status": "resolved"
+  },
+  {
+   "id": "codex B5",
+   "note": "Lifted width rules, R in region calls, function-confined labels/qjumpr, distinct parmov destinations, cell padding, bounds, memoryless objects all stated; remaining per-opcode CC enumeration is S1.",
+   "status": "resolved"
+  },
+  {
+   "id": "codex B6",
+   "note": "Handle transition table (\u00a73.3); measure consumes with no subsequent free; hostcall request/reply and outcome mapping in \u00a710.",
+   "status": "resolved"
+  },
+  {
+   "id": "codex B7",
+   "note": "Variable-binding table, requested-vs-achieved rule, scheme cost/epsilon removed with leaf-only aggregation, t2/control order, default rate; mbu_schemes removed rather than completed, with \u00a717 item 6 default.",
+   "status": "resolved"
+  },
+  {
+   "id": "codex B8",
+   "note": "Closure set defined per symbol kind incl. qregion @image references and CC/R device/service deps; globals are data symbols; lprocs take region bases as parameters (\u00a79.2, \u00a74.2).",
+   "status": "resolved"
+  },
+  {
+   "id": "codex B9",
+   "note": "Versioned expansion library bound by name/version/hash (\u00a711) is the alternative both raisers named; prefix paths, iteration vectors, per-kind selectors, any-default and dependency timing stated.",
+   "status": "resolved"
+  },
+  {
+   "id": "codex B10",
+   "note": "SDP printed with Choi convention, constraints, norm (not half-norm) convention, encoding and PSD procedure; schedule_hash required in claim subjects; error/multiplicities keyed by full realisation context.",
+   "status": "resolved"
+  },
+  {
+   "id": "muse B1_AD_INVERSE_INTERLEAVING",
+   "note": "Exact-reverse rule, three slot kinds, both inverse lists printed, one-step suite-B inverse tests added.",
+   "status": "resolved"
+  },
+  {
+   "id": "muse B2_LIFTED_TYPE_SCHEMA",
+   "note": "Closed lifted width rules in \u00a73.3; mismatch is suite-F ill-formed, never truncation/extension.",
+   "status": "resolved"
+  },
+  {
+   "id": "muse B3_TARGET_VARIABLES_AND_MBU",
+   "note": "Binding table added; scheme cost/epsilon deleted in favour of expansion accounting; MBU removed from 0.6 as I recommended, default unitary cleanup.",
+   "status": "resolved"
+  },
+  {
+   "id": "muse B4_SCHEDULE_OPERATION_IDENTITY",
+   "note": "Bound expansion library gives identical operation sets to consumers implementing it (others reject); prefix matching and loop-iteration vectors defined; removals limited to library-marked operations.",
+   "status": "resolved"
+  },
+  {
+   "id": "muse B5_CERTIFICATE_CHECKER_RULES",
+   "note": "Subjects carry closure/variant/controls/schedule_hash at signature widths, widths field deleted, SDP and interval arithmetic with outward rounding printed, error keyed like cleanup. One wording flaw remains ('leading principal minors', suggestion, S1 under rubric rule 6 since the PSD iff-obligation governs).",
+   "status": "resolved"
+  },
+  {
+   "id": "muse B6_LAUNCH_RESULT_AND_TAPE_ENCODING",
+   "note": "Result encodings per kind, cap-too-small E_ARG, bennett_wait single-outcome contract, clean-only qreg_free, tape args as 8-byte fields. The declined typed accessors are adequately replaced by kind-tagged 8-byte ids.",
+   "status": "resolved"
+  },
+  {
+   "id": "opus B1",
+   "note": "Pure-suffix rule adopted; editor's no-redo variant is sound: pure frames touch only instances, so post-uncall every other component already equals its pre-segment value and whole-run reversal correctly skips the segment. T4 counterexample no longer constructs.",
+   "status": "resolved"
+  },
+  {
+   "id": "opus B2",
+   "note": "Result name a location, S_cells=9, hash table now name=hash, @sum envelope printed; I recomputed its SCC member hash c0f11401... byte-for-byte.",
+   "status": "resolved"
+  },
+  {
+   "id": "opus B3",
+   "note": "(a) MBU deferred with unitary default instead of opus's normative fixup - a legitimate scope decision recorded in \u00a717; (b) SDP stated, with the correct two-sided form giving ||Phi||_diamond <= mu directly.",
+   "status": "resolved"
+  }
+ ],
+ "regressions": [],
+ "suggestions": [
+  "\u00a73.6/\u00a74.2: state that A-row destinations (alloctab[atop] in lift.alloc, store cells) are identified in the old state and retained through exchanges in both directions, so the atop exchange cannot retarget the entry exchange in a circuit expansion.",
+  "\u00a73.7: state R1 is the \u00a73.6 step-2(b) succ computation (and the \u00a73.7 flag paragraph is step-2(a)), so no reader XORs succ twice.",
+  "\u00a73.6/\u00a75.2: state the first block is the entry block, pc starts at its first index, and give W_j/k_max as an algorithm (per-slot maximum, low-bit exchange), plus the qjumpr succ zero-extension/truncation to P bits.",
+  "\u00a77.4: say explicitly that reversing an outer segment skips already-reversed nested segments and their uncall frames, mirroring the whole-run rule.",
+  "\u00a712.1: replace 'every leading principal minor nonnegative' with all principal minors or LDLT pivot nonnegativity (leading minors alone are insufficient for PSD).",
+  "\u00a78.1/\u00a78.3: state how a scheme parent's epsilon_share is apportioned among template leaf gates when matching and charging.",
+  "\u00a710: one line mapping each CC trap cause to the \u00a75.4 code a FAILED run exposes, and the simulator's unclean-qreg.free outcome in launch terms.",
+  "Publish the ref expansion library as a hashed bennett-isa-spec artefact before sched 0.6 is frozen for interchange (deliverable, not a text change)."
+ ],
+ "summary": "All nineteen round-5 blockers are resolved (see previous_status); none is re-raised and there are no regressions. The three core S0 classes are genuinely fixed, not relabelled: the A+D inverse is now the exact reverse of printed C1-C5/R1-R5 lists and survives a recursive-call trace; segment uncall is restricted to a pure suffix with skip-on-reversal, which kills the allocation/device/re-execution counterexamples while keeping compute-copy-uncall; Example 2's arithmetic now closes (r a location, R_sum=16, S_cells=9, 272<=512) and I verified it mechanically - tools/isa_check.py passes and I independently recomputed inc8=1b6157f8... and sum=c0f11401... from the printed envelopes. The diamond-norm SDP as printed is mathematically correct in its two-sided form. What remains is S1 polish (old-state destination identity for A rows, R1/step-2(b) identification, entry-pc sentence, a PSD-procedure wording flaw, trap-code mapping), each an implementer-visible clarification that does not change any computed function under the reading the text forces. Core and whole document: accept.",
+ "verdict": "accept",
+ "verdict_core": "accept"
+}

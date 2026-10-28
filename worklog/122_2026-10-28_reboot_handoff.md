@@ -3,6 +3,28 @@
 Previous: chunk 121 (2026-10-27 blueprint; 2026-10-28 north-star council
 to consensus, ISA spec rounds 1–4, repo bootstrap, process change).
 
+## Session log — 2026-10-28 — ISA round 6: muse accepts, mean 3.92; draft 0.7; round 7 launched
+
+Round 6 on 0.6 (codex 1686 s, muse 325 s, opus ~5 min, zero retries):
+**muse accept** (core + overall), codex revise (4 S0: 2 core, 2 contract),
+opus revise (2 S0: 1 core, 1 contract); mean 3.12 → 3.92, no criterion
+below 3. Every 0.5 blocker reported resolved or partially resolved; one
+regression: my 0.6 PSD shortcut ("leading principal minors ≥ 0") was
+false (Z·Z − id, diag(0,−1)). Lesson: do not invent a numerical
+acceptance rule while transcribing a known SDP; require strict positive
+definiteness via interval Cholesky and let producers δ-shift witnesses.
+Other fixes in 0.7: A-row inverse exchanges in reverse forward order
+(`lift.alloc` prints both orders; the counterexample was alloctab[atop]
+addressed after atop was restored); one history traversal shared by
+segment `uncall` and whole-run reversal (skip reversed frames and
+`uncall` markers, recursive) — fixes the nested call-g/uncall-g/clock
+double-decrement; `uncall` over a segment containing `measure` traps and a
+`measure` frame is never reversed; certificate subjects denote every
+invocation context in the root schedule and `error` entries are common
+upper bounds over them (makes the multiplicity sum sound). Response:
+`docs/council/isa-2026-10-28/round-6/response.md`. Hashes repatched for
+`isa=0.7` (4 new values).
+
 ## Session log — 2026-10-28 — ISA draft 0.6 from round 5; council round 6 launched
 
 Orchestrator session (Fable). Round 5 aggregated at the previous pause:

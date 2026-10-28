@@ -1,0 +1,198 @@
+{
+ "criteria": [
+  {
+   "id": "C1",
+   "score": 4,
+   "evidence": "\u00a7\u00a73.2\u20133.7 now specify the state, widths, slot kinds and recursive activation records clearly. History reversal remains incomplete for segments containing an earlier uncall.",
+   "change": "Define one cancellation-aware history traversal used by both segment uncall and whole-run reversal."
+  },
+  {
+   "id": "C2",
+   "score": 4,
+   "evidence": "The lifted operand rules and memory-failure boundaries are substantially improved. The A-row inverse still lacks the exchange order required by lift.alloc's indexed destination.",
+   "change": "Require A-row exchanges to be undone in reverse forward-exchange order before uncomputing any assignment slot."
+  },
+  {
+   "id": "C3",
+   "score": 3,
+   "evidence": "The printed lift.call/lift.ret inverses repair the original mixed-row defect. The bounded oracle construction and unitary-cleanup default are sound directions, but allocation inversion and nested segment cancellation still threaten exact restoration.",
+   "change": "Close the two remaining inverse-semantics defects identified in B1 and B3."
+  },
+  {
+   "id": "C4",
+   "score": 4,
+   "evidence": "\u00a78 now binds the principal variables, charges expanded leaves once and supplies allocation and occupancy defaults. A worked example would still expose unresolved details around epsilon indices and accuracy allocation within schemes.",
+   "change": "Add one complete target-and-schedule accounting vector covering scheme expansion, leaf accuracy shares and occupancy rates."
+  },
+  {
+   "id": "C5",
+   "score": 3,
+   "evidence": "Identity closure, launch ownership and the versioned expansion-library decision are materially clearer. Certificate subjects and error keys still do not distinguish different realisations of the same callee within one root schedule.",
+   "change": "Choose occurrence-specific certificate subjects or explicitly verified worst-case bounds across all matching invocation contexts."
+  },
+  {
+   "id": "C6",
+   "score": 3,
+   "evidence": "The diamond-norm inequalities are sound: setting Z=(Y+J)/2 connects them to the scaled dual in [Watrous \u00a74](https://www.theoryofcomputing.org/articles/v005a011/v005a011.pdf). However, the newly permitted leading-principal-minor test does not establish positive semidefiniteness. The example preflight passes, but it does not exercise the inverse counterexamples below.",
+   "change": "Replace the false PSD acceptance criterion with a sound criterion that handles singular Hermitian matrices."
+  },
+  {
+   "id": "C7",
+   "score": 5,
+   "evidence": "The bounded oracle, phase-sensitive action semantics, classical scheduling invariant and separate public contracts follow the north star. Deferring measurement-based cleanup with an explicit unitary default is appropriate for this draft.",
+   "change": "No change needed."
+  },
+  {
+   "id": "C8",
+   "score": 4,
+   "evidence": "The grammar, defaults and corrected example objects give implementers a practical starting point. The remaining blockers are localized semantic corrections rather than missing implementation work.",
+   "change": "Add small normative vectors for allocation inversion and nested uncall, alongside the forward examples."
+  }
+ ],
+ "blocking": [
+  {
+   "id": "B1",
+   "section": "\u00a7\u00a73.6, 4.2 lift.alloc; T2",
+   "scope": "core",
+   "severity": "S0",
+   "problem": "The mixed-row inverse is repaired, but the indexed A-row destination remains unresolved. lift.alloc writes w, alloctab[old_atop], heap_used and atop. Its inverse says to exchange every assignment slot back without specifying the exchange order, while addresses are evaluated from the current inverse state. With old_atop=0, an inverse following the listed slot order exchanges the table slot with alloctab[1], leaving alloctab[0] live; the slot then cannot uncompute cleanly. Reversing the exchange order instead restores the correct state. At table capacity, the former interpretation can address outside the table.",
+   "fix": "State that an A row first undoes all destination exchanges in reverse forward-exchange order, then uncomputes all slots from the restored pre-state. Print lift.alloc's inverse exchange order: atop, heap_used, alloctab[restored_atop], w; only afterwards clear the four slots. Alternatively retain effective addresses in the frame. I recommend reverse-order exchanges for the existing rows."
+  },
+  {
+   "id": "B3",
+   "section": "\u00a7\u00a74.1, 7.4; T4",
+   "scope": "core",
+   "severity": "S0",
+   "problem": "The pure-suffix restriction fixes the original interference examples, but segment reversal is not defined consistently for nested cancellations. Only whole-run reversal explicitly skips reversed segments and uncall frames; segment uncall still reverses the segment's frames, nested segments included. Let R function f call g, immediately uncall g, then return, with g performing one clock.read. Calling f leaves the clock unchanged. A subsequent legal uncall f encounters both the inner uncall and g's already-reversed effect frame. Applying the stated segment traversal again decrements the clock a second time; skipping the canceled frames does not. The inverse treatment of an uncall frame inside the selected segment needs an explicit rule.",
+   "fix": "Use the same cancellation-aware traversal for every history reversal: undo only unreversed ordinary frames, skip the effects of already-reversed frames and uncall markers, and define how their records are retired. Apply this recursively when uncalling an outer segment. Alternatively prohibit uncall of any segment containing an uncall; I recommend the shared traversal because it preserves nested compute-copy-uncall."
+  },
+  {
+   "id": "B10",
+   "section": "\u00a7\u00a711, 12.1\u201312.3",
+   "scope": "contract",
+   "severity": "S0",
+   "problem": "The certificate's realisation context is still incomplete. One root schedule can invoke the same callee with the same variant and inherited control count at multiple paths, using different classical arguments, budgets, synthesis shares or cleanup choices. Those invocations have identical current subject fields and error-map keys, yet can denote different realised and reference unitaries. Thus 'build the realised unitary U of the subject' is not a unique operation, and multiplying one invocation's error bound by the shared multiplicity can understate the total error. Adding variant and control count fixes only part of the previous issue.",
+   "fix": "For 0.6, explicitly define each region/key error entry as a verified common upper bound over every matching invocation in the bound root schedule, including its resolved arguments, budget and path-dependent realisation; require the claim to check all those contexts. I recommend this conservative default. Alternatively identify each subject by its invocation context or resolved sub-schedule identity, including arguments and budget, and compose separately keyed bounds."
+  },
+  {
+   "id": "B11",
+   "section": "\u00a712.1 Diamond-norm SDP",
+   "scope": "contract",
+   "severity": "S0",
+   "problem": "The statement that nonnegative leading principal minors establish positive semidefiniteness is false. For the one-qubit channel difference Z(\u00b7)Z\u2212id, J has only J[0,3]=J[3,0]=\u22122 nonzero. Every leading principal minor of both J and \u2212J is zero, although both are indefinite. Consequently the permitted fallback can accept Y=0, mu=0 and bound=0: all its leading-minor tests pass, but the actual diamond distance is 2. This is an unsound acceptance rule, not a request for a more detailed numerical procedure.",
+   "fix": "Delete the leading-principal-minor alternative. The minimal correction is to require all principal minors to be nonnegative, with rigorous rejection of inconclusive tests. A sound Hermitian LDL\u2020 procedure with appropriate singular-pivot handling is another option. I recommend retaining the PSD obligation and using all-principal-minor verification as the simple conservative default until a faster sound procedure is specified."
+  }
+ ],
+ "previous_status": [
+  {
+   "id": "codex:B1",
+   "status": "partially",
+   "note": "The call/return interleaving and capture-slot distinctions are fixed; lift.alloc's effective-address restoration remains unresolved in B1."
+  },
+  {
+   "id": "codex:B2",
+   "status": "resolved",
+   "note": "The result is explicitly a location, R_sum=16 and S_cells=9 permits the advertised n=16 success case; the preflight passes."
+  },
+  {
+   "id": "codex:B3",
+   "status": "partially",
+   "note": "Pure suffixes eliminate the original interference and replay defects; nested cancellation still needs the shared traversal specified in B3."
+  },
+  {
+   "id": "codex:B4",
+   "status": "resolved",
+   "note": "Pre-entry capacity, CC/R heap exhaustion and widened address/length comparisons are now stated."
+  },
+  {
+   "id": "codex:B5",
+   "status": "resolved",
+   "note": "R region calls, lifted widths, label confinement, distinct parmov destinations, padding, action bounds and memoryless defaults are addressed."
+  },
+  {
+   "id": "codex:B6",
+   "status": "resolved",
+   "note": "Consuming measurement, handle transitions, hostcall memory effects and launch results/states resolve the substantive contract gaps."
+  },
+  {
+   "id": "codex:B7",
+   "status": "resolved",
+   "note": "Variable bindings, leaf-only charging, multi-target bindings and defaults are supplied; MBU templates are removed with a unitary default."
+  },
+  {
+   "id": "codex:B8",
+   "status": "resolved",
+   "note": "Dependency closure now covers actions and CC/R functions; images are symbol references and lprocs receive interface bases explicitly."
+  },
+  {
+   "id": "codex:B9",
+   "status": "resolved",
+   "note": "The bound expansion-library obligation, reference default, per-kind resolution and dependency-respecting timing settle the architectural issue; selector-schema refinements remain suggestions."
+  },
+  {
+   "id": "codex:B10",
+   "status": "partially",
+   "note": "Choi normalisation, SDP inequalities and schedule binding are supplied; invocation context remains incomplete, and the new PSD fallback is unsound."
+  },
+  {
+   "id": "muse:B1_AD_INVERSE_INTERLEAVING",
+   "status": "resolved",
+   "note": "C1\u2013C5/R1\u2013R5 and their inverse lists correctly restore counters before address-dependent operations and distinguish slot kinds."
+  },
+  {
+   "id": "muse:B2_LIFTED_TYPE_SCHEMA",
+   "status": "resolved",
+   "note": "Lifted address, length, call and return width rules now reject mismatches and require sufficiently wide comparisons."
+  },
+  {
+   "id": "muse:B3_TARGET_VARIABLES_AND_MBU",
+   "status": "resolved",
+   "note": "The binding table and expansion-only accounting address the principal target defects; MBU is explicitly unavailable."
+  },
+  {
+   "id": "muse:B4_SCHEDULE_OPERATION_IDENTITY",
+   "status": "resolved",
+   "note": "A versioned expansion library is now the normative operation-identity authority, with prefix paths and iteration vectors."
+  },
+  {
+   "id": "muse:B5_CERTIFICATE_CHECKER_RULES",
+   "status": "partially",
+   "note": "The numerical obligations and SDP are substantially specified; B10 and B11 identify remaining subject ambiguity and false acceptance semantics."
+  },
+  {
+   "id": "muse:B6_LAUNCH_RESULT_AND_TAPE_ENCODING",
+   "status": "resolved",
+   "note": "Result byte encodings, insufficient-capacity behavior, wait outcomes, clean release and tape argument layout are stated."
+  },
+  {
+   "id": "opus:B1",
+   "status": "partially",
+   "note": "The original allocation/device interference and re-execution counterexamples are excluded; nested segment cancellation remains incomplete."
+  },
+  {
+   "id": "opus:B2",
+   "status": "resolved",
+   "note": "The result-location decision, increased stack, named hash table and printed sum envelope repair the reported example defects."
+  },
+  {
+   "id": "opus:B3",
+   "status": "partially",
+   "note": "MBU deferral resolves part (a), and the SDP equations resolve the original formulation ambiguity in part (b); the added PSD fallback is nevertheless unsound."
+  }
+ ],
+ "regressions": [
+  "\u00a712.1 adds a false leading-principal-minor acceptance rule where the previous draft required actual SDP dual feasibility without that unsound shortcut."
+ ],
+ "suggestions": [
+  "S1 \u2014 \u00a711: When completing the selector schema, put step and phase coordinates at each invocation level and explicitly record any removed generated operations, with none removed by default. Include a nested-oracle matching vector.",
+  "S1 \u2014 \u00a78: Define eps_decade explicitly or state that it is rejected by the unbound-variable rule. Clarify how a scheme's operation-level accuracy share is distributed among its expanded leaves.",
+  "S1 \u2014 \u00a7\u00a73.3, 10, 17: Describe hardware cleanliness as a semantic or certified precondition. Make clear that the FAILED outcome does not promise a nondestructive test of an arbitrary unknown state.",
+  "S1 \u2014 T4: State the theorem for histories beginning at the run entry and satisfying reversal eligibility; distinguish abstract reversal of faulted prefixes from the launch API's COMPLETED-only operation.",
+  "Editorial \u2014 \u00a716.3: Qualify the n+1-call and 16(n+1)-cell statements by fault-free execution with n\u226416. For n>16, the memory fault can occur before those resource thresholds are reached.",
+  "Conformance \u2014 Add negative vectors for the Z-versus-identity PSD witness and positive round-trip vectors for lift.alloc and an outer uncall containing an already-canceled inner call."
+ ],
+ "verdict": "revise",
+ "path_to_accept": "Specify reverse-order A-row exchanges; apply cancellation-aware traversal to every segment and whole-run reversal; define certificate subjects/errors over resolved invocation contexts or verified common worst-case bounds; replace the false leading-minor PSD test. These four localized semantic changes would remove the blockers.",
+ "summary": "Four S0 issues remain: two core inverse-semantics defects and two certificate defects. The example preflight passes. Previous codex B2 and B4\u2013B9, muse B1\u2013B4 and B6, and opus B2 are resolved. Codex B1/B3/B10, muse B5 and opus B1/B3 are partially resolved, as detailed above. The architecture is substantially clearer; no deduction is for unbuilt implementation or missing mechanised proofs.",
+ "verdict_core": "revise"
+}

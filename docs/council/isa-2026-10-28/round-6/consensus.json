@@ -1,0 +1,84 @@
+{
+ "agree": false,
+ "core_agree": false,
+ "verdicts": {
+  "codex": "revise",
+  "muse": "accept",
+  "opus": "revise"
+ },
+ "core_verdicts": {
+  "codex": "revise",
+  "muse": "accept",
+  "opus": "revise"
+ },
+ "blocking": {
+  "codex": [
+   {
+    "id": "B1",
+    "section": "\u00a7\u00a73.6, 4.2 lift.alloc; T2",
+    "scope": "core",
+    "severity": "S0",
+    "problem": "The mixed-row inverse is repaired, but the indexed A-row destination remains unresolved. lift.alloc writes w, alloctab[old_atop], heap_used and atop. Its inverse says to exchange every assignment slot back without specifying the exchange order, while addresses are evaluated from the current inverse state. With old_atop=0, an inverse following the listed slot order exchanges the table slot with alloctab[1], leaving alloctab[0] live; the slot then cannot uncompute cleanly. Reversing the exchange order instead restores the correct state. At table capacity, the former interpretation can address outside the table.",
+    "fix": "State that an A row first undoes all destination exchanges in reverse forward-exchange order, then uncomputes all slots from the restored pre-state. Print lift.alloc's inverse exchange order: atop, heap_used, alloctab[restored_atop], w; only afterwards clear the four slots. Alternatively retain effective addresses in the frame. I recommend reverse-order exchanges for the existing rows."
+   },
+   {
+    "id": "B3",
+    "section": "\u00a7\u00a74.1, 7.4; T4",
+    "scope": "core",
+    "severity": "S0",
+    "problem": "The pure-suffix restriction fixes the original interference examples, but segment reversal is not defined consistently for nested cancellations. Only whole-run reversal explicitly skips reversed segments and uncall frames; segment uncall still reverses the segment's frames, nested segments included. Let R function f call g, immediately uncall g, then return, with g performing one clock.read. Calling f leaves the clock unchanged. A subsequent legal uncall f encounters both the inner uncall and g's already-reversed effect frame. Applying the stated segment traversal again decrements the clock a second time; skipping the canceled frames does not. The inverse treatment of an uncall frame inside the selected segment needs an explicit rule.",
+    "fix": "Use the same cancellation-aware traversal for every history reversal: undo only unreversed ordinary frames, skip the effects of already-reversed frames and uncall markers, and define how their records are retired. Apply this recursively when uncalling an outer segment. Alternatively prohibit uncall of any segment containing an uncall; I recommend the shared traversal because it preserves nested compute-copy-uncall."
+   },
+   {
+    "id": "B10",
+    "section": "\u00a7\u00a711, 12.1\u201312.3",
+    "scope": "contract",
+    "severity": "S0",
+    "problem": "The certificate's realisation context is still incomplete. One root schedule can invoke the same callee with the same variant and inherited control count at multiple paths, using different classical arguments, budgets, synthesis shares or cleanup choices. Those invocations have identical current subject fields and error-map keys, yet can denote different realised and reference unitaries. Thus 'build the realised unitary U of the subject' is not a unique operation, and multiplying one invocation's error bound by the shared multiplicity can understate the total error. Adding variant and control count fixes only part of the previous issue.",
+    "fix": "For 0.6, explicitly define each region/key error entry as a verified common upper bound over every matching invocation in the bound root schedule, including its resolved arguments, budget and path-dependent realisation; require the claim to check all those contexts. I recommend this conservative default. Alternatively identify each subject by its invocation context or resolved sub-schedule identity, including arguments and budget, and compose separately keyed bounds."
+   },
+   {
+    "id": "B11",
+    "section": "\u00a712.1 Diamond-norm SDP",
+    "scope": "contract",
+    "severity": "S0",
+    "problem": "The statement that nonnegative leading principal minors establish positive semidefiniteness is false. For the one-qubit channel difference Z(\u00b7)Z\u2212id, J has only J[0,3]=J[3,0]=\u22122 nonzero. Every leading principal minor of both J and \u2212J is zero, although both are indefinite. Consequently the permitted fallback can accept Y=0, mu=0 and bound=0: all its leading-minor tests pass, but the actual diamond distance is 2. This is an unsound acceptance rule, not a request for a more detailed numerical procedure.",
+    "fix": "Delete the leading-principal-minor alternative. The minimal correction is to require all principal minors to be nonnegative, with rigorous rejection of inconclusive tests. A sound Hermitian LDL\u2020 procedure with appropriate singular-pivot handling is another option. I recommend retaining the PSD obligation and using all-principal-minor verification as the simple conservative default until a faster sound procedure is specified."
+   }
+  ],
+  "muse": [],
+  "opus": [
+   {
+    "id": "B1_UNCALL_OVER_MEASURE",
+    "section": "\u00a77.4, \u00a74.1 uncall, \u00a73.3 handle table",
+    "scope": "core",
+    "severity": "S0",
+    "problem": "Segment uncall is legal in CC. A CC callee may execute `measure` (and `qreg.free` on hardware, \u00a717 item 14), and nothing excludes such a segment from uncall. The handle table defines the reversal of a `measure` frame as 'the handle states before that frame'. So `call @f` (where f measures q) followed by `uncall @f (...)` makes q live again over wires that were collapsed and released. That is unphysical, and T4 claims a restoration that cannot happen. Some implementers will restore the handle and others will trap, so the semantics diverge and are unsound. The parenthetical 'a run containing measure is not reversible' governs only whole-run reversal (\u00a710), not segment uncall.",
+    "fix": "Add to \u00a77.4: 'An `uncall` whose segment S contains, at any nesting depth, a `measure` frame (or, on hardware, a `qreg.free` frame whose cleanliness was not verified) is a CC trap with no state change.' Change the handle-table reversal row to say that reversal of a `measure` frame never occurs, because both segment uncall and whole-run reversal exclude it. Add the case to suite A. The alternative is to forbid `measure` in any function reachable from a callee that is later uncalled, as a static suite-F rule. That is harder to check, so I would take the dynamic trap."
+   },
+   {
+    "id": "B2_PSD_ACCEPTANCE_UNSOUND",
+    "section": "\u00a712.1 diamond-norm SDP, encoding paragraph",
+    "scope": "contract",
+    "severity": "S0",
+    "problem": "The checker may establish PSD by 'any procedure that rejects whenever it cannot prove every leading principal minor nonnegative'. Nonnegative leading principal minors do not imply PSD: diag(0,\u22121) has minors 0 and 0 and is not PSD. A checker following this rule accepts invalid witnesses, so a false diamond bound can be certified, and it disagrees with an LDL\u1d40-based checker on the same certificate. Interval LDL\u1d40 also cannot soundly prove PSD when a pivot is exactly zero.",
+    "fix": "Require the checker to prove positive definiteness of Y\u2212J(\u03a6), Y+J(\u03a6) and mu\u00b7I\u2212Tr_out(Y) by an interval Cholesky (or LDL\u1d40) factorisation in which every pivot's interval lower bound is strictly positive, and to reject otherwise. State that producers make witnesses strictly feasible by replacing Y with Y+\u03b4I and mu with mu+\u03b4\u00b7d_out; this keeps the bound valid, since \u2016\u03a6\u2016\u25c7 \u2264 mu+\u03b4\u00b7d_out \u2264 `bound`. The alternative is to require proof that every principal minor (not only the leading ones) is nonnegative. That is exponential and still fragile at zero, so I would take strict positive definiteness."
+   }
+  ]
+ },
+ "means": {
+  "C1": 4.0,
+  "C2": 4.0,
+  "C3": 3.67,
+  "C4": 4.0,
+  "C5": 3.67,
+  "C6": 3.33,
+  "C7": 4.67,
+  "C8": 4.0
+ },
+ "members": [
+  "codex",
+  "muse",
+  "opus"
+ ]
+}
