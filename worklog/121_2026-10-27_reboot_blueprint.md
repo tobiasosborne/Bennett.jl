@@ -354,6 +354,40 @@ no verification mail, no local gh login, no transcripts); remotes
 script `bennett/scripts/create-remotes.sh` committed in the meta repo,
 waiting for the org to be created in the web UI (no API exists).
 
+**Remotes live.** Maintainer created org `bennett-quantum` (12:58 UTC)
+and refreshed `gh` with `admin:org,repo`; `bennett/scripts/create-
+remotes.sh` created 13 public repos under https://github.com/bennett-
+quantum (bennett, bennett-{dialect-spec,isa-spec,sched,plugin,driver,
+vm,circuits,estimate,targets,runtimes,arith,conformance}), pushed
+`main` to each, installed pre-push hooks; every local repo tracks
+origin, clean. `Bennett.jl` deliberately skipped: v2 continues in this
+repo (tobiasosborne/Bennett.jl); transfer to the org is a separate
+decision. Gotcha: GitHub.com orgs cannot be created by API or gh —
+web UI only; `gh repo create <org>/<name>` works with `repo` scope but
+`gh api orgs/<org>` needs `read:org`/`admin:org`.
+
+**ISA spec round 4 — NO-GO, mean DOWN to 2.83** (opus 250 s, muse
+532 s, codex 1218 s; 12 + 9 + 5 blockers). The drop was earned: draft
+0.4 had mechanical errors — `lift.retval r` with `result r` is `r ^= r
+= 0` (both examples returned zero!); the inverse step never undid the
+successor XOR nor uncomputed the slots; the toggling lemma was still
+unsound (three counterexamples: `cx b2 b1`/`cx b1 t`; `cx b x`/`cx x
+z`; `swap y z; cx b y`); example 2 used undefined name resolution, its
+heap overlapped `db`, and the hash table printed each hash equal to
+itself (template substitution bug). Draft 0.5: dedicated `result_val`;
+inverse step written out in exact reverse dependency order; translation
+lemma with V-targets ⊆ B, V-controls ⊆ X, X ∩ B = ∅, W-targets outside
+X/B/all W-controls, ≤1 borrowed control per W gate, no swaps (the four
+counterexamples are negative suite-F tests); lprocs resolve only their
+own names + `lift.addr @g`; inherent `inrange` on loads/stores; CC
+`qreg[n]` type + binding rule; segment `uncall @f (args) (results)`;
+schemes with `realises` + indexed wires + ancillae; byte-exact envelope
+with tagged lines and example 1's envelope bytes printed; checker-
+computed numerical claims; specificity total order. Lesson: under time
+pressure I introduced new *mechanical* errors each round; from now on
+every example in the spec gets executed by a script before a round, not
+just hashed. Round 5 launched.
+
 **Not done.** No tests run; no src/test change; nothing committed or
 pushed this session yet (maintainer still iterating). BennettVM untouched.
 

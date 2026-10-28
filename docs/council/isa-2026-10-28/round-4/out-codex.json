@@ -1,0 +1,134 @@
+{
+ "criteria": [
+  {
+   "id": "C1",
+   "score": 3,
+   "evidence": "Sections 3 and 7 now identify the principal state components, dynamic SSA instances and wider counters. Activation-record operations, initial allocator state and several history deltas still require interpretation.",
+   "change": "Define complete initial states and atomic transitions, including every retained value required by their inverses."
+  },
+  {
+   "id": "C2",
+   "score": 3,
+   "evidence": "The lifted-row table substantially improves operand and effect coverage. However, lift.retval aliases its source in both examples, lift.ret refers to an undefined record.v, and classical result typing and several interface bindings remain unspecified.",
+   "change": "Publish a complete typed opcode schema and reconcile every row with the examples and activation-record layout."
+  },
+  {
+   "id": "C3",
+   "score": 1,
+   "evidence": "The literal step inverse leaves nonzero scratch, predication permits an operation to target its own implicit control, and the replacement toggling lemma admits borrowed-state-dependent outputs. These contradict the core reversibility and factorisation claims.",
+   "change": "Correct the reversible construction and replace the insufficient predication and borrow-frame conditions with explicit, checkable restrictions."
+  },
+  {
+   "id": "C4",
+   "score": 2,
+   "evidence": "The target AST, resource kinds and gate matching are useful advances. Exact-rational evaluation cannot represent general log2inv_eps results, and scheme templates still lack sufficient matching, binding and expansion semantics.",
+   "change": "Define a closed executable target language, including numerical evaluation, scheme applicability, wire bindings and resource aggregation."
+  },
+  {
+   "id": "C5",
+   "score": 2,
+   "evidence": "Builders, invocation ownership and schedule bindings now exist. Metadata schemas, semantic hashing, launch argument ownership, schedule expansion and certificate witnesses still leave decisions to individual repositories.",
+   "change": "Finish the exchanged schemas and their validation rules, with executable identities and schedules bound to fully specified realisations."
+  },
+  {
+   "id": "C6",
+   "score": 2,
+   "evidence": "The reference interpreter and full-domain permutation theorem provide the right foundation. The stated construction does not establish T2, the structural borrow rule is false, and numerical witnesses and wide-domain sampling are not independently checkable as written.",
+   "change": "Repair the counterexamples and specify executable checking rules for every supported proof kind."
+  },
+  {
+   "id": "C7",
+   "score": 3,
+   "evidence": "The three tiers, bounded XOR oracle, explicit fault result and separate contracts follow the north star. The claimed dirty-ancilla rule overgeneralises toggle detection, and device-side register handling and independently checkable certificates remain incomplete.",
+   "change": "State the precise hypotheses of the adopted constructions and complete the device-boundary contracts promised by the north star."
+  },
+  {
+   "id": "C8",
+   "score": 2,
+   "evidence": "The organisation supports implementation work, but the remaining omissions are semantic rather than deferred encodings. Example 2 introduces implicit global loads and enclosing-oracle lookup that the main instruction and scope rules do not define.",
+   "change": "Make both worked examples valid under rules stated earlier, with complete initial states, traces, canonical bytes and expected results."
+  }
+ ],
+ "blocking": [
+  {
+   "id": "B1",
+   "section": "\u00a7\u00a73.6, 4.2, 5.2; T2",
+   "problem": "The stated inverse is not the inverse of the forward step. After undoing the pc exchanges, it never undoes the successor XOR into pc'; after exchanging displaced values back, it never uncomputes the computed values remaining in disp_j. A lift.const 5 step with successor 1 therefore leaves pc'=1 and disp=5 after the listed inverse. Moreover, 'the same controlled operations' is false for a general lift.perm_call: a permutation need not be an involution, and composite direct operations require reversed order.",
+   "fix": "Specify the inverse in exact reverse dependency order: reconstruct dispatch, undo both pc exchanges, undo successor accumulation while flag/succ are available, invert each row's direct suboperations in reverse order, restore assignment destinations, uncompute every assignment value from the restored old state, clear succ/flag, and clear dispatch from the restored pc. A permutation call must invoke its actual inverse. Define the interleaving for A+D rows explicitly, including retained effective addresses."
+  },
+  {
+   "id": "B2",
+   "section": "\u00a7\u00a73.6\u20133.7, 4.2, 16.3",
+   "problem": "The return protocol is inconsistent. Both examples declare result r and execute lift.retval r, whose row performs result ^= v: this is r ^= r, yielding zero classically and lacking the claimed direct-permutation implementation. lift.ret uses record.v although the record has no such field or defined operand-to-slot mapping. Recursive calls move the callee's locations before copying arguments that may occupy those locations, without specifying how their old values remain readable. Example 2 additionally gives separately linkable lprocs implicit access to enclosing-oracle locations and global loads. Finally, label indices are ordinary reg values, so observable numeric indices conflict with unrestricted re-indexing.",
+   "fix": "Use a dedicated return accumulator, distinct from every permitted return source, or make lift.retval only select the return value without modifying it; I recommend the dedicated accumulator. Define the complete ordered location set, old-argument capture, return-value capture and destination update for call/ret. Choose assignment or XOR semantics for call results explicitly. Require explicit capture parameters and explicit global load rows, or specify and hash an equivalent lexical environment; I recommend explicit parameters and loads. Make labels opaque, or preserve their canonical observable numeric representation during re-indexing."
+  },
+  {
+   "id": "B3",
+   "section": "\u00a7\u00a73.3, 3.5, 4.6, 5.3, 6.4",
+   "problem": "Operand disjointness does not include implicit predicate controls. Consequently qpred p; x p; qunpred p is not explicitly rejected, although controlling X on its own target maps both basis values to zero. qif and its adjoint also require the branch selector to remain stable. Measurement-based cleanup eligibility checks inherited invocation controls, but does not clearly account for predicates introduced locally around the cleanup.",
+   "fix": "Require every active or inherited control to be disjoint from every target and consumed allocation, and require predicate selectors to remain unchanged until their matching pop. Define duplicate-control handling and its accounting. Apply the unitary-cleanup restriction to the complete effective control context at each cleanup site, including local predicates; alternatively admit controlled measurement-assisted cleanup only through a separately specified controlled-channel contract."
+  },
+  {
+   "id": "B4",
+   "section": "\u00a75.6; \u00a712.1 toggling_lemma",
+   "problem": "The replacement toggling lemma is false for the permitted permutation gates. Let V = cx x b and W = swap y z; cx b y, with b borrowed and X={x}. All four written conditions hold, including target/control disjointness. For x=y=z=0, V;W;V\u207b\u00b9;W returns b unchanged but produces y=z=b. Public outputs therefore depend on the borrowed value. Affine dependence on b alone does not imply that the repeated W cancels it; standard toggle detection also needs an appropriate self-inverse operation. [Khattar\u2013Gidney, \u00a74](https://arxiv.org/html/2407.17966v2)",
+   "fix": "Restrict the structural rule to an explicit translation form: V maps b to b XOR f(X), and W maps Y to Y XOR g(b,Z), with X, Z and all controls unchanged, Y disjoint from controls and borrowed wires, and g affine in b. A sufficient syntactic rule uses only X-family target flips with globally disjoint control and target sets; arbitrary swaps are excluded. Alternatively remove this structural rule and require a full T3 claim. I recommend the restricted translation lemma."
+  },
+  {
+   "id": "B5",
+   "section": "\u00a7\u00a73.7, 4.2, 7.1\u20137.2, 10, 16.3",
+   "problem": "Memory initialisation and validity are still incomplete. Pre-entered pinned allocations require atop to start at their count, but this initial counter value is not stated. Heap limits are checked against physical capacity without explicitly enforcing heap_limit_max and disjointness from mapped interface ranges. Example 2 permits a heap extending from 32 to 8192 while db occupies 4096\u20134111. The separate boundscheck instruction is not explicitly tied to the same address version and byte length as the subsequent access. Counter-width comparisons also need widening when an allocation size or prospective sum exceeds that width.",
+   "fix": "Define the complete initial allocator state, including atop, bump pointer, counters, table order and zero-filled storage. Validate a disjoint maximum heap interval at load time and require each token's heap limit to fit it. Either make every load/store perform its own bounds check or require a verified matching check over the identical address version and full access length; I recommend checks in the reference access semantics. Perform prospective arithmetic at sufficient width before narrowing. Correct Example 2's heap interval."
+  },
+  {
+   "id": "B6",
+   "section": "\u00a7\u00a73.3, 4, 9.1, 16.1\u201316.2",
+   "problem": "The claimed complete operand and metadata schemas are still sketches. A CC const or zext has no encoded result type or complete inference rule; ptrtoint/inttoptr width semantics are absent. Tier applicability, register-id-to-wire binding and caller-owned region binding are not defined sufficiently to express device CC register management independently. Metadata fields lack complete types and required/optional rules: for example, the lproc signature in Example 2 omits fields presented as mandatory by <sig>. Modifier syntax and several instruction forms remain delegated to schematic prose.",
+   "fix": "Publish a closed per-opcode schema covering tier, operands, result types, literals, widths, aliases and modifiers, plus concrete schemas for every metadata section. Add explicit result type annotations where inference is not unique. Define the CC representation and operations for quantum-register handles and region arguments. Specify kind-dependent signature fields, canonical ordering, numeric encodings and rejection rules, then make every example conform."
+  },
+  {
+   "id": "B7",
+   "section": "\u00a7\u00a77.1, 7.3\u20137.4, 10; T4",
+   "problem": "The retained history cannot yet restore all declared state. entropy.read and block.read overwrite classical memory, but an effect frame retains only a tape index and the tape records args/results, not the overwritten destination bytes. Rewinding the entropy position does not restore those bytes. Block writes must distinguish an absent sector from a present zero sector. Allocation reversal does not explicitly restore the bump pointer and initialised storage. The clock operation also contradicts the blanket statement that device results are written through memory arguments, and the history treatment of uncall itself is unspecified.",
+   "fix": "Give every effect an exact typed signature and reversible delta, including overwritten memory, device counters, sector contents and sector-presence bits. Record allocator cursor and storage changes. Define whether uncall removes an adjacent call trace or records an inverse operation that can itself be reversed. State failure atomicity and restoration rules for faulted effect prefixes. These rules should make T4 follow directly from the frame table."
+  },
+  {
+   "id": "B8",
+   "section": "\u00a78",
+   "problem": "The target language remains underdetermined. General log2inv_eps values are irrational, so they cannot be evaluated in the promised exact-rational arithmetic; eps=0 is left undefined when an entry declares epsilon=0. AST arities, variable availability and table range errors are missing. Schemes have no opcode applicability, operand-class/control signature or complete wire/parameter binding, and their repeat variable cannot be referenced by the closed expression grammar. Resource kinds also lack complete rules for custom occupancy rates and concurrent peak demands.",
+   "fix": "Define every AST operator and its domain. Prefer an integer ceil_log2_inv_eps primitive with exact comparison semantics, and prohibit logarithm evaluation in exact mode; rigorous interval evaluation is a viable alternative. Give schemes explicit applicability signatures, input/control/target/scratch bindings, scoped variables, expansion rules and dependencies on native entries. Define aggregation from scheduled events and live intervals for every resource kind, including concurrent demands, rates and objective validation."
+  },
+  {
+   "id": "B9",
+   "section": "\u00a7\u00a79.2\u20139.3, 12.3, 16.3",
+   "problem": "The semantic envelope still does not have one complete interpretation. 'Reached' layout entries are not a sufficient dependency rule: an otherwise unread global changes the number of pinned entries and can change allocation faults. Section 9.2 specifies JCS entry lines, while Example 2 introduces dotted-name-prefixed lines. SCC substitution does not explicitly resolve the separate referenced-hash list for intra-SCC dependencies. Hashing only ISA MAJOR also needs a compatibility rule that explains semantic changes between these 0.x drafts. Executable certificate closure_hash remains optional.",
+   "fix": "Hash all semantic initialisation inputs, including every pre-entered allocation and relevant device model, or define a conservative dependency closure that necessarily includes them. Specify one byte-level envelope format and apply SCC placeholders to every dependency occurrence, including the dependency list. Bind the precise semantic version and require resolved closure identities for executable certificates and caches. I recommend a tagged canonical envelope with reference vectors for acyclic and recursive examples. The inc8 hash itself reproduces correctly under the stated trailing-LF envelope rule."
+  },
+  {
+   "id": "B10",
+   "section": "\u00a7\u00a79.4, 10\u201311",
+   "problem": "The C API now has builders, but its behavioural contract remains incomplete. There is no normative mapping from argument-array entries to CC wire/region parameters, no lifetime rule for asynchronously used args and entropy buffers, and no complete rules for tokens, borrowed accessor buffers or unload with live runs. qreg_prepare does not state whether it requires a clean register or performs a reset channel. Close, ownership release and returned register validity are not fully specified. The scheduling opaque types are also used without declarations.",
+   "fix": "Define positional typed argument and region bindings, byte encodings and widths, ownership/copying at each call, buffer lifetimes, token scope and destruction, and every run/qreg transition with its status result. Choose clean-only basis preparation or explicit reset semantics; I recommend clean-only preparation plus a separately named reset operation if needed. Specify close/unload effects on all handles and add the missing opaque declarations. Publish this as one self-contained versioned header and behavioural contract."
+  },
+  {
+   "id": "B11",
+   "section": "\u00a7\u00a79.4, 11\u201312",
+   "problem": "The hierarchical schedule still cannot be executed verbatim by independent executors. One iteration field does not identify nested loop iterations or repeated calls at multiple levels. Generated categories such as comparator identify many operations without defining their expansion or individual identities. Overlapping selectors have no complete specificity/tie rule. A cleanup marked mbu carries neither a particular measurement/fixup realisation nor a binding to one, and class any still leaves an allocation decision to the consumer. Different legal executor lowerings therefore need not share the scheduled operation set.",
+   "fix": "Bind schedules to a normative hierarchical realised-operation graph, either carried in the schedule or expanded from versioned templates. Give each nesting level its own occurrence/iteration and phase coordinates, define deterministic selector resolution or reject overlaps, and bind every decomposition, cleanup instrument/fixup and allocation class. Validate dependency order, control context, timing, accuracy and capacity on that graph. I recommend carrying the hierarchical graph so executor optimisations cannot silently reinterpret schedule entries."
+  },
+  {
+   "id": "B12",
+   "section": "\u00a712; T6; suites C\u2013D",
+   "problem": "Certificates still lack executable proof rules. An intervals array has no defined relationship to matrices, channel constructions or a norm-bound derivation; inverse_pair_library and adjoint_table witnesses are unspecified. A single 64-bit PRNG output cannot sample a component whose range exceeds 2^64, although wider bundles are allowed. The all-zero xoshiro state is also not rejected, contrary to the generator's requirement. Minimality claims promised by the north star have no witness format. Finally, T6 states an operator-norm conclusion for actions without requiring that their inclusive bounds actually use that metric. [xoshiro256** reference implementation](https://prng.di.unimi.it/xoshiro256starstar.c)",
+   "fix": "Define complete claim schemas and versioned checking algorithms, including realised-artifact identity, structural rule payloads and rigorous matrix/channel bound witnesses. Assemble enough PRNG words for each component, specify word order, rejection and offset rules, and reject the zero seed. Add checkable lower-bound/exhaustive-search witness formats for supported minimality claims, or explicitly prohibit such claims in this version. Preserve metric types through composition: operator conclusions require operator bounds, with the stated conversion only toward channel bounds."
+  }
+ ],
+ "suggestions": [
+  "Turn both examples into complete conformance vectors with exact envelope bytes, launch bindings, budgets, forward results and restored-state expectations; replace the tautological hash equalities with those bytes.",
+  "State proof scope explicitly: exhaustive checking on a proper finite subdomain is proof for that subdomain, even though it does not prove the full oracle contract.",
+  "After correcting the semantics, include the three small counterexamples above as normative rejection or regression cases."
+ ],
+ "verdict": "revise",
+ "path_to_accept": "Correct the step inverse, return/call protocol, predicate restrictions and borrow lemma; finish allocator/access and CC/R reversal semantics; complete typed syntax and exchanged schemas; make targets, hashes, launch ownership, realised schedules and certificate checking independently executable. These are specification changes, not implementation milestones. Accept requires resolving B1\u2013B12 and making both examples satisfy the resulting rules.",
+ "summary": "The architecture remains appropriate, and this revision makes substantial concrete repairs, but the literal machine still violates its central claims. No deduction is for unbuilt implementation work.\n\nRound-3 dispositions, using the original reviewer IDs:\nCodex B1: partially resolved; assignment/direct classification, fault flags and HALT restrictions are fixed, but the inverse and return operation remain wrong (B1\u2013B2 here). B2: partially resolved; flattening and wider counters are fixed, but activation, binding and initialisation remain incomplete (B2, B5). B3: partially resolved; distinct zero-size allocations and mapped regions are added, but allocation/access rules remain incomplete (B5). B4: partially resolved; region threading and call interfaces improve, but typing/schema gaps remain (B6). B5: resolved at the stated dependency-and-matched-sequence level; predicated exchange and memory dependencies are now included. B6: resolved; matched cleanup consumes successor target/fault versions. B7: partially resolved; dynamic SSA is defined, but device/history restoration remains incomplete (B7). B8: partially resolved (B8). B9: partially resolved; destination syntax and function-newline convention are fixed, but schemas remain incomplete (B6). B10: partially resolved; the envelope and named hashes are added, but semantic coverage and SCC encoding remain incomplete (B9). B11: partially resolved; invocation ownership fixes duplicate Q inversion and hostcall exists, but launch lifecycle remains incomplete (B10). B12: partially resolved; builders and namespace collisions are fixed, but ABI behaviour remains incomplete (B10). B13: partially resolved (B11). B14: partially resolved (B12).\n\nMuse B1: partially resolved (B1). B2: partially resolved (B2). B3: partially resolved (B5). B4: resolved; memory dependencies and action input-position restrictions are added. B5: partially resolved; launch entropy and hostcall are added, but device signatures/restoration and ABI details remain incomplete (B7, B10). B6: partially resolved; tree ownership and prepare invalidation are fixed, but complete reversible history is still missing (B7). B7: partially resolved (B8). B8: partially resolved (B10\u2013B11). B9: partially resolved (B6, B9). B10: partially resolved (B12).\n\nOpus B1: resolved as raised: base-only free matching, distinct allocation bases, wider occupancy counters and the physical heap bound are now stated. B2: partially resolved; null reservation, pinned entries and mapped regions are added, but the heap partition remains inconsistent (B5). B3: unresolved; the replacement structural lemma is also false (B4). B4: partially resolved; destination spelling is fixed and an envelope exists, but identity remains incomplete (B9). B5: resolved as raised: flattening, terminators, labels and root-return restrictions are now stated; the newly exposed return-record and label-observability issues are covered separately in B2."
+}

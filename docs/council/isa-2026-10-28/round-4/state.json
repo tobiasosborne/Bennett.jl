@@ -6,22 +6,28 @@
  "prepared": "2026-10-28T11:59:19+00:00",
  "members": {
   "codex": {
-   "status": "running",
+   "status": "done",
    "attempts": 1,
    "started": "2026-10-28T11:59:19+00:00",
-   "updated": "2026-10-28T11:59:19+00:00"
+   "updated": "2026-10-28T12:19:37+00:00",
+   "exit": 0,
+   "seconds": 1218
   },
   "muse": {
-   "status": "running",
+   "status": "done",
    "attempts": 1,
    "started": "2026-10-28T11:59:19+00:00",
-   "updated": "2026-10-28T11:59:19+00:00"
+   "updated": "2026-10-28T12:08:11+00:00",
+   "exit": 0,
+   "seconds": 532
   },
   "opus": {
-   "status": "running",
+   "status": "done",
    "attempts": 1,
    "started": "2026-10-28T11:59:19+00:00",
-   "updated": "2026-10-28T11:59:19+00:00"
+   "updated": "2026-10-28T12:03:29+00:00",
+   "exit": 0,
+   "seconds": 250
   }
  },
  "rubric": "docs/council/rubric-isa.md",
