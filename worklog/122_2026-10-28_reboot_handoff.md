@@ -1,3 +1,9 @@
+## Session log — 2026-10-28 — bd repair (sonnet agent)
+
+Ran: `chmod 700 .beads`; `git config beads.role maintainer`; raw `cp -a .beads` safety copy to scratchpad (pre-migration `bd export` FAILS on v32: "table not found: leases"); `bd migrate --force` (v32->v66, ok); `bd export --all -o .beads/pre-flatten-backup.jsonl` (888 issues + 10 memories = 898 lines; `bd stats` total 888); `bd flatten --force` (2323 commits -> 1; store 246.8 MB -> 58.3 MB; stats total still 888).
+Sizes: noms/vvvv... journal 93.7 MB -> gone; largest now `.beads/backup/*.darc` 56.9 MB (gitignored) + two git-remote-cache packs 24.2/15.5 MB (tracked). `.beads` 159M -> 121M.
+Gotchas: (1) `bd export` only works after migration. (2) After flatten, `bd dolt push` first failed "not a git repository" because git-remote-cache/*/repo.git lost its empty `refs/{heads,tags}` dirs; recreated with mkdir. (3) Push then rejected non-fast-forward (flattened history diverges from remote refs/dolt/data); a force push is required and was NOT done by the agent (needs maintainer OK). Tracked `.beads/issues.jsonl` (898 lines, 2026-10-04) is stale vs the DB. (4) `.beads.gate.lock` is bd-created, covered by ignore; `tools/__pycache__/` added to .gitignore. Open count shifted 221->227 post-migration (status reclassification; total unchanged).
+
 # Worklog chunk 122 — 2026-10-28 — reboot workstream handoff
 
 Previous: chunk 121 (2026-10-27 blueprint; 2026-10-28 north-star council
