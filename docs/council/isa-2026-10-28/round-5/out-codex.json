@@ -1,0 +1,122 @@
+{
+ "criteria": [
+  {
+   "id": "C1",
+   "score": 3,
+   "evidence": "The tier model, allocator initialisation and dedicated result_val are substantially clearer. Mixed activation-record reversal, quantum-register ownership and some allocation boundary cases still prevent a unique state-transition model.",
+   "change": "Give each state-changing operation an explicit forward transition, inverse transition and failure transition."
+  },
+  {
+   "id": "C2",
+   "score": 3,
+   "evidence": "Result suffixes, inherent memory checks and CC quantum-register instructions close important gaps. However, \u00a74.8 contradicts \u00a73.1 about R-to-Q calls, and several operand, metadata and handle-lifetime rules remain incomplete.",
+   "change": "Replace the opcode-family summary with a closed schema defining types, aliases, widths, modifiers and tier applicability for every instruction."
+  },
+  {
+   "id": "C3",
+   "score": 2,
+   "evidence": "The return accumulator, predicate restrictions and translation lemma repair the previous counterexamples. The prescribed inverse still does not correctly reverse mixed call/return rows, so the central prefix-reversal guarantee remains unsupported.",
+   "change": "Specify mixed-row inversion in literal reverse dependency order, including restoration of addressing state."
+  },
+  {
+   "id": "C4",
+   "score": 3,
+   "evidence": "The integer logarithm, ordered schemes and event-based aggregation are useful improvements. Scheme binding, measurement/fixup templates, expression environments and some cost-aggregation rules still require implementers to invent conventions.",
+   "change": "Publish a fully typed target-template language with explicit operation bindings and leaf-event accounting."
+  },
+  {
+   "id": "C5",
+   "score": 2,
+   "evidence": "The four example hashes reproduce, and positional launch arguments and buffer copying are now specified. General dependency closure, selective uncall, hostcall behaviour, realised schedules and executable certificate bindings remain incomplete.",
+   "change": "Make every exchanged artifact identify the complete executable realisation and its semantic dependencies."
+  },
+  {
+   "id": "C6",
+   "score": 3,
+   "evidence": "The restricted translation lemma, permutation theorem, multiword sampler and metric-preserving composition are sound improvements. T2 and T4 still depend on problematic operational rules, while channel-proof checking lacks a specified SDP and numerical acceptance procedure.",
+   "change": "Make the theorem hypotheses and certificate checks executable from the normative transition and witness definitions."
+  },
+  {
+   "id": "C7",
+   "score": 4,
+   "evidence": "The main architecture follows the north star: preserved-input XOR oracles, controlled actions, explicit resources and independent contracts. The explicit prohibition of minimality claims is an honest version limitation; the unresolved reversible ABI and scheduling contracts prevent full alignment.",
+   "change": "Complete the substitutable scheduling and reversible-execution contracts promised by the north star."
+  },
+  {
+   "id": "C8",
+   "score": 3,
+   "evidence": "The organisation and worked examples make implementation approachable, but several passages call an expansion or schema normative while leaving essential choices unspecified. Example 2 also promises a successful case that its physical stack cannot accommodate.",
+   "change": "Replace remaining semantic shorthand with complete rules and internally consistent normative vectors."
+  }
+ ],
+ "blocking": [
+  {
+   "id": "B1",
+   "section": "\u00a7\u00a73.6\u20133.7, 4.2; T2",
+   "problem": "The inverse remains incorrect for A+D rows. A forward lift.call changes sp and fp after pushing the record, but \u00a73.6 tells the inverse to undo direct suboperations before restoring assignments. Consequently, its stack exchanges and metadata XORs use the new sp rather than the original record base. lift.ret similarly needs its original fp restored before reversing delivery and location exchanges. The text also gives no dependency-safe reversal rule for assignment destinations such as alloctab[old_atop]. The repaired pure-assignment example works, but T2 still fails for the stated mixed-row algorithm.",
+   "fix": "Define inversion by reversing the complete ordered list of elementary suboperations, interleaving assignment restoration with direct inverses. For call, restore the counter assignments first, undo parameter binding and record construction at the restored record base, restore L_f, then uncompute captured arguments. For return, restore fp/depth before undoing delivery and location exchanges, then uncompute the captured result. Preserve every effective address until its last inverse use, either through retained address slots or an explicitly proved restoration order; I recommend literal reverse-order semantics with retained addresses wherever needed."
+  },
+  {
+   "id": "B2",
+   "section": "\u00a7\u00a73.7, 16.2\u201316.3 Example 2",
+   "problem": "Example 2 cannot satisfy its advertised success domain. If the named result r is a location, as its use as a recursive call destination and lift.ret operand requires, @sum has 3 parameters, 1 result location and 9 regs: R_f = 16 cells. Input n = 16 requires 17 activations and therefore 272 cells, exceeding the maximum stack_limit of 2^8 = 256. If the result declaration specifies only a width, r is undeclared instead. No permitted budget makes the stated n = 16 success case work.",
+   "fix": "Explicitly define whether a named lproc result belongs to L_f and its declaration order; I recommend that it does. Increase Example 2's S_cells to 9 and recompute its affected hashes. Alternatively restrict its advertised success domain to n \u2264 15, but increasing the stack preserves the intended 16-byte example."
+  },
+  {
+   "id": "B3",
+   "section": "\u00a7\u00a74.1, 7.4, 9.4, 10; T4",
+   "problem": "Matching boundary argument/result values does not make a call segment reversible through intervening state changes. For example, f() reads pointer P and stores 1 through it. Start with P=A and A=B=0; call f, change P to B, then uncall f. The stored delta restores A. Re-executing f when reversing uncall now writes B, whereas the retained original call frames describe writes to A. Following those frames leaves B modified; replacing the segment with newly generated frames would be a different, unspecified history rule. Intervening allocations and device operations cause analogous interference.",
+   "fix": "Permit segment uncall only when intervening frames are proven noninterfering with the segment's read dependencies, writes, allocator state, device state and quantum operands. Define the version checks, failure outcome and exact replay/history treatment; copying an immutable result can remain legal. Alternatively restrict uncall to an adjacent LIFO segment. I recommend the checked noninterfering form if compute-copy-uncall is required."
+  },
+  {
+   "id": "B4",
+   "section": "\u00a7\u00a73.7, 4.2, 7.1\u20137.2",
+   "problem": "Memory boundary semantics still have holes. Nothing explicitly rejects more pinned pre-entries than alloctab can hold. CC/R alloc has no stated heap-exhaustion or address-overflow check despite the declared maximum heap interval. Finally, inrange mandates ptr_width + 1 arithmetic even though its length operand can be wider; this conflicts with \u00a73.7's widened-arithmetic rule and can truncate a large boundscheck length.",
+   "fix": "Reject layouts whose pre-entry count exceeds table capacity. Define CC/R allocation failure before mutation when the prospective bump exceeds the heap interval or pointer range, with a CC trap and a specified R fault code. Evaluate every bounds comparison at a width sufficient for all address and length operands plus carry, and narrow only after successful validation."
+  },
+  {
+   "id": "B5",
+   "section": "\u00a7\u00a73.1, 3.3, 4.7\u20134.8, 9.1, 16.2",
+   "problem": "The claimed closed instruction and metadata schemas are still incomplete. \u00a73.1 permits R functions to call Q regions, while \u00a74.8 permits region calls only in Q and CC. Width and alias rules for label values, frame-slot padding and repeated assignment destinations are absent. qjumpr checks only a global numeric range without a complete rule preserving function/activation ownership. Action bounds remain an unexplained array, and the memoryless example omits layout although budget validation and construction otherwise require its fields.",
+   "fix": "Publish per-opcode schemas and kind-specific metadata schemas with required fields, defaults and rejection rules. Include R in region-call applicability consistently. Define label provenance and legal indirect destinations; I recommend checked block-entry labels belonging to the current function. Require distinct assignment destinations, specify slot padding, map every action bound to its construct, and define the exact memoryless configuration when layout is absent."
+  },
+  {
+   "id": "B6",
+   "section": "\u00a7\u00a73.3, 4.1, 7.4, 10",
+   "problem": "The launch/handle contract remains ambiguous. measure consumes the handle and wires, but \u00a710 prescribes 'measure then free'. concat does not say whether it consumes its inputs, and slice lacks a complete ownership-return rule. hostcall has a form and API handshake but no defined request-memory/reply-memory semantics or reply-capacity behaviour. Failed-run, trap and fault outcomes are not fully mapped to states and reversal eligibility.",
+   "fix": "Define a handle transition table covering creation, views, concatenation, calls, measurement, release and reversal. I recommend consuming concat inputs, explicit restoration of parent ownership after a view's call, and consuming measurement that invalidates the id; remove the subsequent free instruction. A non-consuming measurement plus explicit reset is another viable design. Specify hostcall request bytes, reply destination/capacity, rlen and failure atomicity, then map each completion/fault condition to launch states and allowed operations. Treat hardware cleanliness as a semantic or certified precondition, without promising a nondestructive test of an arbitrary quantum state."
+  },
+  {
+   "id": "B7",
+   "section": "\u00a78",
+   "problem": "Targets still cannot be expanded and charged independently. k, c, a, w and eps_decade lack complete evaluation environments; the relationship between requested eps and an entry's epsilon expression is unstated. Schemes expose one target t without a general binding for multi-target operations, and mbu_schemes still contains an ellipsis instead of a measurement/fixup language. Scheme costs versus expanded gate costs can be double-counted, and optional occupancy rates have no complete default/precedence rule.",
+   "fix": "Define every expression variable and index, including requested versus achieved accuracy. Give schemes explicit ordered control/target/parameter bindings and complete native-leaf expansion rules. Specify measurement outcomes, dependency inputs and conditional fixups for MBU templates; alternatively prohibit MBU in target 0.5 until that grammar exists. I recommend completing it. Aggregate expanded leaf events exactly once, with scheme costs either validated summaries or separately identified overhead events, and define rates for every occupancy resource and class."
+  },
+  {
+   "id": "B8",
+   "section": "\u00a7\u00a79.2\u20139.3",
+   "problem": "The envelope now reproduces the examples, but dependency closure is defined only for oracles, lprocs and data. Actions can initialise qregions from images, and CC/R functions depend on initial memory/layout, yet their data/layout closure is unspecified. An action that XORs a local image byte into a target changes meaning when the image changes; its function text alone does not identify that change. Global names versus image-symbol names and lproc access to caller-specific interface mappings also need explicit resolution.",
+   "fix": "Define semantic dependencies for every symbol kind, including image references without @ tokens and all applicable initialisation inputs. Require lproc interface-region bases to be explicit parameters, or bind an explicit environment in its signature and hash; I recommend parameters. A precise dependency analysis is viable, but for this draft I recommend conservative inclusion of all applicable layout, image and device initialisation inputs, with byte-level vectors for actions and CC/R functions."
+  },
+  {
+   "id": "B9",
+   "section": "\u00a7\u00a75.7, 8.2, 11",
+   "problem": "Declaring generated ordinals normative does not define the generated operation graph. The cited sections specify comparisons and arithmetic abstractly, without gate decompositions or scratch identities. Transformations may remove operations, nested oracle invocations have only one step coordinate, and an uncovered allocation still resolves any by an unspecified choice. Selector resolution is not clearly independent per kind. Furthermore, assigning start times is allowed without a complete dependency-order rule, leaving noncommuting instruction order insufficiently constrained.",
+   "fix": "Carry a hierarchical realised-operation graph in the schedule, or bind a complete versioned expansion library; I recommend carrying the graph. Give every invocation level its own occurrence, step/iteration and phase coordinates. Bind all decompositions, concrete allocation classes and cleanup instruments, resolve selectors independently by kind with ties rejected, and require timing to respect explicit data, wire, lifetime and effect dependencies unless a checked transformation justifies their removal."
+  },
+  {
+   "id": "B10",
+   "section": "\u00a7\u00a76.4, 12.1\u201312.3; suites C\u2013D",
+   "problem": "Certificate checking still requires unspecified choices. 'The diamond-norm program' does not identify a particular SDP, Choi normalisation, matrix encoding or rigorous PSD acceptance rule; standard formulations even differ in whether their objective is the norm or half the norm. [Watrous, \u00a74](https://www.theoryofcomputing.org/articles/v005a011/v005a011.pdf). The realised artifact remains incompletely bound because schedule_hash is optional. Error entries also remain keyed only by region, although realisations and cleanup entries vary by variant and inherited control count.",
+   "fix": "Require a schedule/realised-graph identity for executable claims and define the checked matrix construction, workspace treatment and proof-dependency rules. For channel differences, one sufficient explicit contract uses an unnormalised Choi matrix J and checks Y\u2212J \u2265 0, Y+J \u2265 0, \u03bcI\u2212Tr_out(Y) \u2265 0 and \u03bc \u2264 bound, with a specified rational witness encoding and rigorous PSD checker that rejects inconclusive results. Alternatively prohibit channel proof labels until such a rule exists; I recommend specifying the rule. Key local/inclusive errors and multiplicities by the complete realisation context, or explicitly require a verified common worst-case bound across all contexts."
+  }
+ ],
+ "suggestions": [
+  "Replace the final hash-equals-itself listing with symbol-name-to-hash entries. All four current digests reproduce; this remaining presentation error is not a blocker.",
+  "Add compact normative traces for recursive call/return reversal, the maximum successful stack case, interfering segment uncall and wide boundscheck lengths.",
+  "Distinguish step frames, activation records, borrow frames and shared workspace frames consistently in the terminology section."
+ ],
+ "verdict": "revise",
+ "path_to_accept": "Correct mixed-row inversion and the recursive example; define interference-safe uncall and complete allocation checks; close the instruction, handle and launch schemas; finish target expansion, dependency hashing and realised-schedule semantics; and make certificate checking and error composition specific to the bound realisation. These are specification changes and normative vectors, not requests to build the implementation.",
+ "summary": "23/40. The direction remains sound, but several operational and cross-repository contracts still permit incompatible machines. Previous codex blockers: B1 unresolved (current B1); B2 partially resolved\u2014the accumulator, argument capture, exchange delivery and explicit names are fixed, but activation/location rules remain in current B1/B2/B5; B3 resolved; B4 resolved; B5 partially resolved (current B4); B6 partially resolved (current B5); B7 partially resolved\u2014effect deltas are repaired, but segment reversal remains problematic (current B3); B8 partially resolved (current B7); B9 partially resolved (current B8), with all four printed hashes verified; B10 partially resolved (current B6); B11 unresolved (current B9); B12 partially resolved\u2014the sampler, nonzero seed, numerical-bound approach, metric restriction and minimality prohibition are repaired, but current B10 remains. Previous muse blockers: B1 partially resolved (remaining activation/inverse issues in current B1/B2); B2, B3 and B4 resolved; B5 partially resolved (current B7); B6 resolved for its byte-envelope/SCC objections; B7 partially resolved (current B10); B8 partially resolved (current B9); B9 partially resolved (current B3). Previous opus blockers: B1 and B2 resolved; B3 partially resolved (current B5/B6); B4 partially resolved (current B7); B5 resolved at blocking level\u2014the remaining self-equality hash table is cosmetic. The newly identified stack-capacity error in Example 2 is current B2."
+}

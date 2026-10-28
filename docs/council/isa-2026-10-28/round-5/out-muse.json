@@ -1,0 +1,101 @@
+{
+ "blocking": [
+  {
+   "fix": "State that the inverse of an A+D row is the exact reverse of its full \u00a73.7 sub-operation list, with A sub-operations inverted at their reversed positions, and print the inverse sequences for lift.call and lift.ret. Distinguish three slot kinds: assignment slots (exchange back, then uncompute), capture slots (uncompute only, after the state they were captured from is restored), and the ret delivery slot (exchange back with the destination under the restored fp, then uncompute v after L_f is exchanged back to callee values). Add suite-B tests that run one forward call/ret step on a recursive call, then its inverse, and assert the whole pre-step tuple and clean frame.",
+   "id": "B1_AD_INVERSE_INTERLEAVING",
+   "problem": "\u00a73.6 inverse step 4 groups operations as fault writes, then direct sub-operations in reverse order, then A-row exchanges/uncomputes. Read literally for lift.ret this undoes the pop and delivery exchanges before the A assignment restoring fp, so their stack addresses and the (stack[fp+2]==id) delivery condition are evaluated with the caller's fp, not the callee fp used forward. For lift.call, undoing the stack[sp+1]^=fp XOR before restoring fp likewise uses the new fp. The text also does not distinguish assignment slots from the \u00a73.7 argument/result capture slots, which forward are computed but not exchanged with a destination, so 'exchange every slot back with its destination' has no destination for them. An implementer reversing the whole \u00a73.7 list operationally gets the true inverse; one following \u00a73.6's grouping does not.",
+   "section": "\u00a73.6 inverse step, \u00a73.7 lift.call/lift.ret, \u00a74.2"
+  },
+  {
+   "fix": "Add a per-row type column or closed rules: every address operand and lift.addr/lift.label destination is reg[ptr_width]; lift.alloc's n and lift.boundscheck's n are reg[ptr_width] or a literal in [0,2^ptr_width); lift.load/store addresses are reg[ptr_width]; call arguments, ret operand and oracle/perm call ins/tgt/fr locations have exactly the callee signature widths; fault's code literal is < 2^F; the \u00a73.3 width rules apply verbatim to the lift.* counterparts; mem operands name caller regions with the callee's exact [A,W] and compatible role. State that any width mismatch is suite-F ill-formed, never truncation or extension.",
+   "id": "B2_LIFTED_TYPE_SCHEMA",
+   "problem": "The CC width holes of round 4 are fixed, but lifted rows still have no closed type relations. Nothing states the width of a lift.load/store/boundscheck/alloc address or length location relative to ptr_width, the destination width of lift.addr or lift.label, or width equality between lift.call/lift.ret/lift.oracle_call operands and the callee signature. A body with base:reg[8] under ptr_width=32 and lift.addr of a global at 4096 is accepted-and-truncated by one executor, zero-extended by another, and rejected by a third; inrange's 'computed at ptr_width+1, no wrap' is false if the length operand is reg[64]. Well-formedness, hence F_B, diverges.",
+   "section": "\u00a73.3, \u00a74.2, \u00a74.8, \u00a75.1"
+  },
+  {
+   "fix": "Add a variable-binding table by evaluation context (gate cost/epsilon: k = the gate's own control count, c = k + effective control count, eps = the schedule epsilon_share; scheme ancillae/template subscripts: k and i only; qram: a = address width, w = cell width; frame descriptor: c only), make referencing an unbound variable a load error, and either delete a scheme's cost/epsilon and charge/validate the expanded template (my choice), or require suite E to verify they equal the expansion's sums and use only the expansion for accounting. For measurement-based cleanup, either define mbu_schemes as named patterns with an applicability signature over the computing instruction (computing gate kind, garbage wire role, dependency/control wire roles, measurement basis, outcome-to-fixup gate list), or remove the mbu realisation from cert/sched 0.5 and mark it a named future extension; I would take removal for 0.5, since the fixup is a function of the computing circuit, not of the target.",
+   "id": "B3_TARGET_VARIABLES_AND_MBU",
+   "problem": "\u00a78.1 lists variables k, eps, a, w, c but never binds a or w, and does not say how k differs from c (\u00a78.3 calls the total control count c, then says template subscripts are expressions 'over k and i'). A scheme also carries its own cost and epsilon while \u00a78.2 aggregates the expanded template gates, with no rule for which is authoritative when they disagree. Finally mbu_schemes' template is the placeholder '[\u2026 measure/fixup steps \u2026]' with no language, no wire roles, and no statement of which computing shapes a scheme may clean up, although \u00a76.4 and \u00a711 bind cleanups to it by name. A vendor cannot write, and a scheduler cannot cost identically, these entries.",
+   "section": "\u00a78.1\u2013\u00a78.3, \u00a76.4, \u00a79.4"
+  },
+  {
+   "fix": "Carry the realised operation graph in the schedule: nodes with stable ids, source program-point, invocation chain, loop-iteration vector, machine step/phase where applicable, realised gate or library-call identity (closure hash for composite arithmetic), wire/region operands, dependencies, and per-node kind bindings; selectors then resolve against nodes, and the consumer executes the node list verbatim. The alternative, a normative gate-level expansion of every arithmetic row, comparator, inrange scan and address dispatch, is possible but freezes one adder family into the ISA; I would take the carried hierarchical graph. In either case define path matching explicitly (prefix over the invocation chain) and make iteration a vector with one component per enclosing qloop, outermost first.",
+   "id": "B4_SCHEDULE_OPERATION_IDENTITY",
+   "problem": "\u00a711 asserts the expansion into generated operations is normative, but \u00a7\u00a73.6/4.2/4.5\u20134.6 never expand lift.add, the inrange scan, dispatch comparators or address multiplexing into gates: a ripple-carry and a carry-lookahead executor produce different generated gate sets, so a 'generated: 5, kind: gate' entry names different operations, or none, in each. Path matching is also undefined: nothing says a shorter path is a prefix of an operation's invocation chain, what a non-final path element's point denotes, or how one integer 'iteration' identifies a point inside two nested qloops of the same function. \u00a75.7 permits transformations while \u00a711 requires the surviving operations to keep ordinals, without saying which operations a transformation may drop under a verbatim schedule. Two consumers can execute and charge different circuits from one valid-looking schedule.",
+   "section": "\u00a711, \u00a75.7, \u00a73.6 expansions"
+  },
+  {
+   "fix": "Restrict numerical/channel claims to explicitly identified subjects {region closure hash, variant, inherited_controls, schedule_hash, reference subject} at their actual signature widths (delete free-floating 'widths', or define it as the ordered width list of the subject's interface in allocation order). Key error exactly like cleanup by '<variant>:<inherited_controls>'. Print the SDP: unnormalised Choi matrix in input\u2297output allocation-order basis, the dual variables' shapes, the exact linear/PSD constraints (Y, mu) must satisfy, the objective whose value bounds the diamond norm (stating the norm, not half-norm, convention), interval entries as ordered [re_lo,re_hi,im_lo,im_hi] decimal strings, and a named PSD/feasibility checking procedure. Define interval arithmetic as outward rounding to precision_bits-bit binary rationals after every operation, with stated Taylor/remainder enclosures for sin/cos/exp, so accept/reject is a function of the certificate.",
+   "id": "B5_CERTIFICATE_CHECKER_RULES",
+   "problem": "The channel claim still says only 'verify the SDP dual feasibility of (Y, mu) for the diamond-norm program': the Choi convention, the primal/dual equations, the objective, the factor-of-two convention, dimensions, and the JSON encoding of an interval Hermitian matrix are all unstated, so two checkers test different programs. The numerical claim's 'widths' have no format or meaning for a region whose signature widths are fixed, the claim carries no subject (which realised variant, how many inherited controls, under which schedule) and no reference identity, and 'interval arithmetic at precision_bits' does not fix rounding or enclosures of the trigonometric entries of rz/rx, so one sound checker accepts a bound another rejects. The error object is still one local/inclusive pair per region although realised error varies with the variant and inherited control count that cleanup entries are keyed by and that \u00a78.3 charges on total controls.",
+   "section": "\u00a712.1, \u00a712.3, \u00a76.4"
+  },
+  {
+   "fix": "Give one result-value table: INT = ceil(N/8) little-endian bytes with width=N; F64 = 8 IEEE-754 little-endian bytes with width=64; QREG and TOKEN are returned only through new typed accessors bennett_result_get_qreg/_token (bennett_result_get on them returns BENNETT_E_ARG), and cap too small is BENNETT_E_ARG writing nothing. State that bennett_wait blocks until exactly one outcome: HOST_REQUEST (BENNETT_OK, request non-null, result null) or COMPLETED/FAILED (BENNETT_OK, result non-null including fault codes, request null). Define bennett_qreg_free to require clean, returning BENNETT_E_QREG_NOT_CLEAN, with discarding an entangled register available only through measurement (I prefer this to a silent trace-out free). Define tape args per device operation as its operands in \u00a77.3 order, each an unsigned 64-bit little-endian field, pointers zero-extended from ptr_width.",
+   "id": "B6_LAUNCH_RESULT_AND_TAPE_ENCODING",
+   "problem": "Input binding is now pinned but outputs are not. bennett_result_get returns one (kind, width, le_bytes) triple for every value, with no encoding for QREG (width = register width n, or 64 for the id?) or TOKEN, no F64 byte rule, and no result when cap is too small. bennett_wait's contract for RUNNING, HOST_REQUEST and FAILED runs\u2014which out-pointer is set, whether it blocks, and which status each outcome carries\u2014is unstated. bennett_tape_next returns argument 'bytes' with no per-device-op layout, although tape replay is a conformance artefact. bennett_qreg_free has no clean/dirty rule, unlike the CC qreg.free and \u00a710's clean-only prepare, so one runtime traces out an entangled register and another errors.",
+   "section": "\u00a710, \u00a77.3\u2013\u00a77.4, \u00a73.3"
+  }
+ ],
+ "criteria": [
+  {
+   "change": "Print the A+D inverse as the exact reverse sub-operation list for lift.call/lift.ret, distinguishing capture from assignment slots.",
+   "evidence": "Counters, initial allocator state, frame layout and the forward/inverse pc commit are now pinned, and the simple-row inverse (successor XOR and slot uncompute) is correct; the remaining gap is the A+D interleaving and capture-slot treatment (blocking B1).",
+   "id": "C1",
+   "score": 4
+  },
+  {
+   "change": "Publish the per-row type relations for lifted rows (address/length/call operand widths).",
+   "evidence": "Forms, classes, successors and fault codes are tabulated for every row, CC result-type suffixes and qreg operations exist; lifted-row operand widths against ptr_width and callee signatures remain unstated (blocking B2).",
+   "id": "C2",
+   "score": 3
+  },
+  {
+   "change": "Fix the call/ret inverse order and scope \u00a76's window obligation explicitly for oracle-internal versions.",
+   "evidence": "F_B is total via inherent inrange checks, result_val fixes the return path, the translation lemma's side conditions now exclude all round-4 counterexamples, and control-context disjointness is stated; prefix reversal of the two A+D rows is still ambiguous as written.",
+   "id": "C3",
+   "score": 3
+  },
+  {
+   "change": "Bind every expression variable by evaluation context and make scheme cost the checked sum of its expansion.",
+   "evidence": "Exact-integer log2inv_eps, arities, ordered schemes with realises/indexed wires/ancillae, and event-list aggregation are real progress; a/w are unbound, k vs c is undefined, and mbu_schemes are placeholders (blocking B3).",
+   "id": "C4",
+   "score": 3
+  },
+  {
+   "change": "Make schedules carry their realised operation identities instead of referring to an expansion the text does not fix.",
+   "evidence": "The envelope is byte-exact\u2014I recomputed all four example hashes (inc8, zero, @sum's SCC member hash, @sum_db) and they match\u2014and linking/closure rules are closed; the schedule's generated-operation identity, certificate claim subjects and launch result/tape encodings still leave two repositories guessing.",
+   "id": "C5",
+   "score": 3
+  },
+  {
+   "change": "State the diamond-norm SDP and interval-arithmetic rules so a numerical/channel claim has one accept/reject outcome.",
+   "evidence": "The reference interpreter defines F_B, T1\u2013T6 have usable hypotheses, the sampler is fully specified including non-zero seed, and suites map to sections; checker-computed claims lack executable checking rules (blocking B5).",
+   "id": "C6",
+   "score": 3
+  },
+  {
+   "change": "Either admit a defined closed-window MBU pattern or record its exclusion from 0.5 as a deliberate narrowing of the north star.",
+   "evidence": "Linear wire SSA, Silq/Unqomp windows, QCM exit synchronisation, and the oracle/action split all follow the north star; no contradiction found, with closed-window measurement-based cleanup excluded where the north star sanctions it.",
+   "id": "C7",
+   "score": 4
+  },
+  {
+   "change": "Remove the remaining placeholder schemas ([\u2026 steps \u2026], free-form 'points'/'widths') in favour of the same concreteness the object format now has.",
+   "evidence": "A VM author could start on the CC/R tiers and the step machine tomorrow, and the examples are genuine test vectors; a scheduler or certificate-checker author still hits schematic JSON in \u00a7\u00a78/11/12, and the \u00a716.3 hash table still prints each hash equal to itself instead of name = hash.",
+   "id": "C8",
+   "score": 3
+  }
+ ],
+ "path_to_accept": "Six narrow edits, no redesign: (1) \u00a73.6/\u00a73.7 print the exact reverse sub-operation sequences for lift.call and lift.ret and the three slot kinds; (2) \u00a74.2/\u00a74.8 add lifted-row type relations (reg[ptr_width] addresses/lengths, signature-width equality, mismatch is ill-formed); (3) \u00a78 add the variable-binding table, make scheme cost/epsilon checked against or replaced by the expansion, and define or defer mbu_schemes; (4) \u00a711 carry the hierarchical realised-operation graph with loop-iteration vectors and prefix path matching; (5) \u00a712 identify numerical/channel claim subjects, key error by variant:inherited-controls, and print the SDP, interval encodings and arithmetic; (6) \u00a710 pin result-value encodings, bennett_wait outcomes, tape argument layouts and bennett_qreg_free cleanliness. With those stated, every round-4 blocker is closed and I would return accept.",
+ "suggestions": [
+  "\u00a716.3: label the final hash table name = hash; the hashes themselves reproduce, so this is cosmetic only.",
+  "\u00a76.2: state that oracle-internal location/cell versions are discharged by the \u00a75.2 prefix reversal, not by explicit body cleanup; as written, a suite-F checker could read the window obligation as rejecting ordinary oracle loops that overwrite a location.",
+  "\u00a77.4: require frames after a segment uncall's segment to be footprint-disjoint from it (except reads of its results), or state plainly that segment reversal is literal per-frame undo (e.g. console pop removes the last bytes written, whoever wrote them), so producers do not assume semantic segment deletion.",
+  "\u00a78.3: state that template gates are re-matched by the same native-then-scheme rule, and that a scheme whose expansion does not strictly decrease a stated measure (controls, then template size) is a load error.",
+  "\u00a74.2/\u00a75.4: either add FAULT_BUDGET_STACK or state once that stack-limit exhaustion deliberately reports FAULT_BUDGET_DEPTH.",
+  "\u00a73.3: state the CC qreg handle discipline at region calls (the handle is borrowed for the call and usable afterwards; a slice is consumed by its one call and the parent is then usable again)."
+ ],
+ "summary": "Draft 0.5 closes most of round 4; I verified the four example hashes byte-for-byte. Resolved: codex B2, B3, B4, B5, B7, B9; muse B1, B2, B3, B4, B6, B9; opus B1, B2, B3, B5 (substantively; only the unlabelled hash table remains, as a suggestion). Not fully resolved, re-raised in narrowed form: codex B1 (the A+D/capture-slot inverse, now B1), codex B6 (lifted-row type schema, now B2), codex B8 + muse B5 + opus B4 (target variable bindings, scheme cost authority, mbu_schemes, now B3), codex B11 + muse B8 (schedule operation identity and path/nested-iteration matching, now B4), codex B12 + muse B7 (SDP/interval checking rules and per-context error, now B5; the sampler and minimality parts are resolved), codex B10 (launch output/tape/wait/free contract, now B6; input binding, lifetimes and tokens are resolved). The core machine\u2014step construction, total oracle contract, translation lemma, envelope\u2014is now sound; what remains is contract concreteness at the scheduling, certificate, target and launch boundaries, where independent implementers would still diverge.",
+ "verdict": "revise"
+}
