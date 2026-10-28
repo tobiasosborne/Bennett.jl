@@ -1,13 +1,66 @@
+# Worklog chunk 122 — 2026-10-28 — reboot workstream handoff
+
+Previous: chunk 121 (2026-10-27 blueprint; 2026-10-28 north-star council
+to consensus, ISA spec rounds 1–4, repo bootstrap, process change).
+
+## Session log — 2026-10-28 — ISA draft 0.6 from round 5; council round 6 launched
+
+Orchestrator session (Fable). Round 5 aggregated at the previous pause:
+codex 10 / muse 6 / opus 3 blockers, mean 3.12, no `verdict_core`
+(members graded before the S0/S1 rubric landed). Draft 0.6 written by
+surgical edits only (no rewrite); editor's response with the S0/S1
+re-classification table in `docs/council/isa-2026-10-28/round-5/
+response.md`. Decisions and gotchas worth keeping:
+
+- **A+D inverse.** The real bug behind codex B1 / muse B1: §3.6 grouped
+  "direct sub-ops, then assignment exchanges", so `lift.ret`'s stack
+  addresses were evaluated under the caller's `fp`. 0.6 defines the
+  inverse of an A+D row as the literal reverse of its elementary
+  sub-operation list and prints C1–C5 / R1–R5 with both inverse lists.
+  Three slot kinds (assignment / capture / delivery) because capture
+  slots have no destination to exchange back into.
+- **Result name is a location** (after params, before regs). That makes
+  `R_sum = 16`, so example 2 at n = 16 needs 17·16 = 272 stack cells;
+  `S_cells` went 8 → 9. The pre-flight now models the monotonic stack and
+  tests the capacity boundary (16(n+1) cells succeed, one fewer faults).
+- **Segment `uncall`.** Took the pure-suffix rule (legal only if every
+  frame after the segment is pure) and *dropped* redo/re-execution:
+  with a pure suffix the state at the `uncall` frame already equals the
+  pre-segment state on everything but instances, so whole-run reversal
+  simply skips reversed segments and `uncall` frames. Instances defined
+  inside the segment cease to exist after `uncall` (use → trap).
+- **MBU deferred** (not admitted in 0.6; unitary cleanup only; §17 item
+  6 default). The fixup after X-measurement is (−1)^{m·g(x)}, a property
+  of g's computing sequence, not of the target, so `mbu_schemes` in the
+  target format was the wrong home anyway.
+- **Expansion library** instead of carrying the realised gate graph in
+  every schedule: `bindings.expansion = {name, version, hash}`; the
+  reference library `ref` is the default (§17 item 7). Both codex and
+  muse listed this as the acceptable alternative.
+- **Globals are data symbols of the same name** (`image` = the global's
+  name). This resolves the `@zero` ambiguity (global or symbol?) that the
+  envelope rule depended on silently.
+- **Diamond-norm SDP printed** (Watrous 2009 §4, Hermiticity-preserving
+  form, Y₀ = Y₁ = Y): accept iff Y ∓ J(Φ) ⪰ 0, μI − Tr_out Y ⪰ 0, μ ≤
+  bound; ‖Φ‖◇ ≤ μ with no factor 2. Opus's variant (Y ⪰ 0, Y ⪰ J, 2μ)
+  is also valid for TP differences but looser; codex's form was taken.
+- **Checker gotcha.** A printed envelope for a self-referential
+  one-member SCC (`@sum`) hashes to `scc_hash`, and the symbol's hash
+  is SHA-256("<scc_hash>:0"); the check accepts either. `isa_check.py`
+  gained `--repatch` (rewrites every printed hash to the computed one,
+  needed whenever the version string or a closure leaf changes) and
+  `--print-envelope NAME`.
+- New §17 "Decisions deferred to implementation, with defaults" (14
+  items) replaces the bare list; S1 items close by stating a default.
+- bd: the sonnet agent's repair (below) left one step: `bd dolt push
+  --force`, blocked for the agent harness as a destructive git action;
+  the maintainer runs it.
+
 ## Session log — 2026-10-28 — bd repair (sonnet agent)
 
 Ran: `chmod 700 .beads`; `git config beads.role maintainer`; raw `cp -a .beads` safety copy to scratchpad (pre-migration `bd export` FAILS on v32: "table not found: leases"); `bd migrate --force` (v32->v66, ok); `bd export --all -o .beads/pre-flatten-backup.jsonl` (888 issues + 10 memories = 898 lines; `bd stats` total 888); `bd flatten --force` (2323 commits -> 1; store 246.8 MB -> 58.3 MB; stats total still 888).
 Sizes: noms/vvvv... journal 93.7 MB -> gone; largest now `.beads/backup/*.darc` 56.9 MB (gitignored) + two git-remote-cache packs 24.2/15.5 MB (tracked). `.beads` 159M -> 121M.
 Gotchas: (1) `bd export` only works after migration. (2) After flatten, `bd dolt push` first failed "not a git repository" because git-remote-cache/*/repo.git lost its empty `refs/{heads,tags}` dirs; recreated with mkdir. (3) Push then rejected non-fast-forward (flattened history diverges from remote refs/dolt/data); a force push is required and was NOT done by the agent (needs maintainer OK). Tracked `.beads/issues.jsonl` (898 lines, 2026-10-04) is stale vs the DB. (4) `.beads.gate.lock` is bd-created, covered by ignore; `tools/__pycache__/` added to .gitignore. Open count shifted 221->227 post-migration (status reclassification; total unchanged).
-
-# Worklog chunk 122 — 2026-10-28 — reboot workstream handoff
-
-Previous: chunk 121 (2026-10-27 blueprint; 2026-10-28 north-star council
-to consensus, ISA spec rounds 1–4, repo bootstrap, process change).
 
 ## Session log — 2026-10-28 — HANDOFF: state of the reboot at session pause
 

@@ -263,10 +263,20 @@ class Budget(Exception):
     pass
 
 
-def run_oracle(hdr, sections, name, ins, regions, B, depth_limit=64):
+def frame_cells(fn):
+    """R_f per §3.7: 3 record cells + |L_f|; L_f = params, result name, regs."""
+    nparams = len(parse_params(fn["plists"][0]))
+    nresult = len(parse_params(fn["plists"][1]))
+    nregs = len(parse_regs(fn["regs"])) if fn["regs"] else 0
+    return 3 + nparams + nresult + nregs
+
+
+def run_oracle(hdr, sections, name, ins, regions, B, depth_limit=64, stack_limit=None):
     fns = {f["name"]: f for f in parse_functions(sections["functions"])}
     oracle = fns[name]
     layout = sections.get("layout", {})
+    if stack_limit is None:
+        stack_limit = 2 ** layout.get("S_cells", 0)
     leaves = layout_leaves(layout)
     data = dict(l.split(" ") for l in sections.get("data", []))
     # memory + alloctab pre-entries: globals (layout order) then interface regions
@@ -287,7 +297,7 @@ def run_oracle(hdr, sections, name, ins, regions, B, depth_limit=64):
     addr_of = {g: e["base"] for g, e in layout.get("globals", {}).items()}
     addr_of.update({r: irs[r]["base"] for r in irs})
     ptr_mask = (1 << int(hdr["ptr_width"])) - 1
-    state = {"steps": 0, "depth": 0, "result": 0}
+    state = {"steps": 0, "depth": 0, "result": 0, "sp": 0}
 
     def step():
         state["steps"] += 1
@@ -342,9 +352,11 @@ def run_oracle(hdr, sections, name, ins, regions, B, depth_limit=64):
             elif op == "lift.call":
                 callee = fns[ops[0][1:]]
                 args = [rd(x) for x in ops[1].strip("()").split(", ") if x]
-                if state["depth"] + 1 > depth_limit:
+                # §3.7 flag: depth or stack exhaustion; the stack is monotonic
+                if state["depth"] + 1 > depth_limit or state["sp"] + frame_cells(callee) > stack_limit:
                     raise Fault(FAULT["DEPTH"])
                 state["depth"] += 1
+                state["sp"] += frame_cells(callee)
                 cenv = {}
                 for (pn, _, _), v in zip(parse_params(callee["plists"][0]), args):
                     cenv[pn] = v
@@ -378,15 +390,76 @@ def run_oracle(hdr, sections, name, ins, regions, B, depth_limit=64):
 
 # ------------------------------------------------------------------- checks
 
+def envelopes_of(hdr, sections):
+    """name -> envelope bytes for every function/data symbol (single-member SCCs)."""
+    out = {}
+    symbols = {v["name"]: v for v in sections["symbols"].values()}
+    fns = {f["name"]: f for f in parse_functions(sections.get("functions", []))}
+    hashes, _ = compute_hashes(hdr, sections)
+    data_lines = dict(l.split(" ") for l in sections.get("data", []))
+    for v, sym in symbols.items():
+        if v in fns:
+            fn = fns[v]
+            refs = []
+            def repl(m):
+                w = m.group(1)
+                if w == v:
+                    return "@$0"
+                if w in symbols:
+                    if hashes[w] not in refs:
+                        refs.append(hashes[w])
+                    return "@" + hashes[w]
+                return m.group(0)
+            body = [fn["lines"][0]] + [re.sub(r"@([A-Za-z_][A-Za-z0-9_.]*)", repl, l) for l in fn["lines"][1:]]
+            data, leaves = closure_set(sym, fn, sections)
+            out[v] = envelope(hdr["isa"], hdr["ptr_width"], sym["signature"], body, data, leaves, refs)
+        else:
+            out[v] = envelope(hdr["isa"], hdr["ptr_width"], sym["signature"], [f"{v} {data_lines[v]}"], {}, {}, [])
+    return out
+
+
+def repatch(text):
+    """Rewrite every printed hash (symbols lines, table, prose) to the computed one."""
+    mapping = {}
+    for obj in extract_examples(text):
+        hdr, sections = parse_object(obj)
+        hashes, symbols = compute_hashes(hdr, sections)
+        for n, h in hashes.items():
+            old = symbols[n]["interface_hash"]
+            if old != h:
+                mapping[old] = h
+    for old, new in mapping.items():
+        text = text.replace(old, new)
+    return text, mapping
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--repatch":
+        text, mapping = repatch(SPEC.read_text(encoding="utf-8"))
+        SPEC.write_text(text, encoding="utf-8")
+        for old, new in mapping.items():
+            print(f"repatched {old[:12]} -> {new[:12]}")
+        print("re-run without --repatch to verify")
+        return
+    if len(sys.argv) > 2 and sys.argv[1] == "--print-envelope":
+        text = SPEC.read_text(encoding="utf-8")
+        for obj in extract_examples(text):
+            hdr, sections = parse_object(obj)
+            envs = envelopes_of(hdr, sections)
+            if sys.argv[2] in envs:
+                sys.stdout.write(envs[sys.argv[2]].decode())
+                return
+        sys.exit(f"no symbol {sys.argv[2]}")
     text = SPEC.read_text(encoding="utf-8")
     examples = extract_examples(text)
     assert len(examples) >= 2, "expected at least two example objects"
     failures = []
     printed = dict(re.findall(r"^([A-Za-z_][A-Za-z0-9_.]*) = ([0-9a-f]{64})$", text, re.M))
+    all_hashes = {}
     for obj in examples:
         hdr, sections = parse_object(obj)
         hashes, symbols = compute_hashes(hdr, sections)
+        all_hashes.update(hashes)
         for n, h in hashes.items():
             ih = symbols[n]["interface_hash"]
             if ih != h:
@@ -395,9 +468,6 @@ def main():
                 failures.append(f"{n}: printed table hash {str(printed.get(n))[:12]} != computed {h[:12]}")
         names = set(symbols)
         if "inc8" in names:
-            env_block = re.search(r"```\n(isa=0\.[0-9]+\n.*?)```", text, re.S)
-            if not env_block or sha(env_block.group(1).encode()) != hashes["inc8"]:
-                failures.append("printed inc8 envelope bytes do not hash to the inc8 hash")
             for x in range(256):
                 r, c, st = run_oracle(hdr, sections, "inc8", [x], {}, 3)
                 if (r, c) != ((x + 1) & 255, 0):
@@ -414,6 +484,20 @@ def main():
                 exp = (sum(db[:n]) & 255, 0) if n <= 16 else (0, FAULT["MEMFAULT"])
                 if (r, c) != exp:
                     failures.append(f"sum_db({n}) -> {(r, c)} expected {exp}")
+            # stack capacity (§3.7, §16.3): R_sum = 16 cells; n needs 16(n+1) cells
+            fns = {f["name"]: f for f in parse_functions(sections["functions"])}
+            if frame_cells(fns["sum"]) != 16:
+                failures.append(f"R_sum = {frame_cells(fns['sum'])}, text says 16")
+            for n in (0, 5, 15, 16):
+                need = 16 * (n + 1)
+                r, c, _ = run_oracle(hdr, sections, "sum_db", [n], {"db": db}, 10 ** 6, stack_limit=need)
+                if c != 0:
+                    failures.append(f"sum_db({n}) stack_limit={need} -> code {c}, expected success")
+                r, c, _ = run_oracle(hdr, sections, "sum_db", [n], {"db": db}, 10 ** 6, stack_limit=need - 1)
+                if c != FAULT["DEPTH"]:
+                    failures.append(f"sum_db({n}) stack_limit={need - 1} -> code {c}, expected DEPTH")
+            if 2 ** sections["layout"]["S_cells"] < 16 * 17:
+                failures.append("S_cells too small for the stated n <= 16 success domain")
             for n in (1, 3, 7):
                 r, c, _ = run_oracle(hdr, sections, "sum_db", [n], {"db": db}, 10 ** 6, depth_limit=n)
                 if c != FAULT["DEPTH"]:
@@ -442,12 +526,23 @@ def main():
                     failures.append(f"layout ranges overlap: {an} [{a0},{a1}) and {bn} [{b0},{b1})")
             if rngs[-1][1] > 2 ** lay["H"]:
                 failures.append(f"layout exceeds 2^H: {rngs[-1]}")
+    # every printed envelope block must hash to a computed symbol hash
+    env_blocks = re.findall(r"```\n(isa=0\.[0-9]+\n.*?)```", text, re.S)
+    if not env_blocks:
+        failures.append("no printed envelope block found")
+    for blk in env_blocks:
+        h = sha(blk.encode())
+        # a plain symbol hashes its envelope; a one-member SCC with a self-reference
+        # hashes "<scc_hash>:0" where scc_hash is the SHA-256 of the envelope (§9.2)
+        candidates = {h, sha(f"{h}:0".encode())}
+        if not candidates & set(all_hashes.values()):
+            failures.append(f"printed envelope starting {blk.splitlines()[3][:40]!r} hashes to {h[:12]}, no symbol has it")
     if failures:
         print("ISA CHECK FAILED:")
         for f in failures:
             print(" -", f)
         sys.exit(1)
-    print(f"isa_check ok: {len(examples)} example objects parse, hash per §9.2, and execute as stated")
+    print(f"isa_check ok: {len(examples)} example objects parse, hash per §9.2, {len(env_blocks)} printed envelopes verified, and execute as stated")
 
 
 if __name__ == "__main__":
