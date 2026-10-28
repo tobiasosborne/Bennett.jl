@@ -32,6 +32,8 @@ members with cwd = that repo, so codex's read-only sandbox sees the
 records but must be given the spec path explicitly (it is embedded in
 the prompt verbatim anyway).
 
+**Beads**: `Bennett-amah` (dolt journal bloat) closed — flatten done, force push pending with the maintainer. The post-flatten noms journal restarts small and is tracked again.
+
 **Not done / open**: `bd init` in the new repos (chunk 122 item 3; bd
 itself was only just repaired here); the dialect spec has no draft
 (north star §9 item 1: legality spike first); BennettVM.jl archive
