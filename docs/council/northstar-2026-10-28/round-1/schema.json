@@ -1,0 +1,98 @@
+{
+ "type": "object",
+ "additionalProperties": false,
+ "properties": {
+  "criteria": {
+   "type": "array",
+   "minItems": 8,
+   "maxItems": 8,
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "id": {
+      "type": "string",
+      "enum": [
+       "C1",
+       "C2",
+       "C3",
+       "C4",
+       "C5",
+       "C6",
+       "C7",
+       "C8"
+      ]
+     },
+     "score": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5
+     },
+     "evidence": {
+      "type": "string"
+     },
+     "change": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "score",
+     "evidence",
+     "change"
+    ]
+   }
+  },
+  "blocking": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "section": {
+      "type": "string"
+     },
+     "problem": {
+      "type": "string"
+     },
+     "fix": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "id",
+     "section",
+     "problem",
+     "fix"
+    ]
+   }
+  },
+  "suggestions": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "verdict": {
+   "type": "string",
+   "enum": [
+    "accept",
+    "revise",
+    "reject"
+   ]
+  },
+  "summary": {
+   "type": "string"
+  }
+ },
+ "required": [
+  "criteria",
+  "blocking",
+  "suggestions",
+  "verdict",
+  "summary"
+ ]
+}

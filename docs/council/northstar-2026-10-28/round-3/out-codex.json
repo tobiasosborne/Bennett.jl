@@ -1,0 +1,81 @@
+{
+ "criteria": [
+  {
+   "id": "C1",
+   "score": 4,
+   "evidence": "The inferred tiers, virtual ISA, shared scheduler and two executors now describe one coherent architecture. The thesis still promises fault detection beyond what the optimise-first pipeline guarantees.",
+   "change": "Make the thesis use exactly the definedness and fault contract adopted in \u00a73.2."
+  },
+  {
+   "id": "C2",
+   "score": 3,
+   "evidence": "Effectful external markers and the Enzyme-style link-time transformation are credible without an LLVM fork. The remaining UB guarantee is overstated, and the claim that Rust's distributed standard library lacks bitcode is false.",
+   "change": "State the precise boundary between source-definedness assumptions and faults detectable in the selected optimised-IR reference machine."
+  },
+  {
+   "id": "C3",
+   "score": 4,
+   "evidence": "The predicated step machine, classical-only scheduling policy, allocation classes and explicit padding costs make the VM proposal technically coherent. Unspecified fault payloads still prevent the two executors from implementing one fully determined coherent operation.",
+   "change": "Define the complete reversible result on faulted inputs, including payload and preserved state."
+  },
+  {
+   "id": "C4",
+   "score": 5,
+   "evidence": "Sections 4.4 and 6.1 now assign the object, linking, launch, scheduling, target and certificate interfaces to published contracts. Reusing a scheduler through its specified ABI is intentional modularity, not a hidden monolith.",
+   "change": "None required at vision level; preserve these ownership boundaries during design."
+  },
+  {
+   "id": "C5",
+   "score": 4,
+   "evidence": "Portable handles, explicit runtime coverage constraints and real frontend-emission gates resolve the previous source-ABI problem. The mixed-version rule still treats compatibility as more automatic than the toolchains promise.",
+   "change": "Replace 'merge and run on the newest' with a tested compatibility envelope covering bitcode readers, target layouts, ABIs and frontend-specific IR."
+  },
+  {
+   "id": "C6",
+   "score": 4,
+   "evidence": "The proof/evidence distinction, post-decomposition permutation boundary and channel comparisons are substantial corrections. However, \u00a75.1's theorem still omits input preservation from its hypotheses and permits incomplete comparisons on faulted inputs.",
+   "change": "Make the complete register-state relation the explicit object of verification."
+  },
+  {
+   "id": "C7",
+   "score": 4,
+   "evidence": "The novelty claim is appropriately about a combination, with broad attribution. Quantum Control Machine is a particularly relevant omission now that a superposed program counter is central.",
+   "change": "Add Quantum Control Machine and explain how Bennett's embedding and control-state cleanup satisfy the relevant synchronization obligations."
+  },
+  {
+   "id": "C8",
+   "score": 4,
+   "evidence": "The component responsibilities and deferred mechanics are clear enough for the three intended readers. The remaining disagreements concern normative semantics rather than missing implementation detail.",
+   "change": "Give one authoritative success-and-failure relation and make the thesis, theorem and acceptance tests reference it."
+  }
+ ],
+ "blocking": [
+  {
+   "id": "B1_LLVM_DEFINEDNESS",
+   "section": "\u00a7\u00a70, 3.2, 4.2, 5.1 and 8 rung 7",
+   "problem": "Section 3.2 acknowledges that optimisation can erase source UB, but \u00a70 still promises named faults for executions outside the defined domain. These cannot both hold for source executions. I confirmed locally that clang -O3 turns `int f(int x){int y=10/x;return 0;}` into `return 0`, leaving nothing to fault on at x=0. UBSan also detects selected UB classes; a clean run does not establish source definedness. See the [LLVM UB manual](https://llvm.org/docs/UndefinedBehavior.html) and [UBSan documentation](https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html).",
+   "fix": "Prefer the minimal correction: state that source equivalence requires an independently stated definedness assumption for every supported basis input; faults cover conditions encountered by Bennett's totalised optimised-IR machine, with no guarantee of detecting source UB erased earlier. Describe UBSan as supplementary evidence, not a complete domain classifier. Alternatively, retain source-level fault guarantees by introducing checked semantics before UB-exploiting optimisation, explicitly naming their coverage. The kernel rung must identify which contract it uses."
+  },
+  {
+   "id": "B3_FAULT_RESULT_SEMANTICS",
+   "section": "\u00a7\u00a74.2 and 5.1",
+   "problem": "Saying that faulted outputs are 'not an oracle value' does not specify their quantum state. Two implementations can return the same fault code and clean workspace while one writes zero to the payload and the other copies x. On a superposition these produce different correlations, even if nobody reads the invalid payload. Comparing only the fault code therefore cannot establish the claimed common semantics.",
+   "fix": "Define a deterministic bounded result F_B(x): success returns (f(x), 0), while failure returns (0, error_B(x)); implement it by XOR into payload and error targets, preserving the input and restoring workspace. Error selection must follow the shared bounded reference semantics. Alternatively, specify a deterministic partial-result payload on failure and compare it completely; I would choose the canonical zero payload. Merely disabling forward predicates is insufficient without retaining and reversing the required history."
+  },
+  {
+   "id": "B4_INPUT_PRESERVATION",
+   "section": "\u00a75.1 part 1 and its conformance requirements",
+   "problem": "The theorem's listed hypotheses check the result and clean/dirty ancilla restoration, but do not require preservation of x. Appending X on an input bit after an otherwise correct oracle preserves every listed result and ancilla check, yet violates the claimed mapping. Exhausting target and dirty-register values does not close this hole.",
+   "fix": "Require explicit equality of the entire register tuple: preserved input and reference state, target XOR the specified bounded result, correctly transformed fault target, unchanged dirty registers, and restored clean workspace. State input preservation in both the theorem's hypotheses and the acceptance checks; native execution supplies f(x), while the embedding specification supplies the complete expected state."
+  }
+ ],
+ "suggestions": [
+  "Specify the approximation metric and numerical assurance behind channel comparisons. Diamond-norm bounds support compositional channel guarantees; phase-sensitive unitary bounds are needed for controlled use. Ordinary floating-point matrix agreement should remain evidence unless numerical error is rigorously bounded.",
+  "Clarify that the marker-only quantum-memory rule concerns explicit quantum-register access. Ordinary LLVM loads/stores in unmodified SQLite must still be accepted and coherently lifted according to the incoming memory model; otherwise \u00a73.1 reads as contradicting the flagship demonstration.",
+  "Correct \u00a73.3: Rust's distributed standard library normally includes embedded LLVM bitcode. Extract compatible bitcode where available; require rebuilding only when it is missing or unsuitable. Also replace unconditional mixed-major linking with supported combinations. See [rustc bitcode options](https://doc.rust-lang.org/rustc/codegen-options/#embed-bitcode) and [LTO compatibility](https://doc.rust-lang.org/rustc/linker-plugin-lto.html#toolchain-compatibility).",
+  "Add [Quantum Control Machine](https://arxiv.org/abs/2304.15000) to \u00a77. Its injectivity and synchronization analysis directly informs the new step-machine construction; distinguish preservation of classical inputs through oracle embedding from unrestricted lifting of quantum control flow."
+ ],
+ "verdict": "revise",
+ "path_to_accept": "Three normative edits suffice: consistently limit UB guarantees to the chosen reference semantics and explicit definedness assumptions; specify the complete faulted output state; and require input preservation plus full-state comparison in the permutation theorem and conformance checks. No implementation or additional demonstration is required for acceptance.",
+ "summary": "The architecture is ambitious and substantially coherent. Round-2 status: codex B2_SOURCE_MARKER_ABI is resolved. Codex B1_LLVM_DEFINEDNESS is partially resolved, with the source-level guarantee still inconsistent. Codex B3_BOUND_EXHAUSTION and muse B2_BOUND_EXHAUSTION_SEMANTICS resolve budget sourcing and silent truncation, but leave fault payload semantics incomplete. Codex B4_VERIFICATION_SCOPE and muse B1_CORRECTNESS_COMPLETENESS resolve sampling, decomposition and channel-scope objections, but still omit explicit input preservation. Opus B1-coherent-totality-and-bounds resolves region budgets and arbitrary-CFG execution; its definedness and total-result aspects remain partial. These are narrow semantic corrections to a credible founding vision, not objections to its ambition or implementation status."
+}

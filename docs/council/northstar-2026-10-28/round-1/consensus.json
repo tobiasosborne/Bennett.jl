@@ -1,0 +1,121 @@
+{
+ "agree": false,
+ "verdicts": {
+  "codex": "revise",
+  "muse": "revise",
+  "opus": "revise"
+ },
+ "blocking": {
+  "codex": [
+   {
+    "id": "B1_EFFECT_DOMAINS",
+    "section": "\u00a7\u00a70, 1.3\u20131.4, 3 effects row, 5, 7",
+    "problem": "The unrestricted controlled-anything promise conflates classical reversibility with quantum coherence. Recording a measurement result does not restore the discarded coherence, and recording external output does not make the external observer reversible. A bounded deterministic simulation of SQLite or Linux can become a coherent oracle; an execution that exposes branch-dependent information to an ordinary console, filesystem, or measurement record cannot generally be uncomputed into that oracle. Likewise, replaying one recorded environment is not equivalent to evaluating every superposed input against a live environment. [Measurement and reversibility](https://arxiv.org/abs/1808.08598).",
+    "fix": "Define separate execution capabilities for classical execution/replay, coherent reversible computation, and measurement-bearing computation. Preserve broad language coverage through an explicitly modeled environment: specify inputs, randomness, memory, bounds, and effects included in the reversible state. Require external effects to be coherently modeled or deferred where coherent control is promised; define rejection or another explicit semantic outcome otherwise. State the defined LLVM execution domain, including the treatment of undefined behavior."
+   },
+   {
+    "id": "B2_LLVM_CONTRACT",
+    "section": "\u00a73 and \u00a78.1",
+    "problem": "The extension-point table asserts guarantees these mechanisms do not provide. Target extension types are not linear; address spaces qualify pointers rather than arbitrary iN values; unfamiliar instruction metadata can be dropped; and llvm.lifetime.end describes memory lifetime, not quantum cleanup. [LLVM language reference](https://llvm.org/docs/LangRef.html). Convergence constrains particular control-flow transformations rather than furnishing general quantum effect semantics. [Convergence semantics](https://llvm.org/docs/ConvergentOperations.html). Genuine new llvm.* intrinsics require LLVM-side definitions, unlike Enzyme-style external marker calls. [Extending LLVM](https://llvm.org/docs/ExtendingLLVM.html). Consequently, the claimed blanket legality does not follow from the proposed mechanisms.",
+    "fix": "Commit to a viable conservative no-fork representation: distinguish classical computations awaiting coherent lifting from explicit quantum state and effects; use ordinary effectful marker calls where necessary; carry mandatory bounds and lifecycle operations semantically rather than solely as metadata. State where verification and quantum lowering occur relative to ordinary optimization. Exact attributes may remain a design question, but their claimed guarantees cannot remain settled facts."
+   },
+   {
+    "id": "B3_COHERENT_RUNTIME",
+    "section": "\u00a7\u00a71.6, 3, 4, 8.3\u20138.7",
+    "problem": "A classical runtime cannot inspect a superposed trip count, allocation decision, pointer, or garbage value to choose an ordinary execution path without potentially destroying coherence. Nor can classical checkpointing be transferred to arbitrary quantum states by copying them. Maximum-bound padding addresses execution length, but does not specify coherent allocation, history, release, or what happens when only some branches exceed a bound. Leaving these as unrestricted resource policy risks building a reversible classical debugger and calling it a quantum VM.",
+    "fix": "Require scheduling decisions either to depend only on classical information or to be implemented coherently. Identify coherent versus classical heap, history, and control state; define bound-exhaustion semantics and the memory/recursion bounds needed for specialization. Specify clean release and dirty borrowing as semantic obligations, including restoration of correlations with external reference systems. Defer the scheduling algorithms, not these invariants."
+   },
+   {
+    "id": "B4_QUANTUM_CORRECTNESS",
+    "section": "\u00a7\u00a72, 5, 7, 8.8",
+    "problem": "Matching native bit outputs and returning ancillae to zero does not establish a correct quantum oracle. A circuit implementing |x,0> \u2192 (-1)^g(x)|x,f(x)> passes those checks while introducing an unintended phase; even a global phase becomes observable when the operation is controlled. Measurement-bearing programs require comparison of quantum instruments or channels, not merely recorded outcomes. The current success definition can therefore certify artifacts that break the flagship quantum algorithms.",
+    "fix": "State the intended phase-sensitive oracle embedding and the semantics of general quantum operations, including entangled inputs and dirty ancillae. Add small exhaustive operator/channel checks and interference tests to the ladder. Specify approximation budgets for rotations and hardware lowering, and identify what proof-carrying output proves, under which assumptions, with what independent checking. Describe differential testing as evidence rather than universal proof."
+   }
+  ],
+  "muse": [
+   {
+    "fix": "Rewrite the table around verified mechanisms: opaque declared marker functions rather than new intrinsics, bounds as explicit operands of marker calls, custom garbage markers, region outlining before general optimisation of tainted code, and a named pipeline placement. Make a legality spike against stock LLVM passes a gate on freezing bennett-dialect-spec.",
+    "id": "B1",
+    "problem": "Several rows are false as stated: llvm.lifetime.start/end annotate memory objects, not SSA garbage values; LLVM loop metadata is droppable and cannot carry load-bearing bound semantics; target extension types do not give linear ownership, because LLVM SSA uses may be duplicated, selected and threaded before any after-the-fact verifier runs; and a pass plugin cannot register new llvm.* intrinsics, only recognise calls to declarations. The iN-plus-taint row also conflicts with the target-extension-type row: ordinary iN values carry no address-space or per-value taint that survives optimisation.",
+    "section": "\u00a73"
+   },
+   {
+    "fix": "Scope the claim: a clang/opt pass plugin first; rustc needs its unstable LLVM-plugin/codegen-backend path and Julia needs an LLVM.jl pipeline integration, each named as its own front-end integration. State that Bennett needs its own driver, link step and launch runtime (bennett-driver), with clang offload as the model, not a reused mechanism.",
+    "id": "B2",
+    "problem": "'Loaded by clang, rustc, and Julia without modification' and reuse of clang's GPU offload model are not true at the level needed. clang offload outlining, fat binaries and launch are front-end/driver mechanisms tied to language annotations and target triples, not something a middle-end plugin can conjure after taint analysis; rustc does not load clang pass plugins, does not use the clang driver, and exposes LLVM plugins only unstably; Julia integration is a separate problem the document itself defers in \u00a78.9.",
+    "section": "\u00a71.3-1.4, \u00a76"
+   },
+   {
+    "fix": "Define two control classes in the vision itself: classical control flow on measured/host data, which is genuinely dynamic, and coherent control, which is predicated execution padded to a bound in both executors. State that the circuit is a specialisation of the VM only under that shared padded semantics, and drop any implication that run-time bounds unlock superposition trip counts.",
+    "id": "B3",
+    "problem": "The ISA's central semantics are conflated: 'branch on a qubit' and 'loop while a quantum register is nonzero' cannot be classical instruction-pointer control in superposition; coherent control is predication padded to a maximum, as \u00a74 half-admits, while measured feedback is ordinary classical branching. Until the vision says which class each ISA control instruction belongs to, 'one semantics, two executors' and 'circuit as bounded specialisation of the VM' are undefined, and the ISA spec, the VM and the specialiser would be built against different machines.",
+    "section": "\u00a74, \u00a78.4"
+   },
+   {
+    "fix": "Add an effect boundary to the thesis: coherent regions are closed and effect-free, with classical inputs fixed before entry and outputs emitted after measurement; databases and kernels run as reversible code over reversible memory, with panic/query-match as computed predicates. Restate universality as covering every defined, effect-bounded execution, with trap/shim semantics for the rest, and rewrite rungs 4 and 7 accordingly.",
+    "id": "B4",
+    "problem": "An effect tape makes classical replay deterministic; it does not make I/O, syscalls, measurement or host filesystem access unitary. As written, Grover over SQLite executed 'by the actual SQLite engine' and amplitude amplification with 'the kernel panics' as oracle require coherent access to external state and an irreversible effect inside an oracle, which is physically incoherent. The same gap covers UB/poison, atomics, volatile, inline asm and exceptions: \u00a70 promises universality for anything clang accepts, but no reversible semantics for undefined or effectful executions is stated, only deferred in \u00a78.11.",
+    "section": "\u00a70, \u00a73, \u00a75, \u00a77"
+   },
+   {
+    "fix": "Redefine correct as basis-state differential equivalence plus phase-sensitive checks: unitary equivalence at exhaustive small widths and controlled/interference differential tests (run the artefact controlled and in interference against a reference), with proof-carrying output given a concrete certificate notion a checker can validate.",
+    "id": "B5",
+    "problem": "Differential equivalence against native execution on classical inputs cannot detect relative-phase errors or residual garbage entanglement, yet the thesis is controlled-anything: an artefact correct on every basis state can be wrong under control and in superposition, which is the only place it will be used. 'It compiles and it is correct are the same statement' therefore overclaims, and 'proof-carrying circuit' is never given a checkable meaning.",
+    "section": "\u00a75, \u00a77"
+   },
+   {
+    "fix": "Either expand the ISA spec's stated contents to own the object/link format, reversible ABI, host launch/runtime ABI and cost-certificate schema, or name them as further contracts. Resolve the scheduler and one-codebase contradictions explicitly: what is shared, through which spec, such that a competitor's VM or specialiser could still replace either executor.",
+    "id": "B6",
+    "problem": "The dialect spec and ISA spec are not sufficient for every pair of components to communicate, and \u00a78.6 defers exactly the missing pieces: plugin, driver, runtimes and arith also couple through a reversible ABI, a linkable object format, a host/device launch ABI, and a cost-certificate format shared by circuits, arith, estimate and Bennett.jl. Two internal contradictions hide the monolith: \u00a71.6 makes compiler and VM 'the same optimiser at two time scales' across the contract boundary, and \u00a76 gives both executors 'one codebase' while \u00a76.1 splits them into independently replaceable repositories.",
+    "section": "\u00a71.6, \u00a76, \u00a76.1"
+   }
+  ],
+  "opus": [
+   {
+    "id": "B1-dialect-extension-points",
+    "section": "\u00a73 table, \u00a71.2",
+    "problem": "Several extension points the dialect depends on are not available to an out-of-tree plugin, or do not do what is claimed. Out-of-tree code cannot add llvm.* intrinsics. Target extension type properties are hardcoded per name inside LLVM, so target(\"bennett.qubit\") is unsized: it cannot be stored, alloca'd, made a global, or placed in memory aggregates, which rules out qubit arrays and 'quantum memory'. clang and rustc cannot emit the type from source. Address spaces and attributes cannot taint iN values. lifetime intrinsics apply only to allocas. Loop metadata is droppable and cannot carry a runtime bound operand. The cited examples (NVPTX, AMDGPU, SPIR-V) are in-tree. Built as written, the project would rest on mechanisms that do not exist.",
+    "fix": "Restate \u00a73 in terms of mechanisms that do exist: marker function declarations (Enzyme-style) with call-site attributes added by the plugin, handle retyping at PipelineStartEP, bounds as real operands of marker calls, garbage lifetime from liveness, and taint from analysis. Where a target-extension-type property entry is genuinely needed, say it will be proposed upstream (an upstream patch, not a fork), or design without it."
+   },
+   {
+    "id": "B2-qubit-semantics",
+    "section": "\u00a73 rows 1 and 4, \u00a71.7",
+    "problem": "The document wants qubits as 'SSA values \u2026 never opaque pointers' that are visible to dataflow, and also gates as intrinsics with memory effects so that passes cannot CSE, hoist or delete them. If gates have memory effects, the qubit is a handle whose state changes through hidden memory. That is QIR's problem again. Value semantics with readnone gates instead invites speculation that breaks linearity. Opacity does not prevent copies either, because SSA uses are free. This choice is the core design decision of the dialect, and CUDA-Q's Quake has both ref and wire forms precisely because of it.",
+    "fix": "Decide value vs reference semantics, or say which form is used at which pipeline stage, at the vision level. State plainly that LLVM cannot enforce linearity, so linearity rests on a fail-loud verifier plus the legality contract."
+   },
+   {
+    "id": "B3-taint-compilation-model",
+    "section": "\u00a71.3\u20131.4, \u00a75 toolchain, \u00a76.1 driver",
+    "problem": "Taint and controlled or adjoint bodies depend on the call context across the whole program. A function in one TU may be called under a qubit from another, and generating its controlled body needs its IR, which is Enzyme's own requirement. clang's offload machinery (outlining, fat binaries, launch) is driven by the frontend and driver over separately compiled device modules, so a pass cannot reuse it after the fact. As written, a per-TU plugin cannot decide what is 'never ours', and 'one reversible object per TU' is underspecified.",
+    "fix": "Specify the compilation model. Every function is emitted natively and also carries embedded IR (a fat object). Device specialisation, taint resolution, and control and adjoint generation happen at link time (LTO plugin) or load time (runtime JIT). Define 'untainted' relative to the resolved call graph. The ISA lowering must accept host-triple IR (datalayout, ABI, target intrinsics, inline asm as trapped or shimmed)."
+   },
+   {
+    "id": "B4-effects-under-superposition",
+    "section": "\u00a73 effects row, \u00a74 effect tape, \u00a77 rungs 4/6\u20138",
+    "problem": "A recorded effect tape gives deterministic replay only for classical and reversible execution. In a superposed region, the effect sequence differs per branch, and a real outside-world effect (console, disk, a SQLite file read at a quantum-dependent address) decoheres or is simply undefined. The flagship rungs (Grover over SQLite, kernel fuzzing) depend on this semantics, which the document does not define.",
+    "fix": "Define effect semantics per tier. The classical and reversible tiers may tape. The superposition tier must either trap on external effects or virtualise them as state inside the device (SQLite through an in-memory VFS over QROM/QRAM, devices modelled reversibly). Also state that VM run-time policy may depend only on classical data."
+   },
+   {
+    "id": "B5-repo-split-contradiction",
+    "section": "\u00a76 Rust row vs \u00a76.1, \u00a71.6",
+    "problem": "\u00a76 says the two executors live in one codebase, giving one semantics by construction, but \u00a76.1 makes them independently replaceable repositories. Decision 6 says the compiler and VM are one optimiser, but the optimiser is split across C++ and Rust with no shared code, which breaks the document's own rule that C++ is used only where LLVM is linked. The host\u2194device launch ABI and the reversible object format belong to no contract. The split would be built wrong.",
+    "fix": "Choose one executor arrangement and make the ISA spec's formal model plus the conformance suite the source of 'one semantics'. Move the scheduler and cost model into a non-LLVM component behind a specified interface used by both plugin and VM. Make the ISA spec explicitly own the launch ABI, object/linking format, and cost-certificate format."
+   }
+  ]
+ },
+ "means": {
+  "C1": 3.33,
+  "C2": 2.0,
+  "C3": 3.0,
+  "C4": 3.0,
+  "C5": 2.0,
+  "C6": 2.67,
+  "C7": 2.0,
+  "C8": 3.0
+ },
+ "members": [
+  "codex",
+  "muse",
+  "opus"
+ ]
+}

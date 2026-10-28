@@ -1,0 +1,89 @@
+{
+ "criteria": [
+  {
+   "id": "C1",
+   "score": 4,
+   "evidence": "The LLVM front door, reversible oracle construction, resource-aware ISA, and two executors describe one ambitious system. The closed-effect boundary makes the SQLite and kernel demonstrations coherent, but undefined behavior and bound exhaustion still lack consistent correctness contracts.",
+   "change": "Make the defined execution domain and bound-failure behavior explicit qualifications of the thesis."
+  },
+  {
+   "id": "C2",
+   "score": 3,
+   "evidence": "Declared markers, explicit bound operands, reference-to-wire conversion, and whole-program transformation are credible mechanisms. The remaining claims about concretising LLVM undefined behavior, Rust address-space emission, and the sufficiency of negative call attributes are incorrect or overstated.",
+   "change": "Replace those claims with a definedness contract, a portable source marker ABI, and positive requirements for marker effects."
+  },
+  {
+   "id": "C3",
+   "score": 4,
+   "evidence": "Sections 4.2\u20134.4 clearly distinguish dynamic classical control from padded coherent control and identify allocation, garbage, resources, and launch semantics. However, a permanently false predicate does not specify a correct response when a live branch exhausts its bound.",
+   "change": "Specify bound exhaustion as either an excluded execution under an explicit precondition or a reversible, observable error outcome."
+  },
+  {
+   "id": "C4",
+   "score": 4,
+   "evidence": "The ISA now owns the object format, reversible ABI, launch ABI, and certificate schema; independent executors share a specification rather than requiring shared implementation. The scheduler C ABI and driver invocation interfaces still need explicit ownership within the claimed two-contract structure.",
+   "change": "Assign every callable cross-repository interface to a published contract, including scheduler and driver interfaces."
+  },
+  {
+   "id": "C5",
+   "score": 4,
+   "evidence": "Whole-program bitcode, an owned driver, host-triple lowering, and named frontend integrations make the no-fork strategy credible. Requiring dedicated-address-space handles directly from unmodified Rust remains an unsupported frontend assumption.",
+   "change": "Accept source-emittable marker signatures and perform any required handle normalisation in Bennett's pipeline."
+  },
+  {
+   "id": "C6",
+   "score": 2,
+   "evidence": "The permutation theorem is correct under exhaustive agreement on the complete declared input domain, and permutation-oracle branch enumeration is sound. Section 5.1 nevertheless calls sampled testing complete and specifies unitary equivalence for measurement-bearing implementations without defining their channel or instrument semantics.",
+   "change": "Separate mathematical correctness, exhaustive finite-domain checks, sampled evidence, and measurement-channel verification in both acceptance criteria and certificates."
+  },
+  {
+   "id": "C7",
+   "score": 4,
+   "evidence": "The landscape table identifies relevant predecessors and mostly claims a combination rather than inventing its ingredients. Section 4.1's assertion that quantum programming has lacked an abstraction layer is historically false: Quil already specifies a portable quantum abstract machine. [Quil specification](https://quil-lang.github.io/)",
+   "change": "Add Quil/QAM and eQASM, and describe the missing combination of reversible compilation, lifecycle semantics, and resource scheduling."
+  },
+  {
+   "id": "C8",
+   "score": 4,
+   "evidence": "The architecture, component ownership, and concrete demonstrations give the three intended readers useful direction. Some semantic obligations remain under open technical questions despite determining what programs mean and what successful verification establishes.",
+   "change": "Move definedness, bound failure, and verification scope into normative decisions; defer their implementation mechanisms."
+  }
+ ],
+ "blocking": [
+  {
+   "id": "B1_LLVM_DEFINEDNESS",
+   "section": "\u00a7\u00a70, 3.2\u20133.3, 4.2, 8 rung 7",
+   "problem": "\u201cUndefined behaviour is concretised and recorded\u201d is false for the stated optimise-first pipeline. LLVM UB is not a random environmental choice: optimisation may remove or change behavior before the offending operation, leaving nothing a link-time recorder can reconstruct. Undef, poison, freeze, and external nondeterminism are also distinct concepts. This matters particularly for a kernel-fuzzing oracle: agreement with the same optimised native binary cannot establish the promised semantics of executions affected by source UB. [LLVM UB manual](https://llvm.org/docs/UndefinedBehavior.html)",
+   "fix": "State that correctness applies under explicit definedness assumptions covering every basis input in the supported coherent domain. Distinguish deterministic refinements of permitted undefined values from immediate UB and poison-triggered UB. If faulting executions are supported, establish defined checked or machine-simulation semantics before optimisations exploit UB. Record these assumptions and any fixed environmental choices in the certificate."
+  },
+  {
+   "id": "B2_SOURCE_MARKER_ABI",
+   "section": "\u00a7\u00a73.1 qubit handles, 3.3, 6.1 dialect specification",
+   "problem": "The dialect requires dedicated-address-space pointer handles, while the Rust integration merely exports bitcode from unmodified rustc. Rustc's internal LLVM bindings are not an extension point available to an ordinary Rust marker library; emitting bitcode does not let that library choose arbitrary pointer address spaces. Consequently, the proposed universal source ABI lacks a supported Rust emission path. Address-space meanings are also target-dependent. [Rust pointer types](https://doc.rust-lang.org/reference/types/pointer.html), [Clang address-space attribute](https://clang.llvm.org/docs/AttributeReference.html#address-space)",
+   "fix": "Define a portable source marker ABI using ordinary opaque pointers or integer handles, with Bennett normalising recognised handles into its internal representation. Specify how that representation respects the incoming target's pointer layout and address spaces. Gate the dialect specification on actual clang, Rust, and Julia emission examples, as well as optimisation tests."
+  },
+  {
+   "id": "B3_BOUND_EXHAUSTION",
+   "section": "\u00a7\u00a73.1 bounds, 4.2, 5.1, 9.4",
+   "problem": "Forcing a predicate permanently false does not distinguish normal termination from exhaustion while computation remains active. It can silently produce a truncated result that differs from native execution, even when the resulting circuit is reversible and cleans its workspace. Deferring this distinction permits the VM and specialiser to implement different functions. Recursion and workspace exhaustion require the same treatment.",
+   "fix": "Choose a shared semantic rule: require bounds sufficient for all supported inputs under stated assumptions, or define a total bounded computation with a reversible exhaustion flag and specified output behavior. Preserve enough state to uncompute, expose failure only through the declared interface, and identify whether the reference oracle is the original function or its explicitly bounded variant."
+  },
+  {
+   "id": "B4_VERIFICATION_SCOPE",
+   "section": "\u00a7\u00a74.2, 5.1, 8, 9.6",
+   "problem": "The permutation theorem does not make property-based testing complete: untested basis inputs can still be wrong. Its stated XOR embedding also requires checking the full allowed domain, including arbitrary target-register contents, input preservation, and dirty-borrow restoration. Measurement-based uncomputation is a channel implementation, not generally a unitary on the measured system; checking selected state-vector trajectories is insufficient to establish its behavior on entangled inputs. A record of test seeds cannot upgrade these checks into a universal correctness proof. [Quantum-channel representations and equivalence](https://learning.quantum.ibm.com/course/general-formulation-of-quantum-information/quantum-channels)",
+   "fix": "Keep the permutation theorem, but label exhaustive checks complete only for their declared finite domain and sampled checks as evidence. State the full input/output relation, including dirty registers. For measurement-assisted implementations, compare the induced channel, or instrument when outcomes are exposed, including controlled execution and reference-system correlations. Distinguish replayable validation records from independently checkable proofs, and specify the scope and composition of approximation budgets."
+  }
+ ],
+ "suggestions": [
+  "Tighten \u00a73.1's call-legality wording. Absence of readnone and speculatable is insufficient: a readonly, returning call can still be eliminated or commoned. Conservative external effectful declarations are a viable foundation; specify their positive effect requirements and prohibit incompatible attributes. [LLVM memory attributes](https://llvm.org/docs/LangRef.html#function-attributes)",
+  "Publish ownership of the scheduler C ABI and driver invocation interface. Also reconcile \u00a76's claim that every Rust component consumes ISA serialisation with the driver's stated bitcode responsibilities; invoking LLVM tools externally is a coherent arrangement.",
+  "Explicitly restrict branch enumeration to permutation blocks, or to logical permutation abstractions whose lowerings are separately verified. Enumerating the compiled permutation on each supported basis component is exact and can avoid a state vector spanning SQLite's workspace; arbitrary rotations and measurements need additional simulation machinery.",
+  "State that classical scheduling decisions do not authorise copying arbitrary quantum checkpoints. Checkpoint and recomputation operations must themselves preserve quantum state and correlations.",
+  "Strengthen rungs 2, 3, and 6 with independent forward-result checks. Byte-exact reversal and deterministic tape replay alone can certify an implementation that consistently computes the wrong forward result.",
+  "Clarify that an exact-synthesis witness demonstrates attainability; claimed minimality additionally needs a checkable lower-bound or exhaustive-search certificate.",
+  "Replace the historical absence-of-abstraction argument with a precise comparison to Quil/QAM and eQASM. These predecessors do not invalidate Bennett's proposed combination. [Quil specification](https://quil-lang.github.io/), [eQASM paper](https://arxiv.org/abs/1808.02449)"
+ ],
+ "verdict": "revise",
+ "summary": "The direction is sound, but four semantic or interface corrections remain blocking. Round-1 status: codex B1_EFFECT_DOMAINS and muse B4 are partially resolved\u2014the external-effect boundary is fixed, while definedness remains B1; opus B4 is resolved. Codex B2_LLVM_CONTRACT, muse B1, and opus B1 have their intrinsic, type-linearity, metadata, and lifetime issues resolved, but the replacement frontend ABI retains B2. Muse B2 and opus B3 have their driver and whole-program compilation issues resolved, with the Rust ABI qualification in B2. Opus B2 is resolved by reference-to-wire staging. Codex B3_COHERENT_RUNTIME and muse B3 have their control and scheduling issues resolved, but bound-exhaustion semantics remain B3. Codex B4_QUANTUM_CORRECTNESS and muse B5 are partially resolved and remain B4. Muse B6 and opus B5 are resolved at vision level by the expanded ISA contract and shared scheduler component. The editor's branch-enumeration premise is correct for a genuine permutation oracle with restored workspace; it does not extend to arbitrary coherent regions or independently validate their physical lowerings."
+}

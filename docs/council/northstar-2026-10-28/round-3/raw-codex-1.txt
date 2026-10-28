@@ -1,0 +1,1587 @@
+exit 0 in 765s
+--stdout--
+{
+  "criteria": [
+    {
+      "id": "C1",
+      "score": 4,
+      "evidence": "The inferred tiers, virtual ISA, shared scheduler and two executors now describe one coherent architecture. The thesis still promises fault detection beyond what the optimise-first pipeline guarantees.",
+      "change": "Make the thesis use exactly the definedness and fault contract adopted in §3.2."
+    },
+    {
+      "id": "C2",
+      "score": 3,
+      "evidence": "Effectful external markers and the Enzyme-style link-time transformation are credible without an LLVM fork. The remaining UB guarantee is overstated, and the claim that Rust's distributed standard library lacks bitcode is false.",
+      "change": "State the precise boundary between source-definedness assumptions and faults detectable in the selected optimised-IR reference machine."
+    },
+    {
+      "id": "C3",
+      "score": 4,
+      "evidence": "The predicated step machine, classical-only scheduling policy, allocation classes and explicit padding costs make the VM proposal technically coherent. Unspecified fault payloads still prevent the two executors from implementing one fully determined coherent operation.",
+      "change": "Define the complete reversible result on faulted inputs, including payload and preserved state."
+    },
+    {
+      "id": "C4",
+      "score": 5,
+      "evidence": "Sections 4.4 and 6.1 now assign the object, linking, launch, scheduling, target and certificate interfaces to published contracts. Reusing a scheduler through its specified ABI is intentional modularity, not a hidden monolith.",
+      "change": "None required at vision level; preserve these ownership boundaries during design."
+    },
+    {
+      "id": "C5",
+      "score": 4,
+      "evidence": "Portable handles, explicit runtime coverage constraints and real frontend-emission gates resolve the previous source-ABI problem. The mixed-version rule still treats compatibility as more automatic than the toolchains promise.",
+      "change": "Replace 'merge and run on the newest' with a tested compatibility envelope covering bitcode readers, target layouts, ABIs and frontend-specific IR."
+    },
+    {
+      "id": "C6",
+      "score": 4,
+      "evidence": "The proof/evidence distinction, post-decomposition permutation boundary and channel comparisons are substantial corrections. However, §5.1's theorem still omits input preservation from its hypotheses and permits incomplete comparisons on faulted inputs.",
+      "change": "Make the complete register-state relation the explicit object of verification."
+    },
+    {
+      "id": "C7",
+      "score": 4,
+      "evidence": "The novelty claim is appropriately about a combination, with broad attribution. Quantum Control Machine is a particularly relevant omission now that a superposed program counter is central.",
+      "change": "Add Quantum Control Machine and explain how Bennett's embedding and control-state cleanup satisfy the relevant synchronization obligations."
+    },
+    {
+      "id": "C8",
+      "score": 4,
+      "evidence": "The component responsibilities and deferred mechanics are clear enough for the three intended readers. The remaining disagreements concern normative semantics rather than missing implementation detail.",
+      "change": "Give one authoritative success-and-failure relation and make the thesis, theorem and acceptance tests reference it."
+    }
+  ],
+  "blocking": [
+    {
+      "id": "B1_LLVM_DEFINEDNESS",
+      "section": "§§0, 3.2, 4.2, 5.1 and 8 rung 7",
+      "problem": "Section 3.2 acknowledges that optimisation can erase source UB, but §0 still promises named faults for executions outside the defined domain. These cannot both hold for source executions. I confirmed locally that clang -O3 turns `int f(int x){int y=10/x;return 0;}` into `return 0`, leaving nothing to fault on at x=0. UBSan also detects selected UB classes; a clean run does not establish source definedness. See the [LLVM UB manual](https://llvm.org/docs/UndefinedBehavior.html) and [UBSan documentation](https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html).",
+      "fix": "Prefer the minimal correction: state that source equivalence requires an independently stated definedness assumption for every supported basis input; faults cover conditions encountered by Bennett's totalised optimised-IR machine, with no guarantee of detecting source UB erased earlier. Describe UBSan as supplementary evidence, not a complete domain classifier. Alternatively, retain source-level fault guarantees by introducing checked semantics before UB-exploiting optimisation, explicitly naming their coverage. The kernel rung must identify which contract it uses."
+    },
+    {
+      "id": "B3_FAULT_RESULT_SEMANTICS",
+      "section": "§§4.2 and 5.1",
+      "problem": "Saying that faulted outputs are 'not an oracle value' does not specify their quantum state. Two implementations can return the same fault code and clean workspace while one writes zero to the payload and the other copies x. On a superposition these produce different correlations, even if nobody reads the invalid payload. Comparing only the fault code therefore cannot establish the claimed common semantics.",
+      "fix": "Define a deterministic bounded result F_B(x): success returns (f(x), 0), while failure returns (0, error_B(x)); implement it by XOR into payload and error targets, preserving the input and restoring workspace. Error selection must follow the shared bounded reference semantics. Alternatively, specify a deterministic partial-result payload on failure and compare it completely; I would choose the canonical zero payload. Merely disabling forward predicates is insufficient without retaining and reversing the required history."
+    },
+    {
+      "id": "B4_INPUT_PRESERVATION",
+      "section": "§5.1 part 1 and its conformance requirements",
+      "problem": "The theorem's listed hypotheses check the result and clean/dirty ancilla restoration, but do not require preservation of x. Appending X on an input bit after an otherwise correct oracle preserves every listed result and ancilla check, yet violates the claimed mapping. Exhausting target and dirty-register values does not close this hole.",
+      "fix": "Require explicit equality of the entire register tuple: preserved input and reference state, target XOR the specified bounded result, correctly transformed fault target, unchanged dirty registers, and restored clean workspace. State input preservation in both the theorem's hypotheses and the acceptance checks; native execution supplies f(x), while the embedding specification supplies the complete expected state."
+    }
+  ],
+  "suggestions": [
+    "Specify the approximation metric and numerical assurance behind channel comparisons. Diamond-norm bounds support compositional channel guarantees; phase-sensitive unitary bounds are needed for controlled use. Ordinary floating-point matrix agreement should remain evidence unless numerical error is rigorously bounded.",
+    "Clarify that the marker-only quantum-memory rule concerns explicit quantum-register access. Ordinary LLVM loads/stores in unmodified SQLite must still be accepted and coherently lifted according to the incoming memory model; otherwise §3.1 reads as contradicting the flagship demonstration.",
+    "Correct §3.3: Rust's distributed standard library normally includes embedded LLVM bitcode. Extract compatible bitcode where available; require rebuilding only when it is missing or unsuitable. Also replace unconditional mixed-major linking with supported combinations. See [rustc bitcode options](https://doc.rust-lang.org/rustc/codegen-options/#embed-bitcode) and [LTO compatibility](https://doc.rust-lang.org/rustc/linker-plugin-lto.html#toolchain-compatibility).",
+    "Add [Quantum Control Machine](https://arxiv.org/abs/2304.15000) to §7. Its injectivity and synchronization analysis directly informs the new step-machine construction; distinguish preservation of classical inputs through oracle embedding from unrestricted lifting of quantum control flow."
+  ],
+  "verdict": "revise",
+  "path_to_accept": "Three normative edits suffice: consistently limit UB guarantees to the chosen reference semantics and explicit definedness assumptions; specify the complete faulted output state; and require input preservation plus full-state comparison in the permutation theorem and conformance checks. No implementation or additional demonstration is required for acceptance.",
+  "summary": "The architecture is ambitious and substantially coherent. Round-2 status: codex B2_SOURCE_MARKER_ABI is resolved. Codex B1_LLVM_DEFINEDNESS is partially resolved, with the source-level guarantee still inconsistent. Codex B3_BOUND_EXHAUSTION and muse B2_BOUND_EXHAUSTION_SEMANTICS resolve budget sourcing and silent truncation, but leave fault payload semantics incomplete. Codex B4_VERIFICATION_SCOPE and muse B1_CORRECTNESS_COMPLETENESS resolve sampling, decomposition and channel-scope objections, but still omit explicit input preservation. Opus B1-coherent-totality-and-bounds resolves region budgets and arbitrary-CFG execution; its definedness and total-result aspects remain partial. These are narrow semantic corrections to a credible founding vision, not objections to its ambition or implementation status."
+}
+
+--stderr--
+OpenAI Codex v0.164.0
+--------
+workdir: /home/tobias/Projects/Bennett.jl
+model: gpt-6-astra
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 01a181d3-299e-7041-8b39-b3a55669710e
+--------
+user
+# Council
+
+You are a member of a three-model council grading the document below, the founding vision for a from-scratch reboot of Bennett (a reversible / quantum compiler toolchain; see the document). Grade it against the rubric on the absolute scale. Be exacting and skeptical: verify every technical premise against your own knowledge; name any that is false. Grade the vision for being the right vision, stated precisely; do not deduct for things that are not built yet. A blocking issue is one that would make the project build the wrong thing if uncorrected; everything else is a suggestion. Return `accept` only if the blocking list is empty.
+
+Be constructive, not only critical: for every blocking issue the `fix` field must say concretely how to overcome it, at vision level (the sentence or semantics the document should state, or the decision it should take), not merely that it is wrong. Where you see two viable ways out, name both and say which you would take. In `path_to_accept`, state the minimal set of changes that would make you return `accept`; if you already accept, say what would raise the lowest-scoring criterion by one point.
+
+You may read the repository you are running in (read-only) to check claims about the current code; its root contains Bennett-NorthStar.md (the document, identical to the snapshot below), Bennett-Reboot-Blueprint.md and Bennett-V2-PRD.md (the superseded plans), worklog/ (session logs; chunk 121 has the 2026-10-28 ground-truth survey), reviews/2026-09-26-astra/ (the last review campaign), and src/ (the deprecated v1). Reading is optional; the snapshot below is what you grade.
+
+Answer only with JSON matching the schema.
+
+# Previous round (2)
+
+Verdicts: codex: revise, muse: revise, opus: revise
+
+Blocking issues raised last round:
+- [codex] B1_LLVM_DEFINEDNESS (§§0, 3.2–3.3, 4.2, 8 rung 7): “Undefined behaviour is concretised and recorded” is false for the stated optimise-first pipeline. LLVM UB is not a random environmental choice: optimisation may remove or change behavior before the offending operation, leaving nothing a link-time recorder can reconstruct. Undef, poison, freeze, and external nondeterminism are also distinct concepts. This matters particularly for a kernel-fuzzing oracle: agreement with the same optimised native binary cannot establish the promised semantics of executions affected by source UB. [LLVM UB manual](https://llvm.org/docs/UndefinedBehavior.html) Fix proposed: State that correctness applies under explicit definedness assumptions covering every basis input in the supported coherent domain. Distinguish deterministic refinements of permitted undefined values from immediate UB and poison-triggered UB. If faulting executions are supported, establish defined checked or machine-simulation semantics before optimisations exploit UB. Record these assumptions and any fixed environmental choices in the certificate.
+- [codex] B2_SOURCE_MARKER_ABI (§§3.1 qubit handles, 3.3, 6.1 dialect specification): The dialect requires dedicated-address-space pointer handles, while the Rust integration merely exports bitcode from unmodified rustc. Rustc's internal LLVM bindings are not an extension point available to an ordinary Rust marker library; emitting bitcode does not let that library choose arbitrary pointer address spaces. Consequently, the proposed universal source ABI lacks a supported Rust emission path. Address-space meanings are also target-dependent. [Rust pointer types](https://doc.rust-lang.org/reference/types/pointer.html), [Clang address-space attribute](https://clang.llvm.org/docs/AttributeReference.html#address-space) Fix proposed: Define a portable source marker ABI using ordinary opaque pointers or integer handles, with Bennett normalising recognised handles into its internal representation. Specify how that representation respects the incoming target's pointer layout and address spaces. Gate the dialect specification on actual clang, Rust, and Julia emission examples, as well as optimisation tests.
+- [codex] B3_BOUND_EXHAUSTION (§§3.1 bounds, 4.2, 5.1, 9.4): Forcing a predicate permanently false does not distinguish normal termination from exhaustion while computation remains active. It can silently produce a truncated result that differs from native execution, even when the resulting circuit is reversible and cleans its workspace. Deferring this distinction permits the VM and specialiser to implement different functions. Recursion and workspace exhaustion require the same treatment. Fix proposed: Choose a shared semantic rule: require bounds sufficient for all supported inputs under stated assumptions, or define a total bounded computation with a reversible exhaustion flag and specified output behavior. Preserve enough state to uncompute, expose failure only through the declared interface, and identify whether the reference oracle is the original function or its explicitly bounded variant.
+- [codex] B4_VERIFICATION_SCOPE (§§4.2, 5.1, 8, 9.6): The permutation theorem does not make property-based testing complete: untested basis inputs can still be wrong. Its stated XOR embedding also requires checking the full allowed domain, including arbitrary target-register contents, input preservation, and dirty-borrow restoration. Measurement-based uncomputation is a channel implementation, not generally a unitary on the measured system; checking selected state-vector trajectories is insufficient to establish its behavior on entangled inputs. A record of test seeds cannot upgrade these checks into a universal correctness proof. [Quantum-channel representations and equivalence](https://learning.quantum.ibm.com/course/general-formulation-of-quantum-information/quantum-channels) Fix proposed: Keep the permutation theorem, but label exhaustive checks complete only for their declared finite domain and sampled checks as evidence. State the full input/output relation, including dirty registers. For measurement-assisted implementations, compare the induced channel, or instrument when outcomes are exposed, including controlled execution and reference-system correlations. Distinguish replayable validation records from independently checkable proofs, and specify the scope and composition of approximation budgets.
+- [muse] B1_CORRECTNESS_COMPLETENESS (5.1, 1 decision 7, 8 rungs 4/7/8): Section 5.1 correctly observes that an ideal circuit using only X, CX, CCX and exact MCX is a permutation, but then calls testing 'exhaustive at small widths and property-based above' complete. Property-based sampling over a proper subset of basis inputs cannot determine the permutation on unsampled inputs; it is evidence, not completeness. The document also does not state that the theorem must be applied after MCX decomposition: a relative-phase Toffoli decomposition is not a permutation matrix and can introduce phases invisible to basis tests, while measurement-based cleanups likewise leave the permutation tier. Finally, checking only ancillae initialized to zero proves the action on that clean-ancilla subspace, not correctness under dirty borrowing or other ancilla domains unless those are separately included. Fix proposed: Restate the theorem with its exact domain: exhaustive agreement over all x and target values, with ancillae initially in the stated clean state, determines the oracle on that subspace. Define the permutation tier after decomposition into the gates actually emitted, excluding relative-phase Toffoli/MCX decompositions and measurement fixups from that tier. Label sampled differential testing as evidence, exhaustive testing or a compositional/structural proof as proof, and make the certificate distinguish those cases and state the input/ancilla domain proved.
+- [muse] B2_BOUND_EXHAUSTION_SEMANTICS (4.2, 9.4, 0, 8): The padded semantics say what happens before a bound is reached, but not what a branch that would exceed its loop, recursion, allocation or execution bound means. Section 9.4 defers this and says only that 'a predicate that is false forever is the only legal outcome.' If the remaining body is merely predicated off, execution after the loop can proceed from a truncated intermediate state and produce a branch-dependent wrong oracle result, with no coherent trap possible inside the region. That contradicts section 0's promise of never a silent wrong answer and leaves SQLite/kernel resource estimates unable to distinguish a valid large instance from one whose assumed bound truncates some branches. The source of bounds for the many internal data-dependent loops in unmodified code is also still only implicit. Fix proposed: Define bound exhaustion in section 4.2 itself: exceeding a loop, recursion, allocation or step bound in any branch sets an explicit overflow outcome in the region result/certificate, makes the region result invalid rather than an oracle result, and is checked in differential tests and resource estimates. State who supplies the region-level classical bound or step budget from which internal bounds for unmodified code are derived.
+- [opus] B1-coherent-totality-and-bounds (§3.1 bounds row, §4.2, §4.5, §5.1, §8 rungs 4/7/8, §9.4): Coherent execution of unmodified programs is not yet defined, in three linked ways. (i) The only stated bound mechanism is a per-loop `__bennett_bound` operand 'consumed by the loop's guard', with a compile error otherwise. That needs source edits in SQLite, Linux and the Monte Carlo, contradicting 'nobody rewrote SQLite'. It also relies on loop identity surviving O3 (rotate, unswitch, versioning, unroll, vectorise), which it does not. Read literally as an LLVM `token`, a non-intrinsic function cannot return it. (ii) Coherent control is specified only through structured pred{} and loop{}. Post-O3 CFGs of these programs are unstructured or irreducible: VDBE dispatch, gotos, recursion, and indirect calls on superposed pointers. The general construction is unstated. (iii) Some basis branches will exhaust the bound, trap, hit immediate undefined behaviour, or touch an unvirtualised device inside the region. None of these has a defined output, so the oracle is not a total function and §5.1's permutation theorem has nothing to compare against. In addition, 'undefined values are concretised at entry' is false for poison computed from superposed data. Uncorrected, the project builds a per-loop-annotated dialect that cannot compile the flagship rungs, and oracles whose behaviour off the happy path is silently truncated rather than failing loud. Fix proposed: (a) Make the primary bound a region-level classical budget: dynamic steps, plus heap and recursion depth. It is passed as an ordinary integer operand of `__bennett_ctrl`/region entry, or supplied out of band by the host or driver, and applied by the plugin after outlining, so no loop identity has to survive optimisation. Per-loop SCEV and marker bounds become refinements. (b) Define coherent execution of an arbitrary CFG as a predicated step machine: a superposed block counter stepped for the budget, with structured pred/loop as optimisations of it. Both executors share this semantics. (c) Make every coherent region total by construction. Each region gets a fault/exhaustion output register, with a distinct code per cause (budget, trap/UB, unmodelled effect), as part of the oracle's output. Define poison/undef as a fixed deterministic refinement of the region's inputs (freeze). (d) Restate §5.1 equivalence as 'equals native, or is flagged'. Require each rung to report the flag rate over its tested domain, and require that rate to be zero for the acceptance instances.
+
+## Editor's response (what changed, what was declined and why)
+
+# Editor's response to round 2
+
+All three members returned `revise` (mean 3.75, up from 2.62; C1, C3, C4,
+C7, C8 unanimous 4). Seven blocking issues converging on three themes
+plus one ABI point; all accepted. Iteration 3 is a targeted revision.
+
+## Accepted and changed
+
+1. **Bound exhaustion and totality of coherent regions** (codex B3, muse
+   B2, opus B1). §3.1 bounds row rewritten: the primary bound is a
+   **region-level classical budget** (steps, heap, recursion depth) passed
+   as ordinary integer operands of the region-entry marker or supplied
+   out of band by the host or driver, applied after outlining; per-loop
+   bounds are refinements only; **no per-loop source annotation is ever
+   required**, so "nobody rewrote SQLite" follows from the dialect. The
+   `token` wording is gone. §4.2 now defines the general coherent
+   construction as a **predicated step machine** over an arbitrary post-
+   O3 CFG (structured pred/loop as optimisations), and **totality**: every
+   coherent region returns declared outputs plus a **fault register**
+   with distinct codes (budget, immediate UB, unmodelled effect); on a
+   faulted basis input the outputs are not an oracle value and the
+   workspace is still returned clean because predicated execution runs to
+   the budget with the fault predicate off. Equivalence is restated as
+   "equals native, or is flagged", the fault rate is reported per domain
+   and must be zero on acceptance instances (§5.1, §8). The ISA sketch
+   gained `region`, `step`, `fault`.
+2. **Verification scope** (codex B4, muse B1). §5.1 rewritten: the
+   permutation tier is defined *after decomposition into emitted gates*
+   (relative-phase Toffoli decompositions and measurement fixups
+   excluded); the theorem's domain D is stated exactly (every x, every
+   target t, every value of borrowed dirty ancillae, clean ancillae in
+   their declared state), with equality of result or of fault code;
+   **exhaustive agreement on D is complete for D; sampling is evidence**;
+   measurement-based uncomputation is verified as a channel (Choi-state
+   comparison with a reference system, instrument where outcomes are
+   exposed), unitaries by equivalence plus controlled-interference tests,
+   with ε and its composition rule; certificates label every claim proof
+   or evidence; replayable records are evidence; minimality needs a
+   lower-bound or exhaustive-search certificate. Branch enumeration is
+   scoped to permutation segments with the full branch configuration
+   tracked (§4.2). Clean release is checked by simulation.
+3. **Definedness** (codex B1, opus B1(iii)). §3.2 "Definedness" bullet and
+   §0: the claim that UB is "concretised and recorded" is withdrawn. The
+   reference semantics is the optimised bitcode; undef/poison are refined
+   by `freeze` at region inputs and poison-producing operations;
+   immediate UB is a fault code; correctness is under an explicit
+   definedness assumption recorded in the certificate; the native oracle
+   runs under UBSan and UB-triggering inputs are excluded and counted
+   separately.
+4. **Portable marker ABI** (codex B2, opus C2/C5 suggestions). Handles are
+   ordinary `ptr` in address space 0 or integer handles, emittable from
+   unmodified clang, rustc and Julia; normalised by the plugin at link
+   time; quantum memory is accessed only through `__bennett_qload/qstore`
+   markers, never LLVM `load`/`store` in a special address space, which
+   also removes the GVN/forwarding hazard and the DataLayout concern. The
+   dialect spec is gated on actual emission examples from all three front
+   ends and on native codegen of fat objects.
+
+Also from the suggestions: positive legality requirement on markers (no
+`readnone`/`readonly`/`speculatable`/`willreturn` combinations; external
+declarations are never inlined, containing functions may be); context-
+sensitive interprocedural taint with polyvariant specialisation; region
+well-formedness (unitary; user measurement refused or deferred by the
+deferred-measurement principle; MBU the sole exception); `__bennett_
+reversible` as the reversible-tier entry; stated coverage constraints for
+Rust std (`-Zbuild-std`), the Julia runtime and native libraries; mixed-
+LLVM-major link rule; `bennett-sched` interface, capability declarations,
+coverage-report format and driver invocation assigned to the two specs;
+launch-time lowering to the target alphabet assigned to the VM; classical
+checkpoints never copy quantum state; Quil/QAM, eQASM, Knill's QRAM model,
+Spire and Qrisp added to §7 and §4.1's "has not had its layer" qualified
+to name what those machines lacked; rungs 2, 3, 6 gained independent
+forward-result checks; rung 8's entropy wording fixed; driver stated as
+Rust invoking LLVM tools externally so the "C++ only where LLVM is linked"
+rule holds.
+
+## Declined or kept, with reasons
+
+- Nothing was declined. One point is kept with a clarification rather than
+  a change: codex's note that branch enumeration "does not independently
+  validate physical lowerings" is correct and is now stated in §4.2 and
+  §5.1 (enumeration is exact for permutation segments; lowerings are
+  verified by part 2).
+
+
+Re-grade the revised document below from scratch on the absolute scale. For each blocking issue above, state in your summary whether it is resolved; re-raise it in `blocking` only if it is not.
+
+
+# Rubric
+
+# Vision-document rubric — the council's scale
+
+The rubric the council (`docs/council/README.md`) uses to grade
+`Bennett-NorthStar.md`, the from-scratch reboot vision for Bennett. Eight
+criteria, each scored 1–5 on an absolute scale, plus blocking issues and a
+verdict. Scores are advisory; the maintainer decides.
+
+## What is being graded
+
+A **vision document**, not an implementation. The current Bennett.jl and
+BennettVM.jl are declared deprecated as designs; the document describes
+what the reboot must become. Grade the vision for being the right vision,
+stated so that strangers could build it. Do not deduct for "this does not
+exist yet". Do deduct, and block, for a technical premise that is false
+(for example a claim about what LLVM permits without a fork), an internal
+contradiction, a missing load-bearing piece, or ambition that is incoherent
+rather than merely large.
+
+## The standard
+
+The maintainer's standard: **unreasonably ambitious, and right.** The
+document should read as the founding document of the abstraction layer
+quantum programming has lacked, the way the PTX ISA document, the JVM
+specification, or the LLVM language reference read for their domains. The
+question for each criterion is whether a hardware vendor, a language
+designer, and a compiler engineer could each read this and know what to
+build and why it will matter.
+
+- **Scores are absolute**, not on a curve, and never relative to the
+  current code.
+- **Ambition is a virtue; vagueness is not.** A bold claim stated
+  precisely scores; a bold claim that hides a contradiction does not.
+- **Skepticism is required.** Verify technical premises against your own
+  knowledge of LLVM, Enzyme, PTX, QIR, OpenQASM, MLIR, Catalyst, CUDA-Q,
+  Silq, Q#, Quipper, Tower, and the reversible-computing and
+  resource-estimation literature. Name the premise if it is wrong.
+- **Blocking means blocking.** A blocking issue is one that, uncorrected,
+  would make the project build the wrong thing. Everything else is a
+  suggestion.
+
+### Scale
+
+- **5:** founding-document quality. Precise, complete for its level,
+  premises verified, nothing load-bearing missing, nothing superfluous.
+- **4:** right, with one gap a domain expert names at once.
+- **3:** a competent plan. Sound but generic; nothing a field would rally
+  around.
+- **2:** aspirational. Direction is visible, but premises are unexamined or
+  key pieces are missing.
+- **1:** incoherent, or built on a false premise.
+
+## Criteria
+
+### C1 Ambition and coherence
+
+Is the north star unreasonably ambitious *and* internally coherent? Do the
+thesis, the decisions, the architecture, and the demo ladder describe one
+thing, or several things stapled together?
+
+### C2 Technical premises
+
+Are the technical claims true? In particular: that the dialect can live in
+LLVM IR through sanctioned extension points without a fork (target
+extension types, address spaces, intrinsics with attribute-stated legality,
+function-granularity adjoint/control, lifetime intrinsics, loop metadata);
+that the Enzyme plugin model (optimise, transform, optimise) transfers; that
+the GPU offload model fits the taint tiers; that the pass-plugin entry point
+and the needed analyses are C++-only; the stated problems with QIR.
+
+### C3 The quantum VM as the revolution
+
+Is the VM articulated as the abstraction layer quantum programming lacks,
+with a clear account of what it abstracts (virtual qubits, allocation
+classes, bounded dynamic control flow, garbage as a scheduled resource, the
+resource vector, the effect tape)? Are the pre-VM-era lessons the right
+ones? Is the "circuit model as the bounded specialisation of the VM" claim
+sound, and is the padded-to-maximum semantics for loops in superposition
+stated honestly?
+
+### C4 Modularity and independence
+
+Is the split into independent repositories right? Are the two contracts
+(dialect spec, ISA spec) sufficient for every pair of components to
+communicate, and are they the *only* coupling? Could each repository be
+replaced by a competitor's implementation of the same spec? Where is a
+monolith hiding?
+
+### C5 Universality without forking
+
+Is "any LLVM language, invisibly, with no fork" credible as stated? Are the
+costs (optimiser not reversibility-aware, regions must be functions,
+per-LLVM-version builds) the real costs, and are any missing? Is the
+host/device split the right place for the classical/reversible/quantum
+boundary?
+
+### C6 Verifiability and success criteria
+
+Is the demo ladder measurable, ordered, and sufficient to define success?
+Is "correct" defined as differential equivalence against native execution
+rather than as a reversibility check? Is proof-carrying output and
+resource estimation without materialised gates a coherent verification and
+cost story?
+
+### C7 Position in the landscape
+
+Does the document understand prior art (QIR, OpenQASM 3, MLIR dialects,
+Catalyst, CUDA-Q, Silq, Q#, Quipper, Tower, Qualtran-style resource
+estimation, reversible-computing pebbling literature) and state precisely
+what is new? Is anything claimed as new that is not? Is anything existing
+ignored that should be built on or interoperated with?
+
+### C8 Clarity and completeness as a document
+
+Could the three readers (hardware vendor, language designer, compiler
+engineer) each read this and know what to build? Are the open technical
+questions the right ones, correctly deferred, and is anything deferred that
+is actually load-bearing for the vision?
+
+## What the council returns
+
+Per criterion: a score 1–5, one or two sentences of evidence pointing at
+the document's text, and the single change that would most raise the
+score.
+
+Then:
+
+- **blocking**: a list (possibly empty) of blocking issues, each with a
+  short id, the section it concerns, the problem, and the fix. Blocking
+  means the project would build the wrong thing if uncorrected.
+- **suggestions**: non-blocking improvements, ranked.
+- **verdict**: `accept` (ready as the founding vision, blocking list
+  empty), `revise` (right direction, blocking issues to fix), or `reject`
+  (wrong direction or false premise at the core).
+- **summary**: one paragraph.
+
+Consensus is reached when every member returns `accept` with an empty
+blocking list. The loop runs at most three rounds.
+
+
+# The document (`Bennett-NorthStar.md`, round 3 snapshot)
+
+# Bennett — North Star (reboot vision, iteration 3)
+
+**Date:** 2026-10-28. **Status:** vision settled at the level of "what it
+truly looks like"; technical design NOT started. Iteration 3 after council
+rounds 1 and 2 (`docs/council/northstar-2026-10-28/round-*/report.md`;
+the editor's responses are in `round-*/response.md`). Nothing here is
+implemented, and no code is to be written on the strength of this
+document alone (maintainer process rule: vision, then design, then
+spikes, then code).
+
+**Provenance.** Written up from maintainer/agent design discussions on
+2026-10-28. The maintainer's position on the quantum VM (§4) was formed
+over a year of discussion across the quantum-information community; the
+document states that position and the reasons, and asks to be judged on
+the reasons.
+
+**Relation to earlier documents.** Supersedes `Bennett-Reboot-Blueprint.md`
+§3.1–§3.4 (its standalone "BIR" is dropped: the IR is LLVM IR with a
+dialect inside it). The blueprint's §5 keep/kill list, §6 ladder and §7
+risks carry over where they do not conflict. `Bennett-V2-PRD.md` remains
+parked. `Bennett-VISION-PRD.md`'s Enzyme analogy turns out to be literal.
+
+**Ground truth this was checked against** (2026-10-28 read-only survey of
+both repos, the Astra reviews, BENCHMARKS.md, and the Sturm.jl checkout at
+`~/old/Projects/Sturm.jl`): worklog chunk 121, session 2026-10-28. The
+current Bennett.jl / BennettVM.jl are deprecated as designs; their research
+assets (arithmetic generators, soft-float with its test conventions, gate
+algebra, scaling-relation regressions, the 6502 native-oracle harness) are
+the only things carried forward.
+
+---
+
+## 0. Thesis
+
+**Every program is already a quantum program.** The user never writes a
+circuit, never declares a subset, never learns a new language. They write
+C, Rust, Julia, anything LLVM eats, and the toolchain decides at every
+instruction whether it runs classically, reversibly, or coherently. The
+only thing a quantum programmer adds to a classical codebase is a handful
+of marker calls: allocate qubits, rotate by theta, measure, and a way to
+condition a region on a qubit. Everything else is inferred.
+
+Tagline: **controlled-anything.** If it compiles with clang, you can put it
+under a qubit.
+
+Stated precisely, because precision is what makes the slogan true rather
+than a slogan: *every execution of any LLVM program that is defined,
+effect-bounded, and within a classical resource budget can be run
+coherently under a qubit; executions outside that domain are not silently
+wrong but produce a named fault outcome that is part of the result
+(§4.2).* Undefined values are refined deterministically; immediate
+undefined behaviour and effects outside the device model become fault
+codes, never a wrong answer and never a crash of the region.
+
+The project is predicated on scalable logical quantum computation becoming
+real: plenty of logical qubits and gates at usable gate times. Efficiency
+is pursued hard; universality is never traded for it.
+
+## 1. Decisions (settled 2026-10-28, refined after council rounds 1–2)
+
+1. **Bennett is the LLVM of quantum.** Language designers introduce quantum
+   constructs *as they please*, the way LLVM lets anyone design a classical
+   language. We provide the target and the optimiser, never the language.
+2. **The IR is LLVM IR. We never fork LLVM.** Forking is the disaster
+   scenario. Decades of classical optimisation are kept by sitting inside
+   the ecosystem through mechanisms an out-of-tree plugin can actually rely
+   on (§3). Where an upstream change would help, it is proposed upstream
+   as a patch, never carried as a fork.
+3. **Delivery is a pass plugin, a driver, and a runtime.** The plugin runs
+   at **link time over whole-program bitcode** (§3.3): optimise, reverse,
+   optimise. Any front end that can emit bitcode is supported; per-front-
+   end integration is a driver concern, named per front end with its
+   costs, never a language change.
+4. **Three execution tiers, one program.** Classical (host, native code,
+   never ours), reversible (device, deterministic forwards and backwards,
+   effects on a tape), coherent (device, closed and effect-free, every
+   control decision predicated, every region total with a fault output,
+   §4.2). The quantum VM is the device, in the sense a GPU is a device.
+5. **One virtual ISA, one target description per hardware.** The PTX move.
+   The ISA is a versioned public specification with a conformance suite;
+   the formal model is of the spec, not of any implementation.
+6. **The VM is a scheduler over an extensible resource vector**, and its
+   run-time policy depends only on classical data. Compile-time and run-
+   time scheduling are the same optimiser, implemented once
+   (`bennett-sched`) behind an interface the ISA spec owns (§4.4).
+7. **Correctness is defined by a theorem, two oracles, and a fault
+   outcome, never by a reversibility check** (§5.1). Certificates say
+   which parts are proof and which are evidence.
+8. **QIR, OpenQASM 3, Quil, and MLIR quantum dialects are edge formats**,
+   read and written at the boundary. Never the semantics (§7).
+9. **Languages: the right tool for the job, taste excluded** (§6).
+10. **Many small repositories, published contracts, no monolith** (§6.1).
+
+## 2. The architecture, in one picture
+
+```
+  Front ends     clang (C/C++)   rustc   Julia (Bennett.jl)   QIR / Quil / MLIR-dialect importers
+                     └──────────────┴────────┴───────────────────────┘
+                         emit LLVM bitcode + __bennett_* marker calls (the dialect, §3)
+                                              │
+  Link time      bennett-driver: whole-program bitcode (LTO) ─► LLVM's own optimiser (unmodified)
+                                              │
+                 bennett-plugin (C++, the only LLVM-linked component):
+                   taint over the resolved call graph → region outlining → controlled/adjoint
+                   body generation → lowering to the virtual ISA → bennett-sched (cost, schedule)
+                                              │
+  Objects        fat object: native host code + ISA object(s) + certificate (ISA spec, §4.4)
+                                              │
+  Executors       ┌───────────────────────────┴───────────────────────────┐
+                  ▼                                                       ▼
+        bennett-vm (device runtime)                         bennett-circuits (bounded specialiser)
+        reversible + coherent tiers, history layers,        hierarchical circuit IR, placement,
+        effect tape, branch-enumeration simulation,         proof-carrying output, exporters
+        launch-time lowering to the target alphabet
+                  └───────────────────────────┬───────────────────────────┘
+                                              ▼
+  Backends     Sturm.jl (Perm/MCX)   OpenQASM 3   QIR   bennett-estimate   hardware via bennett-targets
+```
+
+One semantics: the ISA spec's formal model and conformance suite. Two
+executors, in separate repositories, each conformant to that spec, and
+permanently differentially tested against each other and against native
+execution of the same bitcode.
+
+## 3. The dialect: what an out-of-tree plugin can rely on
+
+This section lists only mechanisms that exist for a plugin today, states
+what each does and does not guarantee, and names the legality spike that
+gates freezing the spec.
+
+### 3.1 Mechanisms
+
+| Need | Mechanism (out-of-tree, stock LLVM) | What it does NOT give, and what covers the gap |
+|---|---|---|
+| Quantum operations: allocate (clean / dirty / class), release, gate, rotate(θ), measure, quantum-addressed load and store | **Declared external marker functions** `__bennett_*` with fixed signatures, exactly as Enzyme's `__enzyme_autodiff`. Not `llvm.*` intrinsics (a plugin cannot register them). The plugin recognises them by name and signature at link time. **Positive legality requirement:** a marker is declared as an external function that may read and write memory and may not return (no `readnone`, `readonly`, `speculatable`, `willreturn`, `nounwind`-only combinations that would license elimination, commoning or speculation). Stock passes then preserve the *dynamic sequence* of marker calls on every executed path. | Containing functions may be inlined, cloned, unrolled or versioned, so the *static* count of marker call sites is not preserved; the external declaration itself is never inlined. Quantum memory is accessed only through markers, never through LLVM `load`/`store`, so no alias-analysis or forwarding pass can touch it. This legality is a property of ordinary effectful external calls, not of any attribute we invent; the legality corpus (§3.2) tests it. |
+| Qubit handles | **Portable handles**: an ordinary `ptr` in address space 0 (or an integer handle) returned by `__bennett_qalloc`, which every front end can emit from unmodified source: clang, rustc, Julia. Never dereferenced by host code. The plugin normalises recognised handles into its internal representation after outlining, respecting the incoming target's pointer size. **Reference semantics at the dialect level.** | LLVM cannot enforce linearity; SSA uses are free to duplicate. Linearity is a fail-loud verifier obligation after outlining, plus the ISA's value semantics below. A fail-loud check rejects any handle use that survives into host native code. This is the point on which QIR is faulted in §7, and the answer is to be explicit about it. |
+| Qubit values in the ISA | **Linear value semantics in the virtual ISA** (wire form, as in Quake's wire dialect and QSSA): each use consumes, each definition produces. The plugin converts handles to wires after outlining and verifies the conversion. | Both forms exist, at named pipeline stages, for the same reason CUDA-Q keeps both. |
+| Taint: classical vs reversible vs coherent | **Analysis, not types**: a context-sensitive interprocedural analysis over data dependence, control dependence and memory effects, from marker results and region entries, over the whole-program call graph, with polyvariant specialisation when one function is used both classically and coherently. | No per-value attribute survives optimisation and none is needed. "Untainted" is defined relative to the resolved call graph, never per translation unit. |
+| Control as structure: adjoint, controlled-by-qubit, compute-with-uncompute, reversible-tier entry | **Function granularity**: a region is outlined to a function (LLVM's `CodeExtractor`) and entered through a marker call `__bennett_ctrl(q, @f, budget, args…)`, `__bennett_adj(@f, …)`, `__bennett_compute(@f, …)`, or `__bennett_reversible(@f, budget, …)` for the reversible tier. The plugin generates controlled and adjoint bodies on demand from one source body. **Well-formedness:** a `ctrl`/`adj`/`compute` region is unitary: user measurement inside it is refused (or, when the front end asks for it, deferred by the deferred-measurement principle, which the certificate states); allocations inside are released clean or borrowed and restored; the compiler's own measurement-based uncomputation is the sole exception and has a defined controlled form (§9). | Front ends that want `when`-style syntax do the outlining themselves (Julia macro, clang attribute, Rust proc-macro) and emit the marker call; the dialect does not require it. Generating a body needs the callee's IR, which is why the plugin runs at link time (§3.3). |
+| Bounds for coherent regions | **A region-level classical budget**: dynamic steps, heap bytes and recursion depth, passed as ordinary integer operands of the region-entry marker or supplied out of band by the host or driver (a project-wide default, a per-function table), and applied by the plugin after outlining. **No per-loop source annotation is ever required**, so unmodified SQLite, Linux and the Monte Carlo compile as they are. Per-loop bounds from scalar evolution, and optional per-loop markers, are *refinements* that let the specialiser tighten padding; they are not needed for correctness and no loop identity has to survive O3. | A region whose budget is exhausted on some basis input produces a fault outcome on that input (§4.2); it is never a compile error and never a truncated result. |
+| Garbage and uncomputation | **Liveness analysis** on the outlined region plus the compute/uncompute marker; no lifetime intrinsics. | The scheduler decides when to pay to free a dead value; the dialect only has to make deadness computable. |
+| Measurement and classical feedback | Marker call returning `i1`, flowing into ordinary `br` / `select` / `phi`, outside unitary regions. | Branching on a measurement result is classical control (§4.2). |
+| Effects | Marker calls on the device side for the effects the device models (console, clock, entropy, block device); everything else is a host call. | Effect semantics per tier are in §4.2; an unvirtualisable effect inside a coherent region is a fault code on the executions that reach it, and a coverage-report line at compile time. |
+
+### 3.2 Pipeline placement and the cost of staying in-tree
+
+- **Correctness is invariant under LLVM's optimiser; cost is not.** Any
+  semantics-preserving optimisation of the classical part is lowered as it
+  stands, so differential testing (§5.1) is against the native binary
+  built from the *same* optimised bitcode. Optimisations that erase or
+  duplicate intermediate values change gate counts, so tainted regions get
+  a curated region pipeline after outlining.
+- **Definedness.** Source-level undefined behaviour cannot be "concretised"
+  after an optimiser has exploited it, so the document does not claim
+  that. The contract is: the reference semantics is that of the optimised
+  bitcode; `undef`/`poison` are refined deterministically by `freeze` at
+  region inputs and at poison-producing operations, with the refinement
+  stated in the spec; immediate undefined behaviour (traps, `unreachable`,
+  faulting memory access) is a fault code (§4.2). Correctness claims are
+  made under an explicit definedness assumption recorded in the
+  certificate, and the native oracle in conformance runs under UBSan so
+  basis inputs that trigger source UB are reported as *undefined* and
+  excluded from comparison rather than counted either way.
+- **Regions are functions.** Every `when`, adjoint, compute and
+  reversible-tier block outlines first. Enzyme lives with this.
+- **Per-LLVM-major builds** of the plugin, as Enzyme is built. A mixed-
+  language link merges bitcode from different LLVM majors and runs on the
+  newest.
+- **The legality spike** (§9.1) is a conformance corpus, not a design
+  question: marker-bearing bitcode through every stock pass at O3, plus
+  native code generation of fat objects, must preserve the dynamic
+  sequence of marker calls on every path and must leave no handle use in
+  host code. Freezing `bennett-dialect-spec` is gated on it passing, and
+  on actual emission examples from clang, rustc and Julia.
+
+### 3.3 Compilation model: link time, whole program, fat objects
+
+Taint and controlled bodies depend on the calling context across the whole
+program, and generating a controlled body needs the callee's IR. So:
+
+- Front ends emit **bitcode** (clang `-flto`, rustc `--emit=llvm-bc` or
+  `-Clinker-plugin-lto`, Julia through LLVM.jl). This is the one universal
+  thing every LLVM front end does. No front end loads our plugin; pre-link
+  per-TU optimisation sees markers only as unknown external calls, which
+  is exactly the legality contract.
+- **`bennett-driver`** merges the bitcode, runs LLVM's optimiser, loads the
+  plugin at the LTO pipeline extension point (or runs it through `opt`),
+  resolves taint over the whole call graph, and produces a **fat object**:
+  native host code for the classical tier, ISA object(s) for the device
+  tiers, and a certificate. clang's offload model (outlining, fat
+  binaries, a launch runtime) is the **model**, not a reused mechanism: a
+  middle-end pass cannot conjure clang's driver machinery, so we own ours.
+- **Host-triple IR is what the device lowering accepts**: datalayout, ABI-
+  lowered calls, target intrinsics and inline asm arrive as the host front
+  end produced them. Target intrinsics and asm are classified *lowered /
+  trapped / shimmed* in the coverage report. There is no `bennett` triple,
+  because a plugin cannot add a clang target and we do not fork.
+- **Stated coverage constraints:** a tainted call needs the callee's
+  bitcode. Rust `std`/`core` ship as native rlibs, so tainted calls into
+  non-generic std code need a bitcode build of std (`-Zbuild-std`); the
+  Julia runtime and precompiled native libraries need bitcode builds or
+  shims (`bennett-runtimes`). Calls with no bitcode are coverage-report
+  lines (*trapped*), never silent.
+- **Per-front-end integration is named work**: clang needs only `-flto`
+  and the driver; rustc goes through bitcode emission because its in-
+  process plugin path is nightly-only; Julia goes through LLVM.jl and the
+  same driver in-process. Bennett.jl is the Julia integration.
+- A per-TU invocation remains available as a **fast path** for programs
+  closed within one unit (the REPL case), with the same semantics.
+
+## 4. The virtual ISA and the device
+
+### 4.1 Why the VM is the revolution
+
+The circuit model is to quantum programming what bare-metal machine code
+was to classical programming before virtual machines, virtual memory and
+portable ISAs: every program welded to one machine, every vendor with its
+own toolchain, no dynamic allocation, no loops beyond what you unrolled by
+hand, no portability, no way to ship one artefact to many machines. The
+classical world escaped through abstraction layers *between* program and
+hardware: virtual memory, the process, the JVM, LLVM, PTX.
+
+Quantum programming has had abstract machines before: Knill's QRAM model
+(1996), Quil's Quantum Abstract Machine, eQASM, and the circuit-plus-
+classical-controller model every SDK ships. What none of them has is the
+*rest* of the classical escape: virtual allocation with classes and
+garbage as a resource, bounded coherent control over arbitrary programs
+rather than hand-built circuits, separate compilation and linking, a
+resource vector in the specification, and a program model that any LLVM
+language targets without being rewritten. That combination is the layer
+quantum programming lacks. The mistakes of the pre-VM era are listed so
+the design never repeats them:
+
+- **No program is written against a machine.** Programs target the virtual
+  ISA; hardware implements the ISA through a target description.
+- **Memory is virtual.** Qubits are allocated and released through the VM,
+  never addressed physically. Clean, dirty and class are properties of an
+  allocation request, not of a wire index.
+- **Loops and recursion are instructions, not unrolling.** Budgets are
+  values the VM enforces.
+- **Resource accounting is part of the architecture**, in the ISA spec.
+- **The spec is public and versioned.** Governance: PTX and the JVM each
+  had a steward and a conformance regime; this ISA has a published spec, a
+  conformance suite, and a steward who accepts target descriptions and
+  revisions through a recorded process. A vendor implements it before an
+  ecosystem exists for the reason vendors implemented PTX: the programs
+  are written against it, not against them.
+
+### 4.2 Execution semantics by tier
+
+Two control disciplines, kept apart by name in the ISA:
+
+- **Classical control** (host data, measurement results, run-time
+  budgets): genuinely dynamic, an instruction pointer, data-dependent trip
+  counts, real allocation. This is where run-time scheduling, history
+  layers, checkpointing and pebbling policy live, and **every such
+  decision may inspect only classical data**: an architectural invariant.
+  Classical checkpointing never copies quantum state; a checkpoint of a
+  coherent region is a point from which it is *recomputed*, which the
+  scheduler may choose only where the region's own semantics permit.
+- **Coherent control** (a decision that depends on a qubit): **predicated
+  execution under a classical budget**, in both executors. The general
+  construction, for an arbitrary and possibly irreducible post-O3 CFG, is
+  a **predicated step machine**: a superposed block counter, stepped for
+  the budget, every block executed under the predicate "the counter names
+  me"; structured `pred { }` and `loop { }` blocks are optimisations of it
+  that the specialiser applies where the CFG is structured. A branch on a
+  qubit pays for both arms. An allocation whose size depends on a qubit is
+  padded to its bound. The budget is classical and fixed before entry;
+  run-time budgets come from the host or from measurement results, never
+  from superposed data. **Nothing about the VM makes superposed trip
+  counts observable or cheap; what it makes possible is choosing the
+  budget at run time from classical data instead of at compile time.**
+
+**Totality: every coherent region is a total function with a fault
+output.** The region's result is its declared outputs plus a **fault
+register** with a distinct code per cause: budget exhausted (steps, heap,
+recursion), immediate undefined behaviour reached, unmodelled effect
+reached. On any basis input where a fault code is set, the declared
+outputs are *not* an oracle value and the region's workspace is still
+returned clean, because predicated execution continues to the budget with
+the fault predicate off and uncomputation runs as scheduled. The fault
+register is part of the oracle's interface: algorithms test it, resource
+estimates report it, and the acceptance tests of §8 require its rate to
+be zero on their declared domains. Both executors implement exactly this;
+the circuit specialiser is the VM's semantics under a fixed budget, no
+more and no less.
+
+Effects by tier:
+
+| Tier | Where | Effects | Undefined values |
+|---|---|---|---|
+| classical | host, native | real | real |
+| reversible | device | recorded on the effect tape forwards, replayed backwards; the device models console, clock, entropy, block storage as reversible device models; entered through `__bennett_reversible` or a driver mode | refined by `freeze` at entry; immediate UB is a fault, recorded |
+| coherent | device | **closed and effect-free**: no external effect may occur inside a coherent region. Devices the program touches are virtualised as reversible state inside the device (an in-memory VFS, a console register, a device model) and become part of the oracle's state. Classical inputs are fixed before entry; outputs leave through measurement after exit. An effect the device cannot virtualise is a fault code on the executions that reach it. | refined by `freeze` at entry and at poison-producing operations; immediate UB is a fault code |
+
+What the VM physically *is* at run time: a classical runtime that
+schedules quantum operations. Coherent regions are lowered to predicated
+blocks; the classical runtime decides when to run them, with what
+resources, and how to uncompute their garbage, using only classical
+information; at launch it lowers predicated ISA blocks to the target's
+declared gate alphabet using `bennett-targets` capability declarations
+(the specialiser does the same ahead of time). On a simulator target the
+VM executes a **permutation segment** by **branch enumeration**: a
+permutation applied to a state vector is a permutation of amplitudes, so
+the segment is run once per basis configuration of the superposed inputs,
+tracking the full configuration including garbage and virtualised device
+state. Non-permutation gates between segments (rotations, Hadamards,
+measurement-based fixups) are applied to amplitudes and may increase the
+branch count. This is what makes small-instance end-to-end demos (§8)
+checkable without a state vector the size of SQLite's memory.
+
+### 4.3 Resources
+
+- **The resource vector.** Qubit-time by qubit class is the base. Qubit
+  classes are register classes: a target declares tiers with costs, and
+  allocation chooses a class the way a register allocator does. Garbage
+  carries an occupancy cost per qubit-second. Targets may add energy,
+  routing, T, Clifford, measurement, or anything else; the ISA does not
+  enumerate resources, the target description does. **Decision rule:** a
+  target description supplies either a scalarisation (weights) or a
+  lexicographic order over its resources; the scheduler optimises that
+  objective and reports every component; conformance tests check the
+  accounting of each declared resource against the target's own units.
+- **Honest costs of superposition**: a coherent branch pays for both arms;
+  a quantum-addressed memory access costs O(N) gates through QROM/QRAM
+  circuits unless the target provides QRAM; coherent allocation is padded
+  to its bound; dirty ancillae are cheaper to borrow and more expensive to
+  use; a predicated step machine over an unstructured CFG costs the budget
+  times the block count unless the specialiser recovers structure.
+- **Allocation classes:** clean |0⟩ allocation, **dirty borrowing** (a
+  first-class resource with no analogue in the current code or in
+  Sturm.jl), and release, with clean release and restored correlations as
+  **semantic obligations** checked by simulation (§5.1), since they cannot
+  be decided statically in general.
+
+### 4.4 What the ISA spec owns
+
+The ISA spec is one of the two contracts (§6.1). It owns, by name, every
+format or interface two repositories exchange across the device boundary:
+
+- the instruction set and its formal model (abstract semantics, the fault
+  register, the round-trip theorem);
+- the resource vector and the **target-description format**, including
+  capability declarations (gate alphabet, QRAM, measurement) beyond costs;
+- the **object format** for ISA programs and the **link format** for
+  separate compilation, with a call/uncall convention and shared ancilla
+  frames (the reversible ABI);
+- the **host–device launch ABI**: how a host program starts, suspends,
+  reverses, and reads back a device program, budgets and fault registers
+  included;
+- the **scheduling interface**: scheduling problem in (ISA program, target
+  description, objective), schedule and certificate out, with the C ABI,
+  objective semantics and versioning, so a competitor's scheduler is
+  substitutable and a competitor's VM cannot invalidate compile-time
+  schedules;
+- the **certificate schema** that `bennett-circuits`, `bennett-arith`,
+  `bennett-estimate` and `Bennett.jl` all consume, including the proof-
+  versus-evidence labels of §5.1;
+- the **coverage-report format** the driver emits;
+- serialisation and versioning rules, and the conformance suite.
+
+### 4.5 An illustrative sketch (non-normative)
+
+Instruction classes, not encodings:
+
+```
+  region   budget={steps,heap,depth} outputs=… → outputs, fault   ; coherent region entry
+  qalloc   class=<name> n=<classical>            → wires           ; clean
+  qborrow  class=<name> n=<classical>            → wires           ; dirty
+  qfree    wires                                                   ; verifier: clean / restored
+  gate     op=<X|CX|CCX|MCX|RZ(θ)|…> wires       → wires           ; linear: consumes, produces
+  qload    addr=<wires> mem=<region>             → wires           ; O(N) unless target QRAM
+  qstore   addr=<wires> val=<wires> mem=<region>
+  step     pc=<wires> blocks=…                                      ; predicated step machine
+  pred     p=<wire> { … }                                           ; structured optimisation of step
+  loop     bound=<classical> { … }                                  ; structured optimisation of step
+  fault    code=<const>                                             ; sets the region's fault register
+  measure  wires                                 → classical bits   ; outside unitary regions
+  br / call / ret / alloc / load / store                            ; classical control, host data only
+  effect   dev=<model> …                                            ; reversible tier only; taped
+```
+
+A target description names its qubit classes with costs, its native gate
+alphabet, whether it provides QRAM, and its resource scalarisation:
+
+```
+  target: surface-code-d17-example
+  classes: { logical: {qubit_second: 1.0}, dirty_pool: {qubit_second: 0.3} }
+  gates:   { CX: {t: 0}, CCX: {t: 7, depth: 3}, RZ: {t: "synth(ε)"}, measure: {time: 1} }
+  qram:    none
+  objective: weighted { t: 1.0, qubit_second: 0.05 }
+```
+
+## 5. Scenes from the finished thing, and what "correct" means
+
+**The REPL.** Define a Julia function. Do not compile it. Write
+`when(q) do f(x) end` and it runs, in a simulator or on hardware, because
+compilation is invisible, incremental, cached by world age, composable.
+Quantum registers are REPL values with lexical lifetime. `@cost f(x)`
+prints T-count, T-depth, logical qubits, and wall time on a named target,
+the way `@time` prints allocations. Redefine `f` and everything downstream
+recompiles. Hand a compiled function to another function as an ordinary
+callee. The Lisp image, holding reversible objects with certificates.
+
+**The toolchain.** `-flto` plus our driver beside clang. Point it at a
+mature codebase: one fat object per link, a coverage report honest to the
+instruction (lowered / trapped / shimmed), and a resource estimate. Partial
+compilation is a region marker, and the toolchain is provably the identity
+on everything outside the tainted call graph. The kernel compiles, boots on
+the VM in the reversible tier with its devices modelled, writes a serial
+console to the tape, and un-boots to the reset vector.
+
+**The device.** The quantum VM of §4, as a device runtime the way a GPU
+runtime is: host code at native speed, only device tiers pay for
+reversibility.
+
+**The compiler is optimal within what it claims.** Optimality is defined
+against a target description and a declared search space. Optimal
+reversible pebbling is PSPACE-complete, so: small kernels are exactly
+synthesised, and *minimality* is claimed only with a checkable lower-bound
+or exhaustive-search certificate (an exact-synthesis witness alone shows
+attainability); large programs carry closed-form cost bounds and a
+certificate of the gap between the schedule found and the best bound
+known. The compiler chooses adders, pebbling, measurement-based versus
+unitary uncomputation, QROM versus QRAM, under a space budget.
+
+**The ecosystem.** A registry of reversible libraries with certificates:
+libc, libm, zlib, crypto, SQLite, published as linkable ISA objects so
+nobody compiles them twice. Arithmetic is library code too (§6).
+
+### 5.1 Correctness
+
+Ancilla-zero is not correctness: every historical S0 defect in this
+project passed a reversibility check. Correctness is defined in three
+parts, and every certificate labels each claim as **proof** (exhaustive
+over a declared finite domain, or compositional/structural) or
+**evidence** (sampled, with seeds and counts), never blurring the two.
+
+1. **Permutation tier, by theorem.** Define the permutation tier *after
+   decomposition into the gates actually emitted*: a circuit over
+   {X, CX, CCX, exact MCX} is a permutation matrix. Relative-phase Toffoli
+   decompositions and measurement-based fixups are **not** in this tier.
+   A permutation is determined by its action on basis states. Therefore,
+   over a declared finite domain D (every input x, every target value t,
+   every value of every borrowed dirty ancilla, clean ancillae in their
+   declared state): if the artefact agrees with native execution of the
+   same optimised bitcode on every element of D (result equal, or the same
+   fault code, §4.2) *and* returns clean ancillae to their state and dirty
+   ancillae to their initial value on every element of D, then its
+   restriction to D is exactly |x⟩|t⟩|a⟩ ↦ |x⟩|t⊕f(x)⟩|a⟩ with no relative
+   phase and no residual entanglement. **Exhaustive agreement on D is
+   complete for D. Sampled differential testing above exhaustive widths is
+   evidence, labelled as such.** Clean release is checked by this
+   simulation, not statically.
+2. **Non-permutation lowerings, by channel comparison.** Measurement-based
+   uncomputation is a channel (an instrument where outcomes are exposed),
+   not a unitary on the data; rotations and synthesised gates are unitaries
+   with an approximation budget ε. Every such lowering is verified against
+   its reference by **process comparison at exhaustive small widths**: the
+   induced channel (Choi-state comparison, including a reference system to
+   catch lost correlations) for measurement-assisted implementations, and
+   unitary equivalence plus **controlled-interference tests** (the artefact
+   run controlled and inside an interferometer) for unitaries, with ε and
+   its **composition rule** (budgets add along a sequence; the certificate
+   carries the sum) stated per artefact. This is proof for the widths
+   tested and evidence above them.
+3. **Algorithms, compositionally.** Grover, amplitude estimation and
+   friends are verified by state-vector simulation at small instance size
+   with the compiled oracle applied by branch enumeration over its
+   permutation segments (§4.2), and resource estimates are produced from
+   the oracle's certificate without materialising gates.
+
+**Equivalence is "equals native, or is flagged".** On every element of a
+rung's declared domain the artefact must return either the native result
+or a fault code; the fault rate over the domain is reported and must be
+zero on the rung's acceptance instances; inputs the UBSan-instrumented
+native oracle reports as undefined are excluded and counted separately.
+
+**What a certificate asserts:** the ISA object, the target, the objective,
+the claimed resource vector, the tier and budget of each region, the
+definedness assumption, the verification performed (parts 1–3, with
+domains, widths, seeds and counts, each labelled proof or evidence), the
+fault rate per declared domain, and for small kernels an exact-synthesis
+witness and, where minimality is claimed, its lower-bound certificate. A
+checker in `bennett-conformance` validates a certificate against the
+object without trusting the compiler; replayable validation records are
+not proofs and are labelled evidence.
+
+## 6. The right language for each job
+
+| Component | Language | Why (taste excluded) |
+|---|---|---|
+| Pass plugin (taint, outlining, body generation, lowering to the ISA) | **C++** | The only component that links LLVM. `llvmGetPassPluginInfo` has C linkage, but registering a new-PM pass and every analysis the plugin needs (loop info, dominators, scalar evolution for bound refinement, alias analysis, MemorySSA, `CodeExtractor`) are C++ API only. v1 is the evidence of avoiding this: it reimplements loop analysis in `src/lowering/cfg.jl` and parses MemorySSA out of printed text in `src/memssa.jl`. Enzyme is C++ for the same reason. Built per LLVM major. Kept narrow: it does not contain the scheduler. |
+| Scheduler and cost model (`bennett-sched`) | **Rust**, C ABI owned by the ISA spec | Linked by the plugin (compile time) and the VM (run time); it is what makes decision 6 literally true. No LLVM dependency. |
+| ISA spec tooling, VM / device runtime, circuit specialiser, estimator | **Rust** | None touch LLVM: they consume the ISA's serialised form. Embeddable device library with no runtime; memory safety in a component that must never crash a host; usable without std near kernels; a JIT tier available without LLVM. Rust ownership is affine, not linear, so it models qubit ownership well with a leak check, not natively. |
+| Driver | **Rust**, invoking LLVM tools (`opt`, `lld`) as external processes and the plugin through them | The driver orchestrates bitcode but does not link LLVM itself; that keeps the "C++ only where LLVM is linked" rule true. |
+| Front door, REPL, Sturm bridge, research laboratory | **Julia (Bennett.jl)** | The REPL experience is the product's face; LLVM.jl runs the driver in-process; new lowerings and arithmetic are prototyped here against the spec. |
+| Arithmetic and runtime libraries (adders, multipliers, QROM, soft-float, allocator shims, libc, device models) | **Any** | Ordinary code compiled through the same pipeline and shipped as ISA objects with certificates. "Runtimes are libraries" applies to arithmetic too; the specialiser links them. |
+
+Consequence: the centre of gravity leaves Julia. Bennett.jl is the front
+door of Bennett, not the whole of it. The maintainer has stated this is
+acceptable; the north star outranks language preference.
+
+### 6.1 Many small repositories, two contracts, fully enumerated
+
+**A monolith will grind to a halt** (maintainer, 2026-10-28). Independent
+repositories, each developable, versioned, tested, and released on its
+own, communicating only through **two published contracts**:
+
+- **`bennett-dialect-spec`**: the marker-function ABI (names, signatures,
+  the positive legality requirement), the portable handle convention, the
+  outlining, budget and region well-formedness conventions, the legality
+  conformance corpus, the driver's plugin-invocation interface,
+  versioning.
+- **`bennett-isa-spec`**: everything in §4.4: instruction set and formal
+  model, resource vector and target-description format with capabilities,
+  object and link format with the reversible ABI, host–device launch ABI,
+  scheduling interface, certificate schema, coverage-report format,
+  serialisation, conformance suite.
+
+Nothing shares code across a contract boundary; anything that needs to is
+a sign the boundary is wrong. **One semantics comes from the ISA spec's
+formal model and conformance suite, never from shared code.**
+
+| Repository | Owns | Depends on |
+|---|---|---|
+| `bennett-dialect-spec` | as above | nothing |
+| `bennett-isa-spec` | as above | nothing |
+| `bennett-sched` | scheduler and cost model behind the ISA spec's scheduling interface | ISA spec |
+| `bennett-plugin` | the C++ LLVM pass plugin; built per LLVM major | dialect spec, ISA spec, sched (binary) |
+| `bennett-driver` | link-time driver: bitcode merge, plugin invocation, fat objects, launch, coverage reports; per-front-end integration | dialect spec, ISA spec, plugin (binary) |
+| `bennett-vm` | the Rust device runtime: classical-control tier, history layers, effect tape, device models, branch-enumeration simulation, launch-time lowering to the target alphabet, JIT tier | ISA spec, sched |
+| `bennett-circuits` | the bounded specialiser: hierarchical circuit IR, placement, proof-carrying output, exporters (OpenQASM 3, QIR, Quil, Sturm `Perm`) | ISA spec, sched |
+| `bennett-estimate` | resource estimation from ISA objects, certificates and target descriptions, no gates materialised | ISA spec |
+| `bennett-targets` | target descriptions per hardware model, contributed by vendors; importers for existing resource-model formats | ISA spec |
+| `bennett-runtimes` | allocator, libc/musl shims, device models, Julia shim runtime, bitcode builds of language runtimes, as ordinary code compiled to ISA objects | dialect spec; driver (build tool) |
+| `bennett-arith` | adders, multipliers, QROM, soft-float, as ISA library objects with certificates | dialect spec; driver (build tool) |
+| `Bennett.jl` | Julia front door, REPL, `@cost`, Sturm bridge, research lab | driver (binary), ISA spec |
+| `bennett-conformance` | the demo ladder as executable gates, the certificate checker, the legality corpus runner, the UBSan-instrumented differential harness | everything, as a consumer only |
+
+The test of the split: every repository can be replaced by a competitor's
+implementation of the same spec without the rest noticing.
+
+## 7. Landscape: what is taken, what is rejected, what is new
+
+| System | What Bennett takes | What it does differently |
+|---|---|---|
+| **Enzyme** | The delivery model: an LLVM plugin, marker calls, optimise–transform–optimise, LTO for cross-TU bodies, per-LLVM-major builds; activity analysis as the precedent for taint analysis. | Reversibilisation instead of differentiation; the output is a program for a second executor, not more LLVM IR. |
+| **PTX / CUDA, OpenMP offload** | Virtual ISA with per-hardware target descriptions; host/device split; fat objects; a launch runtime. | We own the driver and launch runtime; nothing is reused from clang's offload machinery. |
+| **Quil / QAM, eQASM, Knill's QRAM model** | The idea of a public abstract machine with a classical controller; Quil as an import/export format. | Those machines execute hand-built circuits with classical control; none has virtual allocation classes, garbage as a resource, bounded coherent control over arbitrary programs, linking, or a resource vector. |
+| **QIR** (QIR Alliance) | LLVM as the carrier; profiles as a warning. Its adaptive profile and memory-management spec exist and are read on import. | Stated precisely: qubits are opaque pointers with no ownership discipline (they do participate in SSA dataflow); adjoint and controlled bodies are emitted by the front end as separate functions, so the IR carries no structural algebra over them; no uncomputation, garbage, resource model, or oracle abstraction; the profiles mix "program the host runs" with "circuit the device executes". Bennett keeps control and adjoint structural, keeps ownership explicit in the ISA, and puts resources in the spec. |
+| **OpenQASM 3** | `ctrl@` / `inv@` modifiers and its dynamic classical control as the export target's expectations. | OpenQASM 3's dynamic control is classical control (§4.2); it is a circuit language, not a program model with memory, linking, or resources. Export only. |
+| **CUDA-Q / Quake** | Quantum kernels as device code; `cudaq::control` / `cudaq::adjoint` at function granularity; the ref-vs-wire distinction, adopted as dialect-vs-ISA. | Not a new language or kernel annotation: taint is inferred over unmodified C, Rust, Julia. The carrier is LLVM bitcode, because that is what every front end emits; MLIR lowering paths are an import door. |
+| **Catalyst, MLIR quantum dialects, Qrisp** | Import path for programs already in those dialects; precedent for a JIT tier; Qrisp's automatic uncomputation over Python-level programs. | Arbitrary LLVM programs, not a Python-hosted language. |
+| **Q#** | Adj+Ctl specialisation from one body. | Specialisation in the plugin over any language's IR, not in one language's compiler. |
+| **Quipper** | Oracle synthesis from classical code; `with_computed`. | Any LLVM language; a VM and ISA beneath. |
+| **Silq, Unqomp, Reqomp, SQUARE** | Automatic and budgeted uncomputation; garbage as a resource with a budget. | Uncomputation scheduled at run time by the VM as well as at compile time, under a target's resource vector. |
+| **Tower, Spire** | Superposed pointers and classically bounded recursion as the right semantics for coherent data structures; Spire's accounting of the cost of padded coherent control. | The same semantics, for programs nobody rewrote; the step machine of §4.2 is the general case. |
+| **Qualtran, Azure RE** | Symbolic, hierarchical resource counting without materialised gates; target models as data. | Certificates attached to linkable objects; the target-description format accepts imported models. |
+| **QSSA, QIRO** | Linear SSA for quantum values. | Used in the ISA, not imposed on LLVM IR. |
+| **ReVerC** | Verified reversible compilation of a small language. | Correctness by theorem plus oracle (§5.1) for arbitrary LLVM input. |
+| **Reversible pebbling (Bennett 89, Knill 95, PRS15, Chan et al.)** | The space-time trade-off theory and its hardness result. | Pebbling as run-time policy over a resource vector, not only a compile-time choice. |
+
+**What is new**, claimed narrowly: (a) inferred-taint reversibilisation of
+unmodified programs in any LLVM language, delivered as a link-time plugin,
+with total coherent regions and a fault outcome; (b) a public virtual ISA
+for quantum programs with virtual qubits, allocation classes, bounded
+coherent control of arbitrary CFGs, garbage as a scheduled resource, a
+resource vector, linking, and a host–device ABI; (c) one scheduler used at
+compile time and run time behind a published interface; (d) correctness
+defined by the permutation theorem plus channel-comparison oracles,
+attached to linkable objects as certificates that separate proof from
+evidence. Everything else is adopted from the systems above with
+attribution.
+
+## 8. Demo ladder (success criteria, each with its acceptance test)
+
+| Rung | Demo | Acceptance test |
+|---|---|---|
+| 1 | Scalar C, Rust, Julia functions | Exhaustive at Int8 over the full domain D of §5.1 part 1, both executors equal to native; fault rate zero. |
+| 2 | Pointers, structs, byte memory | A C hashtable (the existing 258-line corpus): forward result equal to native on every tested input (independent check), then reversed byte-exactly, both executors. |
+| 3 | musl hello-world | Forward output equal to native; run in the reversible tier with a console device model; un-run to the reset state; tape replay deterministic. |
+| 4 | **Grover over SQLite** | SQLite compiled unmodified to the coherent tier under a region budget, with an in-memory VFS over quantum-addressed memory. Database of N rows fixed classically before entry; the predicate is a real SQL query; the oracle bit is the query's match. (a) Oracle verified by §5.1 part 1 over all rows and all target values for N ≤ 2¹⁰, fault rate zero. (b) End-to-end Grover by state-vector simulation with branch enumeration at N ≤ 2⁸. (c) A resource estimate for N = 2²⁰ under a named target, reporting the budget and the padded cost. Nobody rewrote SQLite. |
+| 5 | Julia on a shim runtime | `push!` and `Dict` work because the allocator works, with zero compiler awareness of either; forward results equal to native Julia; reversal exact. |
+| 6 | xv6, then Linux `tinyconfig` | Serial console output equal to a native (QEMU) run of the same image (independent forward check); boots in the reversible tier with device models; un-boots to the reset vector; tape replay byte-identical. |
+| 7 | **Quantum fuzzing of the kernel** | Kernel state snapshot fixed classically after boot; a step budget; syscall arguments as the superposed input over a declared small space; devices virtualised; the oracle bit is the panic flag. (a) Oracle verified by §5.1 part 1 against native execution of the same snapshot per basis input, with UB-flagged inputs reported, fault rate zero on the declared space. (b) Amplitude amplification by state-vector simulation at a toy argument space. (c) A resource estimate under a named target. The oracle is Linux. |
+| 8 | **Amplitude estimation on a Monte Carlo in plain C** | Written by someone who has never heard of a Toffoli gate. The entropy device is replaced by a superposed register; everything else is fixed classically before entry. (a) Oracle by §5.1 part 1; (b) estimation by simulation at small precision; (c) resource estimate. |
+
+Rungs 1–3 and 5–6 are the blueprint's; 4, 7, 8 define success for the
+vision; nobody promises 6–8 on a schedule.
+
+## 9. Open technical questions (deferred by the maintainer's rule: vision first)
+
+In the order the next iteration should take them. Items the council
+promoted from "detail" to "load-bearing" are now answered at vision level
+above and appear here only for their mechanics.
+
+1. **The legality spike** (§3.2): the marker corpus against every stock
+   pass at O3 and through native codegen; emission examples from clang,
+   rustc and Julia; gate on freezing the dialect spec.
+2. **Handle → wire conversion**: the verifier, what it rejects, the leak
+   check.
+3. **Compilation model mechanics** (§3.3): LTO extension point vs `opt`;
+   fat-object layout; the launch ABI; host-triple intrinsic and asm
+   classification tables; bitcode builds of language runtimes.
+4. **Budget mechanics**: out-of-band budget tables; scalar-evolution
+   refinement; how the specialiser recovers structure from the step
+   machine; the exact fault-code set.
+5. **Effect virtualisation**: which device models exist (VFS, console,
+   clock, entropy, block device, network as a recorded peer), how they are
+   expressed as reversible state, what is refused.
+6. **Measurement-based uncomputation under control**: Sturm.jl's
+   `PermClean` certificate cannot express it; the certificate kind with
+   classical fixup and its controlled form, agreed with Sturm before any
+   gate record freezes.
+7. **Reversible ABI and linking**: call/uncall convention, shared ancilla
+   frames, structural symbol resolution, content-addressed objects.
+8. **Run-time scheduling policy**: history layers, checkpoint interval,
+   delta quality, recomputation of coherent regions, as resource policy
+   under the vector of §4.3.
+9. **ISA serialisation and versioning**; conformance suite; the formal
+   model's scope.
+10. **Per-LLVM-major builds**; Julia in-process invocation through LLVM.jl.
+11. Floating point (soft-float as a library), concurrency (sequentialised
+    with a recorded schedule), self-modifying code, signals, setjmp.
+12. Repository hosting and release mechanics for §6.1.
+
+## 10. Process
+
+Vision first (this document), iterate with the council, then design, then
+spikes, then code. The current Bennett.jl and BennettVM.jl are frozen as
+the v1 reference and differential oracle. No reboot code is written on the
+strength of this document. Worklog, beads, red-green, exhaustive
+verification, no remote CI carry over unchanged.
+
+codex
+I’ll read the repository instructions, then verify the load-bearing LLVM and quantum-semantics claims before grading.
+
+exec
+/bin/bash -lc 'cat CLAUDE.md' in /home/tobias/Projects/Bennett.jl
+ succeeded in 0ms:
+# Bennett.jl — Reversible Circuit Compiler
+
+## What This Is
+
+A Julia compiler that takes plain Julia functions on plain integers (and Float64 via soft-float) and compiles them into classical reversible circuits (NOT, CNOT, Toffoli gates) via Bennett's 1973 construction. The long-term goal: quantum control in Sturm.jl via `when(qubit) do f(x) end`.
+
+Full PRDs: `Bennett-PRD.md` (v0.1), `BennettIR-PRD.md` (v0.2), `BennettIR-v03-PRD.md` (v0.3), `BennettIR-v04-PRD.md` (v0.4), `BennettIR-v05-PRD.md` (v0.5).
+
+**Backend: LLVM.jl from v0.2.** The compiler extracts LLVM IR from plain Julia functions via LLVM.jl's C API, walks the IR as typed objects, lowers each instruction to reversible gates, and applies Bennett's construction. No operator overloading, no special types — plain Julia in, reversible circuit out.
+
+## Implementation Principles
+
+These are NON-NEGOTIABLE. Every agent, every session, every commit.
+
+0. **MAINTAIN THE WORKLOG.** Every step, every session: prepend a `## Session log — YYYY-MM-DD — ...` block to the **current top chunk** under `worklog/` — i.e. the file with the **highest** `NNN_` prefix. Do NOT hardcode the chunk number from this rule; check `ls worklog/ | sort -r | head -1` (as of 2026-10-03: chunk `115_*.md`). When that file passes ~280 lines, start a new chunk with the next sequential `NNN_` prefix and prepend there. The root `WORKLOG.md` is a thin **index** (sharded out of a 9,774-line monolith per Bennett-fyni / U70). Capture gotchas, learnings, surprising decisions, LLVM IR quirks, test failures and their root causes — anything a future agent would wish it knew, that's not derivable from the diff. This is the project's institutional memory. If you hit something non-obvious, write it down before moving on. **DO NOT run `python3 scripts/shard_worklog.py`** — per the user's `feedback_shard_worklog_pitfall` memory, the script is destructive: it wipes all existing chunk files. Edit chunks by hand.
+
+1. **FAIL FAST, FAIL LOUD.** Assertions, not silent returns. Crashes, not corrupted state. `error()` with a clear message, not a quiet `nothing`. If a wire is unmapped, if an SSA name is missing, if an instruction is unsupported — crash immediately with context.
+
+2. **ONE IMPLEMENTER PER CHANGE; CODE REVIEW IS BATCHED, NOT PER-CHANGE (3+1 RETIRED 2026-09-27; reaffirmed 2026-10-03).** The former "2 proposers + 1 implementer + orchestrator reviewer" protocol is retired — per the maintainer, current coding models are good enough that one implementer suffices, and review is NOT required for every change. Changes to the core pipeline (`ir_extract.jl`, `lower.jl`, `bennett_transform.jl`), gate types (`gates.jl`, `ir_types.jl`), or the phi resolution algorithm are implemented directly (red-green, rule 3). The orchestrator decides dynamically when an independent code review is worth launching: only after several work items have landed, over the accumulated diff, weighted toward core-pipeline changes. The review checks correctness, ancilla hygiene, and test coverage; its findings become beads. Older beads and worklog entries that say "CORE → 3+1" predate this rule — read them as "core change, include in the next review".
+
+3. **RED-GREEN TDD.** Write the test first. Watch it fail (red). Write the minimum code to make it pass (green). Then refactor. This is the primary development workflow — adopted from v0.4 onward because it works. Tests live in `test/`. Every change needs tests. Use `@testset` and `@test`. For Int8 functions, test all 256 inputs. For wider types, test representative inputs plus edge cases.
+
+4. **EXHAUSTIVE VERIFICATION.** Bennett's construction has a correctness invariant: all ancillae must return to zero. Every test must call `verify_reversibility` or check ancilla values explicitly. "Runs without errors" is not a passing test. The test must verify the actual output against a known-correct answer for every input.
+
+5. **LLVM IR IS NOT STABLE.** LLVM IR output is not a stable API. Never assume specific IR formatting, instruction ordering, or naming conventions. The LLVM.jl C API walker (`ir_extract.jl`) is the source of truth — not regex parsing. When LLVM changes its output, `ir_extract.jl` must adapt. Always use `optimize=false` for predictable IR when testing. **Bennett-t9rh:** `optimize=true` IR is produced under a PINNED TargetMachine (`x86-64-v3` on x86_64, `generic` elsewhere; O2 — `src/extract/target_pin.jl`), so `julia -C`/`-O` and the host CPU no longer change gate counts. Never study the host's `code_llvm(optimize=true)` output — it is not what Bennett compiles; use `Bennett.extract_ir(f, T)` or a `julia -C x86-64-v3` session.
+
+6. **GATE COUNTS ARE REGRESSION BASELINES (per explicit strategy).** Verified gate counts (documented in `worklog/` chunks and pinned in `test/test_gate_count_regression.jl`) are regression tests. If a change alters gate counts for an explicit-strategy invocation, that is a signal — investigate whether it's an improvement or a bug. Key baselines for `add=:ripple, fold_constants=true`: i8 `x+1` = 58 gates, i16 = 114, i32 = 226, i64 = 450; each doubling obeys `total(2W) == 2·total(W) - 2`. Toffoli counts: 12/28/60/124 (each doubling obeys `T(2W) == 2·T(W) + 4`). See `test/test_gate_count_regression.jl` for the pinned assertions. **Bennett-hjwp / U150**: baselines are pinned to *explicit* strategy kwargs (e.g. `add=:ripple`), NOT to `:auto` defaults — this lets the default-strategy dispatcher evolve (e.g. `add=:auto` migrating from `:ripple` to `:qcla` once mature) without tripping the regression tests. If you change a default-strategy choice, document the new default-vs-explicit gate-count delta in BENCHMARKS.md but do NOT update the explicit-strategy baselines unless you intentionally changed that strategy's lowering.
+
+7. **BUGS ARE DEEP AND INTERLOCKED.** Never assume a bug is shallow. Phi resolution bugs, LLVM naming bugs, false-path sensitization — these are subtle and interconnected. Investigate root causes. A fix that passes one test but breaks the invariant elsewhere is not a fix.
+
+8. **GET FEEDBACK FAST.** Run `julia --project -e 'using Bennett; ...'` or the test suite after every non-trivial change. Don't code blind for 500 lines then check. Check every 50 lines. For quick single-test feedback:
+   ```bash
+   julia --project test/test_increment.jl
+   ```
+
+9. **RESEARCH STEPS ARE EXPLICIT.** If you don't know how LLVM represents a construct, mark it as a research step. Don't guess. Don't hallucinate IR patterns. Extract actual IR with `code_llvm` and study it.
+
+10. **SKEPTICISM.** Be skeptical of everything: subagent output, previous agent work, your own assumptions, LLVM documentation. Verify. Test. Reproduce. Especially skeptical of LLVM IR assumptions — extract and inspect actual IR before implementing a handler.
+
+11. **PRD-DRIVEN DEVELOPMENT.** Every version has a PRD written before implementation. The PRD defines scope, success criteria, and test cases. Don't implement features not in the current PRD. Don't skip success criteria.
+
+12. **NO DUPLICATED LOWERING.** Before implementing a new instruction handler, check what `lower.jl` already supports. Check `adder.jl`, `multiplier.jl` for arithmetic patterns. If a lowering exists, use it. If it doesn't, add it in the right place with proper documentation.
+
+13. **SOFT-FLOAT MUST BE BIT-EXACT (Float64 only).** The soft-float library (`src/softfloat/`) implements IEEE 754 operations in pure integer arithmetic. Every Float64 soft-float function must be bit-exact against Julia's native floating-point operations. Test with random inputs AND edge cases (0, -0, Inf, NaN, subnormals, overflow boundaries). **Float32 deviation (Bennett-3rph / U137):** there are no native f32 arithmetic primitives; f32 operations in mixed-precision IR are routed through `soft_fpext → f64-op → soft_fptrunc`, which double-rounds and is **NOT** bit-exact against hardware f32. `reversible_compile(f, Float32)` is rejected. Native 24-bit-mantissa f32 paths are future work — until then, the bit-exact contract applies only to f64. See `src/softfloat/fpconv.jl` docstring header for full details.
+   - **Transcendental subnormal-output convention (Bennett-fnxg / U_).** Every transcendental (`soft_exp`, `soft_log`, `soft_sin`, `soft_cos`, `soft_sinh`, `soft_tanh`, `soft_atan`, ...) MUST include a `@testset "subnormal-output range"` (or equivalent) in its bit-level test file that sweeps inputs `x` where `Base.<func>(x)` is subnormal, in steps fine enough to populate every binade (typically 0.25 or 0.5), asserting bit-exact equality (or ≤1 ulp tol) vs `Base.<func>`. Filed from the `soft_exp` post-mortem (Bennett-wigl): the `x ∈ [-708.4, -745]` garbage-output bug survived initial Bennett-cel testing because the random sweep ran on `[-50, 50]` and never visited the subnormal-output region. This catches the garbage-bug class up-front. Existing reference implementations: `test/test_softfexp.jl:135` and `test/test_softfexp_julia.jl:182`.
+
+14. **NO GITHUB CI, NO REMOTE AUTOMATION.** Quality checks run LOCALLY via `Pkg.test()`, `bd`, and git hooks — never via GitHub Actions, workflows, scheduled runs, or any service that sends email on failure. The user has explicitly rejected automated CI: the failure-email noise is worse than zero signal. Do NOT create `.github/workflows/`, do NOT propose "add CI" beads, do NOT reference external build/test services. When the catalogue or a review mentions CI, treat it as out-of-scope and substitute local gates (pre-push git hook, `Pkg.test()` on every commit per rule 8, `bd` tracking per the Beads section). If a future agent re-proposes CI, point them at this rule.
+
+## Phi Resolution and Control Flow — CORRECTNESS RISK
+
+**CRITICAL FOR ALL AGENTS**: The phi resolution algorithm in `lower.jl` is the most complex and bug-prone part of the compiler. Phi nodes from LLVM IR represent value merging at control flow join points. The lowering converts them to nested MUX circuits (select via condition bits).
+
+**Known failure mode: false-path sensitization.** When a phi node merges values from a diamond CFG (both branches of an outer if feed into the same inner phi), the MUX condition for one branch can fire without its guard condition being true. This is a well-known problem in VLSI circuit verification. The v0.5 soft-float overflow bug is an instance of this.
+
+**Rules for phi resolution changes:**
+1. Never modify the phi resolution algorithm without understanding the full CFG topology
+2. Test with diamond CFGs, not just simple if/else
+3. Verify that MUX conditions are properly guarded by their dominating branch conditions
+4. When in doubt, draw the CFG and trace values through by hand
+
+## Pipeline Architecture
+
+```
+Julia function          LLVM IR              Reversible Circuit
+─────────────────      ─────────            ──────────────────
+f(x::Int8)     ──►  extract_parsed_ir()  ──►  lower()  ──►  bennett()
+                     (LLVM.jl C API)          (gates)       (fwd + copy + undo)
+                                                                │
+                                                                ▼
+                                                          simulate(circuit, input)
+                                                          verify_reversibility()
+```
+
+1. **Extract** — `extract_parsed_ir(f, arg_types)` uses LLVM.jl C API to walk IR as typed objects
+2. **Lower** — `lower(parsed_ir)` maps each instruction to reversible gates (NOTGate, CNOTGate, ToffoliGate)
+3. **Bennett** — `bennett(lr)` applies forward + CNOT-copy + reverse (all ancillae return to zero)
+4. **Simulate** — `simulate(circuit, input)` runs bit-vector simulation with ancilla verification
+
+## File Structure
+
+```
+Bennett.jl/                         # Project root. PRDs and CLAUDE.md live alongside Project.toml.
+  Project.toml                      # deps: LLVM.jl, PrecompileTools, InteractiveUtils; extras: Test, Random
+  Manifest.toml
+  CLAUDE.md                         # this file — non-negotiable project rules
+  README.md                         # public-facing intro
+  WORKLOG.md                        # thin index pointing at sharded chunks under worklog/ (per §0)
+  worklog/                          # 77 sharded session-log files (as of 2026-05-23), ~200-300 lines each, NNN_YYYY-MM-DD_<slug>.md
+                                    #   highest NNN = most recent; prepend new sessions to the top chunk
+  BENCHMARKS.md                     # canonical gate-count + Toffoli-depth baselines (T5 Pareto front)
+  Bennett-VISION-PRD.md             # long-term v1.0 roadmap (Enzyme analogy)
+  Bennett-Memory-PRD.md             # reversible mutable memory plan
+  Bennett-Memory-T5-PRD.md          # T5 persistent-DS workstream
+
+  src/                              # 31 top-level src/*.jl + extract/ (18) + lowering/ (9) + pebble/ (4) + softfloat/ (35) + persistent/ (5, +research/)
+    Bennett.jl                      # module: 3 reversible_compile overloads (Tuple / ParsedIR / Float64), SoftFloat dispatch, callee registry
+    callees.jl                      # registers the soft_* division / memory callees into the extract/ registry on load (Bennett-19g6 / kmuj)
+
+    # ---- IR extraction & representation ----
+    ir_types.jl                     # IR struct hierarchy: IRBinOp, IRICmp, IRSelect, IRPhi, IRCall, IRStore, IRAlloca, IRSwitch, ...
+    ir_extract.jl                   # thin include-manifest (~24 LOC) pulling in the extract/ subdir; the ~2.7k-LOC monolith was split per Bennett-tzrs / U41
+    extract/                        # LLVM.jl C-API walk → ParsedIR, split out of the old ir_extract.jl monolith (Bennett-tzrs / U41)
+      entry.jl                      # extract_ir / extract_parsed_ir / from_ll / from_bc / _run_passes!
+      callees.jl                    # known-callee registry (register_callee! / _lookup_callee) + cache + _LLVMRef + _auto_name
+      callgraph.jl                  # CW-D1a: transitive_callees typed call-graph walker (SC9 Case B path)
+      julia_set.jl                  # CW-D1b: extract_parsed_ir_set_from_julia — closed-world Julia multi-IR producer
+      errors.jl                     # _ir_error / _ir_error_msg + _LLVM_OPCODE_NAMES
+      sret.jl                       # sret detection + writes collection + synthesis (Bennett-dv1z)
+      module_walk.jl                # _find_entry_function / _module_to_parsed_ir / _extract_const_globals / _expand_switches
+      instructions.jl               # _handle_intrinsic + _convert_instruction (the IR → IRInst dispatcher)
+      heap.jl                       # Bennett-gps7 / M1: GC/heap-skeleton recogniser (_detect_gc_preamble!)
+      dict_vm.jl                    # SC9 Case B: mem=:vm Dict → IRMap* recogniser (ADR 0008 / 0013 §D-3)
+      vector_vm.jl                  # SC9 Case A: mem=:vm Vector recogniser — recognition (ADR 0016)
+      vector_vm_walk.jl             # SC9 Case A: skeleton + element-traffic capture (ADR 0016)
+      vector_vm_emit.jl             # SC9 Case A: multi-block ParsedIR assembly (ADR 0016)
+      vector_vm_cfg.jl              # SC9 Case A: CFG helpers + body re-root (ADR 0016)
+      vector_vm_term.jl             # SC9 Case A: terminator rewrite + φ rebind (ADR 0016)
+      constexpr.jl                  # cc0.3 GlobalAlias + cc0.4 ConstantExpr operand folding
+      vectors.jl                    # cc0.7 vector SSA scalarisation + _convert_vector_instruction
+      helpers.jl                    # _get_deref_bytes / _operand / _iwidth / _type_width + _OPCODE_MAP / _PRED_MAP
+    ir_parser.jl                    # legacy regex parser (backward compat; mostly used by test_parse.jl)
+
+    # ---- Lowering: ParsedIR → gates ----
+    lower.jl                        # thin include-manifest (~18 LOC) pulling in the lowering/ subdir; the ~2.9k-LOC monolith was split per Bennett-vdlg / U40
+    lowering/                       # per-opcode ParsedIR → gates lowering, split out of the old lower.jl monolith (Bennett-vdlg / U40)
+      types.jl                      # GateGroup / LoweringResult / LoweringCtx + _lower_inst! dispatch
+      operand.jl                    # resolve! / _ssa_operands / compute_inplace_targets (Bennett-stwr exclusive-reader analysis)
+      driver.jl                     # lower() / _fold_constants / lower_block_insts! (+ strategy / target dispatch)
+      cfg.jl                        # topo sort / back edges / loop unrolling
+      phi.jl                        # path-predicate computation + PHI-MUX resolution
+      arith.jl                      # binop dispatch + bitwise + shifts + icmp + select + cast
+      aggregate.jl                  # divrem + ptr_offset + var_gep + load + extract/insertvalue
+      call.jl                       # function call inlining (callee dispatch)
+      memory.jl                     # T1b.3 reversible memory: alloca + store + MUX-EXCH dispatch
+    narrow.jl                       # _narrow_ir: bit-width narrowing of ParsedIR for reversible_compile(f, T; bit_width=W) (Bennett-19g6)
+    wire_allocator.jl               # bump-allocator + free-list for ancilla wire slots
+
+    # ---- Gate primitives & Bennett construction ----
+    gates.jl                        # NOTGate, CNOTGate, ToffoliGate; ReversibleCircuit (with wire-partition-validation invariant — Bennett-6azb / U58)
+    bennett_transform.jl            # bennett(lr): forward + CNOT-copy + reverse; self-reversing short-circuit (Bennett-egu6 / U03)
+                                    # Bennett-i2ca / U55: body renamed `_bennett_default(lr)`, reached via DefaultStrategy. Helpers `_allocate_copy_wires` / `_emit_copy_gates!` shared with eager / value_eager / pebbled.
+    bennett_strategies.jl           # Bennett-i2ca / U55 (2026-05-01): `abstract type BennettStrategy` + 6 concrete subtypes (DefaultStrategy, EagerStrategy, ValueEagerStrategy, CheckpointStrategy, PebbledStrategy(max_pebbles), PebbledGroupStrategy(max_pebbles)) + `bennett(lr; strategy=...)` dispatch + 5 legacy aliases as zero-overhead forwarders.
+    controlled.jl                   # ControlledCircuit: lifts a circuit to take an explicit control bit
+    compose.jl                      # compose(c1, c2): reversible-circuit pipeline composition, uncomputing the intermediate (Bennett-qcso / U59)
+
+    # ---- Simulation & metrics ----
+    simulator.jl                    # bit-vector simulate; ancilla-zero + input-preservation assertions; signedness inference (Bennett-zc50 / U100)
+    diagnostics.jl                  # gate_count, ancilla_count, depth, t_count, t_depth, toffoli_depth, peak_live_wires, verify_reversibility, print_circuit
+
+    # ---- Adders & multipliers ----
+    adder.jl                        # ripple-carry full adder + Cuccaro in-place
+    qcla.jl                         # Draper-Kutin-Rains-Svore 2004 quantum carry-lookahead adder
+    multiplier.jl                   # shift-and-add + Karatsuba multiplier
+    mul_qcla_tree.jl                # Sun-Borissov 2026 polylogarithmic-depth multiplier (self-reversing; arXiv:2604.09847)
+    partial_products.jl             # emit_partial_products! / emit_conditional_copy! (Sun-Borissov §II.C building blocks)
+    parallel_adder_tree.jl          # binary tree of QCLA adders; self-cleaning via _AdderRecord replay
+    divider.jl                      # soft_udiv / soft_urem (registered as callees)
+
+    # ---- Bennett strategy variants (Bennett-i2ca / U55: bodies renamed `_*_impl`, reached via BennettStrategy dispatch in bennett_strategies.jl) ----
+    pebble/                         # strategy-variant impls, colocated as a group (included from Bennett.jl; filenames preserved)
+      pebbling.jl                   # Knill 1995 (Theorem 2.1) — `_pebbled_bennett_impl` ← PebbledStrategy
+      pebbled_groups.jl             # group-level pebbling with wire reuse + `_checkpoint_bennett_impl` ← CheckpointStrategy / PebbledGroupStrategy
+      eager.jl                      # PRS15 EAGER cleanup (gate-level) — `_eager_bennett_impl` ← EagerStrategy
+      value_eager.jl                # PRS15 Algorithm 2 value-level EAGER — `_value_eager_bennett_impl` ← ValueEagerStrategy
+    # Bennett-u2yp / U149 (2026-05-01): pebble/sat_pebbling.jl + PicoSAT dep dropped — was 211 LOC unwired into any strategy dispatcher; modern-SAT-solver replacement tracked in Bennett-fg2 (P2).
+    dep_dag.jl                      # gate dependency graph extraction
+
+    # ---- Memory: reversible store/load primitives ----
+    softmem.jl                      # soft_mux_*: reversible MUX-store/load on packed UInt64 arrays (registered callees)
+    shadow_memory.jl                # universal reversible store/load via CNOT-copy pattern
+    fast_copy.jl                    # Sun-Borissov 2026 Algorithm 1: reversible n-fold broadcast
+    qrom.jl                         # Babbush-Gidney 2018 QROM via binary decision tree of Toffolis
+    tabulate.jl                     # classical eval of f on all 2^W inputs → emit as QROM lookup
+    memssa.jl                       # parse LLVM MemorySSA annotations for store/load alias resolution
+
+    # ---- Crypto / hash ----
+    feistel.jl                      # reversible Feistel network for bijective hashing
+
+    softfloat/                      # 35 files: IEEE 754 binary64 in pure integer arithmetic (bit-exact vs Julia native)
+                                    # Bennett-iwv5 / U90: wrapped in `module SoftFloatLib`; 39 public soft_*
+                                    # primitives re-exported via `using .SoftFloatLib` in Bennett.jl. Internal
+                                    # helpers (_add128, _sf_normalize_to_bit52, _EXP_TAB, …) and bit-pattern
+                                    # constants (EXP_MASK, IMPLICIT, INDEF, QNAN) stay module-private. Module
+                                    # named `SoftFloatLib` (not `SoftFloat`) to avoid clash with the user-
+                                    # facing `struct SoftFloat` in src/softfloat_dispatch.jl.
+      softfloat.jl                  # `module SoftFloatLib` wrapper + include list + export list
+      softfloat_common.jl           # shared branchless helpers (CLZ, round-to-nearest-even, ...)
+      fadd.jl, fsub.jl, fmul.jl, fma.jl, fdiv.jl, fsqrt.jl, fneg.jl, fcmp.jl
+      fpconv.jl, fptosi.jl, fptoui.jl, sitofp.jl, fround.jl
+      fexp.jl                       # branchless integer exp / exp2
+      fexp_julia.jl                 # Julia-idiom exp / exp2 variants
+
+    persistent/                     # 10 files: persistent-map data structures (T5 workstream)
+                                    # Bennett-iwv5 / U90: wrapped in `module Persistent`; public surface
+                                    # (PersistentMapImpl, verify_pmap_*, LINEAR_SCAN_IMPL, soft_feistel*)
+                                    # re-exported via `using .Persistent`.
+      persistent.jl                 # `module Persistent` wrapper + include list + export list
+      interface.jl                  # AbstractPersistentMap protocol
+      harness.jl                    # correctness + benchmark harness (pmap_demo_oracle)
+      linear_scan.jl                # brute-force baseline (winner at all measured scales — see worklog/026_2026-04-20_*.md)
+      hashcons_feistel.jl           # Feistel-based hash for hash-consing
+      research/                     # opt-in subdir, NOT loaded by Bennett module — relocated 2026-04-25 (Bennett-uoem / U54)
+        okasaki_rbt.jl              # Okasaki 1999 red-black tree
+        hamt.jl                     # Bagwell HAMT
+        cf_semi_persistent.jl       # Conchon-Filliâtre semi-persistent map
+        hashcons_jenkins.jl         # Mogensen Jenkins-96 reversible hash
+        popcount.jl                 # pure-integer popcount (HAMT helper)
+
+  test/                             # 328 test_*.jl files, all registered in runtests.jl (a few behind BENNETT_T5/RESEARCH gates) / ~1.53M assertions (as of 2026-09-24). On a 16 GB box a single Pkg.test process can OOM (~12 GB RSS) — run chunked (see worklog/108)
+    runtests.jl                     # canonical registration order
+                                    # Conventions:
+                                    #   test_<beadid>_*.jl    per-bead regression file (~50 files)
+                                    #   test_<topic>.jl       pipeline / feature / metrics tests
+                                    # Set BENNETT_T5_TESTS=0 to skip the multi-language corpus subset
+                                    # (Julia / C via clang / Rust via rustc; clang+rustc self-skip if absent)
+
+  benchmark/                        # bc{1..6}_*.jl + sweep + run_benchmarks scripts; outputs feed BENCHMARKS.md
+  scripts/
+    pre-push                        # git hook: runs Pkg.test() before push (per §14, replaces GitHub CI)
+    install-hooks.sh                # installs pre-push into .git/hooks/
+    fetch_t5_springer.mjs           # fetches T5 multi-language test corpus from Springer
+    shard_worklog.py                # re-shards WORKLOG.md → worklog/*.md if structure drifts (Bennett-fyni / U70)
+  build/                            # T5 corpus .ll/.bc fixtures (NOT a build-artifact directory)
+  docs/
+    prd/                            # versioned per-version PRDs (Bennett-PRD v0.1, BennettIR-PRD v0.2, ...)
+    src/                            # Documenter-shaped source (no docs/make.jl yet — Bennett-doh6 / U158)
+    design/                         # 3+1 proposer outputs + consensus docs (historical snapshots — do not mutate)
+    literature/                     # SURVEY.md + paper PDFs (memory tier, multiplication, arithmetic)
+    memory/                         # T1/T2/T3 design docs for the memory plan
+  reviews/                          # frozen audit snapshots (e.g. 2026-04-21/19-agent review → UNIFIED_CATALOGUE.md)
+```
+
+## Build & Test
+
+```bash
+# Run full test suite
+julia --project -e 'using Pkg; Pkg.test()'
+
+# Run a single test file
+julia --project test/test_increment.jl
+
+# Run a single test file the way Pkg.test() does (--check-bounds=yes forces
+# every @boundscheck ON; some tests behave differently — see Bennett-2mj3).
+# A per-file "green" claim is only meaningful if it matches the suite mode:
+julia --project --check-bounds=yes test/test_increment.jl
+
+# Quick REPL check
+julia --project -e 'using Bennett; c = reversible_compile(x -> x + Int8(1), Int8); println(gate_count(c))'
+
+# Activate and develop
+julia --project
+]test
+```
+
+<!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:ca08a54f -->
+## Beads Issue Tracker
+
+This project uses **bd (beads)** for issue tracking. Run `bd prime` to see full workflow context and commands.
+
+### Quick Reference
+
+```bash
+bd ready              # Find available work
+bd show <id>          # View issue details
+bd update <id> --claim  # Claim work
+bd close <id>         # Complete work
+```
+
+### Rules
+
+- Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
+- Run `bd prime` for detailed command reference and session close protocol
+- Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+
+### Dolt-cache commit hygiene (Bennett-58rl / U214)
+
+`bd close <id>` mutates `.beads/embeddeddolt/beads/.dolt/...` (the
+embedded dolt store) which appears in `git status` as ~5–10 modified
+binary files plus a handful of new objects under
+`git-remote-cache/.../objects/`. **Bundle these into the same commit
+as the source change that closed the bead** — never make a separate
+`git commit -m "bd: sync dolt cache"`. Two reasons:
+
+1. The dolt cache is downstream of the bead-close action; separating
+   them just doubles the commit count without adding information.
+2. Pre-2026-04-22, the project had ~120 "bd: sync dolt cache" commits
+   (~27 % of history). U214 flagged this as log pollution; the
+   bundled-commit convention has eliminated it (last 60+ commits at
+   the time of close: zero standalone dolt-cache commits).
+
+If `git status` shows ONLY `.beads/...` modifications and no source
+changes, you probably forgot to actually do the work — investigate
+before committing.
+
+## Session Completion
+
+**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+
+**MANDATORY WORKFLOW:**
+
+1. **File issues for remaining work** - Create issues for anything that needs follow-up
+2. **Run quality gates** (if code changed) - Tests, linters, builds
+3. **Update issue status** - Close finished work, update in-progress items
+4. **PUSH TO REMOTE** - This is MANDATORY:
+   ```bash
+   git pull --rebase
+   bd dolt push
+   git push
+   git status  # MUST show "up to date with origin"
+   ```
+5. **Clean up** - Clear stashes, prune remote branches
+6. **Verify** - All changes committed AND pushed
+7. **Hand off** - Provide context for next session
+
+**CRITICAL RULES:**
+- Work is NOT complete until `git push` succeeds
+- NEVER stop before pushing - that leaves work stranded locally
+- NEVER say "ready to push when you are" - YOU must push
+- If push fails, resolve and retry until it succeeds
+<!-- END BEADS INTEGRATION -->
+
+web search: 
+exec
+/bin/bash -lc 'bd prime' in /home/tobias/Projects/Bennett.jl
+ succeeded in 39ms:
+Warning: /home/tobias/Projects/Bennett.jl/.beads has permissions 0775 (recommended: 0700). Run: chmod 700 /home/tobias/Projects/Bennett.jl/.beads
+[bd prime] If this output is truncated by your host, read the full persisted hook output before continuing; it may contain project memories and session rules not visible in the preview.
+
+# Beads Workflow Context
+
+> **Context Recovery**: Run `bd prime` after compaction, clear, or new session
+> Hooks auto-call this in Claude Code and Codex when a beads workspace is resolved
+
+
+## Persistent Memories
+
+Skipped: beads storage unavailable (failed to open database: embeddeddolt: init schema: embeddeddolt: open db: failed to load database "beads": openat LOCK: read-only file system) — persistent memories were NOT injected this session. Run `bd doctor`; if the store is a Dolt server, check it is running and reachable.
+
+# 🚨 SESSION CLOSE PROTOCOL 🚨
+
+**CRITICAL**: Before saying "done" or "complete", you MUST run this checklist:
+
+```
+[ ] 1. bd close <id1> <id2> ...   (close completed issues)
+[ ] 2. run quality gates        (tests, linters, builds when relevant)
+[ ] 3. git status               (check what changed)
+[ ] 4. follow active profile    (conservative: report handoff; team-maintainer: commit/sync/push if enabled)
+```
+
+**Policy:** Conservative is the default. Commit, sync, or push only when the active user, orchestrator, or repository profile grants that authority.
+
+## Core Rules
+- **Default**: Use beads for ALL task tracking (`bd create`, `bd ready`, `bd close`)
+- **Prohibited**: Do NOT use TodoWrite, TaskCreate, or markdown files for task tracking
+- **Workflow**: Create beads issue BEFORE writing code, mark in_progress when starting
+- **Memory**: Use `bd remember "insight"` for persistent knowledge across sessions. Do NOT use MEMORY.md files — they fragment across accounts. Search with `bd memories <keyword>`.
+- Persistence you don't need beats lost context
+- Default: do not commit, push, or run dolt remote sync without explicit authority. Team-maintainer behavior is opt-in and still subordinate to user/orchestrator instructions.
+- Git workflow: conservative by default; commit/push only with explicit user/orchestrator or team-maintainer authority
+- Session management: check `bd ready` for available work
+
+## Essential Commands
+
+### Finding Work
+- `bd ready` - Show issues ready to work (no blockers)
+- `bd list --status=open` - All open issues
+- `bd list --status=in_progress` - Your active work
+- `bd show <id>` - Detailed issue view with dependencies
+
+### Creating & Updating
+- `bd create --title="Summary of this issue" --description="Why this issue exists and what needs to be done" --type=task|bug|feature --priority=2` - New issue
+  - Priority: 0-4 or P0-P4 (0=critical, 2=medium, 4=backlog). NOT "high"/"medium"/"low"
+- `bd create ... --parent=<id>` - Hierarchical child (task under epic, subtask under task; inherits parent labels)
+- `bd update <id> --claim` - Claim work
+- `bd unclaim <id>` - Release stuck issue (agent crashed)
+- `bd update <id> --assignee=username` - Assign to someone
+- `bd update <id> --if-assignee=<expected> --assignee=<new>` - Atomic reassign: applies only if the assignee still matches (--if-status=<expected> guards status; --if-assignee='' requires unassigned). Mismatch exits non-zero with nothing written — never retry blindly
+- `bd update <id> --title/--description/--notes/--design` - Update fields inline
+- `bd close <id>` - Mark complete
+- `bd close <id1> <id2> ...` - Close multiple issues at once (more efficient)
+- `bd close <id> --reason="explanation"` - Close with reason
+- **Tip**: When creating multiple issues/tasks/epics, use parallel subagents for efficiency
+- **WARNING**: Do NOT use `bd edit` - it opens $EDITOR (vim/nano) which blocks agents
+
+### Dependencies & Blocking
+- `bd dep add <issue> <depends-on>` - Add dependency (issue depends on depends-on)
+- `bd blocked` - Show all blocked issues
+- `bd show <id>` - See what's blocking/blocked by this issue
+
+### Sync & Collaboration
+- `bd search <query>` - Search issues by keyword
+
+### Project Health
+- `bd stats` - Project statistics (open/closed/blocked counts)
+- `bd doctor` - Check for issues (sync problems, missing hooks)
+- `bd doctor --check=conventions` - Check for convention drift (lint, stale, orphans)
+
+### Quality Tools
+- `bd create --validate` - Check description has required sections
+- `bd create --acceptance="criteria"` - Set acceptance criteria (checked by --validate)
+- `bd create --design="decisions"` - Record design decisions
+- `bd create --notes="context"` - Add supplementary notes
+- `bd config set validation.on-create warn` - Auto-validate on every create
+- `bd lint` - Check existing issues for missing sections
+
+### Lifecycle & Hygiene
+- `bd defer <id> --until="date"` - Defer work to a future date
+- `bd supersede <id> --with=<new-id>` - Mark issue as superseded
+- `bd close <id> --suggest-next` - Show newly unblocked issues after closing
+- `bd stale` - Find issues with no recent activity
+- `bd orphans` - Find issues with broken dependencies
+- `bd preflight` - Pre-PR checks (lint, stale, orphans)
+- `bd human <id>` - Flag for human decision (list/respond/dismiss)
+
+### Structured Workflows
+- `bd formula list` - See available workflow templates
+- `bd mol pour <name>` - Start structured workflow from formula
+
+## Common Workflows
+
+**Starting work:**
+```bash
+bd ready           # Find available work
+bd show <id>       # Review issue details
+bd update <id> --claim  # Claim it
+```
+
+**Completing work:**
+```bash
+bd close <id1> <id2> ...    # Close all completed issues at once
+git status                  # Check changed files
+# Conservative/minimal/default: report status and proposed commands; wait for approval
+# Team-maintainer opt-in only, unless current instructions forbid it:
+# git add . && git commit -m "..."
+# git push
+```
+
+**Creating dependent work:**
+```bash
+# Run bd create commands in parallel (use subagents for many items)
+bd create --title="Implement feature X" --description="Why this issue exists and what needs to be done" --type=feature
+bd create --title="Write tests for X" --description="Why this issue exists and what needs to be done" --type=task
+bd dep add beads-yyy beads-xxx  # Tests depend on Feature (Feature blocks tests)
+```
+
+web search: https://llvm.org/docs/UndefinedBehavior.html
+web search: 
+web search: site.doc.rust-lang.org rustc linker plugin lto LLVM version standard library embedded bitcode ...
+web search: 
+web search: site:arxiv.org quantum control flow synchronization uncomputation arbitrary programs reversible ...
+codex
+The revision addresses the portable ABI, region budgets, arbitrary control flow, and sampling-versus-proof distinction. I’m checking two remaining semantic gaps: guarantees for UB already erased by optimisation, and the circuit’s exact output on faulted branches.
+
+web search: 
+web search: "quantum control machine" synchronization uncomputation ...
+web search: 
+web search: site:llvm.org/docs/UndefinedBehavior.html "time travel" "printf" ...
+web search: 
+web search: https://arxiv.org/abs/2304.15000
+exec
+/bin/bash -lc "clang -O3 -S -emit-llvm -x c -o - - <<'EOF'
+int discarded_division(int x) {
+    int y = 10 / x;
+    return 0;
+}
+int source_overflow(int x) {
+    return x + 1 > x;
+}
+EOF" in /home/tobias/Projects/Bennett.jl
+ succeeded in 0ms:
+; ModuleID = '-'
+source_filename = "-"
+target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-pc-linux-gnu"
+
+; Function Attrs: mustprogress nofree norecurse nosync nounwind willreturn memory(none) uwtable
+define dso_local noundef i32 @discarded_division(i32 noundef %0) local_unnamed_addr #0 {
+  ret i32 0
+}
+
+; Function Attrs: mustprogress nofree norecurse nosync nounwind willreturn memory(none) uwtable
+define dso_local noundef i32 @source_overflow(i32 noundef %0) local_unnamed_addr #0 {
+  ret i32 1
+}
+
+attributes #0 = { mustprogress nofree norecurse nosync nounwind willreturn memory(none) uwtable "min-legal-vector-width"="0" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
+
+!llvm.module.flags = !{!0, !1, !2, !3}
+!llvm.ident = !{!4}
+
+!0 = !{i32 1, !"wchar_size", i32 4}
+!1 = !{i32 8, !"PIC Level", i32 2}
+!2 = !{i32 7, !"PIE Level", i32 2}
+!3 = !{i32 7, !"uwtable", i32 2}
+!4 = !{!"Ubuntu clang version 18.1.3 (1ubuntu1)"}
+
+codex
+Clang confirms the UB gap: at `-O3`, it removes an unused division entirely, leaving no operation for a link-time fault detector to catch. The correctness theorem also needs explicit input-preservation checks and a defined payload on faulted branches; matching results or fault codes alone does not establish the stated oracle.
+
+exec
+/bin/bash -lc 'git --no-optional-locks status --short' in /home/tobias/Projects/Bennett.jl
+ succeeded in 0ms:
+ M worklog/121_2026-10-27_reboot_blueprint.md
+?? .beads.gate.lock
+?? Bennett-NorthStar.md
+?? docs/council/
+?? tools/
+
+codex
+{
+  "criteria": [
+    {
+      "id": "C1",
+      "score": 4,
+      "evidence": "The inferred tiers, virtual ISA, shared scheduler and two executors now describe one coherent architecture. The thesis still promises fault detection beyond what the optimise-first pipeline guarantees.",
+      "change": "Make the thesis use exactly the definedness and fault contract adopted in §3.2."
+    },
+    {
+      "id": "C2",
+      "score": 3,
+      "evidence": "Effectful external markers and the Enzyme-style link-time transformation are credible without an LLVM fork. The remaining UB guarantee is overstated, and the claim that Rust's distributed standard library lacks bitcode is false.",
+      "change": "State the precise boundary between source-definedness assumptions and faults detectable in the selected optimised-IR reference machine."
+    },
+    {
+      "id": "C3",
+      "score": 4,
+      "evidence": "The predicated step machine, classical-only scheduling policy, allocation classes and explicit padding costs make the VM proposal technically coherent. Unspecified fault payloads still prevent the two executors from implementing one fully determined coherent operation.",
+      "change": "Define the complete reversible result on faulted inputs, including payload and preserved state."
+    },
+    {
+      "id": "C4",
+      "score": 5,
+      "evidence": "Sections 4.4 and 6.1 now assign the object, linking, launch, scheduling, target and certificate interfaces to published contracts. Reusing a scheduler through its specified ABI is intentional modularity, not a hidden monolith.",
+      "change": "None required at vision level; preserve these ownership boundaries during design."
+    },
+    {
+      "id": "C5",
+      "score": 4,
+      "evidence": "Portable handles, explicit runtime coverage constraints and real frontend-emission gates resolve the previous source-ABI problem. The mixed-version rule still treats compatibility as more automatic than the toolchains promise.",
+      "change": "Replace 'merge and run on the newest' with a tested compatibility envelope covering bitcode readers, target layouts, ABIs and frontend-specific IR."
+    },
+    {
+      "id": "C6",
+      "score": 4,
+      "evidence": "The proof/evidence distinction, post-decomposition permutation boundary and channel comparisons are substantial corrections. However, §5.1's theorem still omits input preservation from its hypotheses and permits incomplete comparisons on faulted inputs.",
+      "change": "Make the complete register-state relation the explicit object of verification."
+    },
+    {
+      "id": "C7",
+      "score": 4,
+      "evidence": "The novelty claim is appropriately about a combination, with broad attribution. Quantum Control Machine is a particularly relevant omission now that a superposed program counter is central.",
+      "change": "Add Quantum Control Machine and explain how Bennett's embedding and control-state cleanup satisfy the relevant synchronization obligations."
+    },
+    {
+      "id": "C8",
+      "score": 4,
+      "evidence": "The component responsibilities and deferred mechanics are clear enough for the three intended readers. The remaining disagreements concern normative semantics rather than missing implementation detail.",
+      "change": "Give one authoritative success-and-failure relation and make the thesis, theorem and acceptance tests reference it."
+    }
+  ],
+  "blocking": [
+    {
+      "id": "B1_LLVM_DEFINEDNESS",
+      "section": "§§0, 3.2, 4.2, 5.1 and 8 rung 7",
+      "problem": "Section 3.2 acknowledges that optimisation can erase source UB, but §0 still promises named faults for executions outside the defined domain. These cannot both hold for source executions. I confirmed locally that clang -O3 turns `int f(int x){int y=10/x;return 0;}` into `return 0`, leaving nothing to fault on at x=0. UBSan also detects selected UB classes; a clean run does not establish source definedness. See the [LLVM UB manual](https://llvm.org/docs/UndefinedBehavior.html) and [UBSan documentation](https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html).",
+      "fix": "Prefer the minimal correction: state that source equivalence requires an independently stated definedness assumption for every supported basis input; faults cover conditions encountered by Bennett's totalised optimised-IR machine, with no guarantee of detecting source UB erased earlier. Describe UBSan as supplementary evidence, not a complete domain classifier. Alternatively, retain source-level fault guarantees by introducing checked semantics before UB-exploiting optimisation, explicitly naming their coverage. The kernel rung must identify which contract it uses."
+    },
+    {
+      "id": "B3_FAULT_RESULT_SEMANTICS",
+      "section": "§§4.2 and 5.1",
+      "problem": "Saying that faulted outputs are 'not an oracle value' does not specify their quantum state. Two implementations can return the same fault code and clean workspace while one writes zero to the payload and the other copies x. On a superposition these produce different correlations, even if nobody reads the invalid payload. Comparing only the fault code therefore cannot establish the claimed common semantics.",
+      "fix": "Define a deterministic bounded result F_B(x): success returns (f(x), 0), while failure returns (0, error_B(x)); implement it by XOR into payload and error targets, preserving the input and restoring workspace. Error selection must follow the shared bounded reference semantics. Alternatively, specify a deterministic partial-result payload on failure and compare it completely; I would choose the canonical zero payload. Merely disabling forward predicates is insufficient without retaining and reversing the required history."
+    },
+    {
+      "id": "B4_INPUT_PRESERVATION",
+      "section": "§5.1 part 1 and its conformance requirements",
+      "problem": "The theorem's listed hypotheses check the result and clean/dirty ancilla restoration, but do not require preservation of x. Appending X on an input bit after an otherwise correct oracle preserves every listed result and ancilla check, yet violates the claimed mapping. Exhausting target and dirty-register values does not close this hole.",
+      "fix": "Require explicit equality of the entire register tuple: preserved input and reference state, target XOR the specified bounded result, correctly transformed fault target, unchanged dirty registers, and restored clean workspace. State input preservation in both the theorem's hypotheses and the acceptance checks; native execution supplies f(x), while the embedding specification supplies the complete expected state."
+    }
+  ],
+  "suggestions": [
+    "Specify the approximation metric and numerical assurance behind channel comparisons. Diamond-norm bounds support compositional channel guarantees; phase-sensitive unitary bounds are needed for controlled use. Ordinary floating-point matrix agreement should remain evidence unless numerical error is rigorously bounded.",
+    "Clarify that the marker-only quantum-memory rule concerns explicit quantum-register access. Ordinary LLVM loads/stores in unmodified SQLite must still be accepted and coherently lifted according to the incoming memory model; otherwise §3.1 reads as contradicting the flagship demonstration.",
+    "Correct §3.3: Rust's distributed standard library normally includes embedded LLVM bitcode. Extract compatible bitcode where available; require rebuilding only when it is missing or unsuitable. Also replace unconditional mixed-major linking with supported combinations. See [rustc bitcode options](https://doc.rust-lang.org/rustc/codegen-options/#embed-bitcode) and [LTO compatibility](https://doc.rust-lang.org/rustc/linker-plugin-lto.html#toolchain-compatibility).",
+    "Add [Quantum Control Machine](https://arxiv.org/abs/2304.15000) to §7. Its injectivity and synchronization analysis directly informs the new step-machine construction; distinguish preservation of classical inputs through oracle embedding from unrestricted lifting of quantum control flow."
+  ],
+  "verdict": "revise",
+  "path_to_accept": "Three normative edits suffice: consistently limit UB guarantees to the chosen reference semantics and explicit definedness assumptions; specify the complete faulted output state; and require input preservation plus full-state comparison in the permutation theorem and conformance checks. No implementation or additional demonstration is required for acceptance.",
+  "summary": "The architecture is ambitious and substantially coherent. Round-2 status: codex B2_SOURCE_MARKER_ABI is resolved. Codex B1_LLVM_DEFINEDNESS is partially resolved, with the source-level guarantee still inconsistent. Codex B3_BOUND_EXHAUSTION and muse B2_BOUND_EXHAUSTION_SEMANTICS resolve budget sourcing and silent truncation, but leave fault payload semantics incomplete. Codex B4_VERIFICATION_SCOPE and muse B1_CORRECTNESS_COMPLETENESS resolve sampling, decomposition and channel-scope objections, but still omit explicit input preservation. Opus B1-coherent-totality-and-bounds resolves region budgets and arbitrary-CFG execution; its definedness and total-result aspects remain partial. These are narrow semantic corrections to a credible founding vision, not objections to its ambition or implementation status."
+}
+tokens used
+104,336

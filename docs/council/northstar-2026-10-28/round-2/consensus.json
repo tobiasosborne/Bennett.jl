@@ -1,0 +1,73 @@
+{
+ "agree": false,
+ "verdicts": {
+  "codex": "revise",
+  "muse": "revise",
+  "opus": "revise"
+ },
+ "blocking": {
+  "codex": [
+   {
+    "id": "B1_LLVM_DEFINEDNESS",
+    "section": "\u00a7\u00a70, 3.2\u20133.3, 4.2, 8 rung 7",
+    "problem": "\u201cUndefined behaviour is concretised and recorded\u201d is false for the stated optimise-first pipeline. LLVM UB is not a random environmental choice: optimisation may remove or change behavior before the offending operation, leaving nothing a link-time recorder can reconstruct. Undef, poison, freeze, and external nondeterminism are also distinct concepts. This matters particularly for a kernel-fuzzing oracle: agreement with the same optimised native binary cannot establish the promised semantics of executions affected by source UB. [LLVM UB manual](https://llvm.org/docs/UndefinedBehavior.html)",
+    "fix": "State that correctness applies under explicit definedness assumptions covering every basis input in the supported coherent domain. Distinguish deterministic refinements of permitted undefined values from immediate UB and poison-triggered UB. If faulting executions are supported, establish defined checked or machine-simulation semantics before optimisations exploit UB. Record these assumptions and any fixed environmental choices in the certificate."
+   },
+   {
+    "id": "B2_SOURCE_MARKER_ABI",
+    "section": "\u00a7\u00a73.1 qubit handles, 3.3, 6.1 dialect specification",
+    "problem": "The dialect requires dedicated-address-space pointer handles, while the Rust integration merely exports bitcode from unmodified rustc. Rustc's internal LLVM bindings are not an extension point available to an ordinary Rust marker library; emitting bitcode does not let that library choose arbitrary pointer address spaces. Consequently, the proposed universal source ABI lacks a supported Rust emission path. Address-space meanings are also target-dependent. [Rust pointer types](https://doc.rust-lang.org/reference/types/pointer.html), [Clang address-space attribute](https://clang.llvm.org/docs/AttributeReference.html#address-space)",
+    "fix": "Define a portable source marker ABI using ordinary opaque pointers or integer handles, with Bennett normalising recognised handles into its internal representation. Specify how that representation respects the incoming target's pointer layout and address spaces. Gate the dialect specification on actual clang, Rust, and Julia emission examples, as well as optimisation tests."
+   },
+   {
+    "id": "B3_BOUND_EXHAUSTION",
+    "section": "\u00a7\u00a73.1 bounds, 4.2, 5.1, 9.4",
+    "problem": "Forcing a predicate permanently false does not distinguish normal termination from exhaustion while computation remains active. It can silently produce a truncated result that differs from native execution, even when the resulting circuit is reversible and cleans its workspace. Deferring this distinction permits the VM and specialiser to implement different functions. Recursion and workspace exhaustion require the same treatment.",
+    "fix": "Choose a shared semantic rule: require bounds sufficient for all supported inputs under stated assumptions, or define a total bounded computation with a reversible exhaustion flag and specified output behavior. Preserve enough state to uncompute, expose failure only through the declared interface, and identify whether the reference oracle is the original function or its explicitly bounded variant."
+   },
+   {
+    "id": "B4_VERIFICATION_SCOPE",
+    "section": "\u00a7\u00a74.2, 5.1, 8, 9.6",
+    "problem": "The permutation theorem does not make property-based testing complete: untested basis inputs can still be wrong. Its stated XOR embedding also requires checking the full allowed domain, including arbitrary target-register contents, input preservation, and dirty-borrow restoration. Measurement-based uncomputation is a channel implementation, not generally a unitary on the measured system; checking selected state-vector trajectories is insufficient to establish its behavior on entangled inputs. A record of test seeds cannot upgrade these checks into a universal correctness proof. [Quantum-channel representations and equivalence](https://learning.quantum.ibm.com/course/general-formulation-of-quantum-information/quantum-channels)",
+    "fix": "Keep the permutation theorem, but label exhaustive checks complete only for their declared finite domain and sampled checks as evidence. State the full input/output relation, including dirty registers. For measurement-assisted implementations, compare the induced channel, or instrument when outcomes are exposed, including controlled execution and reference-system correlations. Distinguish replayable validation records from independently checkable proofs, and specify the scope and composition of approximation budgets."
+   }
+  ],
+  "muse": [
+   {
+    "fix": "Restate the theorem with its exact domain: exhaustive agreement over all x and target values, with ancillae initially in the stated clean state, determines the oracle on that subspace. Define the permutation tier after decomposition into the gates actually emitted, excluding relative-phase Toffoli/MCX decompositions and measurement fixups from that tier. Label sampled differential testing as evidence, exhaustive testing or a compositional/structural proof as proof, and make the certificate distinguish those cases and state the input/ancilla domain proved.",
+    "id": "B1_CORRECTNESS_COMPLETENESS",
+    "problem": "Section 5.1 correctly observes that an ideal circuit using only X, CX, CCX and exact MCX is a permutation, but then calls testing 'exhaustive at small widths and property-based above' complete. Property-based sampling over a proper subset of basis inputs cannot determine the permutation on unsampled inputs; it is evidence, not completeness. The document also does not state that the theorem must be applied after MCX decomposition: a relative-phase Toffoli decomposition is not a permutation matrix and can introduce phases invisible to basis tests, while measurement-based cleanups likewise leave the permutation tier. Finally, checking only ancillae initialized to zero proves the action on that clean-ancilla subspace, not correctness under dirty borrowing or other ancilla domains unless those are separately included.",
+    "section": "5.1, 1 decision 7, 8 rungs 4/7/8"
+   },
+   {
+    "fix": "Define bound exhaustion in section 4.2 itself: exceeding a loop, recursion, allocation or step bound in any branch sets an explicit overflow outcome in the region result/certificate, makes the region result invalid rather than an oracle result, and is checked in differential tests and resource estimates. State who supplies the region-level classical bound or step budget from which internal bounds for unmodified code are derived.",
+    "id": "B2_BOUND_EXHAUSTION_SEMANTICS",
+    "problem": "The padded semantics say what happens before a bound is reached, but not what a branch that would exceed its loop, recursion, allocation or execution bound means. Section 9.4 defers this and says only that 'a predicate that is false forever is the only legal outcome.' If the remaining body is merely predicated off, execution after the loop can proceed from a truncated intermediate state and produce a branch-dependent wrong oracle result, with no coherent trap possible inside the region. That contradicts section 0's promise of never a silent wrong answer and leaves SQLite/kernel resource estimates unable to distinguish a valid large instance from one whose assumed bound truncates some branches. The source of bounds for the many internal data-dependent loops in unmodified code is also still only implicit.",
+    "section": "4.2, 9.4, 0, 8"
+   }
+  ],
+  "opus": [
+   {
+    "id": "B1-coherent-totality-and-bounds",
+    "section": "\u00a73.1 bounds row, \u00a74.2, \u00a74.5, \u00a75.1, \u00a78 rungs 4/7/8, \u00a79.4",
+    "problem": "Coherent execution of unmodified programs is not yet defined, in three linked ways. (i) The only stated bound mechanism is a per-loop `__bennett_bound` operand 'consumed by the loop's guard', with a compile error otherwise. That needs source edits in SQLite, Linux and the Monte Carlo, contradicting 'nobody rewrote SQLite'. It also relies on loop identity surviving O3 (rotate, unswitch, versioning, unroll, vectorise), which it does not. Read literally as an LLVM `token`, a non-intrinsic function cannot return it. (ii) Coherent control is specified only through structured pred{} and loop{}. Post-O3 CFGs of these programs are unstructured or irreducible: VDBE dispatch, gotos, recursion, and indirect calls on superposed pointers. The general construction is unstated. (iii) Some basis branches will exhaust the bound, trap, hit immediate undefined behaviour, or touch an unvirtualised device inside the region. None of these has a defined output, so the oracle is not a total function and \u00a75.1's permutation theorem has nothing to compare against. In addition, 'undefined values are concretised at entry' is false for poison computed from superposed data. Uncorrected, the project builds a per-loop-annotated dialect that cannot compile the flagship rungs, and oracles whose behaviour off the happy path is silently truncated rather than failing loud.",
+    "fix": "(a) Make the primary bound a region-level classical budget: dynamic steps, plus heap and recursion depth. It is passed as an ordinary integer operand of `__bennett_ctrl`/region entry, or supplied out of band by the host or driver, and applied by the plugin after outlining, so no loop identity has to survive optimisation. Per-loop SCEV and marker bounds become refinements. (b) Define coherent execution of an arbitrary CFG as a predicated step machine: a superposed block counter stepped for the budget, with structured pred/loop as optimisations of it. Both executors share this semantics. (c) Make every coherent region total by construction. Each region gets a fault/exhaustion output register, with a distinct code per cause (budget, trap/UB, unmodelled effect), as part of the oracle's output. Define poison/undef as a fixed deterministic refinement of the region's inputs (freeze). (d) Restate \u00a75.1 equivalence as 'equals native, or is flagged'. Require each rung to report the flag rate over its tested domain, and require that rate to be zero for the acceptance instances."
+   }
+  ]
+ },
+ "means": {
+  "C1": 4.0,
+  "C2": 3.33,
+  "C3": 4.0,
+  "C4": 4.0,
+  "C5": 3.67,
+  "C6": 3.0,
+  "C7": 4.0,
+  "C8": 4.0
+ },
+ "members": [
+  "codex",
+  "muse",
+  "opus"
+ ]
+}

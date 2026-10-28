@@ -1,0 +1,7 @@
+[codex] codex exec -m gpt-6-astra -c model_reasoning_effort=xhigh -s read-only --ephemeral --skip-git-repo-check --output-schema /home/tobias/Projects/Bennett.jl/docs/council/northstar-2026-10-28/round-1/schema.json -o /home/tobias/Projects/Bennett.jl/docs/council/northstar-2026-10-28/round-1/out-codex.json -- -
+[muse] muse exec --model muse-wonder-full-1.0 --reasoning-effort high --output-schema /home/tobias/Projects/Bennett.jl/docs/council/northstar-2026-10-28/round-1/schema.json --prompt-file /home/tobias/Projects/Bennett.jl/docs/council/northstar-2026-10-28/round-1/prompt.md --workspace /home/tobias/Projects/Bennett.jl --disable-web-tools --disable-reminders --disable-request-user-input --no-session-log
+[opus] claude -p --model opus --output-format json --json-schema <1411 chars> --allowedTools Read Grep Glob --max-turns 40
+[muse] done in 139s (attempt 1)
+[opus] done in 222s (attempt 1)
+[codex] done in 1031s (attempt 1)
+all members done

@@ -1,0 +1,89 @@
+{
+ "criteria": [
+  {
+   "id": "C1",
+   "score": 3,
+   "evidence": "The dialect, virtual ISA, resource scheduler, and demonstrations serve one ambitious objective. However, \u00a7\u00a70\u20135 conflate reversible simulation of a closed computation with coherently controlling arbitrary programs that perform measurement or external effects.",
+   "change": "State a precise coherent-lifting contract that distinguishes ordinary execution, recorded replay, and quantum-controlled execution."
+  },
+  {
+   "id": "C2",
+   "score": 2,
+   "evidence": "The pass-plugin architecture and function-level transformation strategy are credible. Several guarantees attributed to LLVM extension points in \u00a73 are false or unsupported: opacity does not enforce linearity, address spaces do not confer quantum semantics, and lifetime markers do not perform uncomputation.",
+   "change": "Replace the extension-point table with a distinction between guarantees LLVM actually supplies and semantic obligations Bennett must enforce."
+  },
+  {
+   "id": "C3",
+   "score": 3,
+   "evidence": "Virtual qubits, allocation classes, garbage occupancy, and classically supplied bounds form a compelling architecture; the maximum-bound padding statement is appropriately explicit. The missing distinction between classically inspectable scheduler state and coherent heap/history state leaves materially different machines consistent with \u00a74.",
+   "change": "Add an architectural invariant specifying which state scheduling decisions may inspect and how quantum-dependent allocation, termination, and history remain coherent."
+  },
+  {
+   "id": "C4",
+   "score": 3,
+   "evidence": "The repository responsibilities are mostly sensible, but serialized program formats alone do not specify runtime invocation, results, diagnostics, or cost-certificate interchange. Section 6 also promises one codebase for both executors while \u00a76.1 assigns them independent repositories; shared code would not establish semantic agreement anyway.",
+   "change": "Inventory every component boundary and explicitly place its public interface under one of the two contracts."
+  },
+  {
+   "id": "C5",
+   "score": 2,
+   "evidence": "Language-independent transformation of suitable LLVM IR without a fork is credible; unrestricted source and platform compatibility from one plugin flag is not established. Enzyme itself documents cross-translation-unit and LTO requirements, while rustc's plugin-loading interface has toolchain restrictions. [Enzyme integration](https://enzyme.mit.edu/getting_started/UsingEnzyme/), [rustc plugin interface](https://doc.rust-lang.org/nightly/unstable-book/compiler-flags/llvm-plugins.html).",
+   "change": "Define the portable input and integration contract, including observable semantics, external dependencies, compiler-build compatibility, and coherent-execution eligibility."
+  },
+  {
+   "id": "C6",
+   "score": 2,
+   "evidence": "Native differential testing is a substantial improvement over ancilla-zero checks, but it cannot establish the quantum correctness claimed in \u00a75. The ladder lacks explicit phase, entanglement, dirty-ancilla, and measurement-channel criteria, and passing differential tests is not a proof that every accepted artifact is correct.",
+   "change": "Make quantum semantic refinement, with explicit approximation allowances, the correctness criterion and retain native comparison as one supporting test."
+  },
+  {
+   "id": "C7",
+   "score": 2,
+   "evidence": "The categorical account of an abstraction-free quantum ecosystem is false: OpenQASM 3 already provides dynamic control, and Tower provides coherent pointers, allocation, and classically bounded recursion. The document does not distinguish its proposed contribution from these or the other named predecessors. [OpenQASM 3](https://doi.org/10.1145/3505636), [Tower](https://arxiv.org/abs/2205.10255).",
+   "change": "Add a concise prior-art comparison identifying the new combination and interoperability obligations, rather than claiming the existing abstractions are absent."
+  },
+  {
+   "id": "C8",
+   "score": 3,
+   "evidence": "The document is readable, concrete about intended experiences, and appropriately separates vision from implementation. However, it labels architectural choices settled while deferring the semantic conditions needed to determine whether those choices describe a physically valid, optimizer-safe system.",
+   "change": "Resolve the semantic commitments identified below at vision level, while continuing to defer their algorithms and encodings."
+  }
+ ],
+ "blocking": [
+  {
+   "id": "B1_EFFECT_DOMAINS",
+   "section": "\u00a7\u00a70, 1.3\u20131.4, 3 effects row, 5, 7",
+   "problem": "The unrestricted controlled-anything promise conflates classical reversibility with quantum coherence. Recording a measurement result does not restore the discarded coherence, and recording external output does not make the external observer reversible. A bounded deterministic simulation of SQLite or Linux can become a coherent oracle; an execution that exposes branch-dependent information to an ordinary console, filesystem, or measurement record cannot generally be uncomputed into that oracle. Likewise, replaying one recorded environment is not equivalent to evaluating every superposed input against a live environment. [Measurement and reversibility](https://arxiv.org/abs/1808.08598).",
+   "fix": "Define separate execution capabilities for classical execution/replay, coherent reversible computation, and measurement-bearing computation. Preserve broad language coverage through an explicitly modeled environment: specify inputs, randomness, memory, bounds, and effects included in the reversible state. Require external effects to be coherently modeled or deferred where coherent control is promised; define rejection or another explicit semantic outcome otherwise. State the defined LLVM execution domain, including the treatment of undefined behavior."
+  },
+  {
+   "id": "B2_LLVM_CONTRACT",
+   "section": "\u00a73 and \u00a78.1",
+   "problem": "The extension-point table asserts guarantees these mechanisms do not provide. Target extension types are not linear; address spaces qualify pointers rather than arbitrary iN values; unfamiliar instruction metadata can be dropped; and llvm.lifetime.end describes memory lifetime, not quantum cleanup. [LLVM language reference](https://llvm.org/docs/LangRef.html). Convergence constrains particular control-flow transformations rather than furnishing general quantum effect semantics. [Convergence semantics](https://llvm.org/docs/ConvergentOperations.html). Genuine new llvm.* intrinsics require LLVM-side definitions, unlike Enzyme-style external marker calls. [Extending LLVM](https://llvm.org/docs/ExtendingLLVM.html). Consequently, the claimed blanket legality does not follow from the proposed mechanisms.",
+   "fix": "Commit to a viable conservative no-fork representation: distinguish classical computations awaiting coherent lifting from explicit quantum state and effects; use ordinary effectful marker calls where necessary; carry mandatory bounds and lifecycle operations semantically rather than solely as metadata. State where verification and quantum lowering occur relative to ordinary optimization. Exact attributes may remain a design question, but their claimed guarantees cannot remain settled facts."
+  },
+  {
+   "id": "B3_COHERENT_RUNTIME",
+   "section": "\u00a7\u00a71.6, 3, 4, 8.3\u20138.7",
+   "problem": "A classical runtime cannot inspect a superposed trip count, allocation decision, pointer, or garbage value to choose an ordinary execution path without potentially destroying coherence. Nor can classical checkpointing be transferred to arbitrary quantum states by copying them. Maximum-bound padding addresses execution length, but does not specify coherent allocation, history, release, or what happens when only some branches exceed a bound. Leaving these as unrestricted resource policy risks building a reversible classical debugger and calling it a quantum VM.",
+   "fix": "Require scheduling decisions either to depend only on classical information or to be implemented coherently. Identify coherent versus classical heap, history, and control state; define bound-exhaustion semantics and the memory/recursion bounds needed for specialization. Specify clean release and dirty borrowing as semantic obligations, including restoration of correlations with external reference systems. Defer the scheduling algorithms, not these invariants."
+  },
+  {
+   "id": "B4_QUANTUM_CORRECTNESS",
+   "section": "\u00a7\u00a72, 5, 7, 8.8",
+   "problem": "Matching native bit outputs and returning ancillae to zero does not establish a correct quantum oracle. A circuit implementing |x,0> \u2192 (-1)^g(x)|x,f(x)> passes those checks while introducing an unintended phase; even a global phase becomes observable when the operation is controlled. Measurement-bearing programs require comparison of quantum instruments or channels, not merely recorded outcomes. The current success definition can therefore certify artifacts that break the flagship quantum algorithms.",
+   "fix": "State the intended phase-sensitive oracle embedding and the semantics of general quantum operations, including entangled inputs and dirty ancillae. Add small exhaustive operator/channel checks and interference tests to the ladder. Specify approximation budgets for rotations and hardware lowering, and identify what proof-carrying output proves, under which assumptions, with what independent checking. Describe differential testing as evidence rather than universal proof."
+  }
+ ],
+ "suggestions": [
+  "Narrow the novelty claim to the proposed combination of ordinary LLVM program lifting, a portable resource-aware ISA, and coherent execution services. Compare explicitly with Silq's safe uncomputation, Q# and CUDA-Q control/adjoint facilities, Quipper's oracle construction, Catalyst's compilation pipeline, Tower's memory model, and reversible pebbling. [Silq](https://silq.ethz.ch/), [Q# functors](https://learn.microsoft.com/en-us/azure/quantum/user-guide/language/expressions/functorapplication), [CUDA-Q](https://nvidia.github.io/cuda-quantum/latest/using/examples/building_kernels.html), [Catalyst](https://docs.pennylane.ai/projects/catalyst/en/stable/index.html).",
+  "Correct the QIR critique: opaque pointers still participate in LLVM SSA dataflow, and emitted adjoint/controlled bodies do not prevent downstream analysis. The defensible criticism is missing explicit algebraic or ownership guarantees. Acknowledge existing adaptive profiles and allocation capabilities instead of implying that QIR lacks dynamic execution abstractions. [QIR memory management](https://github.com/qir-alliance/qir-spec/blob/main/specification/Memory_Management.md), [adaptive-profile capabilities](https://www.qir-alliance.org/posts/Adaptive_Profile_Helios_H2/).",
+  "Scope optimality certificates to a gate set, objective, accuracy, and search domain. Distinguish exact resource counts, certified bounds, and heuristic estimates; bounded execution does not itself guarantee cheap exact analysis. Specify resource units, composition rules, and optimization preferences. Qualtran's explicit symbolic counting contracts are relevant precedent. [Qualtran counting protocol](https://qualtran.readthedocs.io/en/latest/resource_counting/call_graph.html).",
+  "Give each marquee demonstration a reproducible bounded instance and explicit success assertions, including database loading, randomness/state preparation, environment modeling, and cleanup. This would make the ladder measurable without imposing an implementation schedule or requiring a claimed quantum speedup.",
+  "Complete the interface inventory with host/runtime invocation, quantum-handle ownership across calls, result and error schemas, certificates, and capability negotiation. Resolve the one-codebase versus independent-executors contradiction, and require agreement with the public semantics rather than agreement by construction.",
+  "Keep C++ as the pragmatic implementation choice, but correct the rationale: llvmGetPassPluginInfo has C linkage while its registration machinery uses C++ APIs; this does not prove that all implementation code must be C++. Also distinguish LLVM-major compatibility from exact toolchain ABI/build compatibility. [LLVM pass-plugin interface](https://llvm.org/docs/WritingAnLLVMNewPMPass.html).",
+  "Present maximum-bound padding as the specified coherent-loop execution strategy, rather than a universal optimality theorem imposed by physics. Variable-time amplitude amplification does not permit observing superposed stopping times, but demonstrates that worst-case padding is not the whole algorithmic cost story. [Ambainis](https://arxiv.org/abs/1010.4458)."
+ ],
+ "verdict": "revise",
+ "summary": "The portable VM and resource-aware ISA are a strong direction, and the ambition is appropriate. Acceptance is blocked by four architectural semantic gaps: unrestricted control of effects, unsupported LLVM legality guarantees, unspecified coherence constraints on runtime scheduling, and a correctness definition that misses quantum errors. These require precise commitments in the vision, not completed implementations. The repository split, integration promises, resource claims, and prior-art positioning also need tightening."
+}

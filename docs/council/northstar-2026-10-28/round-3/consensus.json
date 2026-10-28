@@ -1,0 +1,60 @@
+{
+ "agree": false,
+ "verdicts": {
+  "codex": "revise",
+  "muse": "accept",
+  "opus": "revise"
+ },
+ "blocking": {
+  "codex": [
+   {
+    "id": "B1_LLVM_DEFINEDNESS",
+    "section": "\u00a7\u00a70, 3.2, 4.2, 5.1 and 8 rung 7",
+    "problem": "Section 3.2 acknowledges that optimisation can erase source UB, but \u00a70 still promises named faults for executions outside the defined domain. These cannot both hold for source executions. I confirmed locally that clang -O3 turns `int f(int x){int y=10/x;return 0;}` into `return 0`, leaving nothing to fault on at x=0. UBSan also detects selected UB classes; a clean run does not establish source definedness. See the [LLVM UB manual](https://llvm.org/docs/UndefinedBehavior.html) and [UBSan documentation](https://clang.llvm.org/docs/UndefinedBehaviorSanitizer.html).",
+    "fix": "Prefer the minimal correction: state that source equivalence requires an independently stated definedness assumption for every supported basis input; faults cover conditions encountered by Bennett's totalised optimised-IR machine, with no guarantee of detecting source UB erased earlier. Describe UBSan as supplementary evidence, not a complete domain classifier. Alternatively, retain source-level fault guarantees by introducing checked semantics before UB-exploiting optimisation, explicitly naming their coverage. The kernel rung must identify which contract it uses."
+   },
+   {
+    "id": "B3_FAULT_RESULT_SEMANTICS",
+    "section": "\u00a7\u00a74.2 and 5.1",
+    "problem": "Saying that faulted outputs are 'not an oracle value' does not specify their quantum state. Two implementations can return the same fault code and clean workspace while one writes zero to the payload and the other copies x. On a superposition these produce different correlations, even if nobody reads the invalid payload. Comparing only the fault code therefore cannot establish the claimed common semantics.",
+    "fix": "Define a deterministic bounded result F_B(x): success returns (f(x), 0), while failure returns (0, error_B(x)); implement it by XOR into payload and error targets, preserving the input and restoring workspace. Error selection must follow the shared bounded reference semantics. Alternatively, specify a deterministic partial-result payload on failure and compare it completely; I would choose the canonical zero payload. Merely disabling forward predicates is insufficient without retaining and reversing the required history."
+   },
+   {
+    "id": "B4_INPUT_PRESERVATION",
+    "section": "\u00a75.1 part 1 and its conformance requirements",
+    "problem": "The theorem's listed hypotheses check the result and clean/dirty ancilla restoration, but do not require preservation of x. Appending X on an input bit after an otherwise correct oracle preserves every listed result and ancilla check, yet violates the claimed mapping. Exhausting target and dirty-register values does not close this hole.",
+    "fix": "Require explicit equality of the entire register tuple: preserved input and reference state, target XOR the specified bounded result, correctly transformed fault target, unchanged dirty registers, and restored clean workspace. State input preservation in both the theorem's hypotheses and the acceptance checks; native execution supplies f(x), while the embedding specification supplies the complete expected state."
+   }
+  ],
+  "muse": [],
+  "opus": [
+   {
+    "id": "B1_QUANTUM_STATE_WRITE_SEMANTICS",
+    "section": "\u00a73.1 (qload/qstore, ctrl regions), \u00a74.2, \u00a75.1 part 1",
+    "problem": "The document defines a coherent region only as an out-of-place oracle: |x\u27e9|t\u27e9|a\u27e9 \u21a6 |x\u27e9|t\u2295f(x)\u27e9|a\u27e9, with workspace returned clean. It never says what classical code does to quantum state that outlives the region. Three cases are open. (a) What `__bennett_qload` from a handle means under linear ISA semantics: a move, or an entangling copy. (b) What `__bennett_qstore` into a handle whose contents are already superposed means. Overwriting is not unitary: the old value becomes garbage that cannot be uncomputed without an inverse. (c) How an in-place update x \u2190 g(x) of a quantum register by classical code is compiled. This is the project's founding use case: Sturm's `when(q) do f(x) end`, controlled modular addition and multiplication in Shor. Uncorrected, the plugin must guess. It will either silently leave entangled garbage, which violates the region well-formedness the document requires, or support only out-of-place oracles while the thesis promises \"controlled-anything\".",
+    "fix": "Add a \"coherent memory and region interface\" paragraph to \u00a74.2 and mirror it in the dialect spec. (1) qload is a CNOT copy of the register onto fresh wires; the source is preserved and the copy is workspace. (2) qstore XORs into its target, so storing into a clean register is a copy. Storing into a register not known to be clean is a compile-time error, not a fault. (3) Region inputs are preserved, declared outputs are XORed into caller-supplied targets, and every other write is restored workspace. (4) In-place update needs an inverse. Option (a): a marker `__bennett_inplace(@g, @ginv, \u2026)` lowered as compute g out of place, swap, then uncompute with g\u207b\u00b9; library primitives that are known bijections (add a constant, xor, rotate) carry their inverses in bennett-arith. Option (b): no in-place marker; front ends compose two compute regions and a swap. I would take (a), keeping (b) legal, because (a) makes `when(q) do x += a end` work as written. Either way, an in-place update with no inverse fails loud at compile time."
+   },
+   {
+    "id": "B2_UNCOMPUTATION_VALIDITY",
+    "section": "\u00a73.1 (garbage row), \u00a74.2 (classical control: pebbling policy), \u00a74.3, \u00a74.4 (scheduling interface)",
+    "problem": "Garbage is presented as pure scheduling policy: \"the scheduler decides when to pay to free a dead value\", run-time pebbling over the resource vector, and the run-time policy is constrained only to inspect classical data. Uncomputing garbage by reversing or recomputing its computation is correct only if every value it was computed from is in the same basis state at uncompute time as at compute time. Equivalently, no non-permutation gate (H, rotations other than diagonal ones, measurement) and no in-place update may touch those sources in between. This is Silq's qfree/const condition and Unqomp's validity criterion. Garbage still entangled with a qubit when that qubit is interfered also destroys the interference. A scheduler that defers uncomputation past such an operation, which this document licenses, computes the wrong state while every ancilla still returns to zero.",
+    "fix": "State the invariant in the ISA formal model (\u00a74.2/\u00a74.4). Each garbage value records its dependency set. It may be uncomputed by reversal or recomputation only while that set is unmodified since its computation, and it must be cleaned before any non-permutation operation acts on a wire in its dependency set, and before the end of the enclosing unitary region. Measurement-based uncomputation with phase fixup is the sanctioned alternative where that window has closed. Compile-time and run-time schedulers choose only among schedules that satisfy this constraint. The handle\u2192wire verifier (\u00a79.2) rejects violations, and conformance tests exercise them with interference (\u00a75.1 part 2). Credit Silq/Unqomp for the condition in \u00a77."
+   }
+  ]
+ },
+ "means": {
+  "C1": 4.0,
+  "C2": 3.67,
+  "C3": 4.0,
+  "C4": 4.33,
+  "C5": 4.0,
+  "C6": 4.33,
+  "C7": 4.0,
+  "C8": 4.0
+ },
+ "members": [
+  "codex",
+  "muse",
+  "opus"
+ ]
+}

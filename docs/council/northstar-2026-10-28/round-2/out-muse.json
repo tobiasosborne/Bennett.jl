@@ -1,0 +1,77 @@
+{
+ "blocking": [
+  {
+   "fix": "Restate the theorem with its exact domain: exhaustive agreement over all x and target values, with ancillae initially in the stated clean state, determines the oracle on that subspace. Define the permutation tier after decomposition into the gates actually emitted, excluding relative-phase Toffoli/MCX decompositions and measurement fixups from that tier. Label sampled differential testing as evidence, exhaustive testing or a compositional/structural proof as proof, and make the certificate distinguish those cases and state the input/ancilla domain proved.",
+   "id": "B1_CORRECTNESS_COMPLETENESS",
+   "problem": "Section 5.1 correctly observes that an ideal circuit using only X, CX, CCX and exact MCX is a permutation, but then calls testing 'exhaustive at small widths and property-based above' complete. Property-based sampling over a proper subset of basis inputs cannot determine the permutation on unsampled inputs; it is evidence, not completeness. The document also does not state that the theorem must be applied after MCX decomposition: a relative-phase Toffoli decomposition is not a permutation matrix and can introduce phases invisible to basis tests, while measurement-based cleanups likewise leave the permutation tier. Finally, checking only ancillae initialized to zero proves the action on that clean-ancilla subspace, not correctness under dirty borrowing or other ancilla domains unless those are separately included.",
+   "section": "5.1, 1 decision 7, 8 rungs 4/7/8"
+  },
+  {
+   "fix": "Define bound exhaustion in section 4.2 itself: exceeding a loop, recursion, allocation or step bound in any branch sets an explicit overflow outcome in the region result/certificate, makes the region result invalid rather than an oracle result, and is checked in differential tests and resource estimates. State who supplies the region-level classical bound or step budget from which internal bounds for unmodified code are derived.",
+   "id": "B2_BOUND_EXHAUSTION_SEMANTICS",
+   "problem": "The padded semantics say what happens before a bound is reached, but not what a branch that would exceed its loop, recursion, allocation or execution bound means. Section 9.4 defers this and says only that 'a predicate that is false forever is the only legal outcome.' If the remaining body is merely predicated off, execution after the loop can proceed from a truncated intermediate state and produce a branch-dependent wrong oracle result, with no coherent trap possible inside the region. That contradicts section 0's promise of never a silent wrong answer and leaves SQLite/kernel resource estimates unable to distinguish a valid large instance from one whose assumed bound truncates some branches. The source of bounds for the many internal data-dependent loops in unmodified code is also still only implicit.",
+   "section": "4.2, 9.4, 0, 8"
+  }
+ ],
+ "criteria": [
+  {
+   "change": "State the region-level bound/step-budget mechanism that makes unmodified data-dependent code effect-bounded without per-loop source annotations.",
+   "evidence": "The thesis is now precisely qualified in section 0, and sections 4.2, 5.1 and 8 describe the same closed coherent tier rather than unrestricted controlled-anything. The remaining incoherence is that section 3.1 makes a missing coherent-loop bound a compile error while rungs 4, 7 and 8 promise unmodified SQLite, Linux and Monte Carlo code.",
+   "id": "C1",
+   "score": 4
+  },
+  {
+   "change": "Add codegen and target-address-space cases to the legality spike and replace forward-only taint with context-sensitive data, control and memory dependence.",
+   "evidence": "Section 3.1 now uses declared marker functions, handle pointers, analysis-derived taint, bounds as operands and liveness, and explicitly withdraws plugin-registered intrinsics, target extension types, loop metadata and lifetime intrinsics. Residual simplifications include the portability of a dedicated address space across host targets and the description of taint as only a forward dataflow.",
+   "id": "C2",
+   "score": 4
+  },
+  {
+   "change": "Define bound-exhaustion/overflow semantics and its interaction with histories and clean release in the ISA vision.",
+   "evidence": "Section 4.2 now separates classical instruction-pointer control from predicated, padded coherent control, forbids runtime policy from inspecting superposed data, and sections 4.2-4.3 state honest costs for both branch arms, padded allocation and O(N) quantum-addressed memory. Bound exhaustion remains deferred to section 9.4 despite being part of the core padded semantics.",
+   "id": "C3",
+   "score": 4
+  },
+  {
+   "change": "Say whether the bennett-sched C ABI and cost semantics are owned by the ISA spec or are a third internal contract.",
+   "evidence": "Section 4.4 makes the ISA spec own the reversible ABI, link format, launch ABI and cost-certificate schema, and section 6.1 withdraws the shared-executor-codebase claim in favour of the formal model and conformance suite. The shared bennett-sched binary linked by plugin and executors is nevertheless an interface not assigned to either named contract.",
+   "id": "C4",
+   "score": 4
+  },
+  {
+   "change": "State availability limits for whole-program bitcode for language runtimes and standard libraries as explicit coverage constraints.",
+   "evidence": "Section 3.3 credibly moves the plugin to link-time whole-program bitcode, owns the driver and fat-object format, accepts host-triple IR, and names clang, rustc and Julia integration separately. It still understates that obtaining bitcode for Rust std, Julia runtime code and precompiled native libraries may require special builds or shims rather than ordinary unmodified front-end use.",
+   "id": "C5",
+   "score": 4
+  },
+  {
+   "change": "Correct section 5.1 so sampled differential testing is evidence and only exhaustive or compositional proof is called complete/proof-carrying.",
+   "evidence": "Section 8 now gives every rung instance sizes, oracle checks and resource-estimate requirements, and section 5.1 correctly adds phase-sensitive checks for non-permutation lowerings with an epsilon budget. But section 5.1 still calls property-based testing above exhaustive widths complete, which is mathematically false and makes the meaning of a certificate ambiguous.",
+   "id": "C6",
+   "score": 3
+  },
+  {
+   "change": "Qualify the catalyst and taint-novelty wording against Enzyme activity analysis and MLIR lowering paths, while keeping the narrow combination claim.",
+   "evidence": "Section 7 now covers Enzyme, PTX/offload, QIR, OpenQASM 3, Quake, Catalyst, Q#, Quipper, Silq/Unqomp/Reqomp/SQUARE, Tower, Qualtran/Azure RE, QSSA/QIRO, ReVerC and the pebbling literature, and narrows novelty to inferred-taint reversibilisation plus the public virtual ISA and shared compile/run-time scheduler. The QIR criticism is now precise and acknowledges dataflow participation and newer profiles.",
+   "id": "C7",
+   "score": 4
+  },
+  {
+   "change": "Move bound-exhaustion semantics and certificate proof-versus-evidence labels from deferred questions into sections 4.2 and 5.1.",
+   "evidence": "Sections 3.1, 4.4, 4.5, 6.1 and 8 give a compiler engineer, hardware vendor and language designer concrete surfaces, repository dependencies and acceptance tests. Two load-bearing semantic points remain deferred or misstated: what happens when a classical bound is exceeded and what part of a proof-carrying certificate is actually proof.",
+   "id": "C8",
+   "score": 4
+  }
+ ],
+ "suggestions": [
+  "Put the bennett-sched C ABI, objective semantics and versioning in bennett-isa-spec, or explicitly name it as a third internal contract; otherwise a competitor VM can conform to the ISA while invalidating compile-time schedules and certificates.",
+  "Scope branch enumeration exactly: it is exact for permutation segments and for sparse simulation only while the full branch configuration, including garbage and virtualised device state, is tracked; non-permutation gates between such segments must be applied to amplitudes and can increase branch count.",
+  "Replace 'forward dataflow' taint with context-sensitive interprocedural analysis over data dependence, control dependence and memory effects, with polyvariant specialisation when one function is used both classically and coherently.",
+  "Define LLVM poison/undef handling separately from source UB: state where freeze/concretisation occurs relative to optimisation and what per-branch traps such as division by zero or invalid shifts become inside a coherent region.",
+  "Extend the legality spike beyond O3 IR passes to native code generation for fat objects containing handle address-space values, including targets that already reserve nearby address-space numbers.",
+  "Clarify the VM-versus-circuits hardware-lowering boundary: which component lowers predicated ISA blocks to a target gate alphabet at launch time, and what capabilities beyond costs a target description must declare.",
+  "Correct minor wording that stock passes may inline marker calls: an external declaration cannot itself be inlined, although containing functions may be inlined, cloned or unrolled."
+ ],
+ "summary": "Round 1 status: codex B1 is resolved by sections 0 and 4.2; codex B2 is resolved by the section 3.1 rewrite; codex B3 is mostly resolved by the classical-only runtime-policy invariant and padded coherent semantics, but its bound-exhaustion subpart is not resolved and is re-raised; codex B4 is partly resolved by the new phase-sensitive tiers, but the sampled-testing completeness claim remains and is re-raised. Muse B1, B2, B3 and B4 are resolved; muse B5 shares the unresolved completeness/certificate subpart; muse B6 is resolved at vision level, with only the bennett-sched ABI ownership left as a suggestion. Opus B1, B2, B3, B4 and B5 are resolved, subject to that same sched-interface suggestion. The editor's branch-enumeration claim is correct for a permutation oracle when the full output basis configuration is tracked, but it should be scoped to permutation segments rather than arbitrary coherent regions containing non-permutation gates. The revised document is now a coherent and unusually strong founding vision, but two narrow semantic corrections are still required before it can be accepted.",
+ "verdict": "revise"
+}
